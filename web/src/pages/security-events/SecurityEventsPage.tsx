@@ -16,8 +16,10 @@ import ExportDropdown from '../../components/ExportDropdown'
 import type dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { securityEventsApi } from '../../api/securityEvents'
+import IPGeoCell from '../../components/IPGeoCell'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
+import useExportSelection from '../../hooks/useExportSelection'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
@@ -30,6 +32,7 @@ import {
 } from '../../utils/stage4'
 import EventDetailDrawer from './EventDetailDrawer'
 import BlacklistFromEventModal from './BlacklistFromEventModal'
+import WhitelistFromEventModal from './WhitelistFromEventModal'
 import type { SecurityEventItem } from '../../types'
 interface Filters {
   start_time?: string
@@ -59,7 +62,15 @@ export default function SecurityEventsPage() {
   const [pageSize, setPageSize] = useState(20)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [blacklistId, setBlacklistId] = useState<string | null>(null)
+  const [whitelistId, setWhitelistId] = useState<string | null>(null)
   const canManageAccessRules = hasPermission(permissions, 'access_rules.manage')
+  const canExport = hasPermission(permissions, 'security_events.export')
+  const {
+    selectedIds,
+    selectedCount,
+    clearSelection,
+    rowSelection,
+  } = useExportSelection<SecurityEventItem>(canExport)
 
   const listQuery = useQuery({
     queryKey: ['security-events', filters, page, pageSize],
@@ -86,6 +97,12 @@ export default function SecurityEventsPage() {
       render: (v: string) => formatDateTime(v),
     },
     { title: '客户端IP', dataIndex: 'client_ip', width: 125 },
+    {
+      title: '归属地 / 运营商',
+      key: 'client_ip_geo',
+      width: 195,
+      render: (_, record) => <IPGeoCell geo={record.client_ip_geo} />,
+    },
     { title: '域名', dataIndex: 'domain', width: 170, ellipsis: true },
     { title: '方法', dataIndex: 'request_method', width: 70 },
     {
@@ -127,13 +144,23 @@ export default function SecurityEventsPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 130,
+      width: 165,
       fixed: 'right',
       render: (_, record) => (
         <Space size={0}>
           <Button type="link" size="small" onClick={() => setSelectedId(record.id)}>
             详情
           </Button>
+          {canManageAccessRules && (record.client_ip || record.request_uri) && (
+            <Button
+              type="link"
+              size="small"
+              style={{ color: '#389e0d' }}
+              onClick={() => setWhitelistId(record.id)}
+            >
+              加白
+            </Button>
+          )}
           {canManageAccessRules && record.client_ip && (
             <Button type="link" size="small" danger onClick={() => setBlacklistId(record.id)}>
               加黑
@@ -148,21 +175,14 @@ export default function SecurityEventsPage() {
     <Card
       title="安全事件"
       extra={
-        hasPermission(permissions, 'security_events.export') && (
+        canExport && (
           <ExportDropdown
-            tooltip="「导出筛选结果」仅携带时间范围、域名、攻击类型、风险四项筛选（与后端导出接口一致）；客户端IP、请求路径、方法、动作、处置状态、请求 ID 不参与导出。「导出全部」不携带任何筛选。"
-            onExportFiltered={() =>
-              window.open(
-                securityEventsApi.exportUrl({
-                  start_time: filters.start_time,
-                  end_time: filters.end_time,
-                  domain: filters.domain,
-                  attack_type: filters.attack_type,
-                  severity: filters.severity,
-                }),
-                '_blank',
-              )
+            selectedCount={selectedCount}
+            onClearSelection={clearSelection}
+            onExportSelected={() =>
+              window.open(securityEventsApi.exportUrl({ ids: selectedIds.join(',') }), '_blank')
             }
+            onExportFiltered={() => window.open(securityEventsApi.exportUrl({ ...filters }), '_blank')}
             onExportAll={() => window.open(securityEventsApi.exportUrl({}), '_blank')}
           />
         )
@@ -252,10 +272,11 @@ export default function SecurityEventsPage() {
         <SmartTable<SecurityEventItem>
           storageKey="security-events"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
-          scroll={{ x: 1550 }}
+          scroll={{ x: 1745 }}
           onRow={(record) => ({
             onDoubleClick: () => setSelectedId(record.id),
             style: { cursor: 'pointer' },
@@ -280,6 +301,7 @@ export default function SecurityEventsPage() {
         onSelectEvent={(id) => setSelectedId(id)}
       />
       <BlacklistFromEventModal eventId={blacklistId} onClose={() => setBlacklistId(null)} />
+      <WhitelistFromEventModal eventId={whitelistId} onClose={() => setWhitelistId(null)} />
     </Card>
   )
 }

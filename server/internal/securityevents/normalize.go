@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	dsevents "github.com/jiuzhang-waf/gateway/dynamic_security/events"
 	"github.com/jiuzhang-waf/server/internal/customrules"
+	"github.com/jiuzhang-waf/server/internal/wafrules"
 )
 
 // 攻击类型映射
@@ -505,11 +506,12 @@ func parseMessage(em string) MatchInfo {
 		}
 	}
 	ruleID, _ := strconv.Atoi(kv["id"])
+	rawMsg := kv["msg"]
 	mi := MatchInfo{
 		RuleID:   ruleID,
-		RuleName: kv["msg"],
+		RuleName: wafrules.LocalizeRule(ruleID, "", rawMsg),
 		Severity: mapSeverity(kv["severity"]),
-		Message:  kv["msg"],
+		Message:  wafrules.LocalizeMatchMessage(ruleID, rawMsg),
 		Tags:     tags,
 	}
 	if md := matchedDataPattern.FindStringSubmatch(kv["data"]); len(md) == 4 {

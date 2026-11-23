@@ -207,6 +207,10 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e.Asset = asset
+	if asset != nil {
+		e.BusinessType = asset.BusinessType
+		e.Tags = asset.Tags
+	}
 	now := time.Now().UTC()
 	buckets, err := h.store.TrafficBuckets(r.Context(), id, now.Add(-valueTrafficWindowDays*24*time.Hour), now)
 	if err != nil {
@@ -355,6 +359,10 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	h.recordAudit(r, p, "edit", id.String(), truncateName(e.EndpointKey),
 		assetSummary(before), assetSummary(asset), audits.RiskMedium)
 	e.Asset = asset
+	if asset != nil {
+		e.BusinessType = asset.BusinessType
+		e.Tags = asset.Tags
+	}
 	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": e, "message": "资产信息已更新"})
 }
 

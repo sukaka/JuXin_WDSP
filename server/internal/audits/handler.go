@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/response"
+	"github.com/jiuzhang-waf/server/internal/validation"
 )
 
 // Handler 是操作审计处理器。
@@ -70,9 +71,15 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, entry)
 }
 
-// Export 导出审计。
+// Export 导出审计（支持筛选导出与勾选 ids 导出）。
 func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
+	ids, err := validation.ParseExportUUIDs(r.URL.Query(), "ids")
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
 	f := parseFilter(r)
+	f.IDs = ids
 	csv, err := h.svc.Export(r.Context(), f)
 	if err != nil {
 		response.InternalError(w, r, err)

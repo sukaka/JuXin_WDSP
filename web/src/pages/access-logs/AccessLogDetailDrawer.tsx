@@ -94,6 +94,12 @@ export default function AccessLogDetailDrawer({
               {log.client_ip || '-'}
               {log.client_port ? `:${log.client_port}` : ''}
             </Descriptions.Item>
+            <Descriptions.Item label="IP 归属地">
+              {log.client_ip_geo?.label || '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="运营商">
+              {log.client_ip_geo?.isp || '-'}
+            </Descriptions.Item>
             <Descriptions.Item label="域名">{log.domain || '-'}</Descriptions.Item>
             <Descriptions.Item label="方法">{log.request_method || '-'}</Descriptions.Item>
             {/* 请求 URI 按纯文本渲染，React 自动转义，防 XSS */}

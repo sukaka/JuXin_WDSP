@@ -13,6 +13,9 @@ import (
 
 // 事件类型（网关 jiuzhang_guard 产生 + 管理面到期/解封补齐）
 const (
+	EventTypeIPAllowMatch        = "IP_ALLOW_MATCH"
+	EventTypeURLAllowMatch       = "URL_ALLOW_MATCH"
+	EventTypeIPDenyMatch         = "IP_DENY_MATCH"
 	EventTypeCCTempBlockCreated  = "CC_TEMP_BLOCK_CREATED"
 	EventTypeCCTempBlockExpired  = "CC_TEMP_BLOCK_EXPIRED"
 	EventTypeCCTempBlockReleased = "CC_TEMP_BLOCK_RELEASED"

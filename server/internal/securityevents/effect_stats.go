@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jiuzhang-waf/server/internal/wafrules"
 )
 
 // RuleEffectStat 是规则版本按日聚合的效果统计。
@@ -110,6 +112,7 @@ ORDER BY day DESC, rule_id, rule_version LIMIT $`+strconv.Itoa(len(args)+1)+` OF
 			&stat.Hits, &stat.Blocks, &stat.ConfirmedAttacks, &stat.FalsePositives, &stat.Unresolved); err != nil {
 			return nil, 0, err
 		}
+		stat.RuleName = wafrules.LocalizeRule(stat.RuleID, "", stat.RuleName)
 		stat.Reviewed = stat.ConfirmedAttacks + stat.FalsePositives
 		if stat.Reviewed > 0 {
 			confirmationRate := float64(stat.ConfirmedAttacks) / float64(stat.Reviewed)

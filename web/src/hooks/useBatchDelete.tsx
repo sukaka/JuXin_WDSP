@@ -35,6 +35,7 @@ export type UseBatchDeleteOptions<T extends object> = UseBatchDeleteOptionsBase<
 export interface UseBatchDeleteResult<T extends object> {
   rowSelection: TableProps<T>['rowSelection']
   batchDeleteButton: ReactNode
+  selectedRowKeys: string[]
   selectedCount: number
   clearSelection: () => void
 }
@@ -117,6 +118,7 @@ export default function useBatchDelete<T extends object>({
         批量删除{selectedRowKeys.length > 0 ? `（${selectedRowKeys.length}）` : ''}
       </Button>
     ) : null,
+    selectedRowKeys: selectedRowKeys.map(String),
     selectedCount: selectedRowKeys.length,
     clearSelection,
   }

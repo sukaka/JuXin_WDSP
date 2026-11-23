@@ -21,6 +21,7 @@ import { ApiError } from '../../api/client'
 import { accessControlEventsApi } from '../../api/accessControlEvents'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
+import useExportSelection from '../../hooks/useExportSelection'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
@@ -54,6 +55,12 @@ function renderProtoTag(proto?: string | null) {
 export default function AccessControlEventsPage() {
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canExport = hasPermission(permissions, 'access_control_events.export')
+  const {
+    selectedIds,
+    selectedCount,
+    clearSelection,
+    rowSelection,
+  } = useExportSelection<AccessControlEventItem>(canExport)
   const [filters, setFilters] = useState<Filters>({})
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -174,6 +181,14 @@ export default function AccessControlEventsPage() {
       extra={
         canExport && (
           <ExportDropdown
+            selectedCount={selectedCount}
+            onClearSelection={clearSelection}
+            onExportSelected={() =>
+              window.open(
+                accessControlEventsApi.exportUrl({ ids: selectedIds.join(',') }),
+                '_blank',
+              )
+            }
             onExportFiltered={() =>
               window.open(
                 accessControlEventsApi.exportUrl({
@@ -235,6 +250,7 @@ export default function AccessControlEventsPage() {
         <SmartTable<AccessControlEventItem>
           storageKey="access-control-events"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}

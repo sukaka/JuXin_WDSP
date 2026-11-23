@@ -1,9 +1,8 @@
 package wafrules
 
 import (
+	"errors"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 
 	"github.com/google/uuid"
@@ -101,6 +100,8 @@ FROM waf_rules WHERE ` + where + " ORDER BY rule_id LIMIT $" + itoa(argIdx) + " 
 			response.InternalError(w, r, err)
 			return
 		}
+		name = LocalizeRule(ruleID, file, name)
+		message = LocalizeRule(ruleID, file, message)
 		items = append(items, map[string]interface{}{
 			"id": id, "rule_id": ruleID, "rule_source": source, "file_name": file,
 			"name": name, "message": message, "severity": severity, "phase": phase,
@@ -146,6 +147,8 @@ FROM waf_rules WHERE rule_id = $1 ORDER BY crs_version DESC LIMIT 1`, ruleID)
 		response.InternalError(w, r, err)
 		return
 	}
+	name = LocalizeRule(rid, file, name)
+	message = LocalizeRule(rid, file, message)
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
 		"id": id, "rule_id": rid, "rule_source": source, "file_name": file,
 		"name": name, "message": message, "severity": severity, "phase": phase,
@@ -196,11 +199,17 @@ SELECT DISTINCT crs_version FROM waf_rules WHERE rule_source = $1 ORDER BY crs_v
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"versions": versions})
 }
 
-// Sync 触发规则元数据同步（CRS 主包 + CRS 插件 + 第三方/自建 contrib 包）。
+// Sync 触发规则元数据同步（CRS 主包 + CRS 插件 + 第三方/自建 contrib 包 + 九章内置规则）。
 func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	report, err := h.syncSvc.SyncFromSources(r.Context(), h.crsVersion, h.syncSources())
 	if err != nil {
+		h.recordAudit(r, p, "waf_rules", "sync", "crs", h.crsVersion, h.crsVersion,
+			"error="+err.Error(), audits.ResultFailure, audits.RiskMedium)
+		if errors.Is(err, ErrCRSDirEmpty) {
+			response.Error(w, r, http.StatusServiceUnavailable, "CRS_RULES_UNAVAILABLE", err.Error())
+			return
+		}
 		response.InternalError(w, r, err)
 		return
 	}
@@ -209,30 +218,15 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, report)
 }
 
-// syncSources 组装同步来源：CRS 主包、CRS 插件目录（<plugins>/<name>/plugins）、contrib 分包目录。
+// syncSources 组装同步来源：CRS 主包、CRS 插件目录、contrib 分包目录与九章内置目录。
 func (h *Handler) syncSources() []SourceDir {
-	sources := []SourceDir{{Dir: h.crsDir, Source: SourceCRS}}
-	crsRoot := filepath.Dir(h.crsDir)
-	if pluginDirs, err := filepath.Glob(filepath.Join(crsRoot, "plugins", "*", "plugins")); err == nil {
-		for _, d := range pluginDirs {
-			sources = append(sources, SourceDir{Dir: d, Source: SourceCRSPlugin})
-		}
-	}
-	contribRoot := filepath.Join(filepath.Dir(crsRoot), "contrib")
-	for _, sd := range []struct {
-		dir, source string
-	}{
-		{"THIRD_PARTY", SourceThirdParty},
-		{"CUSTOM_PACK", SourceCustomPack},
-	} {
-		if st, err := os.Stat(filepath.Join(contribRoot, sd.dir)); err == nil && st.IsDir() {
-			sources = append(sources, SourceDir{Dir: filepath.Join(contribRoot, sd.dir), Source: sd.source})
-		}
-	}
-	return sources
+	return BuildSyncSources(h.crsDir)
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, action, objType, objID, objName, summary, result, risk string) {
+	if h.audits == nil || p == nil {
+		return
+	}
 	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:       &p.UserID,
 		Username:     p.Username,

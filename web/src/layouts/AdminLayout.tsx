@@ -99,15 +99,20 @@ import { useQuery } from '@tanstack/react-query'
 import { authApi } from '../api/auth'
 import { aiStatusApi } from '../api/ai'
 import { queryClient } from '../api/queryClient'
+import HeaderAlertsPopover from '../components/HeaderAlertsPopover'
 import { useAuthStore } from '../stores/auth'
 import { useBreadcrumbStore } from '../stores/breadcrumb'
 import { useLicenseStore } from '../stores/license'
 import { useProductStore } from '../stores/product'
 import { API_MENU_SECTIONS, filterCoreMenus, filterMenusByLicense, filterMenusByRoles } from '../utils/menu'
+import { hasAnyPermission } from '../utils/permission'
 import { clearClientSession } from '../utils/session'
 import { SYSTEM_NAME } from '../constants'
 
 const { Header, Sider, Content } = Layout
+
+const SIDER_WIDTH = 248
+const MENU_INLINE_INDENT = 16
 
 const MENU_ICONS: Record<string, ReactNode> = {
   '/dashboard': <DashboardOutlined />,
@@ -129,6 +134,7 @@ const MENU_ICONS: Record<string, ReactNode> = {
   '/risk-policy': <SlidersOutlined />,
   '/trusted-proxies': <GlobalOutlined />,
   '/access-rules': <StopOutlined />,
+  '/whitelists': <SafetyCertificateOutlined />,
   '/l7-rules': <FilterOutlined />,
   '/rate-limit': <ThunderboltOutlined />,
   '/temporary-blocks': <ClockCircleOutlined />,
@@ -295,6 +301,19 @@ export default function AdminLayout() {
   // 授权锁定态：状态已加载且无效（含加载失败），仅保留授权管理入口并顶部红色告警
   const licenseLocked = licenseInitialized && !licenseStatus?.valid
 
+  // 顶部快捷入口显隐：严格与路由权限和授权锁定状态保持一致
+  const canAccessConfigPublish =
+    !licenseLocked &&
+    hasAnyPermission(user?.permissions, ['gateway_configs.preview', 'gateway_configs.publish'])
+  const canReadAlerts =
+    !licenseLocked &&
+    hasAnyPermission(user?.permissions, [
+      'system_alerts.read',
+      'system_alerts.read_security',
+      'system_alerts.read_audit',
+    ])
+  const onConfigPublish = location.pathname.startsWith('/config-publish')
+
   const menus = useMemo(
     () =>
       filterMenusByLicense(
@@ -340,7 +359,7 @@ export default function AdminLayout() {
     const groups = new Map<string, typeof visibleMenus>()
     for (const m of visibleMenus) {
       if (!m.group) {
-        items.push({ key: m.key, icon: menuIconFor(m.key), label: m.label })
+        items.push({ key: m.key, icon: menuIconFor(m.key), label: m.label, title: m.label })
       } else {
         const arr = groups.get(m.group) ?? []
         arr.push(m)
@@ -353,7 +372,7 @@ export default function AdminLayout() {
       for (const m of groupChildren) {
         const section = label === 'API 防护' ? API_MENU_SECTIONS[m.key] : undefined
         if (!section) {
-          children.push({ key: m.key, icon: menuIconFor(m.key), label: m.label })
+          children.push({ key: m.key, icon: menuIconFor(m.key), label: m.label, title: m.label })
           continue
         }
         let sectionItem = sections.get(section)
@@ -362,7 +381,7 @@ export default function AdminLayout() {
           sections.set(section, sectionItem)
           children.push(sectionItem)
         }
-        sectionItem.children.push({ key: m.key, icon: menuIconFor(m.key), label: m.label })
+        sectionItem.children.push({ key: m.key, icon: menuIconFor(m.key), label: m.label, title: m.label })
       }
       items.push({ key: label, icon: menuGroupIconFor(label), label, children })
     }
@@ -401,9 +420,17 @@ export default function AdminLayout() {
     }))
   }, [currentMenu, breadcrumbObjectName])
 
+  const isDesktopCollapsed = collapsed && !isMobile
+
   const navMenu = (
-    <div>
-      <div style={{ padding: collapsed ? '0 8px 12px' : '0 16px 12px', borderBottom: '1px solid rgba(255,255,255,0.12)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      <div
+        style={{
+          flexShrink: 0,
+          padding: isDesktopCollapsed ? '0 8px 12px' : isMobile ? '12px 16px' : '0 16px 12px',
+          borderBottom: '1px solid rgba(255,255,255,0.12)',
+        }}
+      >
         <Button
           type="text"
           icon={<AppstoreOutlined />}
@@ -418,20 +445,36 @@ export default function AdminLayout() {
             }
             return next
           })}
-          style={{ width: '100%', justifyContent: collapsed ? 'center' : 'flex-start', color: 'rgba(255,255,255,0.85)' }}
+          style={{
+            width: '100%',
+            justifyContent: isDesktopCollapsed ? 'center' : 'flex-start',
+            color: 'rgba(255,255,255,0.85)',
+          }}
         >
-          {collapsed ? '' : showAllNavigation ? '核心功能' : '全部功能'}
+          {isDesktopCollapsed ? '' : showAllNavigation ? '核心功能' : '全部功能'}
         </Button>
       </div>
-      <Menu
-        theme="dark"
-        mode="inline"
-        selectedKeys={currentMenu ? [currentMenu.key] : []}
-        openKeys={collapsed && !isMobile ? undefined : openKeys}
-        onOpenChange={(keys) => setOpenKeys(keys)}
-        items={menuItems}
-        onClick={({ key }) => navigate(key)}
-      />
+      <div
+        className="admin-sider-menu-scroll"
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          paddingBottom: 12,
+        }}
+      >
+        <Menu
+          theme="dark"
+          mode="inline"
+          inlineIndent={MENU_INLINE_INDENT}
+          selectedKeys={currentMenu ? [currentMenu.key] : []}
+          openKeys={isDesktopCollapsed ? undefined : openKeys}
+          onOpenChange={(keys) => setOpenKeys(keys)}
+          items={menuItems}
+          onClick={({ key }) => navigate(key)}
+        />
+      </div>
     </div>
   )
 
@@ -455,7 +498,7 @@ export default function AdminLayout() {
       {isMobile ? (
         <Drawer
           placement="left"
-          width={240}
+          size={SIDER_WIDTH}
           open={mobileMenuOpen}
           onClose={() => setMobileMenuOpen(false)}
           title={
@@ -464,15 +507,44 @@ export default function AdminLayout() {
               <span>九章动态安全</span>
             </Space>
           }
-          styles={{ body: { padding: 0, background: '#001529' } }}
+          styles={{
+            body: {
+              padding: 0,
+              background: '#001529',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            },
+          }}
         >
           {navMenu}
         </Drawer>
       ) : (
-        <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} theme="dark">
+        <Sider
+          className="admin-sider"
+          collapsible
+          collapsed={collapsed}
+          onCollapse={setCollapsed}
+          theme="dark"
+          width={SIDER_WIDTH}
+          style={{
+            position: 'sticky',
+            top: 0,
+            height: '100vh',
+            alignSelf: 'flex-start',
+          }}
+          styles={{
+            body: {
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            },
+          }}
+        >
           <div
             style={{
               height: 56,
+              flexShrink: 0,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -513,27 +585,42 @@ export default function AdminLayout() {
             )}
             <Breadcrumb items={breadcrumbItems} />
           </Space>
-          <Dropdown
-            menu={{
-              items: [
-                { key: 'profile', icon: <UserOutlined />, label: '个人资料' },
-                { key: 'change-password', icon: <KeyOutlined />, label: '修改密码' },
-                { type: 'divider' },
-                { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true },
-              ],
-              onClick: ({ key }) => {
-                if (key === 'profile') navigate('/profile')
-                else if (key === 'change-password') navigate('/change-password')
-                else if (key === 'logout') void handleLogout()
-              },
-            }}
-          >
-            <Space style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}>
-              <Avatar size="small" icon={<UserOutlined />} />
-              <span>{user?.display_name || user?.username}</span>
-              {loggingOut && <Spin size="small" />}
-            </Space>
-          </Dropdown>
+          <Space size={isMobile ? 6 : 12} align="center" style={{ flexShrink: 0 }}>
+            {canAccessConfigPublish && (
+              <Button
+                type="primary"
+                ghost={!onConfigPublish}
+                size={isMobile ? 'small' : 'middle'}
+                icon={<CloudUploadOutlined />}
+                aria-label="配置发布"
+                onClick={() => navigate('/config-publish')}
+              >
+                {isMobile ? null : '配置发布'}
+              </Button>
+            )}
+            {canReadAlerts && <HeaderAlertsPopover disabled={licenseLocked || loggingOut} />}
+            <Dropdown
+              menu={{
+                items: [
+                  { key: 'profile', icon: <UserOutlined />, label: '个人资料' },
+                  { key: 'change-password', icon: <KeyOutlined />, label: '修改密码' },
+                  { type: 'divider' },
+                  { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true },
+                ],
+                onClick: ({ key }) => {
+                  if (key === 'profile') navigate('/profile')
+                  else if (key === 'change-password') navigate('/change-password')
+                  else if (key === 'logout') void handleLogout()
+                },
+              }}
+            >
+              <Space style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                <Avatar size="small" icon={<UserOutlined />} />
+                <span>{user?.display_name || user?.username}</span>
+                {loggingOut && <Spin size="small" />}
+              </Space>
+            </Dropdown>
+          </Space>
         </Header>
         {licenseLocked && (
           <Alert

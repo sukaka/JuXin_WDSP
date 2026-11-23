@@ -127,4 +127,21 @@ describe('LoginLogsPage 登录日志', () => {
     const option = await screen.findAllByText('双因子挑战（TOTP）')
     expect(option.some((el) => el.closest('.ant-select-item-option-content'))).toBe(true)
   })
+
+  it('后端返回 items: null 时规范化为空数组并渲染空态不崩溃', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: { items: null, page: 1, page_size: 20, total: 0 },
+          }),
+        ),
+      ),
+    )
+    renderPage()
+    await waitFor(() => expect(document.querySelector('.ant-empty')).toBeTruthy())
+  })
 })

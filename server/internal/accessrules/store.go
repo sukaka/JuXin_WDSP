@@ -159,14 +159,7 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*Rule, error) {
 	return scanRule(row)
 }
 
-// List 分页查询规则。
-func (s *Store) List(ctx context.Context, f ListFilter) ([]Rule, int64, error) {
-	if f.Page <= 0 {
-		f.Page = 1
-	}
-	if f.PageSize <= 0 || f.PageSize > 100 {
-		f.PageSize = 20
-	}
+func buildListWhere(f ListFilter) (string, []interface{}) {
 	where := "deleted_at IS NULL"
 	args := []interface{}{}
 	argIdx := 1
@@ -203,6 +196,22 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Rule, int64, error) {
 		}
 		add("address = $%d", addr)
 	}
+	if len(f.IDs) > 0 {
+		add("id = ANY($%d::uuid[])", f.IDs)
+	}
+	return where, args
+}
+
+// List 分页查询规则。
+func (s *Store) List(ctx context.Context, f ListFilter) ([]Rule, int64, error) {
+	if f.Page <= 0 {
+		f.Page = 1
+	}
+	if f.PageSize <= 0 || f.PageSize > 100 {
+		f.PageSize = 20
+	}
+	where, args := buildListWhere(f)
+	argIdx := len(args) + 1
 	var total int64
 	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM ip_access_rules WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err

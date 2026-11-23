@@ -16,6 +16,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/response"
+	"github.com/jiuzhang-waf/server/internal/validation"
 )
 
 const (
@@ -339,12 +340,18 @@ func (h *Handler) ExportList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	ids, err := validation.ParseExportUUIDs(q, "ids")
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
 	f := ListFilter{
 		AssetStatus:     strings.ToUpper(strings.TrimSpace(q.Get("asset_status"))),
 		LearningStatus:  strings.ToUpper(strings.TrimSpace(q.Get("learning_status"))),
 		Keyword:         strings.TrimSpace(q.Get("keyword")),
 		DirectoryPrefix: strings.TrimSpace(q.Get("directory_path")),
 		Unassigned:      q.Get("unassigned") == "true",
+		IDs:             ids,
 		Page:            1,
 		PageSize:        endpointExportCSVPageSize,
 	}

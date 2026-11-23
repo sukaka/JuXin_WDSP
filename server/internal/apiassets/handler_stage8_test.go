@@ -175,7 +175,7 @@ func TestEndpointGroupHTTP(t *testing.T) {
 		t.Fatalf("bad exposure status=%d", rr.Code)
 	}
 	rr = doJSON(t, mux, http.MethodPatch, "/api/v1/api-security/endpoints/"+login.ID.String(),
-		map[string]any{"purpose": "登录认证", "exposure": "PUBLIC", "owner": "安全组", "tags": []string{"core"}})
+		map[string]any{"purpose": "登录认证", "exposure": "PUBLIC", "owner": "安全组", "tags": []string{"core"}, "business_type": "EXPORT"})
 	data = decodeData(t, rr)
 	epRaw, _ = json.Marshal(data["endpoint"])
 	ep = Endpoint{}
@@ -185,11 +185,15 @@ func TestEndpointGroupHTTP(t *testing.T) {
 	if ep.Asset == nil || ep.Asset.Purpose != "登录认证" || ep.Asset.Exposure != "PUBLIC" || len(ep.Asset.Tags) != 1 {
 		t.Fatalf("patched asset: %+v", ep.Asset)
 	}
+	if ep.BusinessType != "EXPORT" || len(ep.Tags) != 1 || ep.Tags[0] != "core" {
+		t.Fatalf("patched endpoint top-level business_type/tags not synced: business_type=%q tags=%v", ep.BusinessType, ep.Tags)
+	}
 
 	// ---- PATCH 资产档案（多标签 + 单位/系统/负责人/等级/认证方式；非法枚举 → 400）----
 	rr = doJSON(t, mux, http.MethodPatch, "/api/v1/api-security/endpoints/"+login.ID.String(), map[string]any{
 		"purpose": "登录认证", "exposure": "PUBLIC", "owner": "张XX",
 		"tags":         []string{"对账", "第三方回调"},
+		"business_type": "LOGIN",
 		"organization": "XX集团金融事业部", "business_system": "客户经营管理平台",
 		"technical_owner": "李XX", "data_owner": "王XX",
 		"data_level": "IMPORTANT", "api_level": "LEVEL_3", "auth_type": "TOKEN",
@@ -203,8 +207,9 @@ func TestEndpointGroupHTTP(t *testing.T) {
 	if ep.Asset == nil || len(ep.Asset.Tags) != 2 ||
 		ep.Asset.Organization != "XX集团金融事业部" || ep.Asset.BusinessSystem != "客户经营管理平台" ||
 		ep.Asset.Owner != "张XX" || ep.Asset.TechnicalOwner != "李XX" || ep.Asset.DataOwner != "王XX" ||
-		ep.Asset.DataLevel != "IMPORTANT" || ep.Asset.APILevel != "LEVEL_3" || ep.Asset.AuthType != "TOKEN" {
-		t.Fatalf("patched profile: %+v", ep.Asset)
+		ep.Asset.DataLevel != "IMPORTANT" || ep.Asset.APILevel != "LEVEL_3" || ep.Asset.AuthType != "TOKEN" ||
+		ep.BusinessType != "LOGIN" || len(ep.Tags) != 2 {
+		t.Fatalf("patched profile: %+v (ep.BusinessType=%q ep.Tags=%v)", ep.Asset, ep.BusinessType, ep.Tags)
 	}
 	for _, bad := range []map[string]any{{"data_level": "TOP"}, {"api_level": "LEVEL_9"}, {"auth_type": "MAGIC"}} {
 		rr = doJSON(t, mux, http.MethodPatch, "/api/v1/api-security/endpoints/"+login.ID.String(), bad)
@@ -228,6 +233,14 @@ func TestEndpointGroupHTTP(t *testing.T) {
 	data = decodeData(t, rr)
 	if data["daily_requests"].(float64) != 2 {
 		t.Fatalf("daily_requests=%v body=%v", data["daily_requests"], data)
+	}
+	epRaw, _ = json.Marshal(data["endpoint"])
+	ep = Endpoint{}
+	if err := json.Unmarshal(epRaw, &ep); err != nil {
+		t.Fatal(err)
+	}
+	if ep.BusinessType != "LOGIN" || len(ep.Tags) != 2 {
+		t.Fatalf("GET endpoint top-level business_type/tags=%q/%v, want LOGIN/[对账 第三方回调]", ep.BusinessType, ep.Tags)
 	}
 
 	// ---- 批量确认（空 ids → 400；部分不存在 → failed）----

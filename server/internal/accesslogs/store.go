@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jiuzhang-waf/server/internal/apigeo"
 )
 
 // Store 是全量访问日志仓储。
@@ -94,9 +95,10 @@ type AccessLog struct {
 	RequestID        string     `json:"request_id"`
 	ApplicationID    *uuid.UUID `json:"application_id"`
 	Domain           string     `json:"domain"`
-	GatewayNodeID    string     `json:"gateway_node_id"`
-	ClientIP         string     `json:"client_ip"`
-	ClientPort       int        `json:"client_port"`
+	GatewayNodeID    string          `json:"gateway_node_id"`
+	ClientIP         string          `json:"client_ip"`
+	ClientIPGeo      *apigeo.GeoInfo `json:"client_ip_geo,omitempty"`
+	ClientPort       int             `json:"client_port"`
 	RequestMethod    string     `json:"request_method"`
 	RequestURI       string     `json:"request_uri"`
 	RequestPath      string     `json:"request_path"`
@@ -147,6 +149,7 @@ type ListFilter struct {
 	DataType            string
 	Direction           string
 	RequestIDs          []string
+	IDs                 []uuid.UUID
 	Page                int
 	PageSize            int
 }
@@ -211,6 +214,9 @@ func buildListWhere(f ListFilter) (string, []interface{}) {
 	}
 	if len(f.RequestIDs) > 0 {
 		add(`request_id = ANY($%d::text[])`, f.RequestIDs)
+	}
+	if len(f.IDs) > 0 {
+		add(`id = ANY($%d::uuid[])`, f.IDs)
 	}
 	if f.FieldPath != "" || f.DataType != "" || f.Direction != "" {
 		conditions := []string{`detail.value->>'detector'='sensitive_data'`, `COALESCE(detail.value->'evidence'->>'field','')<>''`}

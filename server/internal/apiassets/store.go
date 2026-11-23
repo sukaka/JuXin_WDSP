@@ -197,6 +197,7 @@ type ListFilter struct {
 	Unassigned      bool   // true 时仅查未归属接口（application_id IS NULL）
 	DirectoryPrefix string // 目录前缀（含子目录）：/test 命中 /test 与 /test/php
 	BusinessType    string // 业务类型过滤（api_assets.business_type；无资产记录接口按 OTHER 计）
+	IDs             []uuid.UUID
 	Page            int
 	PageSize        int
 }
@@ -445,6 +446,9 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, erro
 	}
 	if f.BusinessType != "" {
 		add("COALESCE(ast.business_type,'OTHER') = $%d", f.BusinessType)
+	}
+	if len(f.IDs) > 0 {
+		add("e.id = ANY($%d::uuid[])", f.IDs)
 	}
 	var total int64
 	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM api_endpoints e

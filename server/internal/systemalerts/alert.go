@@ -59,6 +59,7 @@ type ListFilter struct {
 	View      string
 	StartTime *time.Time
 	EndTime   *time.Time
+	IDs       []uuid.UUID
 	Page      int
 	PageSize  int
 }
@@ -219,14 +220,7 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*Alert, error) {
 	return a, nil
 }
 
-// List 分页查询告警。
-func (s *Store) List(ctx context.Context, f ListFilter) ([]Alert, int64, error) {
-	if f.Page <= 0 {
-		f.Page = 1
-	}
-	if f.PageSize <= 0 || f.PageSize > 1000 {
-		f.PageSize = 20
-	}
+func buildListWhere(f ListFilter) (string, []interface{}) {
 	where := "1=1"
 	args := []interface{}{}
 	argIdx := 1
@@ -262,6 +256,36 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Alert, int64, error) 
 	if f.EndTime != nil {
 		add("last_seen_at <= $%d", *f.EndTime)
 	}
+	if len(f.IDs) > 0 {
+		add("id = ANY($%d::uuid[])", f.IDs)
+	}
+	return where, args
+}
+
+func normalizePage(page, pageSize, maxPageSize int) (int, int) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > maxPageSize {
+		pageSize = 20
+	}
+	return page, pageSize
+}
+
+// List 分页查询告警（单页上限 1000）。
+func (s *Store) List(ctx context.Context, f ListFilter) ([]Alert, int64, error) {
+	return s.list(ctx, f, 1000)
+}
+
+// ListForExport 导出查询告警（上限 10000 条）。
+func (s *Store) ListForExport(ctx context.Context, f ListFilter) ([]Alert, int64, error) {
+	return s.list(ctx, f, 10000)
+}
+
+func (s *Store) list(ctx context.Context, f ListFilter, maxPageSize int) ([]Alert, int64, error) {
+	f.Page, f.PageSize = normalizePage(f.Page, f.PageSize, maxPageSize)
+	where, args := buildListWhere(f)
+	argIdx := len(args) + 1
 	var total int64
 	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM system_alerts WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err

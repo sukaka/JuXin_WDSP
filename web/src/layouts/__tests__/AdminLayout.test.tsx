@@ -60,6 +60,8 @@ function renderLayout(initialPath = '/dashboard') {
             <Route element={<AdminLayout />}>
               <Route path="/dashboard" element={<div>dashboard-page</div>} />
               <Route path="/api-models" element={<div>api-models-page</div>} />
+              <Route path="/config-publish" element={<div>config-publish-page</div>} />
+              <Route path="/system-alerts" element={<div>system-alerts-page</div>} />
             </Route>
             <Route path="/login" element={<div>login-page</div>} />
           </Routes>
@@ -87,6 +89,7 @@ describe('AdminLayout', () => {
     queryClient.clear()
     useAuthStore.getState().reset()
     useBreadcrumbStore.setState({ objectName: null })
+    vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
 
@@ -238,6 +241,58 @@ describe('AdminLayout', () => {
     expect(screen.queryByRole('menuitem', { name: /参数模型/ })).not.toBeInTheDocument()
   })
 
+  it('桌面端侧边栏加宽、独立纵向滚动并收紧三级菜单缩进且保留完整 title', async () => {
+    const originalMatchMedia = window.matchMedia
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('min-width: 768px') || query.includes('min-width: 576px'),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia
+    try {
+      window.localStorage.setItem('wdsp.navigation.mode', 'full')
+      useAuthStore.getState().setSession({
+        ...fakeUser,
+        display_name: '安全管理员',
+        roles: [{ code: 'SECURITY_ADMIN', name: '安全管理员' }],
+      }, 'csrf-token')
+      useProductStore.setState({ initialized: true, apiDynamicProtection: true, webWafEnabled: true })
+
+      const { container, unmount } = renderLayout()
+      const sider = container.querySelector('aside.admin-sider') as HTMLElement | null
+      expect(sider).not.toBeNull()
+      expect(sider?.style.width).toBe('248px')
+      expect(sider?.style.position).toBe('sticky')
+      expect(sider?.style.height).toBe('100vh')
+
+      const scrollBox = container.querySelector('.admin-sider-menu-scroll') as HTMLElement | null
+      expect(scrollBox).not.toBeNull()
+      expect(scrollBox?.style.overflowY).toBe('auto')
+
+      fireEvent.click(await screen.findByText('API 防护'))
+      fireEvent.click(await screen.findByText('资产与接入'))
+      fireEvent.click(await screen.findByText('策略与授权'))
+
+      const endpointsItem = await screen.findByRole('menuitem', { name: /API 接口资产/ })
+      const groupsItem = await screen.findByRole('menuitem', { name: /业务功能分组/ })
+      const mcpItem = await screen.findByRole('menuitem', { name: /MCP 工具目录/ })
+      const admissionItem = await screen.findByRole('menuitem', { name: /API 准入防护/ })
+
+      expect(endpointsItem).toHaveAttribute('title', 'API 接口资产')
+      expect(groupsItem).toHaveAttribute('title', '业务功能分组')
+      expect(mcpItem).toHaveAttribute('title', 'MCP 工具目录')
+      expect(admissionItem).toHaveAttribute('title', 'API 准入防护')
+      expect(endpointsItem.style.paddingLeft).toBe('48px')
+      unmount()
+    } finally {
+      window.matchMedia = originalMatchMedia
+    }
+  })
+
   it('AI 能力停用时对可见 AI 菜单的用户显示停用横幅', async () => {
     vi.stubGlobal(
       'fetch',
@@ -322,5 +377,76 @@ describe('AdminLayout', () => {
     // 给潜在请求一个触发窗口后断言未发起
     await new Promise((r) => setTimeout(r, 100))
     expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/ai/status'))).toBe(false)
+  })
+
+  it('顶部栏快捷方式：具备权限时按「配置发布 → 站内告警铃铛」顺序位于用户菜单左侧，点击可直达配置发布', async () => {
+    useAuthStore.getState().setSession(
+      {
+        ...fakeUser,
+        username: 'oper',
+        display_name: 'oper',
+        roles: [{ code: 'SECURITY_ADMIN', name: '安全管理员' }],
+        permissions: [
+          'gateway_configs.preview',
+          'gateway_configs.publish',
+          'system_alerts.read_security',
+        ],
+      },
+      'csrf-token',
+    )
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/system-alerts')) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: { items: [], total: 3, page: 1, page_size: 8 },
+            }),
+          )
+        }
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: null }))
+      }),
+    )
+
+    renderLayout()
+
+    const publishBtn = await screen.findByRole('button', { name: '配置发布' })
+    const alertBell = await screen.findByRole('button', { name: '站内告警（3 条活跃）' })
+    const userLabel = screen.getByText('oper')
+
+    // 顺序校验：配置发布在左、站内告警铃铛在中间、用户菜单在右
+    expect(publishBtn.compareDocumentPosition(alertBell) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(alertBell.compareDocumentPosition(userLabel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    // 点击配置发布快捷入口直达配置发布页
+    fireEvent.click(publishBtn)
+    expect(await screen.findByText('config-publish-page')).toBeInTheDocument()
+  })
+
+  it('无权限或授权锁定时隐藏配置发布与站内告警快捷入口，且不请求系统告警接口', async () => {
+    useAuthStore.getState().setSession(
+      {
+        ...fakeUser,
+        permissions: ['gateway_configs.publish', 'system_alerts.read'],
+      },
+      'csrf-token',
+    )
+    useLicenseStore.setState({
+      initialized: true,
+      status: { valid: false, status: 'EXPIRED', reason: '授权已过期' } as never,
+    })
+    const fetchMock = vi.fn<(input: RequestInfo | URL) => Promise<Response>>(() =>
+      Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: null })),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderLayout()
+    await screen.findByText('dashboard-page')
+    expect(screen.queryByRole('button', { name: '配置发布' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /站内告警/ })).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/system-alerts'))).toBe(false)
   })
 })

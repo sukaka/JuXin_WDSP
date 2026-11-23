@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CRS_FAMILY_NAMES_ZH, CRS_RULE_NAMES_ZH, ruleNameZh } from '../crsRuleNames'
+import { CRS_FAMILY_NAMES_ZH, CRS_RULE_NAMES_ZH, ruleMessageZh, ruleNameZh } from '../crsRuleNames'
 
 describe('CRS_RULE_NAMES_ZH 逐条映射', () => {
   it('覆盖内置 CRS 4.28.0 全部 622 条规则', () => {
@@ -89,5 +89,50 @@ describe('ruleNameZh 解析优先级', () => {
   it('无任何可用信息时返回空串', () => {
     expect(ruleNameZh({ rule_id: 999999 })).toBe('')
     expect(ruleNameZh({ rule_id: 999999, file_name: '', name: '' })).toBe('')
+  })
+
+  it('支持模板型扩展规则中文化（爬虫/AI爬虫/搜索引擎声明）', () => {
+    expect(ruleNameZh({ rule_id: 1002999, name: 'Scanner fingerprint: crawler UA (zgrab)' })).toBe(
+      '扫描器指纹：爬虫 UA（zgrab）',
+    )
+    expect(ruleNameZh({ rule_id: 1010062, name: 'AI crawler UA: GPTBot' })).toBe('AI 爬虫 UA：GPTBot')
+    expect(ruleNameZh({ rule_id: 1010201, name: 'Search engine bot UA claim: Googlebot' })).toBe(
+      '搜索引擎爬虫 UA 声明：Googlebot',
+    )
+  })
+})
+
+describe('ruleMessageZh 事件匹配消息中文化', () => {
+  it('将英文 CRS 命中消息与动态异常评分转为中文', () => {
+    expect(
+      ruleMessageZh({
+        rule_id: 943120,
+        message: 'Possible Session Fixation Attack: SessionID Parameter Name with No Referer',
+      }),
+    ).toBe('疑似会话固定攻击：SessionID 参数无 Referer')
+
+    expect(
+      ruleMessageZh({
+        rule_id: 949110,
+        message: 'Inbound Anomaly Score Exceeded (Total Score: 5)',
+      }),
+    ).toBe('入站异常评分超限（总分：5）')
+
+    expect(
+      ruleMessageZh({
+        rule_id: 949111,
+        message: 'Inbound Anomaly Score Exceeded in phase 1 (Total Score: 8)',
+      }),
+    ).toBe('入站异常评分超限（阶段 1，总分：8）')
+  })
+
+  it('已有中文的自定义规则消息保持原样', () => {
+    expect(
+      ruleMessageZh({
+        rule_id: 7100001,
+        rule_name: 'Struts2 RCE 虚拟补丁',
+        message: '命中虚拟补丁',
+      }),
+    ).toBe('命中虚拟补丁')
   })
 })

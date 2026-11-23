@@ -6,6 +6,7 @@ import (
 
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/response"
+	"github.com/jiuzhang-waf/server/internal/validation"
 )
 
 // Handler 是登录日志处理器。
@@ -45,6 +46,7 @@ func parseFilter(r *http.Request) ListFilter {
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	f := parseFilter(r)
+	f.Page, f.PageSize = normalizePage(f.Page, f.PageSize, 100)
 	// 无 login_logs.read 权限的用户只能看自己的日志
 	if !p.HasPermission("login_logs.read") {
 		f.UserID = &p.UserID
@@ -57,9 +59,15 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	response.Page(w, r, list, total, f.Page, f.PageSize)
 }
 
-// Export 导出登录日志（需 login_logs.export 权限，由路由控制）。
+// Export 导出登录日志（需 login_logs.export 权限，由路由控制；支持筛选导出与勾选 ids 导出）。
 func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
+	ids, err := validation.ParseExportUUIDs(r.URL.Query(), "ids")
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
 	f := parseFilter(r)
+	f.IDs = ids
 	csv, err := h.svc.Export(r.Context(), f)
 	if err != nil {
 		response.InternalError(w, r, err)

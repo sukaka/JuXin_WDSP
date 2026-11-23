@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jiuzhang-waf/server/internal/apigeo"
+	"github.com/jiuzhang-waf/server/internal/wafrules"
 )
 
 // Store 是安全事件仓储。
@@ -135,9 +137,10 @@ type Event struct {
 	ApplicationID     *uuid.UUID `json:"application_id"`
 	AppName           string     `json:"application_name_snapshot"`
 	Domain            string     `json:"domain"`
-	GatewayNode       string     `json:"gateway_node_id"`
-	ClientIP          string     `json:"client_ip"`
-	ClientPort        int        `json:"client_port"`
+	GatewayNode       string          `json:"gateway_node_id"`
+	ClientIP          string          `json:"client_ip"`
+	ClientIPGeo       *apigeo.GeoInfo `json:"client_ip_geo,omitempty"`
+	ClientPort        int             `json:"client_port"`
 	Method            string     `json:"request_method"`
 	URI               string     `json:"request_uri"`
 	Path              string     `json:"request_path"`
@@ -182,18 +185,12 @@ type ListFilter struct {
 	DispositionStatus string
 	RequestID         string
 	GatewayNode       string
+	IDs               []uuid.UUID
 	Page              int
 	PageSize          int
 }
 
-// List 分页查询事件。
-func (s *Store) List(ctx context.Context, f ListFilter) ([]Event, int64, error) {
-	if f.Page <= 0 {
-		f.Page = 1
-	}
-	if f.PageSize <= 0 || f.PageSize > 100 {
-		f.PageSize = 20
-	}
+func buildListWhere(f ListFilter) (string, []interface{}) {
 	where := "1=1"
 	args := []interface{}{}
 	argIdx := 1
@@ -246,6 +243,22 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Event, int64, error) 
 		args = append(args, *f.RuleID)
 		argIdx++
 	}
+	if len(f.IDs) > 0 {
+		add("id = ANY($%d::uuid[])", f.IDs)
+	}
+	return where, args
+}
+
+// List 分页查询事件。
+func (s *Store) List(ctx context.Context, f ListFilter) ([]Event, int64, error) {
+	if f.Page <= 0 {
+		f.Page = 1
+	}
+	if f.PageSize <= 0 || f.PageSize > 100 {
+		f.PageSize = 20
+	}
+	where, args := buildListWhere(f)
+	argIdx := len(args) + 1
 
 	var total int64
 	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM security_events WHERE `+where, args...).Scan(&total); err != nil {
@@ -337,6 +350,8 @@ FROM security_event_matches WHERE event_id = $1 ORDER BY id`, id)
 			&m.MatchedVariable, &m.MatchedData, &tags, &m.Phase); err != nil {
 			return nil, nil, err
 		}
+		m.RuleName = wafrules.LocalizeRule(m.RuleID, "", m.RuleName)
+		m.Message = wafrules.LocalizeMatchMessage(m.RuleID, m.Message)
 		m.Tags = parseTags(tags)
 		// 编号缺省空数组（契约：[] 非 null）；现值由 AttachVulnIDs 联查填充
 		m.CNNVDIDs = []string{}

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// DefaultCRSDir 与 server/internal/config 默认 WAF_CRS_DIR 保持一致。
+const DefaultCRSDir = "gateway/rules/crs/rules"
+
+// ErrCRSDirEmpty 表示主 CRS 规则目录不存在或不包含任何可用规则文件。
+var ErrCRSDirEmpty = errors.New("未找到可用 CRS 规则文件")
 
 // 规则来源
 const (
@@ -212,7 +219,7 @@ func parseOneRule(text, fileName, source string, commentBlock []string) (*Rule, 
 		rule.Name = truncate(rule.Message, 200)
 	}
 	// 名称/消息兜底（msg 优先原则不变）：msg 缺失时取规则正上方注释块，
-	// 注释也没有时用「文件名去扩展名 + 规则 ID」，保证规则始终有名称
+	// 注释也没有时用「文件名去扩展名 + 规则 ID」，随后统一转为中文展示名
 	if rule.Message == "" {
 		if len(commentBlock) > 0 {
 			rule.Message = truncate(strings.Join(commentBlock, " "), 200)
@@ -220,8 +227,9 @@ func parseOneRule(text, fileName, source string, commentBlock []string) (*Rule, 
 			base := strings.TrimSuffix(fileName, filepath.Ext(fileName))
 			rule.Message = fmt.Sprintf("%s 规则 %d", base, ruleID)
 		}
-		rule.Name = rule.Message
 	}
+	rule.Message = LocalizeRule(ruleID, fileName, rule.Message)
+	rule.Name = truncate(rule.Message, 200)
 	var tags []string
 	for _, m := range tagPattern.FindAllStringSubmatch(text, -1) {
 		tags = append(tags, unescape(m[1]))
@@ -318,10 +326,88 @@ func unescape(s string) string {
 }
 
 func truncate(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
+	runes := []rune(s)
+	if len(runes) > n {
+		return string(runes[:n])
 	}
 	return s
+}
+
+// hasUsableConfFiles 判断目录下是否存在至少一个可解析的 .conf 规则文件。
+func hasUsableConfFiles(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.conf"))
+	if err != nil || len(files) == 0 {
+		return false
+	}
+	for _, f := range files {
+		base := filepath.Base(f)
+		if strings.HasSuffix(base, ".example") || strings.Contains(base, "EXCLUSION") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// ResolveCRSDir 解析实际可用的 CRS 规则目录：
+// 优先使用显式配置目录；若配置为默认值或容器标准挂载路径且当前目录缺失/为空，
+// 自动回退探测容器内置规则目录与常见相对路径（解决旧编排未挂载卷导致同步全 0）。
+func ResolveCRSDir(configured string) string {
+	configured = strings.TrimSpace(configured)
+	if hasUsableConfFiles(configured) {
+		return configured
+	}
+	if configured != "" && configured != DefaultCRSDir && configured != "/etc/caddy/rules/crs/rules" {
+		return configured
+	}
+	candidates := []string{
+		"/etc/caddy/rules/crs/rules",
+		"/app/gateway/rules/crs/rules",
+		DefaultCRSDir,
+		filepath.Join("..", DefaultCRSDir),
+	}
+	for _, c := range candidates {
+		if hasUsableConfFiles(c) {
+			return c
+		}
+	}
+	if configured != "" {
+		return configured
+	}
+	return DefaultCRSDir
+}
+
+// BuildSyncSources 组装全部同步来源：CRS 主包 + CRS 插件 + 第三方/自建 contrib 包 + 九章内置规则。
+func BuildSyncSources(crsDir string) []SourceDir {
+	resolved := ResolveCRSDir(crsDir)
+	sources := []SourceDir{{Dir: resolved, Source: SourceCRS}}
+	crsRoot := filepath.Dir(resolved)
+	if pluginDirs, err := filepath.Glob(filepath.Join(crsRoot, "plugins", "*", "plugins")); err == nil {
+		sort.Strings(pluginDirs)
+		for _, d := range pluginDirs {
+			sources = append(sources, SourceDir{Dir: d, Source: SourceCRSPlugin})
+		}
+	}
+	rulesRoot := filepath.Dir(crsRoot)
+	contribRoot := filepath.Join(rulesRoot, "contrib")
+	for _, sd := range []struct {
+		dir, source string
+	}{
+		{"THIRD_PARTY", SourceThirdParty},
+		{"CUSTOM_PACK", SourceCustomPack},
+	} {
+		if st, err := os.Stat(filepath.Join(contribRoot, sd.dir)); err == nil && st.IsDir() {
+			sources = append(sources, SourceDir{Dir: filepath.Join(contribRoot, sd.dir), Source: sd.source})
+		}
+	}
+	jiuzhangDir := filepath.Join(rulesRoot, "jiuzhang")
+	if st, err := os.Stat(jiuzhangDir); err == nil && st.IsDir() {
+		sources = append(sources, SourceDir{Dir: jiuzhangDir, Source: SourceJiuzhang})
+	}
+	return sources
 }
 
 // SyncService 是 CRS 规则同步服务。
@@ -345,8 +431,9 @@ func (s *SyncService) SyncFromDirectory(ctx context.Context, crsDir, crsVersion 
 	return s.SyncFromSources(ctx, crsVersion, []SourceDir{{Dir: crsDir, Source: SourceCRS}})
 }
 
-// SyncFromSources 从多个来源目录同步元数据到数据库（CRS 主包 + 插件 + 第三方/自建包）。
+// SyncFromSources 从多个来源目录同步元数据到数据库（CRS 主包 + 插件 + 第三方/自建包 + 九章内置）。
 // 各来源独立去重（rule_id, rule_source, crs_version 唯一）；报告为全部来源合计。
+// 主 CRS 来源目录缺失或无任何可用 .conf 文件时返回明确错误，禁止静默返回全 0。
 func (s *SyncService) SyncFromSources(ctx context.Context, crsVersion string, sources []SourceDir) (*SyncReport, error) {
 	report := &SyncReport{}
 	for _, sd := range sources {
@@ -355,11 +442,22 @@ func (s *SyncService) SyncFromSources(ctx context.Context, crsVersion string, so
 		if err != nil {
 			return nil, err
 		}
-		if len(files) == 0 {
-			continue // 空来源目录（如未启用 contrib 包）跳过，不视为错误
+		var usable []string
+		for _, f := range files {
+			base := filepath.Base(f)
+			if strings.HasSuffix(base, ".example") || strings.Contains(base, "EXCLUSION") {
+				continue
+			}
+			usable = append(usable, f)
 		}
-		sort.Strings(files)
-		if err := s.syncSourceFiles(ctx, files, sd.Source, crsVersion, report); err != nil {
+		if len(usable) == 0 {
+			if sd.Source == SourceCRS {
+				return nil, fmt.Errorf("%w（目录 %q 不存在或为空，请检查 WAF_CRS_DIR 配置与规则目录挂载）", ErrCRSDirEmpty, sd.Dir)
+			}
+			continue // 可选来源目录（如未启用 contrib/插件包）为空时跳过
+		}
+		sort.Strings(usable)
+		if err := s.syncSourceFiles(ctx, usable, sd.Source, crsVersion, report); err != nil {
 			return nil, err
 		}
 	}

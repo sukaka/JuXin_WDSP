@@ -276,3 +276,24 @@ func TestParseAuditLineConnectionAddr(t *testing.T) {
 		t.Errorf("invalid header must be ignored: conn=%q port=%d", evt2.ConnectionIP, evt2.ClientPort)
 	}
 }
+
+func TestParseAuditLineChineseRuleNames(t *testing.T) {
+	fixationMsg := `[client \"192.0.2.1\"] Coraza: Warning. [id \"943120\"] [msg \"Possible Session Fixation Attack: SessionID Parameter Name with No Referer\"] [severity \"critical\"] [tag \"attack-fixation\"]`
+	scoreMsg := `[id \"949110\"] [msg \"Inbound Anomaly Score Exceeded (Total Score: 5)\"]`
+	evt, err := ParseAuditLine([]byte(buildAuditLine(fixationMsg, scoreMsg)), "node-01")
+	if err != nil {
+		t.Fatalf("ParseAuditLine: %v", err)
+	}
+	if evt.AnomalyScore != 5 {
+		t.Errorf("anomaly_score = %d, want 5", evt.AnomalyScore)
+	}
+	if len(evt.Matches) != 2 {
+		t.Fatalf("matches = %d, want 2", len(evt.Matches))
+	}
+	if evt.Matches[0].RuleName != "疑似会话固定攻击：SessionID 参数无 Referer" || evt.Matches[0].Message != "疑似会话固定攻击：SessionID 参数无 Referer" {
+		t.Errorf("match[0] = %q / %q", evt.Matches[0].RuleName, evt.Matches[0].Message)
+	}
+	if evt.Matches[1].RuleName != "入站异常评分超限" || evt.Matches[1].Message != "入站异常评分超限（总分：5）" {
+		t.Errorf("match[1] = %q / %q", evt.Matches[1].RuleName, evt.Matches[1].Message)
+	}
+}

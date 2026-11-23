@@ -54,15 +54,59 @@ type Entry struct {
 // 避免循环导入；模式参考 backups.AlertFunc）。nil 时跳过外发。
 type SyslogEnqueueFunc func(severityHint string, payload interface{})
 
+type logRowScanner interface {
+	Next() bool
+	Scan(dest ...interface{}) error
+	Err() error
+	Close()
+}
+
+type logStore interface {
+	Exec(ctx context.Context, sql string, args ...interface{}) error
+	Count(ctx context.Context, sql string, args ...interface{}) (int64, error)
+	Query(ctx context.Context, sql string, args ...interface{}) (logRowScanner, error)
+}
+
+type pgxPoolStore struct {
+	pool *pgxpool.Pool
+}
+
+func (p pgxPoolStore) Exec(ctx context.Context, sql string, args ...interface{}) error {
+	_, err := p.pool.Exec(ctx, sql, args...)
+	return err
+}
+
+func (p pgxPoolStore) Count(ctx context.Context, sql string, args ...interface{}) (int64, error) {
+	var total int64
+	err := p.pool.QueryRow(ctx, sql, args...).Scan(&total)
+	return total, err
+}
+
+func (p pgxPoolStore) Query(ctx context.Context, sql string, args ...interface{}) (logRowScanner, error) {
+	return p.pool.Query(ctx, sql, args...)
+}
+
 // Service 是登录日志服务。
 type Service struct {
 	db     *pgxpool.Pool
+	store  logStore
 	syslog SyslogEnqueueFunc // nil 时跳过 syslog 外发
 }
 
 // NewService 创建登录日志服务。
 func NewService(db *pgxpool.Pool) *Service {
-	return &Service{db: db}
+	var st logStore
+	if db != nil {
+		st = pgxPoolStore{pool: db}
+	}
+	return &Service{db: db, store: st}
+}
+
+func (s *Service) getStore() logStore {
+	if s.store != nil {
+		return s.store
+	}
+	return pgxPoolStore{pool: s.db}
 }
 
 // SetSyslogForwarder 设置 syslog 外发投递函数（应用装配时使用，可为 nil）。
@@ -84,7 +128,7 @@ type RecordInput struct {
 // Record 写入登录日志。日志中不得包含密码、验证码、完整会话标识。
 func (s *Service) Record(ctx context.Context, in RecordInput) error {
 	occurredAt := time.Now().UTC()
-	_, err := s.db.Exec(ctx, `
+	err := s.getStore().Exec(ctx, `
 INSERT INTO login_logs (username, user_id, source_ip, connection_ip, user_agent_summary,
                         event_type, result, failure_code, request_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
@@ -145,18 +189,12 @@ type ListFilter struct {
 	StartTime *time.Time
 	EndTime   *time.Time
 	UserID    *uuid.UUID // 限定查看自己的日志
+	IDs       []uuid.UUID
 	Page      int
 	PageSize  int
 }
 
-// List 分页查询登录日志。
-func (s *Service) List(ctx context.Context, f ListFilter) ([]Entry, int64, error) {
-	if f.Page <= 0 {
-		f.Page = 1
-	}
-	if f.PageSize <= 0 || f.PageSize > 100 {
-		f.PageSize = 20
-	}
+func buildListWhere(f ListFilter) (string, []interface{}) {
 	where := "1=1"
 	args := []interface{}{}
 	argIdx := 1
@@ -189,9 +227,35 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]Entry, int64, error
 	if f.EndTime != nil {
 		add("occurred_at <= $%d", *f.EndTime)
 	}
+	if len(f.IDs) > 0 {
+		add("id = ANY($%d::uuid[])", f.IDs)
+	}
+	return where, args
+}
 
-	var total int64
-	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM login_logs WHERE `+where, args...).Scan(&total); err != nil {
+func normalizePage(page, pageSize, maxPageSize int) (int, int) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > maxPageSize {
+		pageSize = 20
+	}
+	return page, pageSize
+}
+
+// List 分页查询登录日志（单页上限 100）。
+func (s *Service) List(ctx context.Context, f ListFilter) ([]Entry, int64, error) {
+	return s.list(ctx, f, 100)
+}
+
+func (s *Service) list(ctx context.Context, f ListFilter, maxPageSize int) ([]Entry, int64, error) {
+	f.Page, f.PageSize = normalizePage(f.Page, f.PageSize, maxPageSize)
+	where, args := buildListWhere(f)
+	argIdx := len(args) + 1
+
+	st := s.getStore()
+	total, err := st.Count(ctx, `SELECT count(*) FROM login_logs WHERE `+where, args...)
+	if err != nil {
 		return nil, 0, err
 	}
 	query := `
@@ -201,12 +265,12 @@ FROM login_logs WHERE ` + where +
 		fmt.Sprintf(" ORDER BY occurred_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
 	args = append(args, f.PageSize, (f.Page-1)*f.PageSize)
 
-	rows, err := s.db.Query(ctx, query, args...)
+	rows, err := st.Query(ctx, query, args...)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
-	var out []Entry
+	out := []Entry{}
 	for rows.Next() {
 		var e Entry
 		var sip, cip *netip.Addr
@@ -229,7 +293,7 @@ FROM login_logs WHERE ` + where +
 func (s *Service) Export(ctx context.Context, f ListFilter) (string, error) {
 	f.Page = 1
 	f.PageSize = 10000
-	entries, _, err := s.List(ctx, f)
+	entries, _, err := s.list(ctx, f, 10000)
 	if err != nil {
 		return "", err
 	}
@@ -244,7 +308,15 @@ func (s *Service) Export(ctx context.Context, f ListFilter) (string, error) {
 	return b.String(), nil
 }
 
+// csvEscape CSV 字段转义：=、+、-、@、\t 开头前加 ' 防公式注入；含逗号/引号/换行加双引号。
 func csvEscape(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t':
+		s = "'" + s
+	}
 	if strings.ContainsAny(s, ",\"\n\r") {
 		return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\""
 	}

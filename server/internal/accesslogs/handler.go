@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/apigeo"
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/middleware"
 	"github.com/jiuzhang-waf/server/internal/response"
+	"github.com/jiuzhang-waf/server/internal/validation"
 )
 
 // exportMaxRows 导出行数上限。
@@ -20,13 +22,46 @@ const exportMaxRows = 10000
 
 // Handler 是全量访问日志查询处理器。
 type Handler struct {
-	store  *Store
-	audits *audits.Service
+	store     *Store
+	audits    *audits.Service
+	geoLookup apigeo.GeoLookup
 }
 
 // NewHandler 创建访问日志处理器。
 func NewHandler(store *Store, au *audits.Service) *Handler {
 	return &Handler{store: store, audits: au}
+}
+
+// SetGeoLookup 注入统一 GeoIP 归属地查询器。
+func (h *Handler) SetGeoLookup(g apigeo.GeoLookup) {
+	h.geoLookup = g
+}
+
+func (h *Handler) attachGeo(entry *AccessLog) {
+	if h == nil || h.geoLookup == nil || entry == nil || entry.ClientIP == "" {
+		return
+	}
+	entry.ClientIPGeo = h.geoLookup.LookupGeo(entry.ClientIP)
+}
+
+func (h *Handler) attachGeoSlice(list []AccessLog) {
+	if h == nil || h.geoLookup == nil || len(list) == 0 {
+		return
+	}
+	cache := make(map[string]*apigeo.GeoInfo, len(list))
+	for i := range list {
+		ip := list[i].ClientIP
+		if ip == "" {
+			continue
+		}
+		if g, ok := cache[ip]; ok {
+			list[i].ClientIPGeo = g
+			continue
+		}
+		g := h.geoLookup.LookupGeo(ip)
+		cache[ip] = g
+		list[i].ClientIPGeo = g
+	}
 }
 
 // filterFromQuery 解析查询参数（列表、趋势与导出共用）。
@@ -73,6 +108,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
+	h.attachGeoSlice(list)
 	response.Page(w, r, list, total, f.Page, f.PageSize)
 }
 
@@ -162,17 +198,24 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
+	h.attachGeo(entry)
 	response.JSON(w, r, http.StatusOK, entry)
 }
 
-// Export 导出访问日志（CSV，上限 exportMaxRows 行）。
+// Export 导出访问日志（CSV，上限 exportMaxRows 行；支持筛选导出与勾选 ids 导出）。
 func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
+	ids, err := validation.ParseExportUUIDs(r.URL.Query(), "ids")
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
 	f, err := filterFromQuery(r)
 	if err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
+	f.IDs = ids
 	f.Page = 1
 	f.PageSize = exportMaxRows
 	list, _, err := h.store.ListForExport(r.Context(), f)

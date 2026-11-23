@@ -8,7 +8,9 @@ import QueryErrorAlert from '../../components/QueryErrorAlert'
 import { ApiError } from '../../api/client'
 import { accessLogsApi, type AccessLogTrendParams } from '../../api/accessLogs'
 import { applicationsApi } from '../../api/applications'
+import IPGeoCell from '../../components/IPGeoCell'
 import SmartTable from '../../components/SmartTable'
+import useExportSelection from '../../hooks/useExportSelection'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
@@ -58,6 +60,13 @@ function defaultTimeRange(): Filters {
 export default function AccessLogsPage() {
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canReadApps = hasPermission(permissions, 'applications.read')
+  const canExport = hasPermission(permissions, 'access_logs.export')
+  const {
+    selectedIds,
+    selectedCount,
+    clearSelection,
+    rowSelection,
+  } = useExportSelection<AccessLogItem>(canExport)
   const [filters, setFilters] = useState<Filters>(defaultTimeRange)
   const [draft, setDraft] = useState<SearchDraft>(EMPTY_SEARCH_DRAFT)
   const [page, setPage] = useState(1)
@@ -110,6 +119,10 @@ export default function AccessLogsPage() {
     setPage(1)
   }
 
+  /** 导出已选：仅导出勾选记录（单次上限 200 条） */
+  const exportSelected = () =>
+    window.open(accessLogsApi.exportUrl({ ids: selectedIds.join(',') }), '_blank')
+
   /** 导出与列表、趋势共用同一筛选快照（后端上限 10000 行） */
   const exportFiltered = () => window.open(accessLogsApi.exportUrl({ ...filters }), '_blank')
 
@@ -131,6 +144,12 @@ export default function AccessLogsPage() {
       render: (v: string) => formatDateTime(v),
     },
     { title: '客户端IP', dataIndex: 'client_ip', width: 125, render: (v: string) => v || '-' },
+    {
+      title: '归属地 / 运营商',
+      key: 'client_ip_geo',
+      width: 195,
+      render: (_, record) => <IPGeoCell geo={record.client_ip_geo} />,
+    },
     { title: '域名', dataIndex: 'domain', width: 170, ellipsis: true },
     { title: '方法', dataIndex: 'request_method', width: 70 },
     {
@@ -202,8 +221,14 @@ export default function AccessLogsPage() {
     <Card
       title="访问日志"
       extra={
-        hasPermission(permissions, 'access_logs.export') && (
-          <ExportDropdown onExportFiltered={exportFiltered} onExportAll={exportAll} />
+        canExport && (
+          <ExportDropdown
+            selectedCount={selectedCount}
+            onClearSelection={clearSelection}
+            onExportSelected={exportSelected}
+            onExportFiltered={exportFiltered}
+            onExportAll={exportAll}
+          />
         )
       }
     >
@@ -383,12 +408,19 @@ export default function AccessLogsPage() {
         <SmartTable<AccessLogItem>
           storageKey="access-logs"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
-          scroll={{ x: 1400 }}
+          scroll={{ x: 1595 }}
           onRow={(record) => ({
-            onClick: () => setSelectedId(record.id),
+            onClick: (e) => {
+              const target = e.target as HTMLElement | null
+              if (target?.closest('.ant-table-selection-column, .ant-checkbox-wrapper, input, button, a')) {
+                return
+              }
+              setSelectedId(record.id)
+            },
             style: { cursor: 'pointer' },
           })}
           pagination={{

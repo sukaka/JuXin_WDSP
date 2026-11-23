@@ -41,6 +41,7 @@ type Collector struct {
 	store          EventStore
 	blocks         BlockUpserter       // nil 时跳过封禁入库
 	hits           RuleHitRecorder     // nil 时跳过命中计数
+	urlHits        RuleHitRecorder     // nil 时跳过 URL 白名单命中计数
 	syslog         *syslogfw.Forwarder // nil 时跳过 syslog 外发
 	collectorID    string
 	logPath        string
@@ -75,6 +76,9 @@ func (c *Collector) SetBlockUpserter(u BlockUpserter) { c.blocks = u }
 
 // SetHitRecorder 设置规则命中计数接口（应用装配时使用）。
 func (c *Collector) SetHitRecorder(h RuleHitRecorder) { c.hits = h }
+
+// SetURLWhitelistHitRecorder 设置 URL 白名单命中计数接口（应用装配时使用）。
+func (c *Collector) SetURLWhitelistHitRecorder(h RuleHitRecorder) { c.urlHits = h }
 
 // SetSyslogForwarder 设置 syslog 外发器（应用装配时使用，可为 nil）。
 func (c *Collector) SetSyslogForwarder(fw *syslogfw.Forwarder) { c.syslog = fw }
@@ -348,6 +352,20 @@ func (c *Collector) handleSideEffects(ctx context.Context, evt *Event) {
 		if err := c.blocks.UpsertFromEvent(ctx, block); err != nil {
 			slog.Error("upsert temporary block failed",
 				"collector", c.collectorID, "client_ip", evt.ClientIP, "error", err)
+		}
+	case EventTypeURLAllowMatch:
+		if c.urlHits == nil || evt.AccessRuleID == "" {
+			return
+		}
+		ruleID, err := uuid.Parse(evt.AccessRuleID)
+		if err != nil {
+			slog.Warn("url whitelist access_rule_id is not a UUID, skip hit record",
+				"collector", c.collectorID, "access_rule_id", evt.AccessRuleID)
+			return
+		}
+		if err := c.urlHits.IncrementHit(ctx, ruleID, evt.OccurredAt); err != nil {
+			slog.Error("increment url whitelist hit failed",
+				"collector", c.collectorID, "access_rule_id", evt.AccessRuleID, "error", err)
 		}
 	case EventTypeCCThresholdExceeded, EventTypeCCRequestRejected:
 		if c.hits == nil || evt.AccessRuleID == "" {

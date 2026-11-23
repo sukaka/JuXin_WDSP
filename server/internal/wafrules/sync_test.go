@@ -99,7 +99,7 @@ func TestContentHashDiffers(t *testing.T) {
 	}
 }
 
-// 无 msg 的 THIRD_PARTY 排除规则：名称/消息取正上方注释块（跳过分隔线与版权行），
+// 无 msg 的 THIRD_PARTY 排除规则：内置规则 ID 转为中文名，未知规则按文件族名兜底，
 // 攻击类型按文件名兜底为 EXCLUSION。
 func TestParseThirdPartyExclusionRule(t *testing.T) {
 	content := `
@@ -128,7 +128,7 @@ SecRule REQUEST_FILENAME "@unconditionalMatch" \
 		t.Fatalf("parsed %d rules, want 1", len(rules))
 	}
 	r := rules[0]
-	wantName := "Fix FP with requesttoken used for various requests in Nextcloud. Fix FP with timezone"
+	wantName := "Nextcloud 排除规则：Cookie、requesttoken 与时区参数误报放行"
 	if r.Name != wantName {
 		t.Errorf("name = %q, want %q", r.Name, wantName)
 	}
@@ -140,15 +140,16 @@ SecRule REQUEST_FILENAME "@unconditionalMatch" \
 	}
 }
 
-// 无 msg 且无注释时：名称兜底为「文件名去扩展名 规则 <id>」。
+// 无 msg 且无注释且非内置文件时：名称兜底为「文件名去扩展名 规则 <id>」；
+// 未知 ID 落在已知排除插件文件时按中文族名兜底。
 func TestParseFallbackNameWithoutComment(t *testing.T) {
 	rules, _, _ := ParseCRSRules(`
-SecRule REQUEST_FILENAME "@unconditionalMatch" "id:9508511,phase:1,pass,nolog,ctl:ruleRemoveById=942130"
-`, "wordpress-rule-exclusions-before.conf", SourceThirdParty)
+SecRule REQUEST_FILENAME "@unconditionalMatch" "id:9998511,phase:1,pass,nolog,ctl:ruleRemoveById=942130"
+`, "custom-rule-exclusions-before.conf", SourceThirdParty)
 	if len(rules) != 1 {
 		t.Fatalf("parsed %d rules, want 1", len(rules))
 	}
-	want := "wordpress-rule-exclusions-before 规则 9508511"
+	want := "custom-rule-exclusions-before 规则 9998511"
 	if rules[0].Name != want {
 		t.Errorf("name = %q, want %q", rules[0].Name, want)
 	}
@@ -190,8 +191,7 @@ SecRule REQUEST_URI "@rx ^/internal" "id:1003001,phase:1,block,msg:'unauth acces
 	}
 }
 
-// CRS 初始化类规则（无 attack 标签、非兜底文件）保持 OTHER；
-// 无 msg 时同样按注释块兜底命名。
+// CRS 初始化类规则（无 attack 标签、非兜底文件）保持 OTHER，名称自动中文化。
 func TestParseCRSInitRuleStaysOther(t *testing.T) {
 	rules, _, _ := ParseCRSRules(`
 # Initialize anomaly score variables.
@@ -203,7 +203,7 @@ SecRule TX:anomaly_score "@eq 0" "id:901001,phase:1,pass,nolog,setvar:tx.inbound
 	if rules[0].AttackType != "OTHER" {
 		t.Errorf("attack_type = %q, want OTHER", rules[0].AttackType)
 	}
-	if rules[0].Name != "Initialize anomaly score variables." {
+	if rules[0].Name != "检测到未配置 CRS 的部署" {
 		t.Errorf("name = %q", rules[0].Name)
 	}
 }

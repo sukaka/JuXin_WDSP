@@ -26,6 +26,16 @@ const log = {
   domain: 'shop.internal',
   gateway_node_id: 'gw-1',
   client_ip: '192.0.2.10',
+  client_ip_geo: {
+    ip: '192.0.2.10',
+    scope: 'PUBLIC',
+    country_code: 'CN',
+    country: '中国',
+    province: '浙江省',
+    city: '杭州市',
+    isp: '阿里',
+    label: '中国 浙江省 杭州市',
+  },
   client_port: 51000,
   request_method: 'POST',
   request_uri: '/v1/login',
@@ -154,11 +164,15 @@ describe('AccessLogsPage request audit', () => {
     expect(await within(drawer).findByText(traceID)).toBeInTheDocument()
     expect(within(drawer).getByText('42 ms')).toBeInTheDocument()
     expect(within(drawer).getByText('POST /v1/login')).toBeInTheDocument()
+    expect(within(drawer).getByText('中国 浙江省 杭州市')).toBeInTheDocument()
+    expect(within(drawer).getByText('阿里')).toBeInTheDocument()
   })
 
-  it('无 applications.read 权限时不请求应用列表接口', async () => {
+  it('无 applications.read 权限时不请求应用列表接口且列表展示 IP 归属地与运营商', async () => {
     renderPage()
     expect(await screen.findByText('/v1/login')).toBeInTheDocument()
+    expect(screen.getByText('中国 浙江省 杭州市')).toBeInTheDocument()
+    expect(screen.getByText('阿里')).toBeInTheDocument()
     const calls = (fetch as Mock).mock.calls.map((call) => String(call[0]))
     expect(calls.some((url) => url.includes('/applications'))).toBe(false)
   })
@@ -198,5 +212,34 @@ describe('AccessLogsPage request audit', () => {
     // 点击重置筛选清空受控输入框
     fireEvent.click(screen.getByRole('button', { name: /重置筛选/ }))
     expect((screen.getByPlaceholderText('域名') as HTMLInputElement).value).toBe('')
+  })
+
+  it('勾选访问日志不会误开详情抽屉，且支持导出已选与筛选导出', async () => {
+    const openMock = vi.fn()
+    vi.stubGlobal('open', openMock)
+
+    renderPage()
+    expect(await screen.findByText('/v1/login')).toBeInTheDocument()
+
+    // 勾选第一条日志，确认不会误触行 onClick 打开详情抽屉
+    const checkboxes = screen.getAllByRole('checkbox')
+    fireEvent.click(checkboxes[1])
+    expect(await screen.findByText('已选 1 条')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    // 导出已选仅携带已选日志 ID
+    const exportBtn = screen.getByRole('button', { name: /导\s*出/ })
+    fireEvent.click(exportBtn)
+    fireEvent.click(await screen.findByText('导出已选（1）'))
+    expect(openMock).toHaveBeenCalledTimes(1)
+    expect(openMock.mock.calls[0][0]).toBe(`/api/v1/access-logs/export?ids=${log.id}`)
+
+    // 导出筛选结果携带当前筛选条件
+    triggerSearch('域名', 'shop.internal')
+    fireEvent.click(exportBtn)
+    fireEvent.click(await screen.findByText('导出筛选结果'))
+    expect(openMock).toHaveBeenCalledTimes(2)
+    expect(String(openMock.mock.calls[1][0])).toContain('/api/v1/access-logs/export?')
+    expect(String(openMock.mock.calls[1][0])).toContain('domain=shop.internal')
   })
 })

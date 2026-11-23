@@ -11,6 +11,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/middleware"
 	"github.com/jiuzhang-waf/server/internal/response"
+	"github.com/jiuzhang-waf/server/internal/validation"
 )
 
 // Handler 是访问控制事件处理器。
@@ -124,14 +125,20 @@ func (h *Handler) ListByRule(w http.ResponseWriter, r *http.Request) {
 	response.Page(w, r, list, total, f.Page, f.PageSize)
 }
 
-// Export 导出事件（CSV，记录导出审计）。
+// Export 导出事件（CSV，记录导出审计；支持筛选导出与勾选 ids 导出）。
 func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
+	ids, err := validation.ParseExportUUIDs(r.URL.Query(), "ids")
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
 	f, err := parseFilter(r)
 	if err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
+	f.IDs = ids
 	csvData, err := h.store.Export(r.Context(), f)
 	if err != nil {
 		response.InternalError(w, r, err)

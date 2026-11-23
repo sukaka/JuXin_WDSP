@@ -130,6 +130,7 @@ type ListFilter struct {
 	SourceType    string
 	Keyword       string // 匹配名称或地址（模糊）
 	Address       string // 地址精确匹配（会先规范化）
+	IDs           []uuid.UUID
 	Page          int
 	PageSize      int
 }

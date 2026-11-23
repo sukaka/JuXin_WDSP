@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
@@ -20,7 +21,6 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import {
   CloudUploadOutlined,
-  DownloadOutlined,
   ImportOutlined,
   PlusOutlined,
 } from '@ant-design/icons'
@@ -29,10 +29,12 @@ import { ApiError } from '../../api/client'
 import { accessRulesApi } from '../../api/accessRules'
 import type { ImportAccessRulesBody } from '../../api/accessRules'
 import { applicationsApi } from '../../api/applications'
+import ExportDropdown from '../../components/ExportDropdown'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import useBatchDelete from '../../hooks/useBatchDelete'
+import useExportSelection from '../../hooks/useExportSelection'
 import { PublishTaskProgress } from '../config-publish/ConfigPublishPage'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
@@ -121,13 +123,22 @@ function ValidityCell({ record }: { record: AccessRuleItem }) {
   )
 }
 
-export default function AccessRulesPage() {
+export interface IPAccessRulePanelProps {
+  /** 固定规则类型：DENY（IP 黑名单页）或 ALLOW（白名单管理-IP 白名单 Tab） */
+  fixedRuleType: 'ALLOW' | 'DENY'
+  /** 嵌入在 Tabs 内时不渲染外层 Card */
+  embedded?: boolean
+}
+
+export function IPAccessRulePanel({ fixedRuleType, embedded = false }: IPAccessRulePanelProps) {
   const { message, modal } = AntdApp.useApp()
   const queryClient = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canManage = hasPermission(permissions, 'access_rules.manage')
   const canImport = hasPermission(permissions, 'access_rules.import')
   const canPublish = hasPermission(permissions, 'access_rules.publish')
+  const isAllow = fixedRuleType === 'ALLOW'
+  const listLabel = isAllow ? 'IP 白名单' : 'IP 黑名单'
 
   const [filters, setFilters] = useState<Filters>({})
   const [page, setPage] = useState(1)
@@ -146,9 +157,11 @@ export default function AccessRulesPage() {
   const [extendForm] = Form.useForm<ExtendFormValues>()
   const [importForm] = Form.useForm<ImportFormValues>()
 
+  const effectiveFilters: Filters = { ...filters, rule_type: fixedRuleType }
+
   const listQuery = useQuery({
-    queryKey: ['access-rules', filters, page, pageSize],
-    queryFn: () => accessRulesApi.list({ ...filters, page, page_size: pageSize }),
+    queryKey: ['access-rules', effectiveFilters, page, pageSize],
+    queryFn: () => accessRulesApi.list({ ...effectiveFilters, page, page_size: pageSize }),
   })
 
   // 规则关联事件（§8.5）：抽屉内按规则 ID 过滤访问控制事件
@@ -158,12 +171,23 @@ export default function AccessRulesPage() {
     enabled: eventsRule !== null,
   })
 
-  const { rowSelection, batchDeleteButton } = useBatchDelete<AccessRuleItem>({
+  const {
+    rowSelection: batchRowSelection,
+    batchDeleteButton,
+    selectedRowKeys: batchSelectedIds,
+    selectedCount: batchSelectedCount,
+    clearSelection: clearBatchSelection,
+  } = useBatchDelete<AccessRuleItem>({
     remove: (id) => accessRulesApi.remove(id),
     invalidateKeys: [['access-rules']],
     entityName: '黑白名单规则',
     canDelete: canManage,
   })
+  const exportSelection = useExportSelection<AccessRuleItem>(!canManage)
+  const rowSelection = canManage ? batchRowSelection : exportSelection.rowSelection
+  const selectedExportIds = canManage ? batchSelectedIds : exportSelection.selectedIds
+  const selectedExportCount = canManage ? batchSelectedCount : exportSelection.selectedCount
+  const clearExportSelection = canManage ? clearBatchSelection : exportSelection.clearSelection
 
   const appsQuery = useQuery({
     queryKey: ['applications', 'all-for-access-rule'],
@@ -204,7 +228,7 @@ export default function AccessRulesPage() {
       }
       return accessRulesApi.create({
         name: values.name,
-        rule_type: values.rule_type,
+        rule_type: fixedRuleType,
         scope_type: values.scope_type,
         application_id: values.scope_type === 'APPLICATION' ? values.application_id : null,
         address: values.address,
@@ -301,7 +325,7 @@ export default function AccessRulesPage() {
     content: values.content,
     format: values.format,
     mode: values.mode,
-    rule_type: values.rule_type,
+    rule_type: fixedRuleType,
     scope_type: values.scope_type,
     application_id: values.scope_type === 'APPLICATION' ? values.application_id : null,
     effective_until: values.effective_until ? values.effective_until.toISOString() : null,
@@ -312,6 +336,7 @@ export default function AccessRulesPage() {
   const openCreate = () => {
     setEditing(null)
     form.resetFields()
+    form.setFieldsValue({ rule_type: fixedRuleType })
     setFormOpen(true)
   }
 
@@ -476,132 +501,148 @@ export default function AccessRulesPage() {
     },
   ]
 
-  return (
-    <Card
-      title="IP 黑白名单"
-      extra={
-        <Space>
-          {canPublish && (
-            <Button
-              icon={<CloudUploadOutlined />}
-              loading={publishMutation.isPending}
-              onClick={confirmPublish}
-            >
-              发布
-            </Button>
-          )}
-          <Button
-            icon={<DownloadOutlined />}
-            onClick={() =>
-              window.open(
-                accessRulesApi.exportUrl({
-                  rule_type: filters.rule_type,
-                  scope_type: filters.scope_type,
-                  status: filters.status,
-                  source_type: filters.source_type,
-                  keyword: filters.keyword,
-                }),
-                '_blank',
-              )
-            }
-          >
-            导出
-          </Button>
-          {canImport && (
-            <Button
-              icon={<ImportOutlined />}
-              onClick={() => {
-                setPreview(null)
-                importForm.resetFields()
-                setImportOpen(true)
-              }}
-            >
-              导入
-            </Button>
-          )}
-          {canManage && (
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-              新建规则
-            </Button>
-          )}
-        </Space>
-      }
-    >
+  const actionBar = (
+    <Space wrap>
+      {!isAllow && !embedded && (
+        <Link to="/whitelists">
+          <Button>白名单管理</Button>
+        </Link>
+      )}
+      {canPublish && (
+        <Button
+          icon={<CloudUploadOutlined />}
+          loading={publishMutation.isPending}
+          onClick={confirmPublish}
+        >
+          发布
+        </Button>
+      )}
+      <ExportDropdown
+        selectedCount={selectedExportCount}
+        onClearSelection={clearExportSelection}
+        onExportSelected={() =>
+          window.open(
+            accessRulesApi.exportUrl({
+              rule_type: fixedRuleType,
+              ids: selectedExportIds.join(','),
+            }),
+            '_blank',
+          )
+        }
+        onExportFiltered={() =>
+          window.open(
+            accessRulesApi.exportUrl({
+              rule_type: fixedRuleType,
+              scope_type: filters.scope_type,
+              status: filters.status,
+              source_type: filters.source_type,
+              keyword: filters.keyword,
+            }),
+            '_blank',
+          )
+        }
+        onExportAll={() =>
+          window.open(accessRulesApi.exportUrl({ rule_type: fixedRuleType }), '_blank')
+        }
+      />
+      {canImport && (
+        <Button
+          icon={<ImportOutlined />}
+          onClick={() => {
+            setPreview(null)
+            importForm.resetFields()
+            importForm.setFieldsValue({ rule_type: fixedRuleType })
+            setImportOpen(true)
+          }}
+        >
+          导入
+        </Button>
+      )}
+      {canManage && (
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+          {isAllow ? '新建 IP 白名单' : '新建黑名单'}
+        </Button>
+      )}
+    </Space>
+  )
+
+  const body = (
+    <>
       {activeTaskId && <PublishTaskProgress taskId={activeTaskId} />}
-      <Space style={{ marginBottom: 16, marginTop: activeTaskId ? 16 : 0 }} wrap>
-        <Select
-          placeholder="规则类型"
-          allowClear
-          style={{ width: 120 }}
-          options={Object.entries(ACCESS_RULE_TYPE_META).map(([value, meta]) => ({
-            value,
-            label: meta.label,
-          }))}
-          onChange={(v) => {
-            setFilters((f) => ({ ...f, rule_type: v }))
-            setPage(1)
-          }}
-        />
-        <Select
-          placeholder="生效范围"
-          allowClear
-          style={{ width: 120 }}
-          options={Object.entries(ACCESS_RULE_SCOPE_META).map(([value, meta]) => ({
-            value,
-            label: meta.label,
-          }))}
-          onChange={(v) => {
-            setFilters((f) => ({ ...f, scope_type: v }))
-            setPage(1)
-          }}
-        />
-        <Select
-          placeholder="状态"
-          allowClear
-          style={{ width: 120 }}
-          options={Object.entries(ACCESS_RULE_STATUS_META)
-            .filter(([v]) => v !== 'DELETED')
-            .map(([value, meta]) => ({ value, label: meta.label }))}
-          onChange={(v) => {
-            setFilters((f) => ({ ...f, status: v }))
-            setPage(1)
-          }}
-        />
-        <Select
-          placeholder="来源"
-          allowClear
-          style={{ width: 130 }}
-          options={Object.entries(ACCESS_RULE_SOURCE_META).map(([value, meta]) => ({
-            value,
-            label: meta.label,
-          }))}
-          onChange={(v) => {
-            setFilters((f) => ({ ...f, source_type: v }))
-            setPage(1)
-          }}
-        />
-        <Input.Search
-          placeholder="名称 / 地址"
-          allowClear
-          style={{ width: 200 }}
-          onSearch={(v) => {
-            setFilters((f) => ({ ...f, keyword: v || undefined }))
-            setPage(1)
-          }}
-        />
-        {batchDeleteButton}
-      </Space>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 12,
+          flexWrap: 'wrap',
+          marginBottom: 16,
+          marginTop: activeTaskId ? 16 : 0,
+        }}
+      >
+        <Space wrap>
+          <Select
+            placeholder="生效范围"
+            allowClear
+            style={{ width: 120 }}
+            options={Object.entries(ACCESS_RULE_SCOPE_META).map(([value, meta]) => ({
+              value,
+              label: meta.label,
+            }))}
+            onChange={(v) => {
+              setFilters((f) => ({ ...f, scope_type: v }))
+              setPage(1)
+            }}
+          />
+          <Select
+            placeholder="状态"
+            allowClear
+            style={{ width: 120 }}
+            options={Object.entries(ACCESS_RULE_STATUS_META)
+              .filter(([v]) => v !== 'DELETED')
+              .map(([value, meta]) => ({ value, label: meta.label }))}
+            onChange={(v) => {
+              setFilters((f) => ({ ...f, status: v }))
+              setPage(1)
+            }}
+          />
+          <Select
+            placeholder="来源"
+            allowClear
+            style={{ width: 130 }}
+            options={Object.entries(ACCESS_RULE_SOURCE_META).map(([value, meta]) => ({
+              value,
+              label: meta.label,
+            }))}
+            onChange={(v) => {
+              setFilters((f) => ({ ...f, source_type: v }))
+              setPage(1)
+            }}
+          />
+          <Input.Search
+            placeholder="名称 / 地址"
+            allowClear
+            style={{ width: 200 }}
+            onSearch={(v) => {
+              setFilters((f) => ({ ...f, keyword: v || undefined }))
+              setPage(1)
+            }}
+          />
+          {batchDeleteButton}
+        </Space>
+        {embedded && actionBar}
+      </div>
 
       {listQuery.isError ? (
         <Alert
           type="error"
           showIcon
-          message="加载黑白名单失败"
+          message={`加载${listLabel}失败`}
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
         <SmartTable<AccessRuleItem>
-          storageKey="access-rules"
+          storageKey={isAllow ? 'ip-whitelist-rules' : 'access-rules'}
           rowKey="id"
           rowSelection={rowSelection}
           loading={listQuery.isLoading}
@@ -627,7 +668,7 @@ export default function AccessRulesPage() {
       )}
 
       <Drawer
-        title={editing ? '编辑规则' : '新建规则'}
+        title={editing ? `编辑${listLabel}规则` : `新建${listLabel}规则`}
         open={formOpen}
         onClose={() => {
           setFormOpen(false)
@@ -647,7 +688,7 @@ export default function AccessRulesPage() {
         <Form<RuleFormValues>
           form={form}
           layout="vertical"
-          initialValues={{ rule_type: 'DENY', scope_type: 'GLOBAL', validity_type: 'PERMANENT', priority: 100 }}
+          initialValues={{ rule_type: fixedRuleType, scope_type: 'GLOBAL', validity_type: 'PERMANENT', priority: 100 }}
           onFinish={(values) => saveMutation.mutate(values)}
         >
           <Form.Item
@@ -658,12 +699,12 @@ export default function AccessRulesPage() {
               { max: 200, message: '不超过 200 个字符' },
             ]}
           >
-            <Input placeholder="如：封禁恶意扫描源" />
+            <Input placeholder={isAllow ? '如：公司办公出口 IP 放行' : '如：封禁恶意扫描源'} />
           </Form.Item>
           <Space.Compact block>
             <Form.Item name="rule_type" label="规则类型" style={{ width: '50%', marginRight: 8 }} rules={[{ required: true }]}>
               <Select
-                disabled={!!editing}
+                disabled
                 options={Object.entries(ACCESS_RULE_TYPE_META).map(([value, meta]) => ({
                   value,
                   label: meta.label,
@@ -836,7 +877,7 @@ export default function AccessRulesPage() {
         <Form<ImportFormValues>
           form={importForm}
           layout="vertical"
-          initialValues={{ format: 'csv', rule_type: 'DENY', scope_type: 'GLOBAL' }}
+          initialValues={{ format: 'csv', rule_type: fixedRuleType, scope_type: 'GLOBAL' }}
         >
           <Alert
             type="info"
@@ -855,6 +896,7 @@ export default function AccessRulesPage() {
             </Form.Item>
             <Form.Item name="rule_type" label="默认规则类型" style={{ width: '24%', marginRight: 8 }} rules={[{ required: true }]}>
               <Select
+                disabled
                 options={Object.entries(ACCESS_RULE_TYPE_META).map(([value, meta]) => ({
                   value,
                   label: meta.label,
@@ -1076,6 +1118,18 @@ export default function AccessRulesPage() {
         record={detailRecord as Record<string, unknown> | null}
         onClose={() => setDetailRecord(null)}
       />
+    </>
+  )
+
+  if (embedded) return body
+
+  return (
+    <Card title={listLabel} extra={actionBar}>
+      {body}
     </Card>
   )
+}
+
+export default function AccessRulesPage() {
+  return <IPAccessRulePanel fixedRuleType="DENY" />
 }

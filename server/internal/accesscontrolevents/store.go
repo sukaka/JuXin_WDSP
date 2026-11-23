@@ -37,6 +37,7 @@ type ListFilter struct {
 	GatewayNodeID string
 	// AccessRuleID 按命中规则过滤（access_rule_id 列；IP 黑白名单/L7 规则命中事件写入规则 ID）。
 	AccessRuleID string
+	IDs          []uuid.UUID
 	Page         int
 	PageSize     int
 }
@@ -88,6 +89,9 @@ func buildWhere(f ListFilter) (string, []interface{}) {
 	}
 	if f.AccessRuleID != "" {
 		add("access_rule_id = $%d", f.AccessRuleID)
+	}
+	if len(f.IDs) > 0 {
+		add("id = ANY($%d::uuid[])", f.IDs)
 	}
 	return where, args
 }

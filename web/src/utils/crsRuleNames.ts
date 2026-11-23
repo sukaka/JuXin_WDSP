@@ -596,30 +596,30 @@ export const CRS_RULE_NAMES_ZH: Record<number, string> = {
   955017: 'Web Shell 检测内部规则',
   955018: 'Web Shell 检测内部规则',
   955100: '检测到 PHP Web Shell',
-  955110: 'r57 Web Shell',
-  955120: 'WSO Web Shell',
-  955130: 'b4tm4n Web Shell',
-  955140: 'Mini Shell Web Shell',
-  955150: 'Ashiyane Web Shell',
-  955160: 'Symlink_Sa Web Shell',
-  955170: 'CasuS Web Shell',
-  955180: 'GRP WebShell',
-  955190: 'NGHshell Web Shell',
-  955200: 'SimAttacker Web Shell',
+  955110: '检测到 r57 Web Shell',
+  955120: '检测到 WSO Web Shell',
+  955130: '检测到 b4tm4n Web Shell',
+  955140: '检测到 Mini Shell Web Shell',
+  955150: '检测到 Ashiyane Web Shell',
+  955160: '检测到 Symlink_Sa Web Shell',
+  955170: '检测到 CasuS Web Shell',
+  955180: '检测到 GRP WebShell',
+  955190: '检测到 NGHshell Web Shell',
+  955200: '检测到 SimAttacker Web Shell',
   955210: '未知 Web Shell',
-  955220: 'lama\'s\'hell Web Shell',
-  955230: 'lostDC Web Shell',
+  955220: '检测到 lama\'s\'hell Web Shell',
+  955230: '检测到 lostDC Web Shell',
   955240: '未知 Web Shell',
   955250: '未知 Web Shell',
-  955260: 'Ru24PostWebShell Web Shell',
-  955270: 's72 Shell Web Shell',
-  955280: 'PhpSpy Web Shell',
-  955290: 'g00nshell Web Shell',
-  955300: 'PuNkHoLic shell Web Shell',
-  955310: 'azrail Web Shell',
-  955320: 'SmEvK_PaThAn Shell Web Shell',
-  955330: 'Shell I Web Shell',
-  955340: 'b374k m1n1 Web Shell',
+  955260: '检测到 Ru24PostWebShell Web Shell',
+  955270: '检测到 s72 Shell Web Shell',
+  955280: '检测到 PhpSpy Web Shell',
+  955290: '检测到 g00nshell Web Shell',
+  955300: '检测到 PuNkHoLic shell Web Shell',
+  955310: '检测到 azrail Web Shell',
+  955320: '检测到 SmEvK_PaThAn Shell Web Shell',
+  955330: '检测到 Shell I Web Shell',
+  955340: '检测到 b374k m1n1 Web Shell',
   955350: 'webadmin.php 文件管理器',
   955400: '检测到 ASP Web Shell',
   // ===== RESPONSE-956-DATA-LEAKAGES-RUBY 数据泄露（Ruby 错误） =====
@@ -683,9 +683,34 @@ export const CRS_RULE_NAMES_ZH: Record<number, string> = {
   980051: '关联评分内部规则',
 }
 
+const CJK_RE = /[\u2E80-\u9FFF\uF900-\uFAFF]/
+const TOTAL_SCORE_RE = /\(Total Score:\s*(\d+)\)/
+
+function hasCjk(text?: string): boolean {
+  return Boolean(text && CJK_RE.test(text))
+}
+
+function translateTemplateRuleText(raw?: string): string | null {
+  const trimmed = (raw ?? '').trim()
+  if (!trimmed) return null
+  const crawlerPrefix = 'Scanner fingerprint: crawler UA ('
+  if (trimmed.startsWith(crawlerPrefix) && trimmed.endsWith(')')) {
+    return `扫描器指纹：爬虫 UA（${trimmed.slice(crawlerPrefix.length, -1)}）`
+  }
+  const aiPrefix = 'AI crawler UA: '
+  if (trimmed.startsWith(aiPrefix)) {
+    return `AI 爬虫 UA：${trimmed.slice(aiPrefix.length)}`
+  }
+  const botClaimPrefix = 'Search engine bot UA claim: '
+  if (trimmed.startsWith(botClaimPrefix)) {
+    return `搜索引擎爬虫 UA 声明：${trimmed.slice(botClaimPrefix.length)}`
+  }
+  return null
+}
+
 /**
  * 解析规则的中文名称。
- * 优先级：逐条映射 → 规则族名 + 「检测规则」 → 英文 name → 空串。
+ * 优先级：逐条映射 → 模板规则翻译 → 已有中文名 → 规则族名 + 「检测规则」 → 英文 name → 空串。
  */
 export function ruleNameZh(input: {
   rule_id: number
@@ -694,8 +719,54 @@ export function ruleNameZh(input: {
 }): string {
   const byId = CRS_RULE_NAMES_ZH[input.rule_id]
   if (byId) return byId
+  const byTemplate = translateTemplateRuleText(input.name)
+  if (byTemplate) return byTemplate
+  if (hasCjk(input.name)) return input.name ?? ''
   const familyKey = (input.file_name ?? '').replace(/\.conf$/i, '')
   const familyName = CRS_FAMILY_NAMES_ZH[familyKey]
   if (familyName) return `${familyName}检测规则`
   return input.name ?? ''
+}
+
+/**
+ * 解析安全事件命中或规则详情的中文规则消息，兼容历史英文记录并保留动态总分（如 Total Score: 5）。
+ */
+export function ruleMessageZh(input: {
+  rule_id: number
+  file_name?: string
+  name?: string
+  rule_name?: string
+  message?: string
+}): string {
+  const rawMsg = (input.message ?? '').trim()
+  if (rawMsg && hasCjk(rawMsg) && !rawMsg.includes('Total Score:')) {
+    return rawMsg
+  }
+  const byId = CRS_RULE_NAMES_ZH[input.rule_id]
+  const base =
+    byId ||
+    translateTemplateRuleText(rawMsg) ||
+    translateTemplateRuleText(input.rule_name) ||
+    translateTemplateRuleText(input.name) ||
+    (hasCjk(input.rule_name) ? input.rule_name ?? '' : '') ||
+    (hasCjk(input.name) ? input.name ?? '' : '') ||
+    (() => {
+      const familyKey = (input.file_name ?? '').replace(/\.conf$/i, '')
+      const familyName = CRS_FAMILY_NAMES_ZH[familyKey]
+      return familyName ? `${familyName}检测规则` : ''
+    })() ||
+    rawMsg ||
+    input.rule_name ||
+    input.name ||
+    ''
+
+  const scoreMatch = TOTAL_SCORE_RE.exec(rawMsg)
+  if (scoreMatch && base) {
+    const score = scoreMatch[1]
+    if (base.endsWith('）')) {
+      return `${base.slice(0, -1)}，总分：${score}）`
+    }
+    return `${base}（总分：${score}）`
+  }
+  return base
 }

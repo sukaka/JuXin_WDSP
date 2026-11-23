@@ -381,18 +381,12 @@ type ListFilter struct {
 	RequestID string
 	StartTime *time.Time
 	EndTime   *time.Time
+	IDs       []uuid.UUID
 	Page      int
 	PageSize  int
 }
 
-// List 分页查询审计。
-func (s *Service) List(ctx context.Context, f ListFilter) ([]Entry, int64, error) {
-	if f.Page <= 0 {
-		f.Page = 1
-	}
-	if f.PageSize <= 0 || f.PageSize > 100 {
-		f.PageSize = 20
-	}
+func buildListWhere(f ListFilter) (string, []interface{}) {
 	where := "1=1"
 	args := []interface{}{}
 	argIdx := 1
@@ -434,6 +428,31 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]Entry, int64, error
 	if f.EndTime != nil {
 		add("occurred_at <= $%d", *f.EndTime)
 	}
+	if len(f.IDs) > 0 {
+		add("id = ANY($%d::uuid[])", f.IDs)
+	}
+	return where, args
+}
+
+func normalizePage(page, pageSize, maxPageSize int) (int, int) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > maxPageSize {
+		pageSize = 20
+	}
+	return page, pageSize
+}
+
+// List 分页查询审计（单页上限 100）。
+func (s *Service) List(ctx context.Context, f ListFilter) ([]Entry, int64, error) {
+	return s.list(ctx, f, 100)
+}
+
+func (s *Service) list(ctx context.Context, f ListFilter, maxPageSize int) ([]Entry, int64, error) {
+	f.Page, f.PageSize = normalizePage(f.Page, f.PageSize, maxPageSize)
+	where, args := buildListWhere(f)
+	argIdx := len(args) + 1
 
 	var total int64
 	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM operation_audits WHERE `+where, args...).Scan(&total); err != nil {
@@ -505,7 +524,7 @@ FROM operation_audits WHERE id = $1`, id)
 func (s *Service) Export(ctx context.Context, f ListFilter) (string, error) {
 	f.Page = 1
 	f.PageSize = 10000
-	entries, _, err := s.List(ctx, f)
+	entries, _, err := s.list(ctx, f, 10000)
 	if err != nil {
 		return "", err
 	}

@@ -22,6 +22,7 @@ import type dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { auditsApi } from '../../api/audits'
 import RiskLevelTag from '../../components/RiskLevelTag'
+import useExportSelection from '../../hooks/useExportSelection'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatJson } from '../../utils/format'
 import { formatAuditAction, formatAuditModule, formatAuditObjectType } from '../../utils/i18nLabels'
@@ -43,6 +44,13 @@ type RangeValue = [dayjs.Dayjs | null, dayjs.Dayjs | null] | null
 export default function AuditsPage() {
   const { message, modal } = AntdApp.useApp()
   const permissions = useAuthStore((s) => s.user?.permissions)
+  const canExport = hasPermission(permissions, 'audits.export')
+  const {
+    selectedIds,
+    selectedCount,
+    clearSelection,
+    rowSelection,
+  } = useExportSelection<AuditEntry>(canExport)
   const [filters, setFilters] = useState<Filters>({})
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -153,8 +161,13 @@ export default function AuditsPage() {
               校验哈希链
             </Button>
           )}
-          {hasPermission(permissions, 'audits.export') && (
+          {canExport && (
             <ExportDropdown
+              selectedCount={selectedCount}
+              onClearSelection={clearSelection}
+              onExportSelected={() =>
+                window.open(auditsApi.exportUrl({ ids: selectedIds.join(',') }), '_blank')
+              }
               onExportFiltered={() => window.open(auditsApi.exportUrl(filters), '_blank')}
               onExportAll={() => window.open(auditsApi.exportUrl({}), '_blank')}
             />
@@ -232,6 +245,7 @@ export default function AuditsPage() {
         <SmartTable<AuditEntry>
           storageKey="audits"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}

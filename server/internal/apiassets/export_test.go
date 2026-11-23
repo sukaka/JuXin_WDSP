@@ -218,3 +218,50 @@ func TestEndpointExportCSV(t *testing.T) {
 		t.Fatalf("formula host not escaped: status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestEndpointExportCSVSelectedIDs(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	ep1, err := store.UpsertDiscovery(ctx, DiscoveryInput{
+		Method: "GET", PathTemplate: "/api/v1/orders/{id}", Host: "shop.example.com", Confidence: 0.9, IsAPI: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep2, err := store.UpsertDiscovery(ctx, DiscoveryInput{
+		Method: "POST", PathTemplate: "/api/v1/payments/{id}", Host: "shop.example.com", Confidence: 0.9, IsAPI: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertDiscovery(ctx, DiscoveryInput{
+		Method: "DELETE", PathTemplate: "/api/v1/unselected/{id}", Host: "shop.example.com", Confidence: 0.9, IsAPI: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHandler(store, nil)
+	mux := newTestMux(h)
+
+	// 仅导出选中的 ep1 与 ep2，未勾选的 ep3 不得出现
+	rr := doJSON(t, mux, http.MethodGet,
+		"/api/v1/api-security/endpoints/export?format=csv&ids="+ep1.ID.String()+","+ep2.ID.String(), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("selected export status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "/api/v1/orders/{id}") || !strings.Contains(body, "/api/v1/payments/{id}") {
+		t.Fatalf("selected rows missing: %s", body)
+	}
+	if strings.Contains(body, "/api/v1/unselected/{id}") {
+		t.Fatalf("unselected row leaked into export: %s", body)
+	}
+
+	// 空 ids 参数与非法 UUID 必须被 400 拒绝，不得退化为全量导出
+	for _, q := range []string{"ids=", "ids=not-a-uuid"} {
+		rr = doJSON(t, mux, http.MethodGet, "/api/v1/api-security/endpoints/export?format=csv&"+q, nil)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("query %q: status=%d, want 400, body=%s", q, rr.Code, rr.Body.String())
+		}
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jiuzhang-waf/server/internal/wafrules"
 )
 
 // 错误
@@ -311,6 +312,10 @@ ORDER BY ord, rule_source, rule_id`, ref.CNNVDID, ref.CVEID)
 		if err := ruleRows.Scan(&rr.RuleID, &rr.RuleSource, &rr.RuleName, &rr.Description, &rr.Enabled); err != nil {
 			ruleRows.Close()
 			return nil, err
+		}
+		if rr.RuleSource != "USER_CUSTOM" {
+			rr.RuleName = wafrules.LocalizeRule(rr.RuleID, "", rr.RuleName)
+			rr.Description = wafrules.LocalizeMatchMessage(rr.RuleID, rr.Description)
 		}
 		d.Rules = append(d.Rules, rr)
 		ruleIDs = append(ruleIDs, rr.RuleID)

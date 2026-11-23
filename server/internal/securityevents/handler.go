@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/apigeo"
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/middleware"
 	"github.com/jiuzhang-waf/server/internal/response"
+	"github.com/jiuzhang-waf/server/internal/validation"
 )
 
 // Handler 是安全事件中心处理器。
@@ -22,6 +24,8 @@ type Handler struct {
 	audits *audits.Service
 	// exceptionCreator 例外草稿创建（避免循环依赖）
 	exceptionCreator ExceptionCreator
+	// geoLookup 统一 GeoIP 查询器（纯内存实时补齐归属地与运营商；nil 时跳过）
+	geoLookup apigeo.GeoLookup
 }
 
 // ExceptionCreator 是从事件创建例外草稿的接口。
@@ -34,8 +38,40 @@ func NewHandler(store *Store, au *audits.Service, ec ExceptionCreator) *Handler 
 	return &Handler{store: store, audits: au, exceptionCreator: ec}
 }
 
-// List 事件列表。
-func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+// SetGeoLookup 注入统一 GeoIP 归属地查询器。
+func (h *Handler) SetGeoLookup(g apigeo.GeoLookup) {
+	h.geoLookup = g
+}
+
+func (h *Handler) attachGeo(evt *Event) {
+	if h == nil || h.geoLookup == nil || evt == nil || evt.ClientIP == "" {
+		return
+	}
+	evt.ClientIPGeo = h.geoLookup.LookupGeo(evt.ClientIP)
+}
+
+func (h *Handler) attachGeoSlice(list []Event) {
+	if h == nil || h.geoLookup == nil || len(list) == 0 {
+		return
+	}
+	cache := make(map[string]*apigeo.GeoInfo, len(list))
+	for i := range list {
+		ip := list[i].ClientIP
+		if ip == "" {
+			continue
+		}
+		if g, ok := cache[ip]; ok {
+			list[i].ClientIPGeo = g
+			continue
+		}
+		g := h.geoLookup.LookupGeo(ip)
+		cache[ip] = g
+		list[i].ClientIPGeo = g
+	}
+}
+
+// parseListFilter 解析安全事件查询筛选条件（List 与 Export 共用，确保导出与列表筛选维度完全一致）。
+func parseListFilter(r *http.Request) ListFilter {
 	f := ListFilter{
 		Domain:            r.URL.Query().Get("domain"),
 		ClientIP:          r.URL.Query().Get("client_ip"),
@@ -70,11 +106,18 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			f.RuleID = &id
 		}
 	}
+	return f
+}
+
+// List 事件列表。
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	f := parseListFilter(r)
 	list, total, err := h.store.List(r.Context(), f)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
 	}
+	h.attachGeoSlice(list)
 	response.Page(w, r, list, total, f.Page, f.PageSize)
 }
 
@@ -150,6 +193,8 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("event detail: list related events failed", "event_id", id, "error", err)
 		related = &RelatedResult{Events: []Event{}, Mode: "none"}
 	}
+	h.attachGeo(evt)
+	h.attachGeoSlice(related.Events)
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
 		"event":              evt,
 		"matches":            matches,
@@ -205,6 +250,7 @@ func (h *Handler) Related(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
+	h.attachGeoSlice(related.Events)
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
 		"items":      related.Events,
 		"mode":       related.Mode,
@@ -356,26 +402,18 @@ func (h *Handler) CreateException(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Export 导出事件（CSV）。
+// Export 导出事件（CSV，支持全部列表筛选条件以及按勾选 ids 导出）。
 func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
-	f := ListFilter{
-		Domain:     r.URL.Query().Get("domain"),
-		AttackType: r.URL.Query().Get("attack_type"),
-		Severity:   r.URL.Query().Get("severity"),
-		Page:       1,
-		PageSize:   100,
+	ids, err := validation.ParseExportUUIDs(r.URL.Query(), "ids")
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
 	}
-	if st := r.URL.Query().Get("start_time"); st != "" {
-		if t, err := time.Parse(time.RFC3339, st); err == nil {
-			f.StartTime = &t
-		}
-	}
-	if et := r.URL.Query().Get("end_time"); et != "" {
-		if t, err := time.Parse(time.RFC3339, et); err == nil {
-			f.EndTime = &t
-		}
-	}
+	f := parseListFilter(r)
+	f.IDs = ids
+	f.Page = 1
+	f.PageSize = 100
 	// 分页拉取（List 单页上限 100），导出总量上限 10000 行
 	var list []Event
 	for page := 1; len(list) < 10000; page++ {

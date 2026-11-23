@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jiuzhang-waf/server/internal/wafrules"
 )
 
 // 仓储错误。
@@ -440,6 +441,7 @@ WHERE event_id=$1 ORDER BY anomaly_score DESC, rule_id LIMIT 5`, repID)
 			if err := rows.Scan(&rid, &name); err != nil {
 				return nil, err
 			}
+			name = wafrules.LocalizeRule(rid, "", name)
 			ev.RuleHits = append(ev.RuleHits, fmt.Sprintf("rule %d: %s", rid, name))
 		}
 		if err := rows.Err(); err != nil {

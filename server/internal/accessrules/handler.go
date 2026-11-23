@@ -12,18 +12,25 @@ import (
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/middleware"
 	"github.com/jiuzhang-waf/server/internal/response"
+	"github.com/jiuzhang-waf/server/internal/validation"
 )
 
 // Handler 是 IP 访问控制规则处理器。
 type Handler struct {
-	store   *Store
-	audits  *audits.Service
-	checker ProtectedChecker
+	store      *Store
+	audits     *audits.Service
+	checker    ProtectedChecker
+	urlChecker URLWhitelistChecker
 }
 
 // NewHandler 创建处理器。checker 为保护地址检查器，可为 nil 表示不检查。
 func NewHandler(store *Store, au *audits.Service, checker ProtectedChecker) *Handler {
 	return &Handler{store: store, audits: au, checker: checker}
+}
+
+// SetURLWhitelistChecker 注入 URL 白名单冲突检查器（供安全事件白名单预填提示已有规则）。
+func (h *Handler) SetURLWhitelistChecker(c URLWhitelistChecker) {
+	h.urlChecker = c
 }
 
 // List 规则列表。
@@ -543,10 +550,16 @@ func (h *Handler) Import(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, result)
 }
 
-// Export 导出规则（CSV，含表头，防公式注入，最多 10000 条）。
+// Export 导出规则（CSV，含表头，防公式注入，最多 10000 条；支持筛选导出与勾选 ids 导出）。
 func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
+	selectedIDs, err := validation.ParseExportUUIDs(r.URL.Query(), "ids")
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
 	f := listFilterFrom(r)
+	f.IDs = selectedIDs
 	f.Page = 1
 	f.PageSize = 100
 	// 复用 List 分批拉取（单页上限 100），最多 10000 条

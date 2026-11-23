@@ -8,6 +8,7 @@ import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import type dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { logsApi } from '../../api/logs'
+import useExportSelection from '../../hooks/useExportSelection'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
@@ -58,6 +59,13 @@ type RangeValue = [dayjs.Dayjs | null, dayjs.Dayjs | null] | null
 
 export default function LoginLogsPage() {
   const permissions = useAuthStore((s) => s.user?.permissions)
+  const canExport = hasPermission(permissions, 'login_logs.export')
+  const {
+    selectedIds,
+    selectedCount,
+    clearSelection,
+    rowSelection,
+  } = useExportSelection<LoginLogEntry>(canExport)
   const [filters, setFilters] = useState<Filters>({})
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -123,8 +131,13 @@ export default function LoginLogsPage() {
     <Card
       title="登录日志"
       extra={
-        hasPermission(permissions, 'login_logs.export') && (
+        canExport && (
           <ExportDropdown
+            selectedCount={selectedCount}
+            onClearSelection={clearSelection}
+            onExportSelected={() =>
+              window.open(logsApi.loginLogsExportUrl({ ids: selectedIds.join(',') }), '_blank')
+            }
             onExportFiltered={() => window.open(logsApi.loginLogsExportUrl(filters), '_blank')}
             onExportAll={() => window.open(logsApi.loginLogsExportUrl({}), '_blank')}
           />
@@ -178,6 +191,7 @@ export default function LoginLogsPage() {
         <SmartTable<LoginLogEntry>
           storageKey="login-logs"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}

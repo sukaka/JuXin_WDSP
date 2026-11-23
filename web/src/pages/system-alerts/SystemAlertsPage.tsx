@@ -12,13 +12,15 @@ import {
   Timeline,
   Typography,
 } from 'antd'
-import { DownloadOutlined, FieldTimeOutlined } from '@ant-design/icons'
+import { FieldTimeOutlined } from '@ant-design/icons'
+import ExportDropdown from '../../components/ExportDropdown'
 import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { ApiError } from '../../api/client'
 import { systemAlertsApi } from '../../api/systemAlerts'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import StatusTag from '../../components/StatusTag'
+import useExportSelection from '../../hooks/useExportSelection'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasAnyPermission } from '../../utils/permission'
@@ -41,6 +43,12 @@ export default function SystemAlertsPage() {
   // SYS：全部告警操作；SEC：安全类告警确认；AUD：只读
   const canAcknowledge = hasAnyPermission(permissions, ['system_alerts.acknowledge', 'system_alerts.acknowledge_security'])
   const canResolve = hasAnyPermission(permissions, ['system_alerts.resolve'])
+  const {
+    selectedIds,
+    selectedCount,
+    clearSelection,
+    rowSelection,
+  } = useExportSelection<SystemAlertItem>(true)
 
   const [filters, setFilters] = useState<Filters>({})
   const [page, setPage] = useState(1)
@@ -178,9 +186,13 @@ export default function SystemAlertsPage() {
           <Button icon={<FieldTimeOutlined />} onClick={() => setMaintOpen(true)}>
             维护窗口
           </Button>
-          <Button
-            icon={<DownloadOutlined />}
-            onClick={() =>
+          <ExportDropdown
+            selectedCount={selectedCount}
+            onClearSelection={clearSelection}
+            onExportSelected={() =>
+              window.open(systemAlertsApi.exportUrl({ ids: selectedIds.join(',') }), '_blank')
+            }
+            onExportFiltered={() =>
               window.open(
                 systemAlertsApi.exportUrl({
                   status: filters.status,
@@ -191,9 +203,8 @@ export default function SystemAlertsPage() {
                 '_blank',
               )
             }
-          >
-            导出
-          </Button>
+            onExportAll={() => window.open(systemAlertsApi.exportUrl({}), '_blank')}
+          />
         </Space>
       }
     >
@@ -247,6 +258,7 @@ export default function SystemAlertsPage() {
         <SmartTable<SystemAlertItem>
           storageKey="system-alerts"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}

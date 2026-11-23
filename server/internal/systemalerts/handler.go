@@ -14,6 +14,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/middleware"
 	"github.com/jiuzhang-waf/server/internal/response"
+	"github.com/jiuzhang-waf/server/internal/validation"
 )
 
 // exportLimit 导出行数上限。
@@ -256,16 +257,22 @@ func (h *Handler) AddNote(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, n)
 }
 
-// Export 导出告警（CSV，防公式注入，最多 10000 条）。
+// Export 导出告警（CSV，防公式注入，最多 10000 条；支持筛选导出与勾选 ids 导出）。
 func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
+	ids, err := validation.ParseExportUUIDs(r.URL.Query(), "ids")
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
 	f, ok := parseListFilter(w, r)
 	if !ok {
 		return
 	}
+	f.IDs = ids
 	f.Page = 1
 	f.PageSize = exportLimit
-	list, _, err := h.store.List(r.Context(), f)
+	list, _, err := h.store.ListForExport(r.Context(), f)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return

@@ -115,8 +115,20 @@ func (m *MemStore) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, e
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var idSet map[uuid.UUID]struct{}
+	if len(f.IDs) > 0 {
+		idSet = make(map[uuid.UUID]struct{}, len(f.IDs))
+		for _, id := range f.IDs {
+			idSet[id] = struct{}{}
+		}
+	}
 	var all []Endpoint
 	for _, e := range m.byID {
+		if idSet != nil {
+			if _, ok := idSet[e.ID]; !ok {
+				continue
+			}
+		}
 		if f.AssetStatus != "" && e.AssetStatus != f.AssetStatus {
 			continue
 		}
