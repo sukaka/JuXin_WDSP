@@ -23,6 +23,11 @@ const DETECTION_SOURCE_META: Record<string, { color: string; label: string }> = 
   RUNTIME: { color: 'blue', label: '运行时识别' },
 }
 
+/** 取最新脱敏样本（优先独立列，兼容旧版 source_detail） */
+function getMaskedSample(record: ApiSensitiveField): string {
+  return (record.masked_sample || record.source_detail?.masked_sample || '').trim()
+}
+
 /** 置信度展示（0-1 → 百分比）与口径说明 */
 function ConfidenceCell({ value }: { value: number }) {
   return (
@@ -91,6 +96,24 @@ export default function ApiSensitiveFieldsPage() {
       dataIndex: 'data_type',
       width: 110,
       render: (v: string) => <StatusTag value={v} map={API_SENSITIVE_TYPE_META} />,
+    },
+    {
+      title: '脱敏样本',
+      dataIndex: 'masked_sample',
+      width: 170,
+      ellipsis: true,
+      render: (_: string | undefined, record) => {
+        const sample = getMaskedSample(record)
+        return sample ? (
+          <Tooltip title="网关内存脱敏后的最新 1 条值级命中样本（原始明文不落库）">
+            <Typography.Text code>{sample}</Typography.Text>
+          </Tooltip>
+        ) : (
+          <Tooltip title="当前仅通过字段名匹配识别，未捕获到值级样本">
+            <Typography.Text type="secondary">仅字段名识别</Typography.Text>
+          </Tooltip>
+        )
+      },
     },
     {
       title: '置信度',
@@ -172,7 +195,7 @@ export default function ApiSensitiveFieldsPage() {
         loading={listQuery.isLoading}
         columns={columns}
         dataSource={listQuery.data?.items ?? []}
-        scroll={{ x: 1250 }}
+        scroll={{ x: 1420 }}
         onRow={(record) => ({
           onDoubleClick: () => setSelected(record),
           style: { cursor: 'pointer' },
@@ -215,6 +238,18 @@ export default function ApiSensitiveFieldsPage() {
             </Descriptions.Item>
             <Descriptions.Item label="字段路径" span={2}>
               <Typography.Text code>{selected.structured_path}</Typography.Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="脱敏样本（最新）" span={2}>
+              {getMaskedSample(selected) ? (
+                <Space size={8} wrap>
+                  <Typography.Text code>{getMaskedSample(selected)}</Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    已脱敏（保留最新 1 条值级命中样本，原始明文不落库）
+                  </Typography.Text>
+                </Space>
+              ) : (
+                <Typography.Text type="secondary">仅字段名识别，暂无值级脱敏样本</Typography.Text>
+              )}
             </Descriptions.Item>
             <Descriptions.Item label="置信度">
               <ConfidenceCell value={selected.confidence} />

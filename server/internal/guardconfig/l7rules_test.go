@@ -178,3 +178,41 @@ func keysOf(m map[string]interface{}) []string {
 	}
 	return out
 }
+
+// TestToGuardL7Rules_HostAndPreservePathQuery 验证 host 条件与 redirect preserve_path_query=true 透传下发网关。
+func TestToGuardL7Rules_HostAndPreservePathQuery(t *testing.T) {
+	id := uuid.New()
+	rules := []l7rules.Rule{{
+		ID:       id,
+		Name:     "裸域跳转www",
+		Priority: 10,
+		Enabled:  true,
+		Conditions: []l7rules.Condition{
+			{Type: l7rules.CondTypeHost, Op: l7rules.OpEq, Value: "jxdr.cn"},
+		},
+		Action: l7rules.ActionRedirect,
+		ActionConfig: l7rules.ActionConfig{
+			Status:            403,
+			RedirectURL:       "https://www.jxdr.cn",
+			RedirectStatus:    301,
+			PreservePathQuery: true,
+			ContentType:       "text/html; charset=utf-8",
+		},
+	}}
+	raw, err := json.Marshal(toGuardL7Rules(rules))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top map[string][]map[string]interface{}
+	if err := json.Unmarshal(raw, &top); err != nil {
+		t.Fatal(err)
+	}
+	cond := top["rules"][0]["conditions"].([]interface{})[0].(map[string]interface{})
+	if cond["type"] != "host" || cond["op"] != "eq" || cond["value"] != "jxdr.cn" {
+		t.Fatalf("host 条件载荷异常: %+v", cond)
+	}
+	ac := top["rules"][0]["action_config"].(map[string]interface{})
+	if ac["redirect_url"] != "https://www.jxdr.cn" || ac["redirect_status"].(float64) != 301 || ac["preserve_path_query"] != true {
+		t.Fatalf("redirect action_config 载荷异常: %+v", ac)
+	}
+}

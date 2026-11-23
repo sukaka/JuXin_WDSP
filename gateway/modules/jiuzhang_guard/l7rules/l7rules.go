@@ -1,10 +1,11 @@
-// Package l7rules L7 访问控制规则引擎：按 URI/请求方法/请求头/Cookie/Query 参数/来源IP/请求体
+// Package l7rules L7 访问控制规则引擎：按 URI/请求域名（Host）/请求方法/请求头/Cookie/Query 参数/来源IP/请求体
 // 以及响应头/响应体组合条件（多条件 AND）分阶段匹配，各阶段按优先级升序首中即停。
 //
 // 配置契约（与管理面发布通道冻结契约一致）：
 //
 //	{"l7_rules":{"rules":[{"id":"uuid","name":"规则名","priority":100,"enabled":true,
 //	  "conditions":[{"type":"uri","op":"prefix","value":"/admin"},
+//	    {"type":"host","op":"eq","value":"jxdr.cn"},
 //	    {"type":"method","values":["GET","POST"]},
 //	    {"type":"header","name":"X-Env","op":"eq","value":"prod"},
 //	    {"type":"cookie","name":"session","op":"exists"},
@@ -12,24 +13,25 @@
 //	    {"type":"client_ip","values":["10.0.0.0/8","192.168.1.5"]}],
 //	  "action":"block",
 //	  "action_config":{"status":403,"message":"访问被拦截","redirect_url":"",
-//	    "redirect_status":302,"content_type":"text/html; charset=utf-8","body":""}}]}}
+//	    "redirect_status":302,"preserve_path_query":false,"content_type":"text/html; charset=utf-8","body":""}}]}}
 //
 // 语义约定：
 //   - 请求阶段与响应阶段分别按 priority 升序，首个 enabled 且条件全中的规则生效；
-//   - 条件 type ∈ uri|method|header|cookie|query|client_ip|request_body|response_header|response_body；
+//   - 条件 type ∈ uri|host|method|header|cookie|query|client_ip|request_body|response_header|response_body；
 //     op ∈ eq|ne|prefix|contains|regex|exists|not_exists|in；
-//   - method 与 client_ip 仅用 values（数组，等价 op=in）；uri 与正文无 name；
+//   - method 与 client_ip 仅用 values（数组，等价 op=in）；uri/host 与正文无 name；
 //     header/cookie/query/response_header 用 name+op+value（in 用 name+values）；
 //   - exists/not_exists 不需要 value；键不存在时一切值比较（含 ne/in）均为不命中；
 //   - 正则使用 RE2（线性时间，防正则拒绝服务），长度 ≤512；
-//   - 大小写：method 不敏感（统一大写比较）；header 名不敏感（RFC 7230 规范形）；
-//     uri/header 值/cookie 名与值/query 名与值均大小写敏感；
+//   - 大小写：method 不敏感（统一大写比较）；host 不敏感且自动忽略可选端口与尾点（小写归一比较）；
+//     header 名不敏感（RFC 7230 规范形）；uri/header 值/cookie 名与值/query 名与值均大小写敏感；
 //   - 编译失败的规则整条拒绝（由调用方记录加载日志），不影响其余规则。
 package l7rules
 
 import (
 	"fmt"
 	"mime"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/textproto"
@@ -77,6 +79,7 @@ const (
 // 条件类型。
 const (
 	condURI            = "uri"
+	condHost           = "host"
 	condMethod         = "method"
 	condHeader         = "header"
 	condCookie         = "cookie"
@@ -119,7 +122,7 @@ type RuleJSON struct {
 
 // ConditionJSON 一个匹配条件。
 type ConditionJSON struct {
-	Type   string   `json:"type"`             // uri|method|header|cookie|query|client_ip|request_body|response_header|response_body
+	Type   string   `json:"type"`             // uri|host|method|header|cookie|query|client_ip|request_body|response_header|response_body
 	Op     string   `json:"op,omitempty"`     // eq|ne|prefix|contains|regex|exists|not_exists|in
 	Name   string   `json:"name,omitempty"`   // header/cookie/query/response_header 参数名
 	Value  string   `json:"value,omitempty"`  // 单值（exists/not_exists 不需要）
@@ -128,12 +131,13 @@ type ConditionJSON struct {
 
 // ActionConfigJSON 动作配置（按动作取对应字段）。
 type ActionConfigJSON struct {
-	Status         int    `json:"status,omitempty"`          // block/custom_page 状态码（block 默认 403，custom_page 默认 200）
-	Message        string `json:"message,omitempty"`         // block 文案
-	RedirectURL    string `json:"redirect_url,omitempty"`    // redirect 目标（仅 http/https）
-	RedirectStatus int    `json:"redirect_status,omitempty"` // redirect 状态码（301/302，默认 302）
-	ContentType    string `json:"content_type,omitempty"`    // custom_page 内容类型
-	Body           string `json:"body,omitempty"`            // custom_page 内容（≤64KB）
+	Status            int    `json:"status,omitempty"`              // block/custom_page 状态码（block 默认 403，custom_page 默认 200）
+	Message           string `json:"message,omitempty"`             // block 文案
+	RedirectURL       string `json:"redirect_url,omitempty"`        // redirect 目标（仅 http/https）
+	RedirectStatus    int    `json:"redirect_status,omitempty"`     // redirect 状态码（301/302，默认 302）
+	PreservePathQuery bool   `json:"preserve_path_query,omitempty"` // redirect 是否保留原请求路径和查询参数
+	ContentType       string `json:"content_type,omitempty"`        // custom_page 内容类型
+	Body              string `json:"body,omitempty"`                // custom_page 内容（≤64KB）
 }
 
 // ---------- 编译结果 ----------
@@ -146,12 +150,53 @@ type RuleError struct {
 
 // ActionConfig 编译后的动作配置（默认值已填充、URL 已校验）。
 type ActionConfig struct {
-	Status         int    // block/custom_page 状态码
-	Message        string // block 文案
-	RedirectURL    string // redirect 目标（scheme 仅 http/https）
-	RedirectStatus int    // redirect 状态码（301/302）
-	ContentType    string // custom_page 内容类型
-	Body           string // custom_page 内容
+	Status            int      // block/custom_page 状态码
+	Message           string   // block 文案
+	RedirectURL       string   // redirect 目标（scheme 仅 http/https）
+	RedirectStatus    int      // redirect 状态码（301/302）
+	PreservePathQuery bool     // redirect 是否保留原请求路径和查询参数
+	redirectBaseURL   *url.URL // compile 期预解析的 redirect 目标
+	ContentType       string   // custom_page 内容类型
+	Body              string   // custom_page 内容
+}
+
+// RedirectTarget 计算最终重定向 Location。
+// 未开启 PreservePathQuery 时原样返回 RedirectURL；开启后将当前请求路径与查询参数拼接到目标 URL，
+// 自动规避首尾斜杠重复（如 https://www.jxdr.cn/ + /news?id=1 → https://www.jxdr.cn/news?id=1），
+// 并剥离查询串中的控制字符防响应头注入。
+func (c ActionConfig) RedirectTarget(reqURL *url.URL) string {
+	if !c.PreservePathQuery || reqURL == nil {
+		return c.RedirectURL
+	}
+	base := c.redirectBaseURL
+	if base == nil {
+		parsed, err := url.Parse(c.RedirectURL)
+		if err != nil {
+			return c.RedirectURL
+		}
+		base = parsed
+	}
+	u := *base
+	basePath := strings.TrimRight(base.Path, "/")
+	baseEscaped := strings.TrimRight(base.EscapedPath(), "/")
+	reqPath := normalizeRedirectPath(reqURL.Path)
+	reqEscaped := normalizeRedirectPath(reqURL.EscapedPath())
+	u.Path = basePath + reqPath
+	joinedEscaped := baseEscaped + reqEscaped
+	if joinedEscaped != u.Path {
+		u.RawPath = joinedEscaped
+	} else {
+		u.RawPath = ""
+	}
+	reqQuery := stripControlChars(reqURL.RawQuery)
+	if reqQuery != "" {
+		if u.RawQuery == "" {
+			u.RawQuery = reqQuery
+		} else {
+			u.RawQuery = u.RawQuery + "&" + reqQuery
+		}
+	}
+	return u.String()
 }
 
 // Decision 一次命中评估结果。
@@ -303,6 +348,9 @@ func compileActionConfig(r RuleJSON) (Action, ActionConfig, error) {
 		if len(in.RedirectURL) > maxRedirectURLLen {
 			return bad("redirect_url too long")
 		}
+		if hasControlChar(in.RedirectURL) {
+			return bad("redirect_url contains control characters")
+		}
 		u, err := url.Parse(in.RedirectURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return bad("redirect_url must be an absolute http(s) URL")
@@ -314,7 +362,12 @@ func compileActionConfig(r RuleJSON) (Action, ActionConfig, error) {
 		if code != http.StatusMovedPermanently && code != http.StatusFound {
 			return bad("redirect_status must be 301 or 302, got %d", code)
 		}
-		return ActionRedirect, ActionConfig{RedirectURL: in.RedirectURL, RedirectStatus: code}, nil
+		return ActionRedirect, ActionConfig{
+			RedirectURL:       in.RedirectURL,
+			RedirectStatus:    code,
+			PreservePathQuery: in.PreservePathQuery,
+			redirectBaseURL:   u,
+		}, nil
 	case ActionCustomPage:
 		status := in.Status
 		if status == 0 {
@@ -432,7 +485,7 @@ func compileCondition(ruleID string, idx int, c ConditionJSON) (condition, error
 		return nil, fmt.Errorf("rule %q: condition[%d]: %s", ruleID, idx, fmt.Sprintf(format, args...))
 	}
 	switch c.Type {
-	case condURI, condHeader, condCookie, condQuery, condRequestBody, condResponseHeader, condResponseBody:
+	case condURI, condHost, condHeader, condCookie, condQuery, condRequestBody, condResponseHeader, condResponseBody:
 		return compileStringCond(fail, c)
 	case condMethod:
 		return compileMethodCond(fail, c)
@@ -443,7 +496,7 @@ func compileCondition(ruleID string, idx int, c ConditionJSON) (condition, error
 	}
 }
 
-// compileStringCond 编译 URI、头、Cookie、Query 与正文字符串条件。
+// compileStringCond 编译 URI、Host、头、Cookie、Query 与正文字符串条件。
 func compileStringCond(fail func(string, ...any) (condition, error), c ConditionJSON) (condition, error) {
 	switch c.Op {
 	case opEq, opNe, opPrefix, opContains, opRegex, opIn, opExists, opNotExists:
@@ -451,7 +504,7 @@ func compileStringCond(fail func(string, ...any) (condition, error), c Condition
 		return fail("unknown op %q", c.Op)
 	}
 	isBody := c.Type == condRequestBody || c.Type == condResponseBody
-	if (c.Type == condURI || isBody) && (c.Op == opExists || c.Op == opNotExists) {
+	if (c.Type == condURI || c.Type == condHost || isBody) && (c.Op == opExists || c.Op == opNotExists) {
 		return fail("%s does not support exists/not_exists", c.Type)
 	}
 	if isBody && c.Op == opIn {
@@ -467,6 +520,16 @@ func compileStringCond(fail func(string, ...any) (condition, error), c Condition
 			return fail("value too long")
 		}
 		target = func(in *evalInput) ([]string, bool) { return []string{in.path}, true }
+	case condHost:
+		if c.Name != "" {
+			return fail("host condition does not support name")
+		}
+		target = func(in *evalInput) ([]string, bool) {
+			if in.host == "" {
+				return nil, false
+			}
+			return []string{in.host}, true
+		}
 	case condHeader, condResponseHeader:
 		if !validToken(c.Name) || len(c.Name) > maxCondNameLen {
 			return fail("invalid header name %q", c.Name)
@@ -533,6 +596,13 @@ func compileStringCond(fail func(string, ...any) (condition, error), c Condition
 		if err != nil {
 			return fail("bad regex: %v", err)
 		}
+		if c.Type == condHost {
+			// Host 匹配大小写不敏感；请求侧已小写归一，正则包一层 (?i:...) 兼容大写字面量模式
+			re, err = regexp.Compile("(?i:" + c.Value + ")")
+			if err != nil {
+				return fail("bad regex: %v", err)
+			}
+		}
 		out.re = re
 	case opIn:
 		if len(c.Values) == 0 || len(c.Values) > maxValuesPerCond {
@@ -543,12 +613,28 @@ func compileStringCond(fail func(string, ...any) (condition, error), c Condition
 			if len(v) > maxCondValueLen {
 				return fail("value too long")
 			}
+			if c.Type == condHost {
+				v = NormalizeHost(v)
+				if v == "" {
+					return fail("host value required")
+				}
+			}
 			set[v] = struct{}{}
 		}
 		out.values = set
 	default:
 		if len(c.Value) > maxCondValueLen {
 			return fail("value too long")
+		}
+		if c.Type == condHost {
+			if c.Op == opEq || c.Op == opNe {
+				out.value = NormalizeHost(c.Value)
+			} else {
+				out.value = strings.ToLower(strings.TrimSpace(c.Value))
+			}
+			if out.value == "" {
+				return fail("host value required")
+			}
 		}
 	}
 	return out, nil
@@ -619,12 +705,106 @@ func hasControl(s string) bool {
 	return false
 }
 
+// hasControlChar 是否含控制字符（含 DEL，不含普通空格）。
+func hasControlChar(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// stripControlChars 剥离控制字符（用于构造安全的 Location 查询串）。
+func stripControlChars(s string) string {
+	if !hasControlChar(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r >= 0x20 && r != 0x7f {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// normalizeRedirectPath 规范化重定向追加路径：空路径补 "/"、非 "/" 开头补前缀、折叠前导 "//" 避免协议相对歧义。
+func normalizeRedirectPath(p string) string {
+	if p == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	for strings.HasPrefix(p, "//") {
+		p = p[1:]
+	}
+	return p
+}
+
+// NormalizeHost 规范化请求域名（Host）：去空白、剥离合法可选端口（含 [v6]:port）、
+// 剥离 IPv6 字面量方括号、转小写并剥离单个 DNS 尾点（如 "JXDR.CN.:443" -> "jxdr.cn"）。
+func NormalizeHost(raw string) string {
+	h := strings.TrimSpace(raw)
+	if h == "" {
+		return ""
+	}
+	if host, port, err := net.SplitHostPort(h); err == nil && isOptionalPort(port) {
+		h = host
+	}
+	if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
+		h = h[1 : len(h)-1]
+	}
+	h = strings.ToLower(h)
+	if len(h) > 1 && strings.HasSuffix(h, ".") && !strings.HasSuffix(h, "..") {
+		h = h[:len(h)-1]
+	}
+	return h
+}
+
+func isOptionalPort(port string) bool {
+	if port == "" {
+		return true
+	}
+	if len(port) > 5 {
+		return false
+	}
+	n := 0
+	for i := 0; i < len(port); i++ {
+		c := port[i]
+		if c < '0' || c > '9' {
+			return false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n >= 1 && n <= 65535
+}
+
+func extractRequestHost(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if r.Host != "" {
+		return r.Host
+	}
+	if h := r.Header.Get("Host"); h != "" {
+		return h
+	}
+	if r.URL != nil {
+		return r.URL.Host
+	}
+	return ""
+}
+
 // ---------- 评估 ----------
 
 // evalInput 单请求预取的条件输入（一次解析，全条件复用）。
 type evalInput struct {
 	method            string              // 大写规范化
 	path              string              // CanonicalPath(r.URL.Path)
+	host              string              // NormalizeHost(r.Host)：小写且已忽略可选端口
 	header            http.Header         // 规范形键
 	cookies           map[string][]string // cookie 名 -> 全部值（防同名多 Cookie 绕过）
 	query             url.Values
@@ -641,6 +821,7 @@ func newEvalInput(r *http.Request, clientIP netip.Addr) *evalInput {
 	in := &evalInput{
 		method:   strings.ToUpper(r.Method),
 		path:     normalizer.CanonicalPath(r.URL.Path),
+		host:     NormalizeHost(extractRequestHost(r)),
 		header:   r.Header,
 		query:    r.URL.Query(),
 		clientIP: clientIP,

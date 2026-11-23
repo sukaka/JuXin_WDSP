@@ -253,7 +253,7 @@ func (g *Guard) executeL7Response(w http.ResponseWriter, r *http.Request, base e
 		ev.FinalDecision = dispo.JSON()
 		g.emit(ev, events.L7RuleBlock, "BLOCK", dec.Config.Status)
 	case l7rules.ActionRedirect:
-		w.Header().Set("Location", dec.Config.RedirectURL)
+		w.Header().Set("Location", dec.Config.RedirectTarget(r.URL))
 		w.Header().Set("X-Jiuzhang-Request-ID", base.RequestID)
 		w.WriteHeader(dec.Config.RedirectStatus)
 		dispo.RecordTerminal(ExecutorL7ACL, DisActionNone, dec.Config.RedirectStatus, true, []string{"L7_RESPONSE_RULE_REDIRECT"}, []string{dec.RuleID})

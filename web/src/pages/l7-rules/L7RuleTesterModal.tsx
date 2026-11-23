@@ -16,6 +16,7 @@ interface KVRow {
 
 interface TesterFormValues {
   uri: string
+  host?: string
   method: string
   client_ip: string
   headers: KVRow[]
@@ -79,6 +80,7 @@ export default function L7RuleTesterModal({ open, onClose }: { open: boolean; on
     mutationFn: (values: TesterFormValues) =>
       l7RulesApi.test({
         uri: values.uri,
+        host: values.host?.trim() || undefined,
         method: values.method,
         client_ip: values.client_ip,
         headers: kvRowsToRecord(values.headers),
@@ -160,6 +162,9 @@ export default function L7RuleTesterModal({ open, onClose }: { open: boolean; on
             <Input placeholder="203.0.113.66" autoComplete="off" />
           </Form.Item>
         </Space.Compact>
+        <Form.Item name="host" label="请求域名（Host）">
+          <Input placeholder="可选，如 jxdr.cn 或 JXDR.CN:443（兼容大小写和可选端口）" autoComplete="off" />
+        </Form.Item>
         <Form.Item label="请求头">
           <KVList name="headers" addText="添加请求头" />
         </Form.Item>
@@ -198,7 +203,19 @@ export default function L7RuleTesterModal({ open, onClose }: { open: boolean; on
               '不命中任何规则，将继续后续检查'
             )
           }
-          description={result.reason || undefined}
+          description={
+            result.matched && result.action === 'redirect' && result.redirect_location ? (
+              <div>
+                {result.reason && <div>{result.reason}</div>}
+                <div>
+                  重定向预览：HTTP {result.redirect_status ?? 302} →{' '}
+                  <Typography.Text code>{result.redirect_location}</Typography.Text>
+                </div>
+              </div>
+            ) : (
+              result.reason || undefined
+            )
+          }
         />
       )}
     </Modal>

@@ -65,14 +65,15 @@ func TestServeNextResponseJSONSensitiveValueObservedWithoutBodyMutation(t *testi
 		if detail.Detector != "sensitive_data" || detail.Category != "OBSERVE" || detail.Severity != "MEDIUM" {
 			t.Fatalf("unexpected response value detail metadata: %+v", detail)
 		}
-		if len(detail.Evidence) != 5 || detail.Evidence["field"] != "result.contacts[].phone" ||
+		if len(detail.Evidence) != 6 || detail.Evidence["field"] != "result.contacts[].phone" ||
 			detail.Evidence["data_type"] != "phone" || detail.Evidence["level"] != "CORE" ||
-			detail.Evidence["location"] != "response_body" || detail.Evidence["direction"] != "RESPONSE" {
+			detail.Evidence["location"] != "response_body" || detail.Evidence["direction"] != "RESPONSE" ||
+			detail.Evidence["masked_sample"] != "138****8000" {
 			t.Fatalf("unexpected response value evidence: %+v", detail.Evidence)
 		}
 		for key, value := range detail.Evidence {
 			switch key {
-			case "field", "data_type", "level", "location", "direction":
+			case "field", "data_type", "level", "location", "direction", "masked_sample":
 			default:
 				t.Fatalf("unexpected evidence key %q: %+v", key, detail.Evidence)
 			}
@@ -128,5 +129,30 @@ func TestServeNextResponseSensitiveValueCaptureBoundaries(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestServeNextStaticCSSWithClientHintProducesNoFalsePositiveOrEvent(t *testing.T) {
+	g, logPath := newAPITestGuard(t, "PROTECT", nil)
+	g.APISensitiveValueRules = responseBodySensitiveGuardRules()
+	next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		_, _ = io.WriteString(w, "body{color:#333}")
+		return nil
+	})
+	req := httptest.NewRequest(http.MethodGet, "/astro/TheFooter.Cyh15Q7R.css", nil)
+	req.Header.Set("Sec-CH-UA-Mobile", "?0")
+	req.Header.Set("Sec-CH-UA-Platform", `"macOS"`)
+	req.Header.Set("Sec-Fetch-Dest", "style")
+	recorder := httptest.NewRecorder()
+	if err := g.serveNext(recorder, req, next); err != nil {
+		t.Fatalf("serveNext: %v", err)
+	}
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "body{color:#333}" {
+		t.Fatalf("static CSS response changed: status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	records := readAPIRecords(t, logPath)
+	if len(records) != 0 {
+		t.Fatalf("static asset with Sec-CH-UA-Mobile must not emit API events, got %+v", records)
 	}
 }

@@ -17,6 +17,7 @@ import (
 // 条件类型（契约一）
 const (
 	CondTypeURI            = "uri"             // 访问 URI（路径部分，不含 query）
+	CondTypeHost           = "host"            // 请求域名（Host，大小写不敏感且自动兼容可选端口）
 	CondTypeMethod         = "method"          // 请求方法（values 数组，等价 op=in）
 	CondTypeHeader         = "header"          // 请求头（name + op + value；名称大小写不敏感）
 	CondTypeCookie         = "cookie"          // Cookie（name + op + value）
@@ -73,7 +74,7 @@ var (
 )
 
 // Condition 是一条匹配条件。method/client_ip 用 Values（数组，等价 op=in）；
-// header/cookie/query/response_header 用 Name+Op+Value；uri/request_body/response_body 无 Name。
+// header/cookie/query/response_header 用 Name+Op+Value；uri/host/request_body/response_body 无 Name。
 type Condition struct {
 	Type   string   `json:"type"`
 	Name   string   `json:"name,omitempty"`
@@ -82,16 +83,17 @@ type Condition struct {
 	Values []string `json:"values,omitempty"`
 }
 
-// ActionConfig 是动作配置。六键全量存储/下发（与契约一一致），按动作取对应字段：
-// block→status+message；allow→无；redirect→redirect_url+redirect_status；
+// ActionConfig 是动作配置。既有六键全量存储/下发（与契约一一致），新增可选字段按需输出：
+// block→status+message；allow→无；redirect→redirect_url+redirect_status(+preserve_path_query)；
 // custom_page→status+content_type+body。
 type ActionConfig struct {
-	Status         int    `json:"status"`
-	Message        string `json:"message"`
-	RedirectURL    string `json:"redirect_url"`
-	RedirectStatus int    `json:"redirect_status"`
-	ContentType    string `json:"content_type"`
-	Body           string `json:"body"`
+	Status            int    `json:"status"`
+	Message           string `json:"message"`
+	RedirectURL       string `json:"redirect_url"`
+	RedirectStatus    int    `json:"redirect_status"`
+	PreservePathQuery bool   `json:"preserve_path_query,omitempty"`
+	ContentType       string `json:"content_type"`
+	Body              string `json:"body"`
 }
 
 // Rule 是一条 L7 访问控制规则。

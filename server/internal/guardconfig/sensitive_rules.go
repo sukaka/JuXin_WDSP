@@ -33,7 +33,7 @@ var _ SensitiveValueRuleLister = (*SensitiveValueRuleStore)(nil)
 // ListEnabledSensitiveValueRules 读取启用且配置值级 regex 的敏感数据类型（按 data_type 稳定排序）。
 func (s *SensitiveValueRuleStore) ListEnabledSensitiveValueRules(ctx context.Context) ([]gatewayconfig.GuardSensitiveValueRule, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT data_type, regex, locations, level
+SELECT data_type, regex, locations, level, exclude_fields
 FROM api_sensitive_data_types
 WHERE status = 'ENABLED' AND regex <> ''
 ORDER BY data_type`)
@@ -44,12 +44,17 @@ ORDER BY data_type`)
 	out := []gatewayconfig.GuardSensitiveValueRule{}
 	for rows.Next() {
 		var r gatewayconfig.GuardSensitiveValueRule
-		var raw []byte
-		if err := rows.Scan(&r.DataType, &r.Regex, &raw, &r.Level); err != nil {
+		var rawLocs, rawExcludes []byte
+		if err := rows.Scan(&r.DataType, &r.Regex, &rawLocs, &r.Level, &rawExcludes); err != nil {
 			return nil, err
 		}
-		if len(raw) > 0 {
-			if err := json.Unmarshal(raw, &r.Locations); err != nil {
+		if len(rawLocs) > 0 {
+			if err := json.Unmarshal(rawLocs, &r.Locations); err != nil {
+				return nil, err
+			}
+		}
+		if len(rawExcludes) > 0 {
+			if err := json.Unmarshal(rawExcludes, &r.ExcludeFields); err != nil {
 				return nil, err
 			}
 		}

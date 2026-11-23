@@ -19,12 +19,13 @@ func toGuardL7Rules(rules []l7rules.Rule) *gatewayconfig.GuardL7Rules {
 			Action:     r.Action,
 			Conditions: make([]gatewayconfig.GuardL7Condition, 0, len(r.Conditions)),
 			ActionConfig: gatewayconfig.GuardL7ActionConfig{
-				Status:         r.ActionConfig.Status,
-				Message:        r.ActionConfig.Message,
-				RedirectURL:    r.ActionConfig.RedirectURL,
-				RedirectStatus: r.ActionConfig.RedirectStatus,
-				ContentType:    r.ActionConfig.ContentType,
-				Body:           r.ActionConfig.Body,
+				Status:            r.ActionConfig.Status,
+				Message:           r.ActionConfig.Message,
+				RedirectURL:       r.ActionConfig.RedirectURL,
+				RedirectStatus:    r.ActionConfig.RedirectStatus,
+				PreservePathQuery: r.ActionConfig.PreservePathQuery,
+				ContentType:       r.ActionConfig.ContentType,
+				Body:              r.ActionConfig.Body,
 			},
 		}
 		for _, c := range r.Conditions {

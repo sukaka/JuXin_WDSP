@@ -154,6 +154,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 // testRequest 是规则测试器输入。
 type testRequest struct {
 	URI             string            `json:"uri"`
+	Host            string            `json:"host"`
 	Method          string            `json:"method"`
 	Headers         map[string]string `json:"headers"`
 	Cookies         map[string]string `json:"cookies"`
@@ -165,7 +166,7 @@ type testRequest struct {
 }
 
 // Test 规则测试器：以当前规则集（含停用，评估时跳过）纯函数评估输入，
-// 不产生真实流量、不写事件。返回 {matched, rule_id, rule_name, action, reason}。
+// 不产生真实流量、不写事件。返回 {matched, rule_id, rule_name, action, reason}（redirect 附带跳转预览）。
 func (h *Handler) Test(w http.ResponseWriter, r *http.Request) {
 	var req testRequest
 	if err := response.DecodeJSON(w, r, &req, 128*1024); err != nil {
@@ -188,6 +189,7 @@ func (h *Handler) Test(w http.ResponseWriter, r *http.Request) {
 	}
 	result := ev.Eval(Input{
 		URI:             req.URI,
+		Host:            req.Host,
 		Method:          req.Method,
 		Headers:         req.Headers,
 		Cookies:         req.Cookies,
@@ -208,11 +210,15 @@ func (h *Handler) Test(w http.ResponseWriter, r *http.Request) {
 		out["rule_id"] = result.Rule.ID.String()
 		out["rule_name"] = result.Rule.Name
 		out["action"] = result.Rule.Action
+		if result.Rule.Action == ActionRedirect {
+			out["redirect_status"] = result.RedirectStatus
+			out["redirect_location"] = result.RedirectLocation
+		}
 	}
 	response.JSON(w, r, http.StatusOK, out)
 }
 
-// validateTestInput 校验测试器输入（URI 以 / 开头、方法白名单、IP 合法、键值不含控制字符）。
+// validateTestInput 校验测试器输入（URI 以 / 开头、Host 合法、方法白名单、IP 合法、键值不含控制字符）。
 func validateTestInput(req *testRequest) error {
 	req.URI = strings.TrimSpace(req.URI)
 	if req.URI == "" || req.URI[0] != '/' {
@@ -223,6 +229,10 @@ func validateTestInput(req *testRequest) error {
 	}
 	if hasControlChar(req.URI) {
 		return fmt.Errorf("URI含控制字符")
+	}
+	req.Host = strings.TrimSpace(req.Host)
+	if len(req.Host) > MaxCondValueLen || hasControlChar(req.Host) {
+		return fmt.Errorf("请求域名（Host）非法（长度超限或含控制字符）")
 	}
 	if req.Method != "" && !validMethods[strings.ToUpper(strings.TrimSpace(req.Method))] {
 		return fmt.Errorf("无效的请求方法: %s", req.Method)

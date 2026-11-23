@@ -373,10 +373,26 @@ func (h *Handler) ExportTypes(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// importTypeRequest 导入单条类型请求：在 typeRequest 基础上额外接受并忽略导出文档中的
+// 服务端元数据字段（id/version/is_builtin/created_at/updated_at），同时仍通过
+// DisallowUnknownFields 拒绝真正的未知字段。
+type importTypeRequest struct {
+	typeRequest
+	ID        json.RawMessage `json:"id"`
+	Version   json.RawMessage `json:"version"`
+	IsBuiltin json.RawMessage `json:"is_builtin"`
+	CreatedAt json.RawMessage `json:"created_at"`
+	UpdatedAt json.RawMessage `json:"updated_at"`
+}
+
 // importTypesRequest 导入请求（与导出格式对称；仅 types 字段被读取，
-// 条目的 id/version/is_builtin/时间戳一律忽略，由服务端重新授予）。
+// 顶层导出元数据 format/version/exported_at 与条目的 id/version/is_builtin/时间戳
+// 一律忽略，由服务端重新授予）。
 type importTypesRequest struct {
-	Types []typeRequest `json:"types"`
+	Format     json.RawMessage     `json:"format"`
+	Version    json.RawMessage     `json:"version"`
+	ExportedAt json.RawMessage     `json:"exported_at"`
+	Types      []importTypeRequest `json:"types"`
 }
 
 // ImportTypes POST /api/v1/api-security/sensitive-types/import
@@ -401,7 +417,7 @@ func (h *Handler) ImportTypes(w http.ResponseWriter, r *http.Request) {
 	items := make([]SensitiveDataType, 0, len(req.Types))
 	seen := map[string]bool{}
 	for i := range req.Types {
-		item := &req.Types[i]
+		item := &req.Types[i].typeRequest
 		item.normalize()
 		t := item.toType()
 		if err := validateType(t); err != nil {

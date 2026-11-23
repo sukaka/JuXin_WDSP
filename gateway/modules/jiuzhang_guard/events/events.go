@@ -17,6 +17,7 @@ type Type string
 
 const (
 	IPAllowMatch           Type = "IP_ALLOW_MATCH"
+	URLAllowMatch          Type = "URL_ALLOW_MATCH"
 	IPDenyMatch            Type = "IP_DENY_MATCH"
 	IdentityManualBlock    Type = "IDENTITY_MANUAL_BLOCK"
 	CCThresholdExceeded    Type = "CC_THRESHOLD_EXCEEDED"

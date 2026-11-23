@@ -39,6 +39,7 @@ const fieldNameHit = {
   first_seen: '2026-08-01T10:00:00Z',
   last_seen: '2026-08-20T09:00:00Z',
   source_detail: { location: 'query', rule_id: 'sensitive.in_query', event_id: 'ev-1', data_type: 'phone' },
+  masked_sample: '',
   created_at: '2026-08-01T10:00:00Z',
   updated_at: '2026-08-20T09:00:00Z',
 }
@@ -49,7 +50,14 @@ const fieldValueHit = {
   structured_path: 'json.contact',
   confidence: 1.0,
   occurrence_count: 1,
-  source_detail: { location: 'json', rule_id: 'sensitive.value', event_id: 'ev-2', data_type: 'phone' },
+  source_detail: {
+    location: 'json',
+    rule_id: 'sensitive.value',
+    event_id: 'ev-2',
+    data_type: 'phone',
+    masked_sample: '138****8000',
+  },
+  masked_sample: '138****8000',
 }
 
 const listData = { items: [fieldNameHit, fieldValueHit], page: 1, page_size: 20, total: 2 }
@@ -88,16 +96,18 @@ describe('ApiSensitiveFieldsPage', () => {
     vi.unstubAllGlobals()
   })
 
-  it('列表展示接口键、置信度百分比与命中次数', async () => {
+  it('列表展示接口键、脱敏样本、置信度百分比与命中次数', async () => {
     useAuthStore.setState({ user: makeUser(['api_runtime.read']), csrfToken: null, initialized: true })
     renderPage()
     expect((await screen.findAllByText('POST /v1/orders')).length).toBeGreaterThan(0)
+    expect(screen.getByText('138****8000')).toBeInTheDocument()
+    expect(screen.getByText('仅字段名识别')).toBeInTheDocument()
     expect(screen.getByText('80%')).toBeInTheDocument()
     expect(screen.getByText('100%')).toBeInTheDocument()
     expect(screen.getByText('3')).toBeInTheDocument()
   })
 
-  it('点击详情打开抽屉并展示完整字段', async () => {
+  it('点击详情打开抽屉并展示完整字段与脱敏样本', async () => {
     useAuthStore.setState({ user: makeUser(['api_runtime.read']), csrfToken: null, initialized: true })
     renderPage()
     const detailButtons = await screen.findAllByRole('button', { name: '详情' })
@@ -105,12 +115,19 @@ describe('ApiSensitiveFieldsPage', () => {
     const drawer = await screen.findByRole('dialog')
     expect(within(drawer).getByText('敏感字段详情')).toBeInTheDocument()
     expect(within(drawer).getByText('query.phone')).toBeInTheDocument()
+    expect(within(drawer).getByText('仅字段名识别，暂无值级脱敏样本')).toBeInTheDocument()
     expect(within(drawer).getByText('sensitive.in_query')).toBeInTheDocument()
     expect(within(drawer).getByText('运行时识别')).toBeInTheDocument()
     expect(within(drawer).getByText('查询参数')).toBeInTheDocument()
     expect(within(drawer).getByText('ev-1')).toBeInTheDocument()
     expect(within(drawer).getByText('累计命中')).toBeInTheDocument()
     expect(within(drawer).getByText('首次发现')).toBeInTheDocument()
+
+    // 切换查看值级命中记录：展示脱敏样本（中间位脱敏）
+    fireEvent.click(detailButtons[1])
+    expect(within(drawer).getByText('json.contact')).toBeInTheDocument()
+    expect(within(drawer).getByText('138****8000')).toBeInTheDocument()
+    expect(within(drawer).getByText(/保留最新 1 条值级命中样本/)).toBeInTheDocument()
   })
 
   it('无 api_data.manage 权限：不显示勾选列与批量删除按钮', async () => {

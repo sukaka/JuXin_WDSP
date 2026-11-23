@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 )
 
 const (
@@ -159,6 +161,17 @@ func (g *Guard) authenticatedPublishSmokeBinding(r *http.Request, now time.Time)
 		return publishSmokeBinding{}, false
 	}
 	return b, true
+}
+
+// isAuthenticatedPublishSmoke 判断当前请求是否为携带有效当次发布 HMAC 的精确冒烟探针。
+// 仅在路径严格等于 publishSmokePath、方法为 GET 且 HMAC 鉴权通过时返回 true，
+// 用于在 L7 域名重定向等全局规则前放行内部冒烟探针（探针仍会经过真实 IP、黑名单与 CC，且绝不反代源站）。
+func (g *Guard) isAuthenticatedPublishSmoke(r *http.Request, now time.Time) bool {
+	if r.Method != http.MethodGet || normalizer.CanonicalPath(r.URL.Path) != publishSmokePath {
+		return false
+	}
+	_, ok := g.authenticatedPublishSmokeBinding(r, now)
+	return ok
 }
 
 // servePublishSmoke 本地处理精确内部端点；认证失败与未配置同样返回无认证信息的

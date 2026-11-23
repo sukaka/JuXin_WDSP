@@ -684,7 +684,7 @@ func condCoversVerify(c l7rules.Condition) condVerdict {
 		}
 		return verdictNoMatch
 	default:
-		// header/cookie/query/client_ip 依赖请求现场，无法静态判定
+		// host/header/cookie/query/client_ip 依赖请求现场，无法静态判定
 		return verdictUnknown
 	}
 }

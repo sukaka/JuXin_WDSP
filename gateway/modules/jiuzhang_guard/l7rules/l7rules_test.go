@@ -81,6 +81,53 @@ func TestURIConditions(t *testing.T) {
 	}
 }
 
+func TestHostConditions(t *testing.T) {
+	cases := []struct {
+		name       string
+		cond       ConditionJSON
+		host       string
+		headerHost string
+		want       bool
+	}{
+		{"eq裸域精确命中", ConditionJSON{Type: "host", Op: "eq", Value: "jxdr.cn"}, "jxdr.cn", "", true},
+		{"eq兼容大写", ConditionJSON{Type: "host", Op: "eq", Value: "jxdr.cn"}, "JXDR.CN", "", true},
+		{"eq兼容混合大小写与443端口", ConditionJSON{Type: "host", Op: "eq", Value: "jxdr.cn"}, "JxDr.Cn:443", "", true},
+		{"eq兼容80端口", ConditionJSON{Type: "host", Op: "eq", Value: "jxdr.cn"}, "jxdr.cn:80", "", true},
+		{"eq兼容自定义端口", ConditionJSON{Type: "host", Op: "eq", Value: "jxdr.cn"}, "jxdr.cn:8443", "", true},
+		{"eq兼容FQDN尾点与端口", ConditionJSON{Type: "host", Op: "eq", Value: "jxdr.cn"}, "JXDR.CN.:443", "", true},
+		{"eq配置值大小写与端口归一", ConditionJSON{Type: "host", Op: "eq", Value: "JXDR.CN:443"}, "jxdr.cn", "", true},
+		{"eq不命中www子域", ConditionJSON{Type: "host", Op: "eq", Value: "jxdr.cn"}, "www.jxdr.cn", "", false},
+		{"eq不命中前缀相似域名", ConditionJSON{Type: "host", Op: "eq", Value: "jxdr.cn"}, "evil-jxdr.cn", "", false},
+		{"eq不命中后缀拼接域名", ConditionJSON{Type: "host", Op: "eq", Value: "jxdr.cn"}, "jxdr.cn.evil.com", "", false},
+		{"eq不命中非法越界端口", ConditionJSON{Type: "host", Op: "eq", Value: "jxdr.cn"}, "jxdr.cn:99999", "", false},
+		{"eq兼容IPv6带端口", ConditionJSON{Type: "host", Op: "eq", Value: "::1"}, "[::1]:8443", "", true},
+		{"eq回退Header中的Host", ConditionJSON{Type: "host", Op: "eq", Value: "jxdr.cn"}, "", "JXDR.CN:443", true},
+		{"ne命中其他域名", ConditionJSON{Type: "host", Op: "ne", Value: "jxdr.cn"}, "www.jxdr.cn:443", "", true},
+		{"ne不命中同域名大写带端口", ConditionJSON{Type: "host", Op: "ne", Value: "jxdr.cn"}, "JXDR.CN:443", "", false},
+		{"ne空Host不命中", ConditionJSON{Type: "host", Op: "ne", Value: "jxdr.cn"}, "", "", false},
+		{"prefix兼容大小写与端口", ConditionJSON{Type: "host", Op: "prefix", Value: "API."}, "api.jxdr.cn:443", "", true},
+		{"contains兼容大小写与端口", ConditionJSON{Type: "host", Op: "contains", Value: "JXDR.CN"}, "www.jxdr.cn:8443", "", true},
+		{"regex兼容大小写与端口", ConditionJSON{Type: "host", Op: "regex", Value: `^(www\.)?JXDR\.CN$`}, "JXDR.CN:443", "", true},
+		{"regex不命中其他域", ConditionJSON{Type: "host", Op: "regex", Value: `^jxdr\.cn$`}, "www.jxdr.cn", "", false},
+		{"in命中", ConditionJSON{Type: "host", Op: "in", Values: []string{"JXDR.CN", "example.com"}}, "jxdr.cn:443", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := mustCompile(t, &Config{Rules: []RuleJSON{allowRule("r1", 1, tc.cond)}})
+			r := newReq(t, "GET", "/news?id=1")
+			r.Host = tc.host
+			r.URL.Host = ""
+			if tc.headerHost != "" {
+				r.Header.Set("Host", tc.headerHost)
+			}
+			_, got := evalOnce(t, eng, r, "192.168.1.5")
+			if got != tc.want {
+				t.Fatalf("host=%q header=%q want %v, got %v", tc.host, tc.headerHost, tc.want, got)
+			}
+		})
+	}
+}
+
 func TestMethodCondition(t *testing.T) {
 	eng := mustCompile(t, &Config{Rules: []RuleJSON{
 		allowRule("r1", 1, ConditionJSON{Type: "method", Values: []string{"GET", "post"}}),
@@ -325,6 +372,9 @@ func TestCompileRejections(t *testing.T) {
 		{"未知类型", RuleJSON{ID: "r", Priority: 1, Enabled: true, Action: "allow", Conditions: []ConditionJSON{{Type: "body", Op: "eq", Value: "x"}}}},
 		{"未知op", RuleJSON{ID: "r", Priority: 1, Enabled: true, Action: "allow", Conditions: []ConditionJSON{{Type: "uri", Op: "glob", Value: "x"}}}},
 		{"uri不支持exists", RuleJSON{ID: "r", Priority: 1, Enabled: true, Action: "allow", Conditions: []ConditionJSON{{Type: "uri", Op: "exists"}}}},
+		{"host不支持exists", RuleJSON{ID: "r", Priority: 1, Enabled: true, Action: "allow", Conditions: []ConditionJSON{{Type: "host", Op: "exists"}}}},
+		{"host不支持name", RuleJSON{ID: "r", Priority: 1, Enabled: true, Action: "allow", Conditions: []ConditionJSON{{Type: "host", Name: "Host", Op: "eq", Value: "jxdr.cn"}}}},
+		{"host空值拒绝", RuleJSON{ID: "r", Priority: 1, Enabled: true, Action: "allow", Conditions: []ConditionJSON{{Type: "host", Op: "eq", Value: "   "}}}},
 		{"坏正则", RuleJSON{ID: "r", Priority: 1, Enabled: true, Action: "allow", Conditions: []ConditionJSON{{Type: "uri", Op: "regex", Value: "([a-z"}}}},
 		{"正则超长", RuleJSON{ID: "r", Priority: 1, Enabled: true, Action: "allow", Conditions: []ConditionJSON{{Type: "uri", Op: "regex", Value: strings.Repeat("a", 513)}}}},
 		{"header名非法", RuleJSON{ID: "r", Priority: 1, Enabled: true, Action: "allow", Conditions: []ConditionJSON{{Type: "header", Name: "X Bad", Op: "exists"}}}},
@@ -341,6 +391,7 @@ func TestCompileRejections(t *testing.T) {
 		{"redirect非http", RuleJSON{ID: "r", Priority: 1, Enabled: true, Conditions: validConds, Action: "redirect", ActionConfig: ActionConfigJSON{RedirectURL: "javascript:alert(1)"}}},
 		{"redirect相对路径", RuleJSON{ID: "r", Priority: 1, Enabled: true, Conditions: validConds, Action: "redirect", ActionConfig: ActionConfigJSON{RedirectURL: "/login"}}},
 		{"redirect状态码非法", RuleJSON{ID: "r", Priority: 1, Enabled: true, Conditions: validConds, Action: "redirect", ActionConfig: ActionConfigJSON{RedirectURL: "https://a.com/", RedirectStatus: 303}}},
+		{"redirect含控制字符", RuleJSON{ID: "r", Priority: 1, Enabled: true, Conditions: validConds, Action: "redirect", ActionConfig: ActionConfigJSON{RedirectURL: "https://a.com/\r\nX: 1", RedirectStatus: 301}}},
 		{"custom超限", RuleJSON{ID: "r", Priority: 1, Enabled: true, Conditions: validConds, Action: "custom_page", ActionConfig: ActionConfigJSON{Body: strings.Repeat("x", 64*1024+1)}}},
 		{"custom坏contenttype", RuleJSON{ID: "r", Priority: 1, Enabled: true, Conditions: validConds, Action: "custom_page", ActionConfig: ActionConfigJSON{ContentType: "not a type"}}},
 		{"custom状态码越界", RuleJSON{ID: "r", Priority: 1, Enabled: true, Conditions: validConds, Action: "custom_page", ActionConfig: ActionConfigJSON{Status: 100}}},
@@ -434,5 +485,119 @@ func TestDecisionCarriesRuleMeta(t *testing.T) {
 	dec, ok := evalOnce(t, eng, newReq(t, "GET", "/admin"), "192.168.1.5")
 	if !ok || dec.RuleID != "uuid-1" || dec.RuleName != "管理后台拦截" {
 		t.Fatalf("决策元数据: %+v ok=%v", dec, ok)
+	}
+}
+
+func TestRedirectTargetPreservePathQuery(t *testing.T) {
+	cases := []struct {
+		name     string
+		target   string
+		preserve bool
+		reqURI   string
+		rawPath  string
+		rawQuery string
+		want     string
+	}{
+		{
+			name:     "裸域跳www保留路径和查询参数",
+			target:   "https://www.jxdr.cn",
+			preserve: true,
+			reqURI:   "/news?id=1",
+			want:     "https://www.jxdr.cn/news?id=1",
+		},
+		{
+			name:     "未开启保留时返回固定目标",
+			target:   "https://www.jxdr.cn",
+			preserve: false,
+			reqURI:   "/news?id=1",
+			want:     "https://www.jxdr.cn",
+		},
+		{
+			name:     "目标带尾斜杠不产生双斜杠",
+			target:   "https://www.jxdr.cn/",
+			preserve: true,
+			reqURI:   "/news?id=1&lang=zh",
+			want:     "https://www.jxdr.cn/news?id=1&lang=zh",
+		},
+		{
+			name:     "根路径跳转",
+			target:   "https://www.jxdr.cn",
+			preserve: true,
+			reqURI:   "/",
+			want:     "https://www.jxdr.cn/",
+		},
+		{
+			name:     "目标带基础路径前缀拼接原路径",
+			target:   "https://www.jxdr.cn/portal/",
+			preserve: true,
+			reqURI:   "/news?id=1",
+			want:     "https://www.jxdr.cn/portal/news?id=1",
+		},
+		{
+			name:     "目标自带查询参数与原查询合并",
+			target:   "https://www.jxdr.cn?from=apex",
+			preserve: true,
+			reqURI:   "/news?id=1",
+			want:     "https://www.jxdr.cn/news?from=apex&id=1",
+		},
+		{
+			name:     "目标带非默认端口",
+			target:   "https://www.jxdr.cn:8443",
+			preserve: true,
+			reqURI:   "/news?id=1",
+			want:     "https://www.jxdr.cn:8443/news?id=1",
+		},
+		{
+			name:     "保留百分号编码路径",
+			target:   "https://www.jxdr.cn",
+			preserve: true,
+			reqURI:   "/news/a/b?id=1",
+			rawPath:  "/news/a%2Fb",
+			want:     "https://www.jxdr.cn/news/a%2Fb?id=1",
+		},
+		{
+			name:     "折叠前导双斜杠防协议相对歧义",
+			target:   "https://www.jxdr.cn",
+			preserve: true,
+			reqURI:   "//evil.com/x?id=1",
+			want:     "https://www.jxdr.cn/evil.com/x?id=1",
+		},
+		{
+			name:     "剥离查询串中的CRLF控制字符",
+			target:   "https://www.jxdr.cn",
+			preserve: true,
+			reqURI:   "/news",
+			rawQuery: "id=1\r\nX-Injected: 1",
+			want:     "https://www.jxdr.cn/news?id=1X-Injected: 1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := mustCompile(t, &Config{Rules: []RuleJSON{{
+				ID: "redir", Name: "重定向", Priority: 10, Enabled: true,
+				Conditions: []ConditionJSON{{Type: "host", Op: "eq", Value: "jxdr.cn"}},
+				Action:     "redirect",
+				ActionConfig: ActionConfigJSON{
+					RedirectURL:       tc.target,
+					RedirectStatus:    301,
+					PreservePathQuery: tc.preserve,
+				},
+			}}})
+			r := httptest.NewRequest("GET", "https://jxdr.cn"+tc.reqURI, nil)
+			if tc.rawPath != "" {
+				r.URL.RawPath = tc.rawPath
+			}
+			if tc.rawQuery != "" {
+				r.URL.RawQuery = tc.rawQuery
+			}
+			dec, ok := evalOnce(t, eng, r, "192.168.1.5")
+			if !ok {
+				t.Fatal("host 条件应命中")
+			}
+			got := dec.Config.RedirectTarget(r.URL)
+			if got != tc.want {
+				t.Fatalf("RedirectTarget = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

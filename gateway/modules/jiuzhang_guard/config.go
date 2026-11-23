@@ -26,6 +26,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/l7rules"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/riskengine"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/trustedproxy"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/urlwhitelist"
 	"go.uber.org/zap"
 )
 
@@ -45,6 +46,16 @@ type ruleJSON struct {
 	Priority       int    `json:"priority"`
 	EffectiveFrom  string `json:"effective_from,omitempty"`
 	EffectiveUntil string `json:"effective_until,omitempty"`
+}
+
+type urlAllowRuleJSON struct {
+	ID             string   `json:"id"`
+	MatchType      string   `json:"match_type"`
+	URIPattern     string   `json:"uri_pattern"`
+	Methods        []string `json:"methods,omitempty"`
+	Priority       int      `json:"priority"`
+	EffectiveFrom  string   `json:"effective_from,omitempty"`
+	EffectiveUntil string   `json:"effective_until,omitempty"`
 }
 
 type policyJSON struct {
@@ -144,10 +155,12 @@ type Guard struct {
 	ProtectedAddresses []string `json:"protected_addresses,omitempty"`
 
 	// 黑白名单（本路由应用视角：全局 + 本应用）
-	GlobalAllow []ruleJSON `json:"global_allow,omitempty"`
-	GlobalDeny  []ruleJSON `json:"global_deny,omitempty"`
-	AppAllow    []ruleJSON `json:"app_allow,omitempty"`
-	AppDeny     []ruleJSON `json:"app_deny,omitempty"`
+	GlobalAllow    []ruleJSON         `json:"global_allow,omitempty"`
+	GlobalDeny     []ruleJSON         `json:"global_deny,omitempty"`
+	AppAllow       []ruleJSON         `json:"app_allow,omitempty"`
+	AppDeny        []ruleJSON         `json:"app_deny,omitempty"`
+	GlobalURLAllow []urlAllowRuleJSON `json:"global_url_allow,omitempty"`
+	AppURLAllow    []urlAllowRuleJSON `json:"app_url_allow,omitempty"`
 
 	// CC 策略（全局 + 本应用，发布时已过滤）
 	RateLimits []policyJSON `json:"rate_limits,omitempty"`
@@ -465,6 +478,8 @@ type Guard struct {
 	allowA         *accesscontrol.RuleSet
 	denyG          *accesscontrol.RuleSet
 	denyA          *accesscontrol.RuleSet
+	urlAllowG      *urlwhitelist.RuleSet
+	urlAllowA      *urlwhitelist.RuleSet
 	policies       []*compiledPolicy
 	l7             *l7rules.Engine // L7 访问控制编译结果（nil = 未配置）
 	events         *events.Logger

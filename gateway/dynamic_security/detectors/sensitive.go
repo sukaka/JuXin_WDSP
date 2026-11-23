@@ -58,18 +58,20 @@ const maxSensitiveValueRegexLen = 512
 // Locations 词表与管理面一致（query/json/form/xml/header/cookie/path/response_body），
 // 请求侧仅消费 query/json/form/header/path，其余位置过滤后忽略。
 type SensitiveValueRule struct {
-	DataType  string   `json:"data_type"`
-	Regex     string   `json:"regex"`
-	Locations []string `json:"locations"`
-	Level     string   `json:"level"` // 敏感等级（NON_SENSITIVE/GENERAL/SENSITIVE/IMPORTANT/CORE），证据透传
+	DataType      string   `json:"data_type"`
+	Regex         string   `json:"regex"`
+	Locations     []string `json:"locations"`
+	Level         string   `json:"level"`                    // 敏感等级（NON_SENSITIVE/GENERAL/SENSITIVE/IMPORTANT/CORE），证据透传
+	ExcludeFields []string `json:"exclude_fields,omitempty"` // 排除字段名（小写匹配完整路径或末段名）
 }
 
 // CompiledSensitiveValueRule 编译后的值级规则（opaque，由请求侧或响应侧编译入口产出）。
 type CompiledSensitiveValueRule struct {
-	dataType  string
-	level     string
-	locations map[string]bool // 已过滤为对应方向支持的位置
-	re        *regexp.Regexp
+	dataType      string
+	level         string
+	locations     map[string]bool // 已过滤为对应方向支持的位置
+	excludeFields map[string]bool // 排除字段名（小写）
+	re            *regexp.Regexp
 }
 
 // sensitiveValueRequestLocations 请求侧值级检测支持的位置词表
@@ -118,6 +120,13 @@ func sensitiveValueRulesCacheKey(in []SensitiveValueRule) string {
 			b.WriteByte(',')
 			b.WriteString(strconv.Quote(loc))
 		}
+		if len(r.ExcludeFields) > 0 {
+			b.WriteByte('|')
+			for _, ex := range r.ExcludeFields {
+				b.WriteByte(',')
+				b.WriteString(strconv.Quote(ex))
+			}
+		}
 		b.WriteByte(';')
 	}
 	return b.String()
@@ -155,8 +164,17 @@ func compileSensitiveValueRulesForLocations(in []SensitiveValueRule, supportedLo
 		if len(locs) == 0 {
 			continue // 无当前方向可用位置：跳过该条
 		}
+		var excludes map[string]bool
+		if len(r.ExcludeFields) > 0 {
+			excludes = make(map[string]bool, len(r.ExcludeFields))
+			for _, ex := range r.ExcludeFields {
+				if norm := strings.ToLower(strings.TrimSpace(ex)); norm != "" {
+					excludes[norm] = true
+				}
+			}
+		}
 		out = append(out, CompiledSensitiveValueRule{
-			dataType: r.DataType, level: r.Level, locations: locs, re: re,
+			dataType: r.DataType, level: r.Level, locations: locs, excludeFields: excludes, re: re,
 		})
 	}
 	return out, nil
@@ -223,11 +241,11 @@ func CheckSensitiveData(ctx *dsctx.RequestContext, p *parser.Parsed, patterns []
 	}
 	n := 0
 	// Query 优先（高危，URL 明文）
-	for k := range p.Query {
+	for _, k := range sortedKeys(p.Query) {
 		if n >= maxSensitiveMatches {
 			return
 		}
-		if typ, ok := matchSensitive(k, patterns); ok {
+		if typ, ok := matchSensitive(k, patterns); ok && !IsSensitiveFieldExcluded(k, typ, valueRules) {
 			ctx.AddMatch(dsctx.DetectorMatch{
 				Detector: "sensitive_data",
 				RuleID:   "sensitive.in_query",
@@ -244,15 +262,15 @@ func CheckSensitiveData(ctx *dsctx.RequestContext, p *parser.Parsed, patterns []
 			n++
 		}
 	}
-	n += scanFieldNames(ctx, p.JSONFields, "json", patterns, maxSensitiveMatches-n)
+	n += scanFieldNames(ctx, p.JSONFields, "json", patterns, valueRules, maxSensitiveMatches-n)
 	if n >= maxSensitiveMatches {
 		return
 	}
-	n += scanFieldNames(ctx, p.FormFields, "form", patterns, maxSensitiveMatches-n)
+	n += scanFieldNames(ctx, p.FormFields, "form", patterns, valueRules, maxSensitiveMatches-n)
 	if n >= maxSensitiveMatches {
 		return
 	}
-	n += scanFieldNames(ctx, p.XMLFields, "xml", patterns, maxSensitiveMatches-n)
+	n += scanFieldNames(ctx, p.XMLFields, "xml", patterns, valueRules, maxSensitiveMatches-n)
 	// 值级检测与 HEADER/PATH 位置扩展：仅随发布通道值级规则开启（无规则下发时零行为变化）
 	if len(valueRules) > 0 {
 		scanValueLevel(ctx, p, patterns, valueRules, maxSensitiveMatches-n)
@@ -260,9 +278,9 @@ func CheckSensitiveData(ctx *dsctx.RequestContext, p *parser.Parsed, patterns []
 }
 
 // scanValueLevel 值级敏感检测：对 QUERY/FORM/JSON_BODY 留存值做 regex 匹配，
-// 并扩展 HEADER（仅非脱敏头；cookie 整头脱敏跳过）与 PATH 段的字段名/值级匹配。
+// 并扩展 HEADER（仅非脱敏且非标准协议头；cookie 整头脱敏跳过）与 PATH 段的字段名/值级匹配。
 // 命中产 OBSERVE 明细（QUERY 位置值命中升级 BLOCK 类，与 sensitive.in_query 同一语义）；
-// 证据只含 data_type/location/字段名/等级，绝不落值。budget 为剩余 match 上限。
+// 证据含 data_type/location/字段名/等级及网关内存脱敏后的 masked_sample，绝不落原始明文。budget 为剩余 match 上限。
 func scanValueLevel(ctx *dsctx.RequestContext, p *parser.Parsed, patterns []CompiledSensitivePattern, rules []CompiledSensitiveValueRule, budget int) {
 	if budget <= 0 {
 		return
@@ -275,9 +293,9 @@ func scanValueLevel(ctx *dsctx.RequestContext, p *parser.Parsed, patterns []Comp
 		if budget <= 0 || scans >= maxSensitiveValueScans {
 			return
 		}
-		if r, ok := matchValueRules(v, "query", rules, &scans); ok {
+		if r, matched, ok := matchValueRulesWithSample(v, "query", k, rules, &scans); ok {
 			addValueMatch(ctx, "sensitive.value_in_query", "BLOCK", "HIGH", 40,
-				"sensitive value in url query", k, "query", r)
+				"sensitive value in url query", k, "query", r, matched)
 			budget--
 		}
 	}
@@ -287,9 +305,9 @@ func scanValueLevel(ctx *dsctx.RequestContext, p *parser.Parsed, patterns []Comp
 		if budget <= 0 || scans >= maxSensitiveValueScans {
 			return
 		}
-		if r, ok := matchValueRules(v, "json", rules, &scans); ok {
+		if r, matched, ok := matchValueRulesWithSample(v, "json", k, rules, &scans); ok {
 			addValueMatch(ctx, "sensitive.value", "OBSERVE", "MEDIUM", 15,
-				"sensitive value observed", k, "json", r)
+				"sensitive value observed", k, "json", r, matched)
 			budget--
 		}
 	}
@@ -298,15 +316,16 @@ func scanValueLevel(ctx *dsctx.RequestContext, p *parser.Parsed, patterns []Comp
 		if budget <= 0 || scans >= maxSensitiveValueScans {
 			return
 		}
-		if r, ok := matchValueRules(v, "form", rules, &scans); ok {
+		if r, matched, ok := matchValueRulesWithSample(v, "form", k, rules, &scans); ok {
 			addValueMatch(ctx, "sensitive.value", "OBSERVE", "MEDIUM", 15,
-				"sensitive value observed", k, "form", r)
+				"sensitive value observed", k, "form", r, matched)
 			budget--
 		}
 	}
-	// HEADER 位置扩展（仅非脱敏头做字段名/值级匹配；cookie 整头脱敏，跳过并注释说明）：
+	// HEADER 位置扩展（仅非脱敏头做字段名/值级匹配；cookie 整头脱敏、标准协议头跳过字段名匹配）：
 	// authorization/cookie/x-api-key 在 parser 层已脱敏为 "[redacted]" 占位，值不可检；
-	// 其中 cookie 头为名值混杂整体，连字段名级匹配也跳过，避免占位名误命中。
+	// 其中 cookie 头为名值混杂整体，连字段名级匹配也跳过，避免占位名误命中；
+	// Sec-CH-UA-Mobile 等标准浏览器/HTTP 协议头跳过字段名匹配，避免被 mobile 等词根误判。
 	for _, name := range sortedKeys(p.Headers) {
 		v := p.Headers[name]
 		if budget <= 0 || scans >= maxSensitiveValueScans {
@@ -318,28 +337,30 @@ func scanValueLevel(ctx *dsctx.RequestContext, p *parser.Parsed, patterns []Comp
 		if v == "[redacted]" {
 			continue // 脱敏头仅保留存在性，无值可检，字段名匹配由认证检测器覆盖
 		}
-		if typ, ok := matchSensitive(name, patterns); ok {
-			ctx.AddMatch(dsctx.DetectorMatch{
-				Detector: "sensitive_data",
-				RuleID:   "sensitive.field",
-				Category: "OBSERVE",
-				Severity: "MEDIUM",
-				Message:  "sensitive field name observed",
-				Evidence: map[string]string{
-					"field":     name,
-					"data_type": typ,
-					"location":  "header",
-				},
-				ScoreDelta: 10,
-			})
-			budget--
-			if budget <= 0 {
-				return
+		if !isStandardProtocolHeader(name) {
+			if typ, ok := matchSensitive(name, patterns); ok && !IsSensitiveFieldExcluded(name, typ, rules) {
+				ctx.AddMatch(dsctx.DetectorMatch{
+					Detector: "sensitive_data",
+					RuleID:   "sensitive.field",
+					Category: "OBSERVE",
+					Severity: "MEDIUM",
+					Message:  "sensitive field name observed",
+					Evidence: map[string]string{
+						"field":     name,
+						"data_type": typ,
+						"location":  "header",
+					},
+					ScoreDelta: 10,
+				})
+				budget--
+				if budget <= 0 {
+					return
+				}
 			}
 		}
-		if r, ok := matchValueRules(v, "header", rules, &scans); ok {
+		if r, matched, ok := matchValueRulesWithSample(v, "header", name, rules, &scans); ok {
 			addValueMatch(ctx, "sensitive.value", "OBSERVE", "MEDIUM", 15,
-				"sensitive value observed", name, "header", r)
+				"sensitive value observed", name, "header", r, matched)
 			budget--
 		}
 	}
@@ -359,7 +380,7 @@ func scanValueLevel(ctx *dsctx.RequestContext, p *parser.Parsed, patterns []Comp
 		valueField := fmt.Sprintf("segment[%d]", i)
 		if strings.HasPrefix(seg, "{") {
 			valueField = seg
-		} else if typ, ok := matchSensitive(seg, patterns); ok {
+		} else if typ, ok := matchSensitive(seg, patterns); ok && !IsSensitiveFieldExcluded(seg, typ, rules) {
 			// 字面段名称命中（如 /api/id_card/... 的段名即敏感语义）
 			ctx.AddMatch(dsctx.DetectorMatch{
 				Detector: "sensitive_data",
@@ -380,9 +401,9 @@ func scanValueLevel(ctx *dsctx.RequestContext, p *parser.Parsed, patterns []Comp
 			}
 		}
 		if i < len(raw) {
-			if r, ok := matchValueRules(raw[i], "path", rules, &scans); ok {
+			if r, matched, ok := matchValueRulesWithSample(raw[i], "path", valueField, rules, &scans); ok {
 				addValueMatch(ctx, "sensitive.value", "OBSERVE", "MEDIUM", 15,
-					"sensitive value observed", valueField, "path", r)
+					"sensitive value observed", valueField, "path", r, matched)
 				budget--
 			}
 		}
@@ -392,8 +413,15 @@ func scanValueLevel(ctx *dsctx.RequestContext, p *parser.Parsed, patterns []Comp
 // matchValueRules 值级匹配：输入长度封顶 4096 后逐规则求值（仅当规则声明该位置）；
 // 返回首个命中规则。scans 为求值计数（每次 regex 求值 +1），由调用方封顶。
 func matchValueRules(value, location string, rules []CompiledSensitiveValueRule, scans *int) (CompiledSensitiveValueRule, bool) {
+	r, _, ok := matchValueRulesWithSample(value, location, "", rules, scans)
+	return r, ok
+}
+
+// matchValueRulesWithSample 值级匹配并返回正则实际命中的片段（供内存脱敏生成 masked_sample）。
+// 字段命中规则 exclude_fields 时跳过该规则；原始切片仅用于就地脱敏，绝不直接写入证据。
+func matchValueRulesWithSample(value, location, field string, rules []CompiledSensitiveValueRule, scans *int) (CompiledSensitiveValueRule, string, bool) {
 	if value == "" {
-		return CompiledSensitiveValueRule{}, false
+		return CompiledSensitiveValueRule{}, "", false
 	}
 	if utf8.RuneCountInString(value) > maxSensitiveValueInputLen {
 		value = string([]rune(value)[:maxSensitiveValueInputLen])
@@ -402,15 +430,18 @@ func matchValueRules(value, location string, rules []CompiledSensitiveValueRule,
 		if !r.locations[location] {
 			continue
 		}
+		if field != "" && matchesExcludeSet(field, r.excludeFields) {
+			continue
+		}
 		*scans++
 		if *scans > maxSensitiveValueScans {
-			return CompiledSensitiveValueRule{}, false
+			return CompiledSensitiveValueRule{}, "", false
 		}
 		if r.re.MatchString(value) {
-			return r, true
+			return r, r.re.FindString(value), true
 		}
 	}
-	return CompiledSensitiveValueRule{}, false
+	return CompiledSensitiveValueRule{}, "", false
 }
 
 // MatchSensitiveValueRule 单值按位置求值已编译值级规则（NG-MCP G1 mcpguard
@@ -425,11 +456,12 @@ func MatchSensitiveValueRule(value, location string, rules []CompiledSensitiveVa
 	return r.dataType, r.level, true
 }
 
-// addValueMatch 产出值级命中明细（证据只含 data_type/location/字段名/等级，绝不落值）。
+// addValueMatch 产出值级命中明细（证据含 data_type/location/字段名/等级与内存脱敏后的
+// masked_sample，绝不落原始明文）。
 // 置信度显式 1.0：值经正则验证，属确定性判定（区别于字段名词表匹配的 0.8 默认，
 // 见 context.go defaultConfidenceByDetector 取值纪律）。
 func addValueMatch(ctx *dsctx.RequestContext, ruleID, category, severity string, score int,
-	message, field, location string, r CompiledSensitiveValueRule) {
+	message, field, location string, r CompiledSensitiveValueRule, matchedValue string) {
 	evidence := map[string]string{
 		"field":     field,
 		"data_type": r.dataType,
@@ -437,6 +469,9 @@ func addValueMatch(ctx *dsctx.RequestContext, ruleID, category, severity string,
 	}
 	if r.level != "" {
 		evidence["level"] = r.level
+	}
+	if masked := MaskSensitiveSample(r.dataType, matchedValue); masked != "" {
+		evidence["masked_sample"] = masked
 	}
 	ctx.AddMatch(dsctx.DetectorMatch{
 		Detector:   "sensitive_data",
@@ -451,16 +486,16 @@ func addValueMatch(ctx *dsctx.RequestContext, ruleID, category, severity string,
 }
 
 // scanFieldNames 扫描一类字段名集合，返回产生的 match 数。
-func scanFieldNames(ctx *dsctx.RequestContext, fields map[string]string, location string, patterns []CompiledSensitivePattern, budget int) int {
+func scanFieldNames(ctx *dsctx.RequestContext, fields map[string]string, location string, patterns []CompiledSensitivePattern, valueRules []CompiledSensitiveValueRule, budget int) int {
 	if budget <= 0 {
 		return 0
 	}
 	n := 0
-	for name := range fields {
+	for _, name := range sortedKeys(fields) {
 		if n >= budget {
 			break
 		}
-		if typ, ok := matchSensitive(name, patterns); ok {
+		if typ, ok := matchSensitive(name, patterns); ok && !IsSensitiveFieldExcluded(name, typ, valueRules) {
 			ctx.AddMatch(dsctx.DetectorMatch{
 				Detector: "sensitive_data",
 				RuleID:   "sensitive.field",

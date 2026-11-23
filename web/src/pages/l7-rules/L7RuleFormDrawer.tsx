@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Alert, App as AntdApp, Button, Drawer, Form, Input, InputNumber, Radio, Select, Space, Typography } from 'antd'
+import { Alert, App as AntdApp, Button, Checkbox, Drawer, Form, Input, InputNumber, Radio, Select, Space, Typography } from 'antd'
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import { useMutation } from '@tanstack/react-query'
 import { ApiError } from '../../api/client'
@@ -14,23 +14,27 @@ import {
   L7_MULTI_VALUE_TYPES,
   L7_NAMED_TYPES,
   L7_OPS_BY_TYPE,
+  previewL7RedirectUrl,
   utf8ByteLength,
+  validateL7HostValue,
   validateL7RedirectUrl,
+  validateL7Regex,
   type L7ConditionFormRow,
 } from '../../utils/l7rules'
 import { formValuesToBody, type L7RuleFormValues } from './formValues'
-import type { L7ConditionType, L7RuleItem } from '../../types'
+import type { L7ConditionOp, L7ConditionType, L7RuleItem } from '../../types'
 
 const DEFAULT_FORM_VALUES: L7RuleFormValues = {
   name: '',
   priority: 100,
   enabled: true,
-  conditions: [],
+  conditions: [{ type: 'uri', op: 'prefix' }],
   action: 'block',
   block_status: 403,
   block_message: '',
   redirect_status: 302,
   redirect_url: '',
+  redirect_preserve_path_query: false,
   custom_status: 403,
   custom_content_type: L7_DEFAULT_CONTENT_TYPE,
   custom_body: '',
@@ -69,7 +73,7 @@ function ConditionRow({
     <Space style={{ display: 'flex', marginBottom: 8 }} align="baseline" wrap>
       <Form.Item name={[fieldName, 'type']} noStyle rules={[{ required: true, message: '选择类型' }]}>
         <Select
-          style={{ width: 110 }}
+          style={{ width: 155 }}
           options={Object.entries(L7_CONDITION_TYPE_META).map(([value, meta]) => ({
             value,
             label: meta.label,
@@ -116,15 +120,45 @@ function ConditionRow({
         !noValue && (
           <Form.Item
             name={[fieldName, 'value']}
+            dependencies={[
+              ['conditions', fieldName, 'type'],
+              ['conditions', fieldName, 'op'],
+            ]}
             noStyle
             rules={[
               { required: true, message: '匹配值必填' },
               { max: 512, message: '不超过 512 字符' },
+              {
+                validator: (_, v: string) => {
+                  if (!v) return Promise.resolve()
+                  const op = (rowOp as L7ConditionOp | undefined) ?? 'eq'
+                  if (rowType === 'uri' && op !== 'regex' && !v.startsWith('/')) {
+                    return Promise.reject(new Error('URI 须以 / 开头'))
+                  }
+                  if (rowType === 'host') {
+                    const err = validateL7HostValue(op, v)
+                    return err ? Promise.reject(new Error(err)) : Promise.resolve()
+                  }
+                  if (op === 'regex') {
+                    const err = validateL7Regex(v)
+                    return err ? Promise.reject(new Error(err)) : Promise.resolve()
+                  }
+                  return Promise.resolve()
+                },
+              },
             ]}
           >
             <Input
               style={{ width: 260 }}
-              placeholder={rowType === 'request_body' || rowType === 'response_body' ? '输入正文关键字或正则' : '匹配值'}
+              placeholder={
+                rowType === 'host'
+                  ? rowOp === 'regex'
+                    ? '如：^(www\\.)?jxdr\\.cn$'
+                    : '如：jxdr.cn（忽略大小写和可选端口）'
+                  : rowType === 'request_body' || rowType === 'response_body'
+                    ? '输入正文关键字或正则'
+                    : '匹配值'
+              }
               autoComplete="off"
             />
           </Form.Item>
@@ -155,6 +189,144 @@ function CustomBodyInput({ value, onChange }: { value?: string; onChange?: (v: s
   )
 }
 
+/** 动作配置区（放在 Form 内部，确保 Form.useWatch 与 Drawer destroyOnHidden 生命周期同步） */
+function ActionConfigSection() {
+  const form = Form.useFormInstance<L7RuleFormValues>()
+  const action = Form.useWatch('action', form)
+  const redirectUrl = Form.useWatch('redirect_url', form)
+  const redirectPreserve = Form.useWatch('redirect_preserve_path_query', form)
+  const conditionsWatch = Form.useWatch('conditions', form) as L7ConditionFormRow[] | undefined
+
+  const sampleSourceHost =
+    conditionsWatch?.find((c) => c?.type === 'host' && c?.op !== 'regex' && (c.value ?? '').trim() !== '')?.value?.trim().toLowerCase() ||
+    'jxdr.cn'
+  const redirectPreview = previewL7RedirectUrl(redirectUrl ?? '', Boolean(redirectPreserve), '/news?id=1')
+
+  if (action === 'block') {
+    return (
+      <>
+        <Form.Item
+          name="block_status"
+          label="响应状态码"
+          rules={[
+            { required: true, message: '请输入状态码' },
+            { type: 'number', min: 400, max: 599, message: '阻止状态码必须在 400~599 之间' },
+          ]}
+        >
+          <InputNumber min={400} max={599} style={{ width: 200 }} />
+        </Form.Item>
+        <Form.Item name="block_message" label="拦截文案" rules={[{ max: 500, message: '不超过 500 字符' }]}>
+          <Input.TextArea rows={2} placeholder="返回给客户端的拦截提示文案（可选）" />
+        </Form.Item>
+      </>
+    )
+  }
+  if (action === 'allow') {
+    return (
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="命中后放行请求，并跳过 CC 频率限制等后续访问控制检查；请求仍会经过 Coraza/CRS 攻击检测（安全底线）。"
+      />
+    )
+  }
+  if (action === 'redirect') {
+    return (
+      <>
+        <Form.Item name="redirect_status" label="重定向状态码" rules={[{ required: true }]}>
+          <Radio.Group
+            options={[
+              { value: 301, label: '301 永久重定向' },
+              { value: 302, label: '302 临时重定向' },
+            ]}
+            optionType="button"
+          />
+        </Form.Item>
+        <Form.Item
+          name="redirect_url"
+          label="重定向 URL（仅支持 http/https）"
+          rules={[
+            { required: true, message: '请输入重定向 URL' },
+            {
+              validator: (_, v: string) => {
+                const err = validateL7RedirectUrl(v ?? '')
+                return err ? Promise.reject(new Error(err)) : Promise.resolve()
+              },
+            },
+          ]}
+        >
+          <Input placeholder="https://www.jxdr.cn" autoComplete="off" />
+        </Form.Item>
+        <Form.Item
+          name="redirect_preserve_path_query"
+          valuePropName="checked"
+          extra={
+            redirectPreview
+              ? `效果示例：https://${sampleSourceHost}/news?id=1 → ${redirectPreview}`
+              : '开启后将原请求路径和查询参数拼接至重定向目标（如 https://jxdr.cn/news?id=1 → https://www.jxdr.cn/news?id=1）'
+          }
+        >
+          <Checkbox>保留路径和查询参数</Checkbox>
+        </Form.Item>
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="HTTPS 域名重定向提示"
+          description="如配置裸域跳转 www（如 jxdr.cn → www.jxdr.cn），请确保裸域和 www 域名均已在应用管理中接入，并且 HTTPS 证书同时覆盖两个域名，否则浏览器会在跳转前报证书错误。保存规则后需点击「发布」下发网关生效。"
+        />
+      </>
+    )
+  }
+  if (action === 'custom_page') {
+    return (
+      <>
+        <Space.Compact block>
+          <Form.Item
+            name="custom_status"
+            label="响应状态码"
+            style={{ width: '40%', marginRight: 8 }}
+            rules={[
+              { required: true, message: '请输入状态码' },
+              { type: 'number', min: 200, max: 599, message: '自定义页面状态码必须在 200~599 之间' },
+            ]}
+          >
+            <InputNumber min={200} max={599} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            name="custom_content_type"
+            label="Content-Type"
+            style={{ width: '60%' }}
+            rules={[
+              { required: true, message: '请输入 Content-Type' },
+              { max: 128, message: '不超过 128 字符' },
+            ]}
+          >
+            <Input placeholder="text/html; charset=utf-8" autoComplete="off" />
+          </Form.Item>
+        </Space.Compact>
+        <Form.Item
+          name="custom_body"
+          label="页面内容（≤ 64KB）"
+          rules={[
+            { required: true, message: '请输入页面内容' },
+            {
+              validator: (_, v: string) =>
+                utf8ByteLength(v ?? '') > L7_MAX_BODY_BYTES
+                  ? Promise.reject(new Error('页面内容超过 64KB 上限'))
+                  : Promise.resolve(),
+            },
+          ]}
+        >
+          <CustomBodyInput />
+        </Form.Item>
+      </>
+    )
+  }
+  return null
+}
+
 export default function L7RuleFormDrawer({
   open,
   editing,
@@ -172,7 +344,6 @@ export default function L7RuleFormDrawer({
 }) {
   const { message } = AntdApp.useApp()
   const [form] = Form.useForm<L7RuleFormValues>()
-  const action = Form.useWatch('action', form)
 
   useEffect(() => {
     if (open) {
@@ -215,7 +386,7 @@ export default function L7RuleFormDrawer({
       <Form<L7RuleFormValues>
         form={form}
         layout="vertical"
-        initialValues={DEFAULT_FORM_VALUES}
+        initialValues={initialValues ?? DEFAULT_FORM_VALUES}
         onFinish={(values) => saveMutation.mutate(values)}
       >
         <Space.Compact block>
@@ -255,9 +426,20 @@ export default function L7RuleFormDrawer({
           style={{ marginBottom: 12 }}
           message="请求体在访问源站前检查；返回头、返回体在源站响应后检查。含响应条件的规则与其他请求条件仍按且（全部满足）组合，各阶段内按优先级首中即停。正文仅检查完整且不超过 1 MiB 的内容；超限、流式或无法解码时完整透传并不产生正文匹配。"
         />
-        <Form.Item label={`匹配条件（多条件且（全部满足），最多 ${L7_MAX_CONDITIONS} 个；无条件匹配全部请求）`}>
-          <Form.List name="conditions">
-            {(fields, { add, remove }) => (
+        <Form.Item label={`匹配条件（多条件且（全部满足），至少 1 条，最多 ${L7_MAX_CONDITIONS} 条）`} required>
+          <Form.List
+            name="conditions"
+            rules={[
+              {
+                validator: async (_, rows: L7ConditionFormRow[] | undefined) => {
+                  if (!rows || rows.length === 0) {
+                    throw new Error('至少需要 1 条匹配条件')
+                  }
+                },
+              },
+            ]}
+          >
+            {(fields, { add, remove }, { errors }) => (
               <>
                 {fields.map((field) => (
                   <ConditionRow key={field.key} fieldName={field.name} onRemove={() => remove(field.name)} />
@@ -271,6 +453,7 @@ export default function L7RuleFormDrawer({
                 >
                   添加条件
                 </Button>
+                <Form.ErrorList errors={errors} />
               </>
             )}
           </Form.List>
@@ -288,95 +471,7 @@ export default function L7RuleFormDrawer({
           />
         </Form.Item>
 
-        {action === 'block' && (
-          <>
-            <Form.Item
-              name="block_status"
-              label="响应状态码"
-              rules={[{ required: true, message: '请输入状态码' }]}
-            >
-              <InputNumber min={100} max={599} style={{ width: 200 }} />
-            </Form.Item>
-            <Form.Item name="block_message" label="拦截文案" rules={[{ max: 500, message: '不超过 500 字符' }]}>
-              <Input.TextArea rows={2} placeholder="返回给客户端的拦截提示文案（可选）" />
-            </Form.Item>
-          </>
-        )}
-        {action === 'allow' && (
-          <Alert
-            type="info"
-            showIcon
-            style={{ marginBottom: 16 }}
-            message="命中后放行请求，并跳过 CC 频率限制等后续访问控制检查；请求仍会经过 Coraza/CRS 攻击检测（安全底线）。"
-          />
-        )}
-        {action === 'redirect' && (
-          <>
-            <Form.Item name="redirect_status" label="重定向状态码" rules={[{ required: true }]}>
-              <Radio.Group
-                options={[
-                  { value: 301, label: '301 永久重定向' },
-                  { value: 302, label: '302 临时重定向' },
-                ]}
-                optionType="button"
-              />
-            </Form.Item>
-            <Form.Item
-              name="redirect_url"
-              label="重定向 URL（仅支持 http/https）"
-              rules={[
-                { required: true, message: '请输入重定向 URL' },
-                {
-                  validator: (_, v: string) => {
-                    const err = validateL7RedirectUrl(v ?? '')
-                    return err ? Promise.reject(new Error(err)) : Promise.resolve()
-                  },
-                },
-              ]}
-            >
-              <Input placeholder="https://example.com/moved" autoComplete="off" />
-            </Form.Item>
-          </>
-        )}
-        {action === 'custom_page' && (
-          <>
-            <Space.Compact block>
-              <Form.Item
-                name="custom_status"
-                label="响应状态码"
-                style={{ width: '40%', marginRight: 8 }}
-                rules={[{ required: true, message: '请输入状态码' }]}
-              >
-                <InputNumber min={100} max={599} style={{ width: '100%' }} />
-              </Form.Item>
-              <Form.Item
-                name="custom_content_type"
-                label="Content-Type"
-                style={{ width: '60%' }}
-                rules={[
-                  { required: true, message: '请输入 Content-Type' },
-                  { max: 128, message: '不超过 128 字符' },
-                ]}
-              >
-                <Input placeholder="text/html; charset=utf-8" autoComplete="off" />
-              </Form.Item>
-            </Space.Compact>
-            <Form.Item
-              name="custom_body"
-              label="页面内容（≤ 64KB）"
-              rules={[
-                {
-                  validator: (_, v: string) =>
-                    utf8ByteLength(v ?? '') > L7_MAX_BODY_BYTES
-                      ? Promise.reject(new Error('页面内容超过 64KB 上限'))
-                      : Promise.resolve(),
-                },
-              ]}
-            >
-              <CustomBodyInput />
-            </Form.Item>
-          </>
-        )}
+        <ActionConfigSection />
       </Form>
     </Drawer>
   )

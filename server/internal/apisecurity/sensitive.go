@@ -24,7 +24,8 @@ type SensitiveField struct {
 	OccurrenceCount int             `json:"occurrence_count"` // 累计命中次数（SweepOnce 维护）
 	FirstSeen       *time.Time      `json:"first_seen"`
 	LastSeen        *time.Time      `json:"last_seen"`
-	SourceDetail    json.RawMessage `json:"source_detail"` // 最近一次命中摘要 {location, rule_id, event_id, data_type}
+	SourceDetail    json.RawMessage `json:"source_detail"` // 最近一次命中摘要 {location, rule_id, event_id, data_type, masked_sample?}
+	MaskedSample    string          `json:"masked_sample"` // 最新 1 条网关内存脱敏后的值级样本（如 138****8000；空=仅字段名识别）
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 }
@@ -69,7 +70,7 @@ func (s *Store) ListSensitiveFields(ctx context.Context, endpointID, direction, 
 	rows, err := s.db.Query(ctx, `
 SELECT f.id, f.endpoint_id, COALESCE(e.endpoint_key, ''), f.direction, f.structured_path, f.data_type,
        f.confidence, f.detection_source, f.occurrence_count, f.first_seen, f.last_seen, f.source_detail,
-       f.created_at, f.updated_at
+       COALESCE(f.masked_sample, ''), f.created_at, f.updated_at
 FROM api_sensitive_fields f
 LEFT JOIN api_endpoints e ON e.id = f.endpoint_id`+cond+fmt.Sprintf(" ORDER BY f.updated_at DESC, f.id LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
 	if err != nil {
@@ -81,7 +82,7 @@ LEFT JOIN api_endpoints e ON e.id = f.endpoint_id`+cond+fmt.Sprintf(" ORDER BY f
 		var f SensitiveField
 		if err := rows.Scan(&f.ID, &f.EndpointID, &f.EndpointKey, &f.Direction, &f.StructuredPath, &f.DataType,
 			&f.Confidence, &f.DetectionSource, &f.OccurrenceCount, &f.FirstSeen, &f.LastSeen, &f.SourceDetail,
-			&f.CreatedAt, &f.UpdatedAt); err != nil {
+			&f.MaskedSample, &f.CreatedAt, &f.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, f)

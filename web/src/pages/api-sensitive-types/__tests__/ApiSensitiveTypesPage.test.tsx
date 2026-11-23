@@ -271,6 +271,42 @@ describe('ApiSensitiveTypesPage', () => {
     expect(importBodies[0]).toEqual({ types: [{ name: '工号', data_type: 'emp_no' }] })
   })
 
+  it('导入导出回灌：自动剥离 id/version/is_builtin/created_at/updated_at 元数据', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_data.read', 'api_data.manage']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    await screen.findAllByText('手机号')
+
+    const exportDoc = {
+      format: 'jiuzhang-api-sensitive-data-types',
+      version: 1,
+      exported_at: '2026-08-16T02:00:00Z',
+      types: [builtinType, customType],
+    }
+    const file = new File([JSON.stringify(exportDoc)], 'export.json', { type: 'application/json' })
+    fireEvent.change(screen.getByLabelText('选择导入文件'), { target: { files: [file] } })
+
+    await screen.findByText(/包含 2 条类型定义/)
+    fireEvent.click(screen.getByRole('button', { name: /确\s*定|^OK$/ }))
+
+    await waitFor(() => expect(importBodies).toHaveLength(1))
+    const submitted = importBodies[0] as { types: Record<string, unknown>[] }
+    expect(submitted.types).toHaveLength(2)
+    for (const item of submitted.types) {
+      expect(item).not.toHaveProperty('id')
+      expect(item).not.toHaveProperty('version')
+      expect(item).not.toHaveProperty('is_builtin')
+      expect(item).not.toHaveProperty('created_at')
+      expect(item).not.toHaveProperty('updated_at')
+    }
+    expect(submitted.types[0]).toEqual(
+      expect.objectContaining({ name: '手机号', data_type: 'phone', level: 'SENSITIVE' }),
+    )
+  })
+
   it('无 api_data.manage 权限：不显示新建/编辑/删除入口', async () => {
     useAuthStore.setState({
       user: makeUser(['api_data.read']),

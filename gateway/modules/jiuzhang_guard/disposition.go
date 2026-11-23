@@ -76,9 +76,12 @@ const (
 	ExecutorUnknown          = "UNKNOWN"
 )
 
-// StepModuleIPAllowlist 白名单步骤模块词（非 executor——白名单命中是放行而非终止，
-// 只记录实际绕过的后续步骤 SKIPPED + detail）。
-const StepModuleIPAllowlist = "IP_ALLOWLIST"
+// StepModuleIPAllowlist / StepModuleURLAllowlist 白名单步骤模块词（非 executor——
+// 白名单命中是放行而非终止，只记录实际绕过的后续步骤 SKIPPED + detail）。
+const (
+	StepModuleIPAllowlist  = "IP_ALLOWLIST"
+	StepModuleURLAllowlist = "URL_ALLOWLIST"
+)
 
 // response_source 枚举（契约 §2）。
 const (
@@ -101,6 +104,7 @@ var dispositionModuleOrder = []string{
 	ExecutorJWT,
 	ExecutorManualBan,
 	StepModuleIPAllowlist,
+	StepModuleURLAllowlist,
 	ExecutorIPBlacklist,
 	ExecutorL7ACL,
 	ExecutorAutoBan,

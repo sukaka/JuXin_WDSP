@@ -94,9 +94,9 @@ func (s *responseSensitiveValueScanner) walk(v any, path string, depth int) {
 		if !ok {
 			return
 		}
-		rule, matched := matchValueRules(value, responseSensitiveValueLocation, s.rules, &s.scans)
+		rule, matchedVal, matched := matchValueRulesWithSample(value, responseSensitiveValueLocation, path, s.rules, &s.scans)
 		if matched {
-			s.addMatch(path, rule)
+			s.addMatch(path, rule, matchedVal)
 		}
 	}
 }
@@ -116,7 +116,7 @@ func responseSensitiveScalarValue(v any) (string, bool) {
 	}
 }
 
-func (s *responseSensitiveValueScanner) addMatch(path string, rule CompiledSensitiveValueRule) {
+func (s *responseSensitiveValueScanner) addMatch(path string, rule CompiledSensitiveValueRule, matchedValue string) {
 	if s.ctx.Response != nil {
 		s.ctx.Response.SensitiveFields = append(s.ctx.Response.SensitiveFields, dsctx.SensitiveFieldHit{
 			Path: path, DataType: rule.dataType,
@@ -130,6 +130,9 @@ func (s *responseSensitiveValueScanner) addMatch(path string, rule CompiledSensi
 	}
 	if rule.level != "" {
 		evidence["level"] = rule.level
+	}
+	if masked := MaskSensitiveSample(rule.dataType, matchedValue); masked != "" {
+		evidence["masked_sample"] = masked
 	}
 	s.ctx.AddMatch(dsctx.DetectorMatch{
 		Detector:   "sensitive_data",

@@ -226,3 +226,73 @@ func TestEval_EmptyAndCompileError(t *testing.T) {
 		t.Fatal("脏CIDR应导致编译错误")
 	}
 }
+
+func TestEval_HostAndRedirectPreview(t *testing.T) {
+	rule := Rule{
+		ID:       uuid.New(),
+		Name:     "裸域跳转www",
+		Priority: 10,
+		Enabled:  true,
+		Conditions: []Condition{
+			{Type: CondTypeHost, Op: OpEq, Value: "jxdr.cn"},
+		},
+		Action: ActionRedirect,
+		ActionConfig: ActionConfig{
+			Status:            403,
+			RedirectURL:       "https://www.jxdr.cn",
+			RedirectStatus:    301,
+			PreservePathQuery: true,
+			ContentType:       "text/html; charset=utf-8",
+		},
+		CreatedAt: time.Now(),
+	}
+	ev, err := NewEvaluator([]Rule{rule})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 兼容大小写和可选端口，保留路径和查询参数
+	for _, host := range []string{"jxdr.cn", "JXDR.CN", "JxDr.Cn:443", "jxdr.cn:80", "jxdr.cn."} {
+		res := ev.Eval(Input{URI: "/news?id=1", Host: host, Method: "GET"})
+		if !res.Matched {
+			t.Fatalf("host=%q 应命中", host)
+		}
+		if res.RedirectStatus != 301 || res.RedirectLocation != "https://www.jxdr.cn/news?id=1" {
+			t.Fatalf("host=%q 重定向预览异常: status=%d loc=%q", host, res.RedirectStatus, res.RedirectLocation)
+		}
+	}
+
+	// 未传 Host 字段时回退 Headers["Host"]，且 Query map 合并进跳转预览
+	resHdr := ev.Eval(Input{
+		URI:     "/news",
+		Method:  "GET",
+		Headers: map[string]string{"Host": "JXDR.CN:8443"},
+		Query:   map[string]string{"id": "1"},
+	})
+	if !resHdr.Matched || resHdr.RedirectLocation != "https://www.jxdr.cn/news?id=1" {
+		t.Fatalf("Headers Host 回退与 Query 预览异常: %+v", resHdr)
+	}
+
+	// www.jxdr.cn 不命中裸域规则
+	if ev.Eval(Input{URI: "/news?id=1", Host: "www.jxdr.cn", Method: "GET"}).Matched {
+		t.Fatal("www.jxdr.cn 不应命中 jxdr.cn 精确规则")
+	}
+
+	// 空 Host 不命中 ne
+	if evalSingle(t, Condition{Type: CondTypeHost, Op: OpNe, Value: "jxdr.cn"}, Input{URI: "/"}) {
+		t.Fatal("空 Host 不应命中 ne")
+	}
+
+	// host regex 大小写不敏感
+	if !evalSingle(t, Condition{Type: CondTypeHost, Op: OpRegex, Value: `^(www\.)?JXDR\.CN$`}, Input{URI: "/", Host: "jxdr.cn:443"}) {
+		t.Fatal("host regex 应兼容大小写与端口")
+	}
+
+	// 关闭 preserve_path_query 时原样返回目标地址
+	if got := BuildRedirectLocation("https://www.jxdr.cn", false, "/news?id=1", nil); got != "https://www.jxdr.cn" {
+		t.Fatalf("未开启保留时应原样返回: %q", got)
+	}
+	if got := BuildRedirectLocation("https://www.jxdr.cn/", true, "/news?id=1", nil); got != "https://www.jxdr.cn/news?id=1" {
+		t.Fatalf("目标带尾斜杠不应出现双斜杠: %q", got)
+	}
+}

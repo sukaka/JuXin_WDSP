@@ -55,6 +55,14 @@ func newTestGuard(t *testing.T, cfg Guard) *Guard {
 	if err != nil {
 		t.Fatal(err)
 	}
+	g.urlAllowG, err = buildURLWhitelistSet(cfg.GlobalURLAllow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.urlAllowA, err = buildURLWhitelistSet(cfg.AppURLAllow)
+	if err != nil {
+		t.Fatal(err)
+	}
 	g.policies, err = compilePolicies(cfg.RateLimits)
 	if err != nil {
 		t.Fatal(err)

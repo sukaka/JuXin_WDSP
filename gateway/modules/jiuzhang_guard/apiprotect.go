@@ -671,6 +671,17 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 		dispo.RecordMaskResponse()
 	}
 	dispo.RecordOrigin(tail.status, true)
+	// 非 API 请求因全局响应控制（如 response_body 敏感值规则）进入捕获路径时，
+	// 若响应为静态资源/普通网页（非 JSON、无文件下载观测）且全程无检测命中/改写/强流程动作，
+	// 不产出运行时 API 事件，避免静态资源污染端点发现与事件流。
+	if !res.API.IsAPI && !masked &&
+		len(res.Context.CopyMatches()) == 0 &&
+		len(flowguard.ActionsFromContext(res.Context)) == 0 {
+		rc := res.Context.GetResponse()
+		if rc == nil || (!rc.IsJSON && rc.FileObservation == nil) {
+			return
+		}
+	}
 	g.emitAPIEvent(r, res, tail)
 }
 

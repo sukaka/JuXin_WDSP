@@ -42,8 +42,8 @@ func TestProcessResponseResponseSensitiveValueNestedArrays(t *testing.T) {
 		if match.Detector != "sensitive_data" || match.Category != "OBSERVE" || match.Severity != "MEDIUM" {
 			t.Fatalf("unexpected response value match metadata: %+v", match)
 		}
-		if len(match.Evidence) != 5 {
-			t.Fatalf("evidence must contain only field/data_type/level/location/direction: %+v", match.Evidence)
+		if len(match.Evidence) != 6 {
+			t.Fatalf("evidence must contain only field/data_type/level/location/direction/masked_sample: %+v", match.Evidence)
 		}
 		want := map[string]string{
 			"field": "groups[].members[].contact", "data_type": "phone", "level": "CORE",
@@ -54,8 +54,11 @@ func TestProcessResponseResponseSensitiveValueNestedArrays(t *testing.T) {
 				t.Fatalf("evidence[%s] = %q, want %q: %+v", key, match.Evidence[key], value, match.Evidence)
 			}
 		}
+		if ms := match.Evidence["masked_sample"]; ms != "138****8000" && ms != "139****9000" {
+			t.Fatalf("unexpected masked_sample %q: %+v", ms, match.Evidence)
+		}
 		for key, value := range match.Evidence {
-			if _, ok := want[key]; !ok {
+			if _, ok := want[key]; !ok && key != "masked_sample" {
 				t.Fatalf("unexpected evidence key %q: %+v", key, match.Evidence)
 			}
 			if strings.Contains(value, firstPhone) || strings.Contains(value, secondPhone) {

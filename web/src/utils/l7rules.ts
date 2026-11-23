@@ -7,11 +7,12 @@ import type {
   L7RuleActionConfig,
   L7RuleCondition,
 } from '../types'
-import { validateIPOrCIDR } from './stage5'
+import { isValidIPLiteral, validateIPOrCIDR } from './stage5'
 
 /** 条件类型中文标签 */
 export const L7_CONDITION_TYPE_META: Record<L7ConditionType, { label: string }> = {
   uri: { label: '访问URI' },
+  host: { label: '请求域名（Host）' },
   method: { label: '请求方法' },
   header: { label: '请求头' },
   cookie: { label: 'Cookie' },
@@ -45,6 +46,7 @@ export const L7_RULE_ACTION_META: Record<string, { color: string; label: string 
 /** 各条件类型可用的运算符（method/client_ip 走 values 数组，等价 in，不单独选运算符） */
 export const L7_OPS_BY_TYPE: Record<L7ConditionType, L7ConditionOp[]> = {
   uri: ['eq', 'ne', 'prefix', 'contains', 'regex'],
+  host: ['eq', 'ne', 'prefix', 'contains', 'regex'],
   method: [],
   header: ['eq', 'ne', 'prefix', 'contains', 'regex', 'exists', 'not_exists'],
   cookie: ['eq', 'ne', 'prefix', 'contains', 'regex', 'exists', 'not_exists'],
@@ -92,15 +94,33 @@ export interface L7ActionFormValues {
   block_message?: string
   redirect_status?: number
   redirect_url?: string
+  redirect_preserve_path_query?: boolean
   custom_status?: number | null
   custom_content_type?: string
   custom_body?: string
 }
 
+/** 规范化非正则的请求域名条件值（与服务端 validateHostCondition 一致） */
+function normalizeHostConditionValue(op: L7ConditionOp, raw: string): string {
+  const trimmed = raw.trim()
+  if (op === 'regex') return raw
+  let v = trimmed.toLowerCase()
+  if (op === 'eq' || op === 'ne') {
+    if (v.startsWith('[') && v.endsWith(']')) {
+      v = v.slice(1, -1)
+    }
+    if (v.length > 1 && v.endsWith('.') && !v.endsWith('..')) {
+      v = v.slice(0, -1)
+    }
+  }
+  return v
+}
+
 /**
  * 条件行 → 契约 JSON：
  * - method/client_ip 仅保留 { type, values }（等价 op=in）；
- * - header/cookie/query 携带 name；exists/not_exists 不带 value。
+ * - header/cookie/query 携带 name；exists/not_exists 不带 value；
+ * - host 非正则值去空白并小写归一。
  */
 export function rowToCondition(row: L7ConditionFormRow): L7RuleCondition {
   const type = row.type
@@ -111,7 +131,10 @@ export function rowToCondition(row: L7ConditionFormRow): L7RuleCondition {
   if (L7_NAMED_TYPES.includes(type)) cond.name = (row.name ?? '').trim()
   const op = row.op ?? 'eq'
   cond.op = op
-  if (op !== 'exists' && op !== 'not_exists') cond.value = row.value ?? ''
+  if (op !== 'exists' && op !== 'not_exists') {
+    const raw = row.value ?? ''
+    cond.value = type === 'host' ? normalizeHostConditionValue(op, raw) : raw
+  }
   return cond
 }
 
@@ -144,6 +167,9 @@ export function buildActionConfig(values: L7ActionFormValues): L7RuleActionConfi
     case 'redirect':
       cfg.redirect_url = (values.redirect_url ?? '').trim()
       cfg.redirect_status = values.redirect_status ?? L7_DEFAULT_REDIRECT_STATUS
+      if (values.redirect_preserve_path_query) {
+        cfg.preserve_path_query = true
+      }
       break
     case 'custom_page':
       cfg.status = values.custom_status ?? L7_DEFAULT_CUSTOM_STATUS
@@ -168,6 +194,7 @@ export function actionConfigToFormValues(
     block_message: action === 'block' ? (c.message ?? '') : '',
     redirect_status: action === 'redirect' ? (c.redirect_status ?? L7_DEFAULT_REDIRECT_STATUS) : L7_DEFAULT_REDIRECT_STATUS,
     redirect_url: action === 'redirect' ? (c.redirect_url ?? '') : '',
+    redirect_preserve_path_query: action === 'redirect' ? Boolean(c.preserve_path_query) : false,
     custom_status: action === 'custom_page' ? (c.status ?? L7_DEFAULT_CUSTOM_STATUS) : L7_DEFAULT_CUSTOM_STATUS,
     custom_content_type:
       action === 'custom_page' ? (c.content_type ?? L7_DEFAULT_CONTENT_TYPE) : L7_DEFAULT_CONTENT_TYPE,
@@ -205,6 +232,54 @@ export function validateL7RedirectUrl(raw: string): string | null {
   return null
 }
 
+/** 校验请求域名（Host）条件值：非正则禁止协议/路径/空白与显式端口（匹配自动兼容大小写与可选端口） */
+export function validateL7HostValue(op: L7ConditionOp, raw: string): string | null {
+  if (op === 'regex') return validateL7Regex(raw)
+  const v = raw.trim()
+  if (v === '') return '请输入请求域名'
+  if (v.includes('://')) return '请求域名不得包含协议（如 https://）'
+  if (/[/?#]/.test(v)) return '请求域名不得包含路径或查询参数'
+  if (/\s/.test(v)) return '请求域名不得包含空白字符'
+  const portMatch = /^(\[[^\]]+\]|[^:]+):(\d*)$/.exec(v)
+  if (portMatch) {
+    const portStr = portMatch[2]
+    const portNum = portStr === '' ? 0 : Number(portStr)
+    if (portStr === '' || (Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535)) {
+      return '请求域名条件值不得包含端口，匹配时已自动兼容可选端口'
+    }
+  }
+  if ((op === 'eq' || op === 'ne') && v.includes(':')) {
+    const bare = v.startsWith('[') && v.endsWith(']') ? v.slice(1, -1) : v
+    if (!isValidIPLiteral(bare)) {
+      return '无效的请求域名（匹配时自动兼容可选端口，无需填写端口）'
+    }
+  }
+  return null
+}
+
+/** 预览重定向最终地址（与网关 preserve_path_query 拼接语义一致） */
+export function previewL7RedirectUrl(
+  redirectUrl: string,
+  preservePathQuery: boolean,
+  samplePathQuery = '/news?id=1',
+): string | null {
+  if (validateL7RedirectUrl(redirectUrl) !== null) return null
+  const trimmed = redirectUrl.trim()
+  if (!preservePathQuery) return trimmed
+  const u = new URL(trimmed)
+  const qIdx = samplePathQuery.indexOf('?')
+  const rawPath = qIdx >= 0 ? samplePathQuery.slice(0, qIdx) : samplePathQuery
+  const rawQuery = qIdx >= 0 ? samplePathQuery.slice(qIdx + 1) : ''
+  const reqPath = (rawPath.startsWith('/') ? rawPath : `/${rawPath}`).replace(/^\/+/, '/')
+  const basePath = u.pathname.replace(/\/+$/, '')
+  u.pathname = `${basePath}${reqPath}`
+  if (rawQuery) {
+    const existing = u.search.replace(/^\?/, '')
+    u.search = existing ? `?${existing}&${rawQuery}` : `?${rawQuery}`
+  }
+  return u.toString()
+}
+
 /** 统计 UTF-8 字节数（自定义页面 64KB 上限按字节计） */
 export function utf8ByteLength(s: string): number {
   return new TextEncoder().encode(s).length
@@ -235,8 +310,11 @@ export function validateConditionRow(row: L7ConditionFormRow): string | null {
   if (op === 'exists' || op === 'not_exists') return null
   const value = row.value ?? ''
   if (value === '') return '请输入匹配值'
-  if (row.type === 'uri' && (op === 'eq' || op === 'ne' || op === 'prefix') && !value.startsWith('/')) {
+  if (row.type === 'uri' && op !== 'regex' && !value.startsWith('/')) {
     return 'URI 须以 / 开头'
+  }
+  if (row.type === 'host') {
+    return validateL7HostValue(op, value)
   }
   if (op === 'regex') return validateL7Regex(value)
   return null

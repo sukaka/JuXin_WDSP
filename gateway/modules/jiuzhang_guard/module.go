@@ -2,7 +2,7 @@
 //
 // 请求处理顺序（与 ServeHTTP 实现一致）：真实IP识别 → JWT 信任链本地验证（可选，仅计算入上下文）
 // → 身份解析与行为观测（可选）→ 保护地址
-// → 人工临时封禁 → 全局白 → 应用白 → 全局黑 → 应用黑 → L7 请求阶段（首中即停）→ 自动临时封禁
+// → 人工临时封禁 → 全局 IP 白 → 应用 IP 白 → 全局 URL 白 → 应用 URL 白 → 全局 IP 黑 → 应用 IP 黑 → L7 请求阶段（首中即停）→ 自动临时封禁
 // → 身份风险策略处置（risk_policy，可选，OBSERVE 默认不实断；CHALLENGE 仅登记请求内待挑战事实）
 // → 授权全局限速（可选，默认关闭）→ CC限速 → 发布冒烟精确端点
 // （/_wdsp/internal/v1/publish-smoke，独立 HMAC，本地应答且不进源站）→ Bot 挑战判定
@@ -63,6 +63,7 @@ import (
 	_ "github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/stek"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/temporaryblock"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/trustedproxy"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/urlwhitelist"
 	"go.uber.org/zap"
 )
 
@@ -206,6 +207,12 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 	}
 	if g.denyA, err = buildRuleSet(g.AppDeny); err != nil {
 		return fmt.Errorf("app deny: %w", err)
+	}
+	if g.urlAllowG, err = buildURLWhitelistSet(g.GlobalURLAllow); err != nil {
+		return fmt.Errorf("global url allow: %w", err)
+	}
+	if g.urlAllowA, err = buildURLWhitelistSet(g.AppURLAllow); err != nil {
+		return fmt.Errorf("app url allow: %w", err)
 	}
 
 	// CC 策略
@@ -1180,7 +1187,7 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 	if g.protected.Contains(clientIP) {
 		dispo.RecordStep(ExecutorProtectedAddress, StepExecuted, "client IP in protected addresses")
 		recordBypassedSteps(dispo, "PROTECTED_ADDRESS",
-			ExecutorManualBan, StepModuleIPAllowlist, ExecutorIPBlacklist, ExecutorL7ACL,
+			ExecutorManualBan, StepModuleIPAllowlist, StepModuleURLAllowlist, ExecutorIPBlacklist, ExecutorL7ACL,
 			ExecutorAutoBan, ExecutorRiskPolicy, ExecutorLicenseQuota, ExecutorCC)
 		return g.serveNextViaBot(w, r, next, base, res)
 	}
@@ -1206,26 +1213,36 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 		autoBlock = &b
 	}
 
-	// 4. 黑白名单（白名单命中直接放行：跳过 L7、自动封禁、授权限速与 CC，
-	// 不跳过 Bot 挑战、API 动态防护与 WAF；不绕过人工临时封禁——封禁查询已在上方执行）
-	dec := accesscontrol.Evaluate(clientIP, now, g.allowG, g.allowA, g.denyG, g.denyA)
-	switch dec.Action {
-	case accesscontrol.ActionAllow:
-		// 白名单命中放行（P0-04 事实记录）：只记录实际绕过的步骤（SKIPPED + detail）；
+	// 4. IP 白名单 → URL 白名单 → IP 黑名单
+	// 白名单命中直接放行：跳过 IP 黑名单、L7、自动封禁、身份风险策略、授权限速与 CC，
+	// 不跳过 Bot 挑战、API 动态防护与 WAF（安全底线）；不绕过人工临时封禁。
+	if allowDec := accesscontrol.Evaluate(clientIP, now, g.allowG, g.allowA, nil, nil); allowDec.Action == accesscontrol.ActionAllow {
+		// IP 白名单命中放行（P0-04 事实记录）：只记录实际绕过的步骤（SKIPPED + detail）；
 		// 放行非终止，不挂 final_decision（该请求仍过 Bot 挑战、API 动态防护与 WAF——安全底线）
-		dispo.RecordStep(StepModuleIPAllowlist, StepExecuted, "allow hit rule="+dec.RuleID)
+		dispo.RecordStep(StepModuleIPAllowlist, StepExecuted, "allow hit rule="+allowDec.RuleID)
 		recordBypassedSteps(dispo, "IP_ALLOWLIST",
+			StepModuleURLAllowlist, ExecutorIPBlacklist, ExecutorL7ACL, ExecutorAutoBan,
+			ExecutorRiskPolicy, ExecutorLicenseQuota, ExecutorCC)
+		ev := base
+		ev.AccessRuleID = allowDec.RuleID
+		g.emit(ev, events.IPAllowMatch, "ALLOW", 0)
+		return g.serveNextViaBot(w, r, next, base, res)
+	}
+	if urlDec := urlwhitelist.Evaluate(r.URL.Path, r.Method, now, g.urlAllowG, g.urlAllowA); urlDec.Matched {
+		dispo.RecordStep(StepModuleURLAllowlist, StepExecuted, "url allow hit rule="+urlDec.RuleID)
+		recordBypassedSteps(dispo, "URL_ALLOWLIST",
 			ExecutorIPBlacklist, ExecutorL7ACL, ExecutorAutoBan,
 			ExecutorRiskPolicy, ExecutorLicenseQuota, ExecutorCC)
 		ev := base
-		ev.AccessRuleID = dec.RuleID
-		g.emit(ev, events.IPAllowMatch, "ALLOW", 0)
+		ev.AccessRuleID = urlDec.RuleID
+		g.emit(ev, events.URLAllowMatch, "ALLOW", 0)
 		return g.serveNextViaBot(w, r, next, base, res)
-	case accesscontrol.ActionDeny:
+	}
+	if denyDec := accesscontrol.Evaluate(clientIP, now, nil, nil, g.denyG, g.denyA); denyDec.Action == accesscontrol.ActionDeny {
 		dispo.RecordTerminal(ExecutorIPBlacklist, DisActionBlock, http.StatusForbidden, false,
-			[]string{"IP_IN_BLACKLIST"}, []string{dec.RuleID})
+			[]string{"IP_IN_BLACKLIST"}, []string{denyDec.RuleID})
 		ev := base
-		ev.AccessRuleID = dec.RuleID
+		ev.AccessRuleID = denyDec.RuleID
 		ev.FinalDecision = dispo.JSON()
 		g.emit(ev, events.IPDenyMatch, "DENY", http.StatusForbidden)
 		accessLogAnnotate(r.Context(), wafActionBlock)
@@ -1234,9 +1251,11 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 	}
 
 	// 4.5 L7 请求阶段（IP 黑白名单之后、CC 之前）；响应条件规则在下游返回后评估。
+	// 已通过本次发布独立 HMAC 鉴权的精确冒烟探针跳过 L7 规则，避免域名级重定向（如裸域跳 www）
+	// 拦截发布后 REAL_IP/CC 流量验证并误触发自动回滚；未鉴权请求仍正常经过 L7 规则。
 	var l7RequestBody []byte
 	l7RequestBodyReady := true
-	if g.l7 != nil {
+	if g.l7 != nil && !g.isAuthenticatedPublishSmoke(r, now) {
 		if g.l7.NeedsRequestBody() {
 			l7RequestBody, l7RequestBodyReady = g.readL7RequestBody(r)
 		}
@@ -1323,9 +1342,9 @@ func (g *Guard) executeL7(w http.ResponseWriter, r *http.Request, next caddyhttp
 		accessLogAnnotate(r.Context(), wafActionBlock)
 		return nil
 	case l7rules.ActionRedirect:
-		// redirect_url 在配置加载时已强制校验 scheme 仅 http/https。
+		// redirect_url 在配置加载时已强制校验 scheme 仅 http/https；开启 preserve_path_query 时拼接原路径与查询参数。
 		// 重定向是网关终止但非安全动作（P0-04）：security_action=NONE、executor=L7_ACL
-		w.Header().Set("Location", dec.Config.RedirectURL)
+		w.Header().Set("Location", dec.Config.RedirectTarget(r.URL))
 		w.Header().Set("X-Jiuzhang-Request-ID", base.RequestID)
 		w.WriteHeader(dec.Config.RedirectStatus)
 		dispo.RecordTerminal(ExecutorL7ACL, DisActionNone, dec.Config.RedirectStatus, true,

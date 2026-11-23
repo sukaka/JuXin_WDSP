@@ -23,6 +23,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/protectedaddresses"
 	"github.com/jiuzhang-waf/server/internal/ratelimitpolicies"
 	"github.com/jiuzhang-waf/server/internal/trustedproxies"
+	"github.com/jiuzhang-waf/server/internal/urlwhitelists"
 )
 
 // Provider 是阶段5配置组装器（实现 gatewayconfig.GuardProvider）。
@@ -36,7 +37,8 @@ type Provider struct {
 	apiAssets          *apiassets.Store // 阶段8：已知端点基线下发（nil 时跳过）
 	apiEndpointActions APIEndpointActionLister
 	apiEndpointGroups  APIEndpointGroupLister
-	l7Rules            *l7rules.Store // L7 访问控制规则（nil 时不下发 l7_rules 段——API 形态零行为变化）
+	l7Rules            *l7rules.Store       // L7 访问控制规则（nil 时不下发 l7_rules 段——API 形态零行为变化）
+	urlWhitelists      *urlwhitelists.Store // URL 白名单规则（nil 时不下发）
 
 	valkeyAddr     string
 	valkeyPassword string
@@ -248,6 +250,9 @@ func (p *Provider) SetAPIAssets(s *apiassets.Store) { p.apiAssets = s }
 // SetL7Rules 注入 L7 访问控制规则仓储（仅 WAF/WDSP 装配；nil 表示不下发 l7_rules 段）。
 func (p *Provider) SetL7Rules(s *l7rules.Store) { p.l7Rules = s }
 
+// SetURLWhitelists 注入 URL 白名单仓储（nil 表示不下发）。
+func (p *Provider) SetURLWhitelists(s *urlwhitelists.Store) { p.urlWhitelists = s }
+
 // SetAccessLogLoader 注入 logging 组系统设置读取（全量访问日志开关，发布时随 GuardConfig 下发；
 // 读取失败时发布失败，不静默回退——避免开关状态与管理面显示不一致）。
 func (p *Provider) SetAccessLogLoader(fn func(ctx context.Context) (AccessLogSettings, error)) {
@@ -415,6 +420,54 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 			appRules[code] = ar
 		}
 		ar.Policies = append(ar.Policies, gp)
+	}
+	// URL 白名单规则（ACTIVE，注入仓储后读取失败中止发布 fail-hard）
+	if p.urlWhitelists != nil {
+		urlRules, _, err := p.urlWhitelists.List(ctx, urlwhitelists.ListFilter{Status: urlwhitelists.StatusActive, Page: 1, PageSize: 10000})
+		if err != nil {
+			return nil, fmt.Errorf("list url whitelist rules: %w", err)
+		}
+		urlAppIDs := map[uuid.UUID]bool{}
+		for _, ur := range urlRules {
+			if ur.ApplicationID != nil {
+				urlAppIDs[*ur.ApplicationID] = true
+			}
+		}
+		urlIDList := make([]uuid.UUID, 0, len(urlAppIDs))
+		for id := range urlAppIDs {
+			urlIDList = append(urlIDList, id)
+		}
+		urlAppCodes, err := p.urlWhitelists.ApplicationCodes(ctx, urlIDList)
+		if err != nil {
+			return nil, fmt.Errorf("resolve url whitelist application codes: %w", err)
+		}
+		for _, ur := range urlRules {
+			gr := gatewayconfig.GuardURLAllowRule{
+				ID:             ur.ID.String(),
+				MatchType:      ur.MatchType,
+				URIPattern:     ur.URIPattern,
+				Methods:        ur.Methods,
+				Priority:       ur.Priority,
+				EffectiveFrom:  formatTime(ur.EffectiveFrom),
+				EffectiveUntil: formatTime(ur.EffectiveUntil),
+			}
+			if ur.ScopeType == urlwhitelists.ScopeGlobal {
+				cfg.GlobalURLAllow = append(cfg.GlobalURLAllow, gr)
+				continue
+			}
+			code := urlAppCodes[*ur.ApplicationID]
+			if code == "" {
+				continue
+			}
+			ar := appRules[code]
+			if ar == nil {
+				ar = &gatewayconfig.GuardAppRules{
+					Allow: []gatewayconfig.GuardRule{}, Deny: []gatewayconfig.GuardRule{}, Policies: []gatewayconfig.GuardPolicy{},
+				}
+				appRules[code] = ar
+			}
+			ar.URLAllow = append(ar.URLAllow, gr)
+		}
 	}
 	cfg.AppRules = appRules
 

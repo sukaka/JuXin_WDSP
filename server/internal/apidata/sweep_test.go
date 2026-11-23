@@ -237,3 +237,99 @@ func TestSweepOnceConfidence(t *testing.T) {
 		}
 	}
 }
+
+// TestSweepOnceMaskedSample 脱敏样本保留策略：保留最新 1 条值级脱敏样本；
+// 后续仅字段名命中（无 masked_sample）不清空既有脱敏样本；绝不读取原始 value 键。
+func TestSweepOnceMaskedSample(t *testing.T) {
+	store := NewMemStore()
+	ctx := context.Background()
+	epKey := "POST /v1/profile"
+	store.addEndpoint(epKey)
+	base := time.Now().UTC().Add(-time.Hour)
+
+	// 首次值级命中：写入 masked_sample = 138****8000
+	store.addRuntimeEvent(epKey, base, sensitiveDetails(t, []map[string]any{
+		{
+			"detector":   "sensitive_data",
+			"rule_id":    "sensitive.response_value",
+			"confidence": 1.0,
+			"evidence": map[string]string{
+				"field":         "user.phone",
+				"data_type":     "phone",
+				"location":      "response_body",
+				"direction":     "RESPONSE",
+				"masked_sample": "138****8000",
+			},
+		},
+		{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.field",
+			"evidence": map[string]string{
+				"field":     "password",
+				"data_type": "credential",
+				"location":  "json",
+				"value":     "must-never-be-copied",
+			},
+		},
+	}))
+	if _, err := store.SweepOnce(ctx); err != nil {
+		t.Fatalf("sweep1: %v", err)
+	}
+	byPath := map[string]sensitiveFieldRow{}
+	for _, r := range store.fieldRows() {
+		byPath[r.StructuredPath] = r
+	}
+	if byPath["response_body.user.phone"].MaskedSample != "138****8000" {
+		t.Fatalf("masked_sample = %q, want 138****8000", byPath["response_body.user.phone"].MaskedSample)
+	}
+	if byPath["json.password"].MaskedSample != "" {
+		t.Fatalf("field-name hit must not copy raw value into masked_sample: %+v", byPath["json.password"])
+	}
+
+	// 新值级命中：更新为最新 1 条脱敏样本 139****5678
+	store.addRuntimeEvent(epKey, base.Add(time.Minute), sensitiveDetails(t, []map[string]any{
+		{
+			"detector":   "sensitive_data",
+			"rule_id":    "sensitive.response_value",
+			"confidence": 1.0,
+			"evidence": map[string]string{
+				"field":         "user.phone",
+				"data_type":     "phone",
+				"location":      "response_body",
+				"direction":     "RESPONSE",
+				"masked_sample": "139****5678",
+			},
+		},
+	}))
+	if _, err := store.SweepOnce(ctx); err != nil {
+		t.Fatalf("sweep2: %v", err)
+	}
+	for _, r := range store.fieldRows() {
+		if r.StructuredPath == "response_body.user.phone" && r.MaskedSample != "139****5678" {
+			t.Fatalf("newer value hit must update masked_sample to latest, got %q", r.MaskedSample)
+		}
+	}
+
+	// 后续仅字段名命中（无 masked_sample）：不得覆盖清空已有值级脱敏样本
+	store.addRuntimeEvent(epKey, base.Add(2*time.Minute), sensitiveDetails(t, []map[string]any{
+		{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.response_field",
+			"evidence": map[string]string{
+				"field":     "user.phone",
+				"data_type": "phone",
+				"location":  "response_body",
+				"direction": "RESPONSE",
+				"value":     "13700000000",
+			},
+		},
+	}))
+	if _, err := store.SweepOnce(ctx); err != nil {
+		t.Fatalf("sweep3: %v", err)
+	}
+	for _, r := range store.fieldRows() {
+		if r.StructuredPath == "response_body.user.phone" && r.MaskedSample != "139****5678" {
+			t.Fatalf("field-name-only hit must keep existing masked_sample, got %q", r.MaskedSample)
+		}
+	}
+}

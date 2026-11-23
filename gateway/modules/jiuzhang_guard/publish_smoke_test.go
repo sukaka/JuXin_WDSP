@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/l7rules"
 )
 
 const publishSmokeTestKeyHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -240,5 +241,33 @@ func TestPublishSmokeConfigValidation(t *testing.T) {
 	}
 	if err := validatePublishSmokeConfig(nil); err != nil {
 		t.Fatalf("nil config must remain valid: %v", err)
+	}
+}
+
+func TestPublishSmokeBypassesL7HostRedirectOnlyWhenAuthenticated(t *testing.T) {
+	g := newPublishSmokeTestGuard(t, Guard{
+		L7Rules: &l7rules.Config{Rules: []l7rules.RuleJSON{{
+			ID: "apex-redirect", Name: "裸域跳www", Priority: 1, Enabled: true,
+			Conditions: []l7rules.ConditionJSON{{Type: "host", Op: "eq", Value: "shop.example.com"}},
+			Action:     "redirect",
+			ActionConfig: l7rules.ActionConfigJSON{
+				RedirectURL: "https://www.shop.example.com", RedirectStatus: 301, PreservePathQuery: true,
+			},
+		}}},
+	})
+	// 1. 携带有效当次发布 HMAC 的冒烟探针跳过 L7 重定向，完成本地验签应答
+	rec, called, err := servePublishSmokeTest(g, publishSmokeTestRequest(t, g, time.Now().Unix()))
+	if err != nil || called || rec.Code != http.StatusOK {
+		t.Fatalf("authenticated publish smoke must pass L7 host redirect: err=%v called=%v code=%d loc=%s",
+			err, called, rec.Code, rec.Header().Get("Location"))
+	}
+	// 2. 未鉴权请求访问同一路径仍被 L7 正常重定向（零绕过）
+	unauth := httptest.NewRequest(http.MethodGet, "http://shop.example.com:80"+publishSmokePath+"?id=1", nil)
+	unauth.RemoteAddr = "127.0.0.1:9000"
+	rec2, called2, err2 := servePublishSmokeTest(g, unauth)
+	if err2 != nil || called2 || rec2.Code != http.StatusMovedPermanently ||
+		rec2.Header().Get("Location") != "https://www.shop.example.com"+publishSmokePath+"?id=1" {
+		t.Fatalf("unauthenticated request must still hit L7 redirect: err=%v called=%v code=%d loc=%s",
+			err2, called2, rec2.Code, rec2.Header().Get("Location"))
 	}
 }

@@ -122,6 +122,53 @@ func TestL7RedirectAction(t *testing.T) {
 	}
 }
 
+// TestL7HostRedirectPreservePathQuery 请求域名（Host）命中 301 重定向并保留路径与查询参数：
+// 兼容大小写和可选端口，未命中域名正常放行。
+func TestL7HostRedirectPreservePathQuery(t *testing.T) {
+	g := newTestGuard(t, Guard{
+		AppID: "app1",
+		L7Rules: l7Config(l7rules.RuleJSON{
+			ID: "l7-apex-to-www", Name: "裸域跳www", Priority: 10, Enabled: true,
+			Conditions: []l7rules.ConditionJSON{{Type: "host", Op: "eq", Value: "jxdr.cn"}},
+			Action:     "redirect",
+			ActionConfig: l7rules.ActionConfigJSON{
+				RedirectURL:       "https://www.jxdr.cn",
+				RedirectStatus:    301,
+				PreservePathQuery: true,
+			},
+		}),
+	})
+	for _, host := range []string{"jxdr.cn", "JXDR.CN", "jxdr.cn:443", "JxDr.Cn:8443"} {
+		t.Run("redirect_"+host, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "https://jxdr.cn/news?id=1", nil)
+			r.Host = host
+			r.RemoteAddr = "203.0.113.12:1234"
+			r.Header.Set("X-Request-Id", "11111111-2222-3333-4444-555555555555")
+			called := false
+			rec := httptest.NewRecorder()
+			if err := g.ServeHTTP(rec, r, nextHandler{&called}); err != nil || called {
+				t.Fatalf("host=%s 应由 L7 重定向终结: err=%v called=%v", host, err, called)
+			}
+			if rec.Code != http.StatusMovedPermanently {
+				t.Fatalf("host=%s 状态码应为 301: got=%d", host, rec.Code)
+			}
+			if loc := rec.Header().Get("Location"); loc != "https://www.jxdr.cn/news?id=1" {
+				t.Fatalf("host=%s Location = %q, want https://www.jxdr.cn/news?id=1", host, loc)
+			}
+		})
+	}
+	// www.jxdr.cn 不命中裸域规则，应正常放行
+	rWWW := httptest.NewRequest("GET", "https://www.jxdr.cn/news?id=1", nil)
+	rWWW.Host = "www.jxdr.cn"
+	rWWW.RemoteAddr = "203.0.113.12:1234"
+	rWWW.Header.Set("X-Request-Id", "11111111-2222-3333-4444-555555555555")
+	called := false
+	rec := httptest.NewRecorder()
+	if err := g.ServeHTTP(rec, rWWW, nextHandler{&called}); err != nil || !called {
+		t.Fatalf("www.jxdr.cn 不应被裸域规则重定向: err=%v called=%v code=%d", err, called, rec.Code)
+	}
+}
+
 // TestL7CustomPageAction 自定义页面动作：状态码+Content-Type+内容。
 func TestL7CustomPageAction(t *testing.T) {
 	g := newTestGuard(t, Guard{

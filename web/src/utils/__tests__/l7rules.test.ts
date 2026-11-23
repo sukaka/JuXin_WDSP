@@ -5,10 +5,12 @@ import {
   actionConfigToFormValues,
   buildActionConfig,
   conditionToRow,
+  previewL7RedirectUrl,
   rowToCondition,
   summarizeConditions,
   utf8ByteLength,
   validateConditionRow,
+  validateL7HostValue,
   validateL7RedirectUrl,
   validateL7Regex,
   type L7ConditionFormRow,
@@ -19,6 +21,19 @@ describe('rowToCondition（表单行 → 契约 JSON）', () => {
   it('uri 条件：仅 type+op+value，无 name', () => {
     const row: L7ConditionFormRow = { type: 'uri', op: 'prefix', value: '/admin' }
     expect(rowToCondition(row)).toEqual({ type: 'uri', op: 'prefix', value: '/admin' })
+  })
+
+  it('host 条件：非正则去空白并小写归一（含尾点），无 name', () => {
+    expect(rowToCondition({ type: 'host', op: 'eq', value: ' JXDR.CN. ' })).toEqual({
+      type: 'host',
+      op: 'eq',
+      value: 'jxdr.cn',
+    })
+    expect(rowToCondition({ type: 'host', op: 'regex', value: '^(www\\.)?JXDR\\.CN$' })).toEqual({
+      type: 'host',
+      op: 'regex',
+      value: '^(www\\.)?JXDR\\.CN$',
+    })
   })
 
   it('method/client_ip 条件：仅 type+values，不带 op', () => {
@@ -67,6 +82,7 @@ describe('conditionToRow（契约 JSON → 表单行，编辑回显）', () => {
   it('与 rowToCondition 往返一致', () => {
     const cases: L7RuleCondition[] = [
       { type: 'uri', op: 'prefix', value: '/admin' },
+      { type: 'host', op: 'eq', value: 'jxdr.cn' },
       { type: 'method', values: ['GET', 'POST'] },
       { type: 'header', name: 'X-Env', op: 'eq', value: 'prod' },
       { type: 'cookie', name: 'session', op: 'exists' },
@@ -116,15 +132,30 @@ describe('buildActionConfig（动作配置序列化，全键输出）', () => {
     })
   })
 
-  it('redirect：取 redirect_url+redirect_status', () => {
+  it('redirect：取 redirect_url+redirect_status，开启保留路径和查询参数时输出 preserve_path_query', () => {
     const cfg = buildActionConfig({
       action: 'redirect',
-      redirect_url: ' https://example.com/m ',
+      redirect_url: ' https://www.jxdr.cn ',
       redirect_status: 301,
+      redirect_preserve_path_query: true,
     })
-    expect(cfg.redirect_url).toBe('https://example.com/m')
+    expect(cfg.redirect_url).toBe('https://www.jxdr.cn')
     expect(cfg.redirect_status).toBe(301)
+    expect(cfg.preserve_path_query).toBe(true)
     expect(cfg.status).toBe(403)
+
+    const back = actionConfigToFormValues('redirect', cfg)
+    expect(back.redirect_preserve_path_query).toBe(true)
+    expect(buildActionConfig(back)).toEqual(cfg)
+
+    // 未勾选时保持六键零漂移
+    const plain = buildActionConfig({
+      action: 'redirect',
+      redirect_url: 'https://www.jxdr.cn',
+      redirect_status: 301,
+      redirect_preserve_path_query: false,
+    })
+    expect('preserve_path_query' in plain).toBe(false)
   })
 
   it('custom_page：取 status+content_type+body', () => {
@@ -183,10 +214,26 @@ describe('validateConditionRow（提交前逐行校验）', () => {
     expect(validateConditionRow({ type: 'cookie', name: 's', op: 'not_exists' })).toBeNull()
   })
 
-  it('uri 的 eq/ne/prefix 须以 / 开头', () => {
+  it('uri 非正则（含 eq/ne/prefix/contains）须以 / 开头，regex 不强制', () => {
     expect(validateConditionRow({ type: 'uri', op: 'prefix', value: 'admin' })).not.toBeNull()
     expect(validateConditionRow({ type: 'uri', op: 'prefix', value: '/admin' })).toBeNull()
-    expect(validateConditionRow({ type: 'uri', op: 'contains', value: 'admin' })).toBeNull()
+    expect(validateConditionRow({ type: 'uri', op: 'eq', value: 'admin' })).not.toBeNull()
+    expect(validateConditionRow({ type: 'uri', op: 'ne', value: 'admin' })).not.toBeNull()
+    expect(validateConditionRow({ type: 'uri', op: 'contains', value: 'admin' })).not.toBeNull()
+    expect(validateConditionRow({ type: 'uri', op: 'contains', value: '/admin' })).toBeNull()
+    expect(validateConditionRow({ type: 'uri', op: 'regex', value: 'admin$' })).toBeNull()
+  })
+
+  it('host 条件校验：允许域名/IPv6/正则，拒绝协议/路径/空白/显式端口', () => {
+    expect(validateConditionRow({ type: 'host', op: 'eq', value: 'jxdr.cn' })).toBeNull()
+    expect(validateConditionRow({ type: 'host', op: 'eq', value: 'JXDR.CN' })).toBeNull()
+    expect(validateConditionRow({ type: 'host', op: 'eq', value: '[::1]' })).toBeNull()
+    expect(validateConditionRow({ type: 'host', op: 'regex', value: '^(www\\.)?jxdr\\.cn$' })).toBeNull()
+    expect(validateConditionRow({ type: 'host', op: 'eq', value: 'jxdr.cn:443' })).not.toBeNull()
+    expect(validateConditionRow({ type: 'host', op: 'eq', value: 'https://jxdr.cn' })).not.toBeNull()
+    expect(validateConditionRow({ type: 'host', op: 'eq', value: 'jxdr.cn/news' })).not.toBeNull()
+    expect(validateConditionRow({ type: 'host', op: 'exists' })).not.toBeNull()
+    expect(validateL7HostValue('eq', 'jxdr.cn evil')).not.toBeNull()
   })
 
   it('regex 须可编译', () => {
@@ -220,9 +267,23 @@ describe('validateL7Regex / validateL7RedirectUrl / utf8ByteLength', () => {
     expect(utf8ByteLength('中文')).toBe(6)
     expect(utf8ByteLength('x'.repeat(L7_MAX_BODY_BYTES))).toBe(L7_MAX_BODY_BYTES)
   })
+
+  it('previewL7RedirectUrl 预览保留路径和查询参数拼接结果', () => {
+    expect(previewL7RedirectUrl('https://www.jxdr.cn', true, '/news?id=1')).toBe('https://www.jxdr.cn/news?id=1')
+    expect(previewL7RedirectUrl('https://www.jxdr.cn/', true, '/news?id=1')).toBe('https://www.jxdr.cn/news?id=1')
+    expect(previewL7RedirectUrl('https://www.jxdr.cn/v2', true, '/news?id=1')).toBe('https://www.jxdr.cn/v2/news?id=1')
+    expect(previewL7RedirectUrl('https://www.jxdr.cn?from=apex', true, '/news?id=1')).toBe(
+      'https://www.jxdr.cn/news?from=apex&id=1',
+    )
+    expect(previewL7RedirectUrl('https://www.jxdr.cn', false, '/news?id=1')).toBe('https://www.jxdr.cn')
+    expect(previewL7RedirectUrl('not-a-url', true, '/news?id=1')).toBeNull()
+  })
 })
 
 describe('summarizeConditions（条件摘要）', () => {
+  it('host 条件摘要展示 请求域名（Host）', () => {
+    expect(summarizeConditions([{ type: 'host', op: 'eq', value: 'jxdr.cn' }])).toBe('请求域名（Host） 等于 jxdr.cn')
+  })
   it('空条件', () => {
     expect(summarizeConditions([])).toBe('无条件（匹配全部请求）')
   })

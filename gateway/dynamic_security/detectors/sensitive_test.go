@@ -456,3 +456,92 @@ func TestSensitiveValue_DeterministicOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestSensitive_StandardBrowserHeadersDoNotFalsePositive(t *testing.T) {
+	ctx := dsctx.New("t-headers", dsctx.DefaultParseLimits())
+	p := &parser.Parsed{
+		Headers: map[string]string{
+			"sec-ch-ua":                 `"Chromium";v="124"`,
+			"sec-ch-ua-mobile":          "?0",
+			"sec-ch-ua-platform":        `"macOS"`,
+			"sec-fetch-mode":            "navigate",
+			"sec-websocket-key":         "dGhlIHNhbXBsZSBub25jZQ==",
+			"user-agent":                "Mozilla/5.0 Mobile Safari/537.36",
+			"accept-encoding":           "gzip, deflate, br",
+			"x-forwarded-for":           "1.2.3.4",
+			"upgrade-insecure-requests": "1",
+		},
+	}
+	CheckSensitiveData(ctx, p, defaultPatterns(t), phoneValueRules(t))
+	if ctx.MatchCount() != 0 {
+		t.Fatalf("standard browser/HTTP protocol headers must not trigger false-positive sensitive hits: %+v", ctx.CopyMatches())
+	}
+}
+
+func TestSensitive_ExcludeFieldsRespectedForNameAndValue(t *testing.T) {
+	rules, err := CompileSensitiveValueRules([]SensitiveValueRule{{
+		DataType:      "phone",
+		Regex:         `^1[3-9]\d{9}$`,
+		Locations:     []string{"json", "query"},
+		Level:         "SENSITIVE",
+		ExcludeFields: []string{"phone_verified", "test_skip_phone"},
+	}})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	ctx := dsctx.New("t-exclude", dsctx.DefaultParseLimits())
+	p := &parser.Parsed{
+		JSONFields: map[string]string{
+			"user.phone_verified": "bool",
+			"user.has_phone":      "bool",
+			"user.is_phone":       "bool",
+			"user.email_verified": "bool",
+			"token_type":          "string",
+			"password_strength":   "number",
+		},
+		JSONValues: map[string]string{
+			"user.test_skip_phone": "13800138000",
+			"user.contact":         "13912345678",
+		},
+	}
+	CheckSensitiveData(ctx, p, defaultPatterns(t), rules)
+	matches := ctx.CopyMatches()
+	if len(matches) != 1 {
+		t.Fatalf("only non-excluded value hit expected, got %+v", matches)
+	}
+	if matches[0].RuleID != "sensitive.value" || matches[0].Evidence["field"] != "user.contact" ||
+		matches[0].Evidence["masked_sample"] != "139****5678" {
+		t.Fatalf("unexpected match: %+v", matches[0])
+	}
+}
+
+func TestSensitiveValue_MaskedSampleEmittedWithoutPlaintext(t *testing.T) {
+	rules, err := CompileSensitiveValueRules([]SensitiveValueRule{
+		{DataType: "phone", Regex: `1[3-9]\d{9}`, Locations: []string{"json", "query"}, Level: "SENSITIVE"},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	ctx := dsctx.New("t-masked", dsctx.DefaultParseLimits())
+	p := &parser.Parsed{
+		Query:      map[string]string{"note": "请联系13800138000处理"},
+		JSONValues: map[string]string{"desc": "电话: 13912345678"},
+	}
+	CheckSensitiveData(ctx, p, defaultPatterns(t), rules)
+	matches := ctx.CopyMatches()
+	if len(matches) != 2 {
+		t.Fatalf("want 2 value matches, got %+v", matches)
+	}
+	gotSamples := map[string]string{}
+	for _, m := range matches {
+		gotSamples[m.Evidence["location"]] = m.Evidence["masked_sample"]
+		for _, v := range m.Evidence {
+			if strings.Contains(v, "13800138000") || strings.Contains(v, "13912345678") {
+				t.Fatalf("raw plaintext leaked into evidence: %+v", m.Evidence)
+			}
+		}
+	}
+	if gotSamples["query"] != "138****8000" || gotSamples["json"] != "139****5678" {
+		t.Fatalf("masked samples = %+v", gotSamples)
+	}
+}

@@ -93,6 +93,22 @@ func TestValidateInput_Conditions(t *testing.T) {
 		{"uri正则超长", Condition{Type: "uri", Op: "regex", Value: strings.Repeat("a", 513)}, false},
 		{"uri带name拒绝", Condition{Type: "uri", Name: "x", Op: "eq", Value: "/a"}, false},
 		{"uri值含控制字符", Condition{Type: "uri", Op: "eq", Value: "/a\r\nInjected: 1"}, false},
+		// host
+		{"host合法裸域", Condition{Type: "host", Op: "eq", Value: "jxdr.cn"}, true},
+		{"host大写与尾点归一", Condition{Type: "host", Op: "eq", Value: "JXDR.CN."}, true},
+		{"host合法IPv6", Condition{Type: "host", Op: "eq", Value: "[::1]"}, true},
+		{"host合法prefix", Condition{Type: "host", Op: "prefix", Value: "API."}, true},
+		{"host合法contains", Condition{Type: "host", Op: "contains", Value: "jxdr.cn"}, true},
+		{"host合法regex", Condition{Type: "host", Op: "regex", Value: `^(www\.)?jxdr\.cn$`}, true},
+		{"host带端口拒绝", Condition{Type: "host", Op: "eq", Value: "jxdr.cn:443"}, false},
+		{"hostIPv6带端口拒绝", Condition{Type: "host", Op: "eq", Value: "[::1]:443"}, false},
+		{"host带协议拒绝", Condition{Type: "host", Op: "eq", Value: "https://jxdr.cn"}, false},
+		{"host带路径拒绝", Condition{Type: "host", Op: "eq", Value: "jxdr.cn/news"}, false},
+		{"host带空白拒绝", Condition{Type: "host", Op: "eq", Value: "jxdr.cn evil"}, false},
+		{"host带name拒绝", Condition{Type: "host", Name: "Host", Op: "eq", Value: "jxdr.cn"}, false},
+		{"host用exists拒绝", Condition{Type: "host", Op: "exists"}, false},
+		{"host用values拒绝", Condition{Type: "host", Op: "eq", Value: "jxdr.cn", Values: []string{"jxdr.cn"}}, false},
+		{"host正则不可编译", Condition{Type: "host", Op: "regex", Value: "([bad"}, false},
 		// method
 		{"method合法小写归一", Condition{Type: "method", Values: []string{"get"}}, true},
 		{"method空values", Condition{Type: "method"}, false},
@@ -143,6 +159,40 @@ func TestValidateInput_ClientIPNormalization(t *testing.T) {
 	// CIDR 掩码化 + v4映射v6归一
 	if in.Conditions[0].Values[0] != "10.0.0.0/8" || in.Conditions[0].Values[1] != "192.168.1.5" {
 		t.Fatalf("client_ip 规范化异常: %v", in.Conditions[0].Values)
+	}
+}
+
+func TestValidateInput_HostNormalizationAndPreservePathQuery(t *testing.T) {
+	in := validInput()
+	in.Conditions = []Condition{
+		{Type: CondTypeHost, Op: OpEq, Value: "  JXDR.CN.  "},
+		{Type: CondTypeHost, Op: OpPrefix, Value: "API."},
+	}
+	in.Action = ActionRedirect
+	in.ActionConfig = ActionConfig{
+		RedirectURL:       "https://www.jxdr.cn",
+		RedirectStatus:    301,
+		PreservePathQuery: true,
+	}
+	if err := ValidateInput(&in); err != nil {
+		t.Fatalf("合法 host + redirect 输入被拒绝: %v", err)
+	}
+	if in.Conditions[0].Value != "jxdr.cn" || in.Conditions[1].Value != "api." {
+		t.Fatalf("host 规范化异常: %+v", in.Conditions)
+	}
+	if !in.ActionConfig.PreservePathQuery {
+		t.Fatal("redirect 动作应保留 preserve_path_query=true")
+	}
+
+	// 非 redirect 动作清理 preserve_path_query，避免切换动作残留脏数据
+	inBlock := validInput()
+	inBlock.Action = ActionBlock
+	inBlock.ActionConfig.PreservePathQuery = true
+	if err := ValidateInput(&inBlock); err != nil {
+		t.Fatal(err)
+	}
+	if inBlock.ActionConfig.PreservePathQuery {
+		t.Fatal("非 redirect 动作应清理 preserve_path_query")
 	}
 }
 

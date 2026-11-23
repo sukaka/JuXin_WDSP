@@ -37,13 +37,18 @@ func TestLoadAPISensitiveValueRulesTolerance(t *testing.T) {
 	if got := p.loadAPISensitiveValueRules(context.Background()); got != nil {
 		t.Fatalf("empty rules must yield nil: %v", got)
 	}
-	// 正常读取
+	// 正常读取（含 exclude_fields 透传）
 	want := []gatewayconfig.GuardSensitiveValueRule{
-		{DataType: "phone", Regex: `^1[3-9]\d{9}$`, Locations: []string{"query", "json", "form", "xml"}, Level: "SENSITIVE"},
+		{
+			DataType: "phone", Regex: `^1[3-9]\d{9}$`,
+			Locations:     []string{"query", "json", "form", "xml", "response_body"},
+			Level:         "SENSITIVE",
+			ExcludeFields: []string{"phone_verified", "has_phone"},
+		},
 	}
 	p = &Provider{sensitiveValueRules: &fakeSensitiveValueRuleLister{rules: want}}
 	got := p.loadAPISensitiveValueRules(context.Background())
-	if len(got) != 1 || got[0].DataType != "phone" || got[0].Level != "SENSITIVE" || len(got[0].Locations) != 4 {
+	if len(got) != 1 || got[0].DataType != "phone" || got[0].Level != "SENSITIVE" || len(got[0].Locations) != 5 || len(got[0].ExcludeFields) != 2 {
 		t.Fatalf("rules = %+v", got)
 	}
 }

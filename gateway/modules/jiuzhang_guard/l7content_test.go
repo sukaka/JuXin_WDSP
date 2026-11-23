@@ -114,6 +114,30 @@ func TestL7ResponseHeaderConditionAndOriginalPassThrough(t *testing.T) {
 			t.Fatalf("未命中响应被改变: code=%d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 		}
 	})
+	t.Run("响应头命中重定向保留路径与查询参数", func(t *testing.T) {
+		g := newTestGuard(t, Guard{AppID: "app1", L7Rules: l7Config(l7rules.RuleJSON{
+			ID: "response-redirect", Priority: 1, Enabled: true,
+			Conditions: []l7rules.ConditionJSON{
+				{Type: "host", Op: "eq", Value: "jxdr.cn"},
+				{Type: "response_header", Name: "X-Move", Op: "eq", Value: "1"},
+			},
+			Action: "redirect",
+			ActionConfig: l7rules.ActionConfigJSON{
+				RedirectURL: "https://www.jxdr.cn", RedirectStatus: 301, PreservePathQuery: true,
+			},
+		})})
+		r := l7Req("GET", "/news?id=1", "203.0.113.34:1")
+		r.Host = "JXDR.CN:443"
+		rec := httptest.NewRecorder()
+		_ = g.ServeHTTP(rec, r, nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+			w.Header().Set("X-Move", "1")
+			_, _ = io.WriteString(w, "origin-body")
+			return nil
+		}))
+		if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "https://www.jxdr.cn/news?id=1" {
+			t.Fatalf("响应阶段重定向异常: code=%d loc=%q", rec.Code, rec.Header().Get("Location"))
+		}
+	})
 }
 
 func TestL7ResponseInspectionDegradesWithoutTruncation(t *testing.T) {

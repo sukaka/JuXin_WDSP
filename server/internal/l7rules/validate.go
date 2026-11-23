@@ -2,6 +2,8 @@ package l7rules
 
 import (
 	"fmt"
+	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -59,12 +61,14 @@ func validateCondition(c *Condition) error {
 		return validateValuesCondition(c, "来源IP")
 	case CondTypeURI:
 		return validateURICondition(c)
+	case CondTypeHost:
+		return validateHostCondition(c)
 	case CondTypeHeader, CondTypeCookie, CondTypeQuery, CondTypeResponseHeader:
 		return validateNamedCondition(c)
 	case CondTypeRequestBody, CondTypeResponseBody:
 		return validateBodyCondition(c)
 	default:
-		return fmt.Errorf("条件类型必须为 uri/method/header/cookie/query/client_ip/request_body/response_header/response_body，收到: %s", c.Type)
+		return fmt.Errorf("条件类型必须为 uri/host/method/header/cookie/query/client_ip/request_body/response_header/response_body，收到: %s", c.Type)
 	}
 }
 
@@ -135,6 +139,99 @@ func validateURICondition(c *Condition) error {
 		return fmt.Errorf("URI条件值必须以 / 开头: %s", c.Value)
 	}
 	return nil
+}
+
+// validateHostCondition 校验请求域名（Host）条件（无 name；支持 eq/ne/prefix/contains/regex）。
+// 非正则条件下拒绝协议/路径/空白与显式端口（网关匹配自动兼容大小写和可选端口），并统一小写归一。
+func validateHostCondition(c *Condition) error {
+	if c.Name != "" {
+		return fmt.Errorf("请求域名条件不支持 name 字段")
+	}
+	if len(c.Values) > 0 {
+		return fmt.Errorf("请求域名条件只支持单值 value，不支持 values 数组")
+	}
+	if !namedValueOps[c.Op] {
+		return fmt.Errorf("请求域名条件运算符必须为 eq/ne/prefix/contains/regex，收到: %s", c.Op)
+	}
+	if err := validateCondValue(c); err != nil {
+		return err
+	}
+	if c.Op == OpRegex {
+		return nil
+	}
+	v := strings.TrimSpace(c.Value)
+	if v == "" {
+		return fmt.Errorf("请求域名条件值不能为空")
+	}
+	if strings.Contains(v, "://") {
+		return fmt.Errorf("请求域名不得包含协议（如 https://）: %s", v)
+	}
+	if strings.ContainsAny(v, "/?#") {
+		return fmt.Errorf("请求域名不得包含路径或查询参数: %s", v)
+	}
+	if strings.ContainsAny(v, " \t\r\n") {
+		return fmt.Errorf("请求域名不得包含空白字符: %s", v)
+	}
+	if host, port, err := net.SplitHostPort(v); err == nil && isOptionalPort(port) {
+		if host == "" {
+			return fmt.Errorf("无效的请求域名: %s", v)
+		}
+		return fmt.Errorf("请求域名条件值不得包含端口，匹配时已自动兼容可选端口: %s", v)
+	}
+	if c.Op == OpEq || c.Op == OpNe {
+		if strings.Contains(v, ":") {
+			bare := strings.TrimSuffix(strings.TrimPrefix(v, "["), "]")
+			if _, err := netip.ParseAddr(bare); err != nil {
+				return fmt.Errorf("无效的请求域名（匹配时自动兼容可选端口，无需填写端口）: %s", v)
+			}
+		}
+		norm := NormalizeHost(v)
+		if norm == "" {
+			return fmt.Errorf("无效的请求域名: %s", v)
+		}
+		c.Value = norm
+		return nil
+	}
+	c.Value = strings.ToLower(v)
+	return nil
+}
+
+// NormalizeHost 规范化请求域名（Host）：去空白、剥离合法可选端口（含 [v6]:port）、
+// 剥离 IPv6 字面量方括号、转小写并剥离单个 DNS 尾点（与网关 l7rules.NormalizeHost 一致）。
+func NormalizeHost(raw string) string {
+	h := strings.TrimSpace(raw)
+	if h == "" {
+		return ""
+	}
+	if host, port, err := net.SplitHostPort(h); err == nil && isOptionalPort(port) {
+		h = host
+	}
+	if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
+		h = h[1 : len(h)-1]
+	}
+	h = strings.ToLower(h)
+	if len(h) > 1 && strings.HasSuffix(h, ".") && !strings.HasSuffix(h, "..") {
+		h = h[:len(h)-1]
+	}
+	return h
+}
+
+func isOptionalPort(port string) bool {
+	if port == "" {
+		return true
+	}
+	if len(port) > 5 {
+		return false
+	}
+	n := 0
+	for i := 0; i < len(port); i++ {
+		c := port[i]
+		if c < '0' || c > '9' {
+			return false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n >= 1 && n <= 65535
 }
 
 // validateNamedCondition 校验命名条件（请求头/Cookie/Query/响应头：name + op + value）。
@@ -231,6 +328,9 @@ func validateActionConfig(action string, cfg *ActionConfig) error {
 		return fmt.Errorf("%w: 自定义页面内容不能超过%dKB", ErrInvalidInput, MaxBodyBytes/1024)
 	}
 	// 动作级强校验
+	if action != ActionRedirect {
+		cfg.PreservePathQuery = false
+	}
 	switch action {
 	case ActionBlock:
 		if cfg.Status < 400 || cfg.Status > 599 {

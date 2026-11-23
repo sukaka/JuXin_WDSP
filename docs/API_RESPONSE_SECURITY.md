@@ -16,7 +16,7 @@ API 响应在返回客户端前进入统一捕获与响应相位，完成敏感�
 - 脱敏：`dynamic_security/response/rule.go`、`transform.go`、`mask_crypto.go`。
 
 数据最小化不变：ResponseContext 不保存明文体；解码树和标量只在当前请求内存中使用。
-事件和证据只含字段路径、类型、等级、方向、规则标识等元数据，绝不含敏感原值或密钥。
+事件和证据只含字段路径、类型、等级、方向、规则标识及值级命中时的网关内存脱敏样本（`masked_sample`，凭据类固定 `******`），绝不含敏感原值或密钥。
 
 ## 二、ResponseContext
 
@@ -71,7 +71,7 @@ transform_plan[]（字段路径、算法、参数及 key_id/map_id，不含密�
 - **SSE data**：JSON data 复用 JSON 树扫描，文本 data 按行扫描，keepalive 原样透传。
 
 所有上述命中均为 `sensitive_data / sensitive.response_value`（OBSERVE/MEDIUM）。
-证据只含安全字段位置、data_type、level、location=response_body 和 direction=RESPONSE。
+证据只含安全字段位置、data_type、level、location=response_body、direction=RESPONSE 与网关内存脱敏后的 `masked_sample`（中间位打码，凭据类固定 `******`）。
 敏感原值不会写入事件。新检测不单独新增阻断或响应改写。
 
 非法 UTF-8、DTD、超深、超预算、未完结 SSE 尾块等产生零分值的

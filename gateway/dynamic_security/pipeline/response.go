@@ -239,7 +239,16 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 	// 挂点侧未供给原请求/身份时零行为
 	checkWebShellC2Response(ctx, in, cfg)
 
-	// 2. 响应敏感字段检测（字段名匹配，证据只含路径与数据类型标签）
+	// 2. 响应敏感字段检测（字段名匹配，证据只含路径与数据类型标签；
+	// 位置统一使用 response_body，与下方值级检测敏感字段合并落同一台账行，并尊重排除字段）
+	var compiledRespValueRules []detectors.CompiledSensitiveValueRule
+	if len(cfg.SensitiveValueRules) > 0 && ((rc.IsJSON && jsonRoot != nil) || len(rc.ParsedBody) > 0) {
+		var verr error
+		compiledRespValueRules, verr = detectors.CompileResponseSensitiveValueRules(cfg.SensitiveValueRules)
+		if verr != nil {
+			return "", fmt.Errorf("compile response sensitive value rules: %w", verr)
+		}
+	}
 	if len(rc.ParsedBody) > 0 {
 		// 编译经 detectors 并发安全缓存：同一配置装配期单次编译，响应相位为缓存查找
 		patterns, err := detectors.CompileSensitivePatterns(cfg.SensitivePatterns)
@@ -257,7 +266,7 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 				break
 			}
 			typ, ok := detectors.MatchSensitiveDataType(p, patterns)
-			if !ok {
+			if !ok || detectors.IsSensitiveFieldExcluded(p, typ, compiledRespValueRules) {
 				continue
 			}
 			rc.SensitiveFields = append(rc.SensitiveFields, dsctx.SensitiveFieldHit{Path: p, DataType: typ})
@@ -270,7 +279,7 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 				Evidence: map[string]string{
 					"field":     p,
 					"data_type": typ,
-					"location":  "response_json",
+					"location":  "response_body",
 					"direction": "RESPONSE",
 				},
 				ScoreDelta: 10,
@@ -292,9 +301,13 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 		}
 	}
 	if len(cfg.SensitiveValueRules) > 0 && ((rc.IsJSON && jsonRoot != nil) || valueMedia != "") {
-		valueRules, err := detectors.CompileResponseSensitiveValueRules(cfg.SensitiveValueRules)
-		if err != nil {
-			return "", fmt.Errorf("compile response sensitive value rules: %w", err)
+		valueRules := compiledRespValueRules
+		if valueRules == nil {
+			var err error
+			valueRules, err = detectors.CompileResponseSensitiveValueRules(cfg.SensitiveValueRules)
+			if err != nil {
+				return "", fmt.Errorf("compile response sensitive value rules: %w", err)
+			}
 		}
 		if len(valueRules) > 0 {
 			if rc.IsJSON && jsonRoot != nil {

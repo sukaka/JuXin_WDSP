@@ -367,5 +367,55 @@ func TestTypesImportExport(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("empty import status=%d", rr.Code)
 	}
+	// 导出JSON原样回灌：携带 id/version/is_builtin/created_at/updated_at（以及顶层 format/version/exported_at）
+	// 均应被接受并忽略服务端元数据（不提升 is_builtin/version），同时未知字段仍应被拒绝。
+	var fullExport map[string]any
+	rr = doJSON(t, mux, http.MethodGet, "/api/v1/api-security/sensitive-types/export", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export raw status=%d", rr.Code)
+	}
+	decodeData(t, rr, &fullExport)
+	roundtripStore := NewMemStore()
+	roundtripMux := newTestMux(NewHandler(roundtripStore, nil))
+	rr = doJSON(t, roundtripMux, http.MethodPost, "/api/v1/api-security/sensitive-types/import", fullExport)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("roundtrip full export import status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var rtRes struct {
+		Created int `json:"created"`
+		Updated int `json:"updated"`
+	}
+	decodeData(t, rr, &rtRes)
+	if rtRes.Created != 2 || rtRes.Updated != 0 {
+		t.Fatalf("roundtrip full export result=%+v", rtRes)
+	}
+	// 条目含伪造服务端元数据：HTTP 导入允许并忽略，不会授予 is_builtin 或保留高版本
+	withMeta := map[string]any{"types": []map[string]any{{
+		"id":         uuid.NewString(),
+		"name":       "带元数据条目",
+		"data_type":  "meta_dt",
+		"version":    99,
+		"is_builtin": true,
+		"created_at": "2025-01-01T00:00:00Z",
+		"updated_at": "2025-01-02T00:00:00Z",
+	}}}
+	rr = doJSON(t, roundtripMux, http.MethodPost, "/api/v1/api-security/sensitive-types/import", withMeta)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("import with metadata status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	metaList, _, _ := roundtripStore.ListTypes(context.Background(), TypeFilter{Keyword: "带元数据条目"})
+	if len(metaList) != 1 || metaList[0].IsBuiltin || metaList[0].Version != 1 {
+		t.Fatalf("imported metadata should be ignored by server, got %+v", metaList)
+	}
+	// 真正的未知字段仍应被 DisallowUnknownFields 拒绝（400）
+	unknownField := map[string]any{"types": []map[string]any{{
+		"name":          "未知字段",
+		"data_type":     "bad_dt",
+		"unknown_field": "should-fail",
+	}}}
+	rr = doJSON(t, roundtripMux, http.MethodPost, "/api/v1/api-security/sensitive-types/import", unknownField)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("unknown field import status=%d body=%s", rr.Code, rr.Body.String())
+	}
 	_ = b
 }

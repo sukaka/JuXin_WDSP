@@ -3,6 +3,7 @@ package l7rules
 import (
 	"fmt"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -11,6 +12,7 @@ import (
 // Input 是一次请求的评估输入（规则测试器与网关评估语义一致）。
 type Input struct {
 	URI             string            // 请求 URI（可含 query，评估时仅取路径部分）
+	Host            string            // 请求域名（Host，大小写不敏感且兼容可选端口；缺省时回退 Headers["Host"]）
 	Method          string            // 请求方法（大小写不敏感，评估时转大写）
 	Headers         map[string]string // 请求头（名称大小写不敏感）
 	Cookies         map[string]string // Cookie（名称大小写敏感）
@@ -23,9 +25,11 @@ type Input struct {
 
 // Result 是评估结果。Matched=false 表示不命中任何规则，将继续后续检查。
 type Result struct {
-	Matched bool
-	Rule    *Rule  // 命中规则（未命中为 nil）
-	Reason  string // 中文原因说明（测试器回显）
+	Matched          bool
+	Rule             *Rule  // 命中规则（未命中为 nil）
+	Reason           string // 中文原因说明（测试器回显）
+	RedirectStatus   int    // 命中 redirect 动作时的状态码（301/302）
+	RedirectLocation string // 命中 redirect 动作时的最终跳转 URL
 }
 
 // Evaluator 是编译后的规则集评估器（纯函数、无副作用；测试器复用，不产生真实流量、不写事件）。
@@ -64,7 +68,14 @@ func NewEvaluator(rules []Rule) (*Evaluator, error) {
 			cc := compiledCondition{cond: c}
 			switch {
 			case c.Op == OpRegex:
-				re, err := regexp.Compile(c.Value)
+				pattern := c.Value
+				if c.Type == CondTypeHost {
+					if _, err := regexp.Compile(pattern); err != nil {
+						return nil, fmt.Errorf("规则「%s」正则编译失败: %w", r.Name, err)
+					}
+					pattern = "(?i:" + pattern + ")"
+				}
+				re, err := regexp.Compile(pattern)
 				if err != nil {
 					return nil, fmt.Errorf("规则「%s」正则编译失败: %w", r.Name, err)
 				}
@@ -101,6 +112,7 @@ func NewEvaluator(rules []Rule) (*Evaluator, error) {
 // evalView 是输入的预处理视图（评估时复用，避免每条件重复归一化）。
 type evalView struct {
 	uriPath         string
+	host            string
 	method          string
 	headers         map[string]string // 键已小写
 	cookies         map[string]string
@@ -133,6 +145,11 @@ func newEvalView(in Input) evalView {
 	}
 	v.headers = normalizeHeaders(in.Headers)
 	v.responseHeaders = normalizeHeaders(in.ResponseHeaders)
+	rawHost := strings.TrimSpace(in.Host)
+	if rawHost == "" {
+		rawHost = v.headers["host"]
+	}
+	v.host = NormalizeHost(rawHost)
 	if i := strings.IndexByte(v.uriPath, '?'); i >= 0 {
 		v.uriPath = v.uriPath[:i] // uri 条件只匹配路径部分
 	}
@@ -156,11 +173,25 @@ func (e *Evaluator) Eval(in Input) Result {
 		}
 		if matchAll(cr.conds, &v) {
 			rule := cr.rule
-			return Result{
+			res := Result{
 				Matched: true,
 				Rule:    &rule,
 				Reason:  fmt.Sprintf("命中规则「%s」（优先级 %d，首中即停）", rule.Name, rule.Priority),
 			}
+			if rule.Action == ActionRedirect {
+				status := rule.ActionConfig.RedirectStatus
+				if status == 0 {
+					status = 302
+				}
+				res.RedirectStatus = status
+				res.RedirectLocation = BuildRedirectLocation(
+					rule.ActionConfig.RedirectURL,
+					rule.ActionConfig.PreservePathQuery,
+					in.URI,
+					in.Query,
+				)
+			}
+			return res
 		}
 	}
 	return Result{Matched: false, Reason: "不命中任何规则，将继续后续检查"}
@@ -181,6 +212,17 @@ func (c compiledCondition) match(v *evalView) bool {
 	switch c.cond.Type {
 	case CondTypeURI:
 		return matchValue(c.cond.Op, c.cond.Value, v.uriPath, c.re)
+	case CondTypeHost:
+		if v.host == "" {
+			return false
+		}
+		want := c.cond.Value
+		if c.cond.Op == OpEq || c.cond.Op == OpNe {
+			want = NormalizeHost(want)
+		} else if c.cond.Op != OpRegex {
+			want = strings.ToLower(strings.TrimSpace(want))
+		}
+		return matchValue(c.cond.Op, want, v.host, c.re)
 	case CondTypeMethod:
 		return c.methods[v.method]
 	case CondTypeHeader:
@@ -245,4 +287,89 @@ func matchValue(op, want, got string, re *regexp.Regexp) bool {
 		return re != nil && re.MatchString(got)
 	}
 	return false
+}
+
+// BuildRedirectLocation 计算重定向最终 Location，与网关 l7rules.ActionConfig.RedirectTarget 语义一致。
+func BuildRedirectLocation(targetURL string, preservePathQuery bool, rawURI string, query map[string]string) string {
+	if !preservePathQuery {
+		return targetURL
+	}
+	base, err := url.Parse(targetURL)
+	if err != nil {
+		return targetURL
+	}
+	u := *base
+	reqURL, err := url.ParseRequestURI(rawURI)
+	if err != nil {
+		reqPath, reqQuery, _ := strings.Cut(rawURI, "?")
+		reqURL = &url.URL{Path: reqPath, RawQuery: reqQuery}
+	}
+	basePath := strings.TrimRight(base.Path, "/")
+	baseEscaped := strings.TrimRight(base.EscapedPath(), "/")
+	reqPath := normalizeRedirectPath(reqURL.Path)
+	reqEscaped := normalizeRedirectPath(reqURL.EscapedPath())
+	u.Path = basePath + reqPath
+	joinedEscaped := baseEscaped + reqEscaped
+	if joinedEscaped != u.Path {
+		u.RawPath = joinedEscaped
+	} else {
+		u.RawPath = ""
+	}
+	reqQuery := stripControlChars(reqURL.RawQuery)
+	if len(query) > 0 {
+		existing := url.Values{}
+		if reqQuery != "" {
+			if parsed, perr := url.ParseQuery(reqQuery); perr == nil {
+				existing = parsed
+			}
+		}
+		extra := url.Values{}
+		for k, v := range query {
+			if _, ok := existing[k]; !ok {
+				extra.Set(k, v)
+			}
+		}
+		if extraEnc := stripControlChars(extra.Encode()); extraEnc != "" {
+			if reqQuery == "" {
+				reqQuery = extraEnc
+			} else {
+				reqQuery = reqQuery + "&" + extraEnc
+			}
+		}
+	}
+	if reqQuery != "" {
+		if u.RawQuery == "" {
+			u.RawQuery = reqQuery
+		} else {
+			u.RawQuery = u.RawQuery + "&" + reqQuery
+		}
+	}
+	return u.String()
+}
+
+func normalizeRedirectPath(p string) string {
+	if p == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	for strings.HasPrefix(p, "//") {
+		p = p[1:]
+	}
+	return p
+}
+
+func stripControlChars(s string) string {
+	if !hasControlChar(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r >= 0x20 && r != 0x7f {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

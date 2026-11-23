@@ -13,6 +13,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/cidr"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/counters"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/ratelimit"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/urlwhitelist"
 )
 
 // compiledPolicy 编译后的 CC 策略。
@@ -54,6 +55,39 @@ func buildRuleSet(rules []ruleJSON) (*accesscontrol.RuleSet, error) {
 		out = append(out, rule)
 	}
 	return accesscontrol.NewRuleSet(out)
+}
+
+// buildURLWhitelistSet 解析 URL 白名单规则 JSON（fail-closed）。
+func buildURLWhitelistSet(rules []urlAllowRuleJSON) (*urlwhitelist.RuleSet, error) {
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	out := make([]urlwhitelist.Rule, 0, len(rules))
+	for _, r := range rules {
+		rule := urlwhitelist.Rule{
+			ID:         r.ID,
+			MatchType:  r.MatchType,
+			URIPattern: r.URIPattern,
+			Methods:    r.Methods,
+			Priority:   r.Priority,
+		}
+		if r.EffectiveFrom != "" {
+			t, err := time.Parse(time.RFC3339, r.EffectiveFrom)
+			if err != nil {
+				return nil, fmt.Errorf("url whitelist rule %q: bad effective_from", r.ID)
+			}
+			rule.EffectiveFrom = &t
+		}
+		if r.EffectiveUntil != "" {
+			t, err := time.Parse(time.RFC3339, r.EffectiveUntil)
+			if err != nil {
+				return nil, fmt.Errorf("url whitelist rule %q: bad effective_until", r.ID)
+			}
+			rule.EffectiveUntil = &t
+		}
+		out = append(out, rule)
+	}
+	return urlwhitelist.NewRuleSet(out)
 }
 
 // maxURIPatternLen 正则/模式长度上限（配合 RE2 线性时间引擎防正则拒绝服务）。

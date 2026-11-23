@@ -48,13 +48,16 @@ func assertResponseValueMatch(t *testing.T, m dsctx.DetectorMatch, path, dataTyp
 		"field": path, "data_type": dataType, "level": "SENSITIVE",
 		"location": "response_body", "direction": "RESPONSE",
 	}
-	if len(m.Evidence) != len(want) {
-		t.Fatalf("evidence keys must be restricted to the response value contract: %+v", m.Evidence)
+	if len(m.Evidence) != len(want)+1 {
+		t.Fatalf("evidence keys must be restricted to the response value contract (+masked_sample): %+v", m.Evidence)
 	}
 	for key, value := range want {
 		if m.Evidence[key] != value {
 			t.Fatalf("evidence[%s] = %q, want %q (all: %+v)", key, m.Evidence[key], value, m.Evidence)
 		}
+	}
+	if masked := m.Evidence["masked_sample"]; masked == "" || !strings.Contains(masked, "*") {
+		t.Fatalf("evidence[masked_sample] must be a masked sample, got %q (all: %+v)", masked, m.Evidence)
 	}
 }
 

@@ -62,16 +62,87 @@ describe('formValuesToBody / ruleToFormValues', () => {
     expect(() => formValuesToBody(values)).toThrowError(/最多 10 个条件/)
   })
 
-  it('redirect 动作提交前序列化 redirect_url/redirect_status', () => {
+  it('redirect 动作提交前序列化 redirect_url/redirect_status/preserve_path_query 与 host 条件', () => {
     const values: L7RuleFormValues = {
       ...ruleToFormValues(CONTRACT_RULE),
+      conditions: [{ type: 'host', op: 'eq', value: 'JXDR.CN' }],
       action: 'redirect',
-      redirect_url: 'https://example.com/moved',
+      redirect_url: 'https://www.jxdr.cn',
       redirect_status: 301,
+      redirect_preserve_path_query: true,
     }
     const body = formValuesToBody(values)
+    expect(body.conditions).toEqual([{ type: 'host', op: 'eq', value: 'jxdr.cn' }])
     expect(body.action).toBe('redirect')
-    expect(body.action_config.redirect_url).toBe('https://example.com/moved')
+    expect(body.action_config.redirect_url).toBe('https://www.jxdr.cn')
     expect(body.action_config.redirect_status).toBe(301)
+    expect(body.action_config.preserve_path_query).toBe(true)
+
+    const back = ruleToFormValues({
+      ...CONTRACT_RULE,
+      conditions: body.conditions,
+      action: 'redirect',
+      action_config: body.action_config,
+    })
+    expect(back.redirect_preserve_path_query).toBe(true)
+    expect(formValuesToBody(back)).toEqual(body)
+  })
+
+  it('conditions 为空时拒绝提交（minItems=1）', () => {
+    const values: L7RuleFormValues = {
+      ...ruleToFormValues(CONTRACT_RULE),
+      conditions: [],
+    }
+    expect(() => formValuesToBody(values)).toThrowError(/至少需要 1 条匹配条件/)
+  })
+
+  it('uri contains 不以 / 开头时拒绝提交', () => {
+    const values: L7RuleFormValues = {
+      ...ruleToFormValues(CONTRACT_RULE),
+      conditions: [{ type: 'uri', op: 'contains', value: 'admin' }],
+    }
+    expect(() => formValuesToBody(values)).toThrowError(/第 1 个条件：URI 须以 \/ 开头/)
+  })
+
+  it('block 状态码必须在 400~599 之间', () => {
+    expect(() =>
+      formValuesToBody({ ...ruleToFormValues(CONTRACT_RULE), action: 'block', block_status: 302 }),
+    ).toThrowError(/400~599/)
+    expect(() =>
+      formValuesToBody({ ...ruleToFormValues(CONTRACT_RULE), action: 'block', block_status: 600 }),
+    ).toThrowError(/400~599/)
+    expect(
+      formValuesToBody({ ...ruleToFormValues(CONTRACT_RULE), action: 'block', block_status: 400 }).action_config.status,
+    ).toBe(400)
+    expect(
+      formValuesToBody({ ...ruleToFormValues(CONTRACT_RULE), action: 'block', block_status: 599 }).action_config.status,
+    ).toBe(599)
+  })
+
+  it('custom_page 状态码必须在 200~599 之间且 body 非空', () => {
+    expect(() =>
+      formValuesToBody({
+        ...ruleToFormValues(CONTRACT_RULE),
+        action: 'custom_page',
+        custom_status: 199,
+        custom_body: 'ok',
+      }),
+    ).toThrowError(/200~599/)
+    expect(() =>
+      formValuesToBody({
+        ...ruleToFormValues(CONTRACT_RULE),
+        action: 'custom_page',
+        custom_status: 200,
+        custom_body: '',
+      }),
+    ).toThrowError(/自定义页面内容不能为空/)
+    expect(
+      formValuesToBody({
+        ...ruleToFormValues(CONTRACT_RULE),
+        action: 'custom_page',
+        custom_status: 200,
+        custom_body: '<h1>Maintenance</h1>',
+      }).action_config.body,
+    ).toBe('<h1>Maintenance</h1>')
   })
 })

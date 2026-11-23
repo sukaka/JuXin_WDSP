@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,6 +32,9 @@ const sweepDefaultConfidence = 0.8
 
 // maxStructuredPathLen api_sensitive_fields.structured_path 列宽。
 const maxStructuredPathLen = 512
+
+// maxMaskedSampleLen api_sensitive_fields.masked_sample 列宽（仅存储网关已脱敏样本）。
+const maxMaskedSampleLen = 128
 
 // SweepResult 一次清扫的结果统计。
 type SweepResult struct {
@@ -57,7 +61,26 @@ type sweepHit struct {
 	DataType       string
 	RuleID         string
 	Location       string
+	MaskedSample   string // 网关内存脱敏后的值级样本（如 138****8000）；仅字段名命中为空
 	Confidence     float64
+}
+
+// sanitizeMaskedSample 清理控制字符并按列宽截断脱敏样本（仅消费网关 evidence.masked_sample，绝不读取原始 value）。
+func sanitizeMaskedSample(raw string) string {
+	cleaned := strings.TrimSpace(strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, raw))
+	if cleaned == "" {
+		return ""
+	}
+	runes := []rune(cleaned)
+	if len(runes) > maxMaskedSampleLen {
+		return string(runes[:maxMaskedSampleLen])
+	}
+	return cleaned
 }
 
 // extractSweepHits 从 details_json 提取敏感证据命中（纯函数；非敏感明细/空字段跳过）。
@@ -97,6 +120,7 @@ func extractSweepHits(detailsJSON []byte) ([]sweepHit, error) {
 			DataType:       d.Evidence["data_type"],
 			RuleID:         d.RuleID,
 			Location:       location,
+			MaskedSample:   sanitizeMaskedSample(d.Evidence["masked_sample"]),
 			Confidence:     confidence,
 		})
 	}
@@ -188,24 +212,29 @@ LIMIT $2`, wm, sweepBatchSize)
 		}
 		res.Hits += len(hits)
 		for _, h := range hits {
-			sourceDetail, err := json.Marshal(map[string]string{
+			detailMap := map[string]string{
 				"location":  h.Location,
 				"rule_id":   h.RuleID,
 				"event_id":  ev.id.String(),
 				"data_type": h.DataType,
-			})
+			}
+			if h.MaskedSample != "" {
+				detailMap["masked_sample"] = h.MaskedSample
+			}
+			sourceDetail, err := json.Marshal(detailMap)
 			if err != nil {
 				return nil, err
 			}
 			// upsert：唯一键 (endpoint_id, direction, structured_path)；
 			// occurrence_count 累加；last_seen 取较大者（乱序防御）；首末次时间不回头；
 			// data_type 以最新非空观测为准；detection_source 保留首次来源（MANUAL 行不被改写）；
-			// confidence 取历史与本次观测的较大者（值级验证命中 1.0 可抬升字段名命中 0.8，不反向降级）。
+			// confidence 取历史与本次观测的较大者（值级验证命中 1.0 可抬升字段名命中 0.8，不反向降级）；
+			// masked_sample 保留最新 1 条非空脱敏样本（后续仅字段名命中不覆盖既有值级样本）。
 			if _, err := tx.Exec(ctx, `
 INSERT INTO api_sensitive_fields
     (endpoint_id, direction, structured_path, data_type, confidence, detection_source,
-     first_seen, last_seen, occurrence_count, source_detail)
-VALUES ($1, $2, $3, $4, $5, 'RUNTIME', $6, $6, 1, $7)
+     first_seen, last_seen, occurrence_count, source_detail, masked_sample)
+VALUES ($1, $2, $3, $4, $5, 'RUNTIME', $6, $6, 1, $7, $8)
 ON CONFLICT (endpoint_id, direction, structured_path) DO UPDATE SET
     occurrence_count = api_sensitive_fields.occurrence_count + 1,
     first_seen = LEAST(COALESCE(api_sensitive_fields.first_seen, 'infinity'::timestamptz), EXCLUDED.first_seen),
@@ -213,9 +242,10 @@ ON CONFLICT (endpoint_id, direction, structured_path) DO UPDATE SET
     data_type  = CASE WHEN EXCLUDED.data_type <> '' THEN EXCLUDED.data_type ELSE api_sensitive_fields.data_type END,
     confidence = GREATEST(api_sensitive_fields.confidence, EXCLUDED.confidence),
     source_detail = EXCLUDED.source_detail,
+    masked_sample = CASE WHEN EXCLUDED.masked_sample <> '' THEN EXCLUDED.masked_sample ELSE api_sensitive_fields.masked_sample END,
     updated_at = now()`,
 				endpointID, h.Direction, h.StructuredPath, h.DataType, h.Confidence,
-				ev.occurredAt, sourceDetail); err != nil {
+				ev.occurredAt, sourceDetail, h.MaskedSample); err != nil {
 				return nil, fmt.Errorf("sensitive sweep upsert: %w", err)
 			}
 			res.FieldsUpserted++

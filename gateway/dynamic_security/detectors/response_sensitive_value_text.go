@@ -172,9 +172,9 @@ func (s *ResponseBodyValueScanner) scanValue(path, value string) string {
 	if s.scanner.scans >= maxSensitiveValueScans {
 		return "SCAN_BUDGET_EXCEEDED"
 	}
-	rule, matched := matchValueRules(value, responseSensitiveValueLocation, s.scanner.rules, &s.scanner.scans)
+	rule, matchedVal, matched := matchValueRulesWithSample(value, responseSensitiveValueLocation, path, s.scanner.rules, &s.scanner.scans)
 	if matched {
-		s.scanner.addMatch(path, rule)
+		s.scanner.addMatch(path, rule, matchedVal)
 	}
 	return ""
 }

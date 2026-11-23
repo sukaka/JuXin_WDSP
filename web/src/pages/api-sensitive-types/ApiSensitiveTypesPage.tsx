@@ -197,10 +197,20 @@ export default function ApiSensitiveTypesPage() {
       message.error('文件内容不符合导入格式（期望 {"types": [...]} 且非空）')
       return
     }
+    const sanitizedTypes: ApiSensitiveTypeBody[] = types.map((item) => {
+      if (!item || typeof item !== 'object') return item as ApiSensitiveTypeBody
+      const copy = { ...(item as Record<string, unknown>) }
+      delete copy.id
+      delete copy.version
+      delete copy.is_builtin
+      delete copy.created_at
+      delete copy.updated_at
+      return copy as ApiSensitiveTypeBody
+    })
     modal.confirm({
       title: '导入敏感数据类型',
-      content: `文件「${file.name}」包含 ${types.length} 条类型定义，按名称更新或新建（同名更新、不存在则新建，单事务整体生效）。确认导入吗？`,
-      onOk: () => importMut.mutate(types as ApiSensitiveTypeBody[]),
+      content: `文件「${file.name}」包含 ${sanitizedTypes.length} 条类型定义，按名称更新或新建（同名更新、不存在则新建，单事务整体生效）。确认导入吗？`,
+      onOk: () => importMut.mutate(sanitizedTypes),
     })
   }
 
@@ -320,10 +330,12 @@ export default function ApiSensitiveTypesPage() {
               {record.status === 'ENABLED' ? '禁用' : '启用'}
             </Button>
             {record.is_builtin ? (
-              <Tooltip title="内置类型不可删除">
-                <Button type="link" size="small" danger disabled>
-                  删除
-                </Button>
+              <Tooltip title="内置类型不可删除" placement="left">
+                <span>
+                  <Button type="link" size="small" danger disabled>
+                    删除
+                  </Button>
+                </span>
               </Tooltip>
             ) : (
               <Button type="link" size="small" danger onClick={() => confirmDelete(record)}>

@@ -25,6 +25,7 @@ type sensitiveFieldRow struct {
 	LastSeen        time.Time
 	OccurrenceCount int
 	SourceDetail    json.RawMessage
+	MaskedSample    string
 }
 
 // memRuntimeEvent 内存运行时事件（api_runtime_events 镜像，仅保留 sweep/overview 所需列）。
@@ -563,12 +564,16 @@ func (m *MemStore) SweepOnce(_ context.Context) (*SweepResult, error) {
 		res.Hits += len(hits)
 		for _, h := range hits {
 			key := endpointID.String() + "|" + h.Direction + "|" + h.StructuredPath
-			sourceDetail, err := json.Marshal(map[string]string{
+			detailMap := map[string]string{
 				"location":  h.Location,
 				"rule_id":   h.RuleID,
 				"event_id":  ev.id.String(),
 				"data_type": h.DataType,
-			})
+			}
+			if h.MaskedSample != "" {
+				detailMap["masked_sample"] = h.MaskedSample
+			}
+			sourceDetail, err := json.Marshal(detailMap)
 			if err != nil {
 				return nil, err
 			}
@@ -584,6 +589,7 @@ func (m *MemStore) SweepOnce(_ context.Context) (*SweepResult, error) {
 					FirstSeen:       ev.occurredAt,
 					LastSeen:        ev.occurredAt,
 					OccurrenceCount: 1, // 与列 DEFAULT 1 的插入语义一致
+					MaskedSample:    h.MaskedSample,
 				}
 				m.fields[key] = row
 			} else {
@@ -600,6 +606,10 @@ func (m *MemStore) SweepOnce(_ context.Context) (*SweepResult, error) {
 				// 与 SQL GREATEST 语义一致：置信度只升不降
 				if h.Confidence > row.Confidence {
 					row.Confidence = h.Confidence
+				}
+				// 与 SQL CASE 一致：保留最新 1 条非空脱敏样本，后续字段名命中不覆盖
+				if h.MaskedSample != "" {
+					row.MaskedSample = h.MaskedSample
 				}
 			}
 			row.SourceDetail = sourceDetail
