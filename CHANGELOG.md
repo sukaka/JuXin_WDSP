@@ -4,6 +4,29 @@
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-23
+
+### 新增
+
+- **URL 白名单管理与安全事件处置收敛**：新增迁移 `000223_url_whitelists`、网关 `urlwhitelist` 模块（全局白 → 应用白，位于 IP 白名单之后、IP 黑名单之前，跳过黑名单/L7/CC 但不绕过手工封禁/WAF/Bot/API 动态防护）、管理 API、过期清理及前端「白名单管理（IP/URL）」页面；安全事件详情抽屉支持一键加入 IP/URL 白名单并联动创建精确例外草稿，研判操作收敛为下拉选择 + 执行处置/仅添备注。
+- **离线 IP 归属地引擎升级**：移除 `qqwry.dat`，新增 `ip2region` xdb + MMDB 混合离线归属地查询引擎与批量查询接口（`server/internal/apigeo`、`server/assets/geoip/ip2region_v4.xdb`），同步更新第三方许可声明、容器/裸机/离线打包脚本及安全事件/访问日志/大屏归属地展示。
+- **L7 规则增强与敏感字段脱敏样本**：L7 访问控制新增 `host` 条件与重定向「保留路径和查询参数」选项及表单实时预览；新增迁移 `000224_api_sensitive_masked_sample` 与网关 `sensitive_mask`，在绝不落盘明文的前提下为 API 敏感字段提供脱敏样本采集与前端展示。
+- **多列表页勾选导出、顶部快捷入口与 WAF 规则中文化**：安全事件、访问日志、访问规则、访问控制事件、登录日志、审计日志、系统告警与 API 资产支持「导出已选（按 IDs）」与筛选导出；顶部栏新增「配置发布」与「站内告警铃铛」快捷入口并优化侧边栏布局；新增 `wafrules/i18n.go` 与 `rule_names_zh.json` 覆盖内置规则、命中消息及历史事件中文化；流程基线支持流程级频控参数，AI 提示词测试页支持模型回归结果详情展示。
+
+### 修复与契约对齐
+
+- **网关与检测引擎**：修复标准浏览器请求头（Client Hints）及静态 CSS 响应触发敏感检测误报；修复 `exclude_fields` 未覆盖值匹配；修复发布冒烟端点被 L7 Host 重定向误拦（仅已认证探针绕过且发布端禁止跟随重定向）；修复 MMDB 指针循环防护与双 Schema 兼容。
+- **AI 分析与编排**：修复分析接口意图识别误劫持与关键词误触发（`B2-4/5/6`、`account` URI 误入 CC 分支、`event_id` 优先级）、空体校验与 IPv6 提取、AI 审计记录 JSON tag 与解包、草稿缺失 `NOISE_REDUCTION` 及 What-If 超 100 条截断（`B4-04`）、`rule_id` 类型错传字符串、提示词回归 60s 超时中断及评估页缺失 `ai.usage.read` 权限门禁。
+- **后端契约、SQL 与校验**：修复 LLM 安全策略创建 SQL 14 占位符绑定错误、MCP 再导入保留描述与重命名（`B12-03/04`）、授权向导 `impact_snapshot` base64 序列化、对象模型 `ANY_OF`/时间参数校验、报表删除权限与归档字段对齐（`B5-02/06`）、保护策略阈值越界/小数校验、登录日志导出被 100 条截断、敏感类型导入导出回灌拒收元数据、配置版本缺 `validation_result`、CRS 目录为空同步未报错、多模块空切片返回 `null` 引发前端崩溃（`B6-7`/`B8-05`/`B9-7`）及用户管理用户名校验/`totp_enabled`/冲突消息吞没（`B12-05/06/10`）。
+- **前端接口契约与交互（`B4–B12` 全站排查）**：修复 401 公开白名单路径 `/auth/totp-verify` 拼写错配、例外规则 `risk_acknowledged`/`DRAFT`/预览/启用解包（`B4-03/05/06/09`）、系统设置与告警抑制原生 `boolean`/`number` 类型错配（`B6-5/12`）、数据流向 `data_type` 大小写（`B6-11`）、报告模板章节键与格式校验（`B7-1/5`）、WAF 来源非法 `CUSTOM`（`B8-04`）、路径转发/HSTS/源站编辑丢字段与 `allow_private` 误传（`B9-1/2/4/5/6`）、漏洞参考 `published_at=null`（`B9-8`）、漏洞情报页契约对齐、JWT `role_claims` 丢失与校验（`B10-1`）、报告定时 `CUSTOM`/`day_of_*=0`（`B10-3/4`）、自定义规则 `CNNVD-` 前缀（`B10-5`）、AI 运维计划丢 `config`（`B10-6`）、交付检查字段对齐（`B11-1/2/3`）、导出按钮 Tooltip 遮挡、API 准入超 100 端点截断、API 安全/APM/升级任务/风险身份/Bot 空态/网络配置/L7 表单校验等契约缺陷。
+
+### 验证与边界
+
+- 网关测试：`gateway/dynamic_security`（`detectors/...`、`pipeline/...`）与 `gateway/modules/jiuzhang_guard`（`urlwhitelist/...`、`l7rules/...` 及全部变更模块单测）通过。
+- 后端构建与测试：`cd server && go build ./...` 及全部 31 个变更包单测通过（含 `internal/upgrades` 版本号断言更新后回归）；`ops` 变更脚本 `bash -n` 语法检查通过。
+- 前端验证：`cd web && npm run typecheck && npm run lint && npm run build` 0 报错通过，全量 Vitest **216/216 文件、1561/1561 用例**全绿。
+- 目标 Linux/amd64 宿主机实机安装、升级、回滚、真实迁移与外部客户端访问均为 `NOT_RUN`。
+
 ## [1.9.2] - 2026-11-19
 
 ### 修复与体验优化
