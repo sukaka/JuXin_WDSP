@@ -91,9 +91,9 @@
 | topojson-client | https://github.com/topojson/topojson-client | 3.1.0 | ISC | 否 | TopoJSON 转 GeoJSON | [licenses/topojson-client/LICENSE](licenses/topojson-client/LICENSE) |
 | world-atlas | https://github.com/topojson/world-atlas | 2.0.2 | ISC（数据为 Natural Earth，公有领域） | 否 | 世界国家面数据（地球底图与国家质心） | [licenses/world-atlas/LICENSE](licenses/world-atlas/LICENSE) |
 | i18n-iso-countries | https://github.com/michaelwittig/node-i18n-iso-countries | 7.14.0 | MIT | 否 | ISO 3166 数字代码转 alpha-2 | [licenses/i18n-iso-countries/LICENSE](licenses/i18n-iso-countries/LICENSE) |
-| geo-whois-asn-country-mmdb | https://github.com/sapics/ip-location-db | 2.3.2026061719 | CC0-1.0（含 NRO 统计数据 CC-BY-4.0，需注明 nro.net 来源） | 否 | 离线 IP→国家归属库（web/public/assets/geo/country.mmdb 前端回退用；runtime/geoip/country.mmdb 服务端数据出境判定用，自研只读解析器见 server/internal/apigeo） | [licenses/geoip-country-mmdb/](licenses/geoip-country-mmdb/) |
-| dbip-city-mmdb | https://github.com/sapics/ip-location-db | 2.3.2026060513 | CC BY 4.0（DB-IP，需署名，大屏地球面板已带链接） | 否 | 离线 IPv6→城市归属库（web/public/assets/geo/city-ipv6.mmdb） | [licenses/dbip-city/](licenses/dbip-city/) |
-| 纯真 CZ88 IP 库（qqwry.dat） | https://github.com/FW27623/qqwry（cz88.net 镜像） | 快照 2026-08-09（sha256:cd4ec244…） | 免费数据库，版权归纯真网络所有，无标准开源许可证（负责人决策引入） | 否 | 离线 IPv4→城市归属库（web/public/assets/geo/qqwry.dat），仅大屏可视化 | [licenses/cz88-qqwry/](licenses/cz88-qqwry/) |
+| geo-whois-asn-country-mmdb | https://github.com/sapics/ip-location-db | 2.3.2026061719 | CC0-1.0（含 NRO 统计数据 CC-BY-4.0，需注明 nro.net 来源） | 否 | 离线 IP→国家归属回退库（web/public/assets/geo/country.mmdb 与服务端统一 GeoIP 引擎，自研只读解析器见 server/internal/apigeo） | [licenses/geoip-country-mmdb/](licenses/geoip-country-mmdb/) |
+| dbip-city-mmdb | https://github.com/sapics/ip-location-db | 2.3.2026060513 | CC BY 4.0（DB-IP，需署名，大屏地球面板已带链接） | 否 | 离线 IPv6→城市归属库（web/public/assets/geo/city-ipv6.mmdb）；服务端统一 GeoIP 引擎同时兼容官方 DB-IP Lite `.mmdb` 替换升级 | [licenses/dbip-city/](licenses/dbip-city/) |
+| ip2region（ip2region_v4.xdb） | https://github.com/lionsoul2014/ip2region | commit f8410adb250b075c20f4c6f463c4b52b821a7970（2026-11-09，sha256:a12ad5aca1277d67e525efcda531a20cc0d654ff4f087150d45bc17fca4bc260） | Apache-2.0 OR MIT | 否 | 离线 IPv4→省市/运营商归属库（server/assets/geoip/ip2region_v4.xdb，自研纯 Go 只读 XDB 解析器见 server/internal/apigeo/xdb.go），供安全事件、访问日志与大屏统一归属地查询 | [licenses/ip2region/LICENSE.md](licenses/ip2region/LICENSE.md) |
 
 ## 阶段8 新增与关键间接依赖补登
 

@@ -18,7 +18,7 @@ console/               控制台 Caddyfile 模板（双栈 / 仅 HTTP）
 gateway/               Caddyfile.bootstrap.template、blockpage.html、rules/（CRS 等规则）
 migrations/            数据库迁移（api 启动时自动执行）
 assets/fonts/          报表字体（NotoSansCJKsc）
-geoip/country.mmdb     GeoIP 国家库
+geoip/                 GeoIP 离线库（ip2region_v4.xdb、city-ipv6.mmdb、country.mmdb，支持放官方 DB-IP Lite .mmdb）
 env.template           运行环境模板（install.sh 渲染为 $R/env）
 ops/                   console-cert.sh / fingerprint.sh / backup.sh / restore.sh / lib/common.sh
 systemd/               7 个单元模板（install.sh 渲染安装）

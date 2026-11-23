@@ -1,8 +1,10 @@
-import { lookupGeo, isPublicIp } from '../../utils/ipgeo'
+import { geoipApi } from '../../api/geoip'
+import type { IPGeoInfo } from '../../types'
+import { countryNameZh, isPublicIp, lookupGeo } from '../../utils/ipgeo'
 import type { GeoPoint } from '../../utils/ipgeo'
-import { lookupGeoByQqwry, countryNameZh } from './components/qqwryGeo'
-import { getCountryCentroids } from './components/geoData'
+import { cnLocationCoords } from './components/cnCoords'
 import { DEMO_ATTACK_ROUTES } from './components/demoGlobe'
+import { getCountryCentroids } from './components/geoData'
 import type { GlobeRoute } from './components/GlobeAttackMap'
 
 /** 一条攻击路线（来源地 → 防护目标） */
@@ -22,11 +24,41 @@ export interface AttackRoute {
 }
 
 const SEVERITY_RANK: Record<string, number> = { HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0 }
+const GREATER_CHINA = new Set(['CN', 'HK', 'MO', 'TW'])
+
+/** 将后端统一 GeoIP 引擎返回的 IPGeoInfo 转为大屏弧线 GeoPoint */
+export function geoInfoToGeoPoint(info: IPGeoInfo | null | undefined): GeoPoint | null {
+  if (!info || info.scope !== 'PUBLIC') return null
+  const countryCode = (info.country_code ?? '').trim().toUpperCase()
+  if (!countryCode) return null
+
+  const province = (info.province ?? '').trim()
+  const city = (info.city ?? '').trim()
+  let location: [number, number] | null = null
+  if (
+    typeof info.longitude === 'number' &&
+    typeof info.latitude === 'number' &&
+    !Number.isNaN(info.longitude) &&
+    !Number.isNaN(info.latitude) &&
+    !(info.longitude === 0 && info.latitude === 0)
+  ) {
+    location = [info.longitude, info.latitude]
+  } else if (GREATER_CHINA.has(countryCode)) {
+    location = cnLocationCoords(province, city)
+  }
+
+  return {
+    countryCode,
+    city: city || (GREATER_CHINA.has(countryCode) ? province : ''),
+    state: province,
+    location,
+  }
+}
 
 /**
  * 攻击事件 → 攻击路线聚合（纯函数，便于测试）。
  * resolve 把 IP 映射为城市级归属地（返回 null 表示内网/未识别）；
- * 无坐标的结果（IPv6/库缺坐标）按国家质心回退，centroids 提供国家质心。
+ * 无坐标的结果（库缺坐标）按国家质心回退，centroids 提供国家质心。
  */
 export function aggregateAttackRoutes(
   items: { client_ip: string; severity: string }[],
@@ -56,27 +88,74 @@ export function aggregateAttackRoutes(
   return [...byPlace.values()].map((e) => e.route).sort((a, b) => b.count - a.count)
 }
 
-/** 单个 IP 解析：IPv4 优先纯真库（中国城市级准确），IPv6 走 DB-IP 城市库；均未命中回退国家库 */
-async function resolveIp(ip: string): Promise<GeoPoint | null> {
-  if (!isPublicIp(ip)) return null
-  if (ip.includes(':')) return lookupGeo(ip)
-  const geo = await lookupGeoByQqwry(ip)
-  if (geo) return geo
-  return lookupGeo(ip)
-}
-
-/** 线上版聚合：离线城市级 GeoIP 查询 + 国家质心回退；GeoIP 库不可用时返回空 */
+/**
+ * 线上版聚合：
+ * 1. 优先复用安全事件列表已携带的 client_ip_geo（零额外请求）；
+ * 2. 对未附带归属地的公网 IP 统一调用后端批量 GeoIP 接口（ip2region + DB-IP/MMDB）；
+ * 3. 若后端接口失败或后端未加载离线库（geo_enabled=false），自动回退浏览器端 MMDB 降级链。
+ */
 export async function buildAttackRoutes(
-  items: { client_ip: string; severity: string }[],
+  items: { client_ip: string; severity: string; client_ip_geo?: IPGeoInfo | null }[],
 ): Promise<AttackRoute[]> {
-  // 预取所有 IP，第一个请求会触发各库懒加载；库缺失时 resolveIp 恒为 null
   const resolved = new Map<string, GeoPoint | null>()
-  await Promise.all(
-    [...new Set(items.map((i) => i.client_ip))].map(async (ip) => {
-      resolved.set(ip, await resolveIp(ip))
-    }),
-  )
-  return aggregateAttackRoutes(items, (ip) => resolved.get(ip) ?? null, getCountryCentroids()).map((r) => ({
+  const missingPublicIps: string[] = []
+  const seenMissing = new Set<string>()
+
+  for (const item of items) {
+    const ip = item.client_ip?.trim()
+    if (!ip) continue
+    if (item.client_ip_geo && !resolved.has(ip)) {
+      const pt = geoInfoToGeoPoint(item.client_ip_geo)
+      if (pt || item.client_ip_geo.scope !== 'PUBLIC') {
+        resolved.set(ip, pt)
+        continue
+      }
+    }
+    if (!resolved.has(ip) && !seenMissing.has(ip)) {
+      if (!isPublicIp(ip)) {
+        resolved.set(ip, null)
+      } else {
+        seenMissing.add(ip)
+        missingPublicIps.push(ip)
+      }
+    }
+  }
+
+  let needBrowserFallbackIps: string[] = []
+  if (missingPublicIps.length > 0) {
+    try {
+      const batch = await geoipApi.lookupBatch(missingPublicIps)
+      if (batch.geo_enabled) {
+        for (const ip of missingPublicIps) {
+          const pt = geoInfoToGeoPoint(batch.items?.[ip])
+          if (pt) {
+            resolved.set(ip, pt)
+          } else {
+            needBrowserFallbackIps.push(ip)
+          }
+        }
+      } else {
+        needBrowserFallbackIps = missingPublicIps
+      }
+    } catch {
+      // 后端批量查询失败时降级回退浏览器端离线 MMDB
+      needBrowserFallbackIps = missingPublicIps
+    }
+  }
+
+  if (needBrowserFallbackIps.length > 0) {
+    await Promise.all(
+      needBrowserFallbackIps.map(async (ip) => {
+        resolved.set(ip, await lookupGeo(ip))
+      }),
+    )
+  }
+
+  return aggregateAttackRoutes(
+    items,
+    (ip) => resolved.get(ip?.trim()) ?? null,
+    getCountryCentroids(),
+  ).map((r) => ({
     ...r,
     name: r.city || countryNameZh(r.country),
   }))

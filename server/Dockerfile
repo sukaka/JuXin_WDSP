@@ -54,6 +54,13 @@ COPY --from=builder /out/jiuzhang-api /usr/local/bin/jiuzhang-api
 COPY --chown=jiuzhang:jiuzhang server/migrations/ /app/migrations/
 # 报告 PDF 字体等资源（阶段6）
 COPY --chown=jiuzhang:jiuzhang server/assets/fonts/*.otf server/assets/fonts/*.ttf /app/assets/fonts/
+# 统一离线 GeoIP 数据资产（ip2region_v4.xdb + DB-IP IPv6 城市库 + 国家回退库；
+# 运行时可在 runtime/geoip/ 放置新版 ip2region 或官方 DB-IP Lite .mmdb 覆盖）
+COPY --chown=jiuzhang:jiuzhang server/assets/geoip/ip2region_v4.xdb web/public/assets/geo/city-ipv6.mmdb web/public/assets/geo/country.mmdb /app/assets/geoip/
+# 内置 WAF 规则元数据目录（OWASP CRS + 插件 + 第三方/自建规则包 + 九章内置规则；
+# 生产编排如挂载 ./gateway/rules:/etc/caddy/rules:ro 并配置 WAF_CRS_DIR 则优先使用挂载目录，
+# 旧编排仅升级镜像时可直接回退读取镜像内 /app/gateway/rules）
+COPY --chown=jiuzhang:jiuzhang gateway/rules/ /app/gateway/rules/
 
 USER jiuzhang
 WORKDIR /app

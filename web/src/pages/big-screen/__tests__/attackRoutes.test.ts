@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { aggregateAttackRoutes } from '../attackRoutes'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { aggregateAttackRoutes, buildAttackRoutes, geoInfoToGeoPoint } from '../attackRoutes'
+import { geoipApi } from '../../../api/geoip'
 import { isPublicIp } from '../../../utils/ipgeo'
 import type { GeoPoint } from '../../../utils/ipgeo'
 
@@ -95,5 +96,88 @@ describe('isPublicIp', () => {
     expect(isPublicIp('::1')).toBe(false)
     expect(isPublicIp('fe80::1')).toBe(false)
     expect(isPublicIp('fc00::1')).toBe(false)
+  })
+})
+
+describe('geoInfoToGeoPoint & buildAttackRoutes', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('后端中国归属地按省市去后缀补全坐标，内网地址忽略', () => {
+    expect(
+      geoInfoToGeoPoint({
+        ip: '202.96.128.86',
+        scope: 'PUBLIC',
+        country_code: 'CN',
+        province: '广东省',
+        city: '广州市',
+        isp: '电信',
+        label: '中国 广东省 广州市',
+      }),
+    ).toEqual({
+      countryCode: 'CN',
+      city: '广州市',
+      state: '广东省',
+      location: [113.26, 23.13],
+    })
+
+    expect(
+      geoInfoToGeoPoint({
+        ip: '10.0.0.1',
+        scope: 'INTERNAL',
+        label: '内网地址',
+      }),
+    ).toBeNull()
+  })
+
+  it('事件已携带 client_ip_geo 时直接复用且不发起批量请求', async () => {
+    const spy = vi.spyOn(geoipApi, 'lookupBatch')
+    const routes = await buildAttackRoutes([
+      {
+        client_ip: '202.96.128.86',
+        severity: 'HIGH',
+        client_ip_geo: {
+          ip: '202.96.128.86',
+          scope: 'PUBLIC',
+          country_code: 'CN',
+          province: '广东省',
+          city: '广州市',
+          isp: '电信',
+          label: '中国 广东省 广州市',
+          longitude: 113.26,
+          latitude: 23.13,
+        },
+      },
+    ])
+    expect(spy).not.toHaveBeenCalled()
+    expect(routes).toHaveLength(1)
+    expect(routes[0]).toMatchObject({ country: 'CN', city: '广州市', from: [113.26, 23.13], count: 1 })
+  })
+
+  it('缺失 client_ip_geo 的公网 IP 走后端批量接口解析', async () => {
+    const spy = vi.spyOn(geoipApi, 'lookupBatch').mockResolvedValue({
+      geo_enabled: true,
+      sources: ['ip2region_v4', 'dbip_city_v6'],
+      items: {
+        '45.148.10.75': {
+          ip: '45.148.10.75',
+          scope: 'PUBLIC',
+          country_code: 'NL',
+          country: '荷兰',
+          province: 'South Holland',
+          label: '荷兰 South Holland',
+          longitude: 4.9041,
+          latitude: 52.3676,
+        },
+      },
+    })
+    const routes = await buildAttackRoutes([
+      { client_ip: '45.148.10.75', severity: 'MEDIUM' },
+      { client_ip: '192.168.1.1', severity: 'LOW' },
+    ])
+    expect(spy).toHaveBeenCalledWith(['45.148.10.75'])
+    expect(routes).toHaveLength(1)
+    expect(routes[0]).toMatchObject({ country: 'NL', name: '荷兰', from: [4.9041, 52.3676] })
   })
 })

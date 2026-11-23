@@ -522,6 +522,9 @@ services:
       CADDY_ADMIN_SOCKET: /var/run/caddy/admin.sock
       GATEWAY_DATA_DIR: /app/runtime
       MIGRATIONS_DIR: /app/migrations
+      # 防护规则库元数据同步目录（与 gateway 共用 ./gateway/rules 只读挂载，缺省则回退镜像内置目录）
+      WAF_CRS_DIR: /etc/caddy/rules/crs/rules
+      WAF_CRS_VERSION: 4.28.0
       # 产品线（由打包写入，安装时可被 .env 覆盖）
       PRODUCT_EDITION: \${PRODUCT_EDITION:-${PRODUCT}}
       API_DYNAMIC_PROTECTION_ENABLED: \${API_DYNAMIC_PROTECTION_ENABLED:-${API_DYNAMIC_DEFAULT}}
@@ -568,6 +571,8 @@ services:
     volumes:
       - gateway-admin:/var/run/caddy
       - gateway-logs:/var/log/caddy-audit:ro
+      # 只读挂载 WAF 规则目录（CRS + 插件 + contrib + 九章内置，与 gateway 共源）
+      - ./gateway/rules:/etc/caddy/rules:ro
       - runtime-data:/app/runtime
       # HTTPS 证书下发：与 gateway 的 /etc/caddy/certs 共用同一卷；嵌套在 runtime-data 下
       - gateway-certs:/app/runtime/certificates

@@ -89,3 +89,125 @@ func TestMMDBCorrupt(t *testing.T) {
 		t.Fatal("missing file should fail")
 	}
 }
+
+// TestExtractMMDBLocationDualSchema 验证同时兼容 sapics 扁平结构与官方 DB-IP/MaxMind 嵌套结构。
+func TestExtractMMDBLocationDualSchema(t *testing.T) {
+	t.Run("official DB-IP nested schema", func(t *testing.T) {
+		rec := map[string]any{
+			"country": map[string]any{
+				"iso_code": "nl",
+				"names": map[string]any{
+					"en":    "Netherlands",
+					"zh-CN": "荷兰",
+				},
+			},
+			"subdivisions": []any{
+				map[string]any{
+					"iso_code": "NH",
+					"names": map[string]any{
+						"en":    "North Holland",
+						"zh-CN": "北荷兰省",
+					},
+				},
+			},
+			"city": map[string]any{
+				"names": map[string]any{
+					"en":    "Amsterdam",
+					"zh-CN": "阿姆斯特丹",
+				},
+			},
+			"location": map[string]any{
+				"latitude":  52.3676,
+				"longitude": 4.9041,
+			},
+		}
+		loc := extractMMDBLocation(rec)
+		if loc == nil {
+			t.Fatal("expected non-nil location")
+		}
+		if loc.CountryCode != "NL" || loc.Country != "荷兰" || loc.Province != "北荷兰省" || loc.City != "阿姆斯特丹" {
+			t.Fatalf("unexpected nested loc: %+v", loc)
+		}
+		if !loc.HasCoord || loc.Latitude != 52.3676 || loc.Longitude != 4.9041 {
+			t.Fatalf("unexpected coords: %+v", loc)
+		}
+	})
+
+	t.Run("official DB-IP registered_country fallback and en names", func(t *testing.T) {
+		rec := map[string]any{
+			"registered_country": map[string]any{
+				"iso_code": "US",
+				"names":    map[string]any{"en": "United States"},
+			},
+			"city": map[string]any{
+				"names": map[string]any{"en": "Mountain View"},
+			},
+			"location": map[string]any{
+				"latitude":  float32(37.4056),
+				"longitude": float32(-122.0775),
+			},
+		}
+		loc := extractMMDBLocation(rec)
+		if loc == nil || loc.CountryCode != "US" || loc.Country != "United States" || loc.City != "Mountain View" || !loc.HasCoord {
+			t.Fatalf("unexpected fallback loc: %+v", loc)
+		}
+	})
+
+	t.Run("sapics flat schema", func(t *testing.T) {
+		rec := map[string]any{
+			"country_code": "JP",
+			"state1":       "Tokyo",
+			"city":         "Tokyo",
+			"latitude":     35.6762,
+			"longitude":    139.6503,
+		}
+		loc := extractMMDBLocation(rec)
+		if loc == nil || loc.CountryCode != "JP" || loc.Province != "Tokyo" || loc.City != "Tokyo" || !loc.HasCoord {
+			t.Fatalf("unexpected flat loc: %+v", loc)
+		}
+	})
+
+	t.Run("zero coord ignored", func(t *testing.T) {
+		rec := map[string]any{
+			"country_code": "US",
+			"latitude":     0.0,
+			"longitude":    0.0,
+		}
+		loc := extractMMDBLocation(rec)
+		if loc == nil || loc.CountryCode != "US" || loc.HasCoord {
+			t.Fatalf("expected HasCoord=false for (0,0), got %+v", loc)
+		}
+	})
+}
+
+// TestMMDBRealCityIPv6Lookup 真实仓库 city-ipv6.mmdb 城市与坐标查询断言。
+func TestMMDBRealCityIPv6Lookup(t *testing.T) {
+	const cityV6Path = "../../../web/public/assets/geo/city-ipv6.mmdb"
+	if _, err := os.Stat(cityV6Path); err != nil {
+		t.Skipf("real city-ipv6.mmdb not present: %v", err)
+	}
+	db, err := OpenMMDB(cityV6Path)
+	if err != nil {
+		t.Fatalf("OpenMMDB city-ipv6: %v", err)
+	}
+	addr := netip.MustParseAddr("2606:4700:4700::1111")
+	loc, err := db.LookupLocation(addr)
+	if err != nil {
+		t.Fatalf("LookupLocation v6: %v", err)
+	}
+	if loc == nil || loc.CountryCode == "" {
+		t.Fatalf("expected non-empty IPv6 city location, got %+v", loc)
+	}
+}
+
+// TestMMDBPointerLoopProtected 循环指针必须触发深度保护返回错误而非栈溢出。
+func TestMMDBPointerLoopProtected(t *testing.T) {
+	// 构造 2 字节循环指针：控制字节 001_00_000 (0x20) + 偏移 0 → 指回自身 baseOffset+0
+	d := decoder{
+		buf:        []byte{0x20, 0x00},
+		baseOffset: 0,
+	}
+	if _, _, err := d.decode(0); err == nil {
+		t.Fatal("expected pointer loop to return error")
+	}
+}

@@ -288,13 +288,15 @@ else
 fi
 chown "${RUN_USER}:${RUN_USER}" "${FP_FILE}"
 chmod 0600 "${FP_FILE}"
-if [[ ! -s "${R}/data/runtime/geoip/country.mmdb" ]]; then
-  cp -a "${R}/geoip/country.mmdb" "${R}/data/runtime/geoip/country.mmdb"
-  chown "${RUN_USER}:${RUN_USER}" "${R}/data/runtime/geoip/country.mmdb"
-  log_info "已部署 GeoIP 库 country.mmdb"
-else
-  log_info "GeoIP 库已存在，保持现状"
-fi
+for geo_file in ip2region_v4.xdb city-ipv6.mmdb country.mmdb; do
+  if [[ -s "${R}/geoip/${geo_file}" && ! -s "${R}/data/runtime/geoip/${geo_file}" ]]; then
+    cp -a "${R}/geoip/${geo_file}" "${R}/data/runtime/geoip/${geo_file}"
+    chown "${RUN_USER}:${RUN_USER}" "${R}/data/runtime/geoip/${geo_file}"
+    log_info "已部署 GeoIP 库 ${geo_file}"
+  elif [[ -s "${R}/data/runtime/geoip/${geo_file}" ]]; then
+    log_info "GeoIP 库 ${geo_file} 已存在，保持现状"
+  fi
+done
 
 # ---------- 10. 渲染 Caddy 配置 ----------
 log_info "==> [10/16] 渲染控制台/网关 Caddy 配置"

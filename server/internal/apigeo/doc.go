@@ -12,18 +12,21 @@
 //
 // GeoIP 数据源（诚实声明）：
 //
-//	仓库内归档的 web/public/assets/geo/country.mmdb（@ip-location-db/
-//	geo-whois-asn-country，CC0-1.0；其中 NRO 统计数据 CC-BY-4.0，使用须署名
-//	https://www.nro.net ，许可文本见 licenses/geoip-country-mmdb/）。该库仅含
-//	country_code（无 ASN/城市），IPv4+IPv6 双栈。因服务端禁止新增第三方依赖，
-//	本包自带只读 mmdb 解析器（mmdb.go，按 MaxMind DB 公开格式实现，仅覆盖
-//	国家码查询所需子集）。纯真 qqwry.dat 为 GBK 中文地名且仅 IPv4，不适配
-//	国家码判定口径，未采用。
+//	统一离线 GeoIP 引擎（engine.go）零外部依赖融合两类宽松许可数据源：
+//	  1. ip2region（ip2region_v4.xdb，Apache-2.0 OR MIT，许可归档 licenses/ip2region/）：
+//	     自研纯 Go 只读 XDB 解析器（xdb.go，兼容 v2/v3），提供精准国内省市与运营商信息；
+//	  2. DB-IP Lite / MaxMind MMDB（city-ipv6.mmdb，CC BY 4.0，署名见大屏地球面板与
+//	     licenses/dbip-city/；country.mmdb，CC0-1.0 含 NRO CC-BY-4.0，归档见
+//	     licenses/geoip-country-mmdb/）：自研只读 MMDB 解析器（mmdb.go）同时兼容
+//	     sapics 扁平格式与官方 DB-IP Lite / MaxMind GeoIP2 嵌套格式，运维可直接将官方
+//	     dbip-city-lite-YYYY-MM.mmdb 或 dbip-country-lite-YYYY-MM.mmdb 放入 runtime/geoip/ 覆盖。
 //
-// 降级语义：运行时数据文件缺失/损坏时 GeoIP 停用（lookup=nil）——Sweep 空转
-// 并在结果中如实标注 GeoEnabled=false（不吞错、不伪造判定），读接口返回
-// geo_enabled=false + 既有数据（可能为空）。集成方将数据文件部署到
-// 装配路径（建议 runtime/geoip/country.mmdb）后能力自动启用。
+//	除数据出境判定外，本包还向安全事件、访问日志、报告和攻击态势大屏提供统一的纯内存
+//	单条/批量归属地查询能力（GET/POST /api/v1/geoip/lookup）。
+//
+// 降级语义：运行时数据文件缺失/损坏时 GeoIP 引擎处于未启用态（Enabled()==false），
+// 数据出境侧注入 nil 保持降级（Sweep 空转、看板如实标注 geo_enabled=false），
+// 不吞错、不伪造判定。数据文件就位后（runtime/geoip/ 或 /app/assets/geoip/）自动启用。
 //
 // 判定口径：内网/保留地址（含 CGNAT）与 GeoIP 未收录（UNKNOWN）一律不记为
 // 跨境——未知归属不能证明出境，宁可漏报不可误报；归属变更（home_regions

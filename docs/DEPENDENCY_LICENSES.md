@@ -160,9 +160,9 @@
 | ai-robots-txt/ai.robots.txt | commit 987266f3（PINNED：tools/rulegen/ai-crawler/PINNED.txt） | MIT | AI 爬虫 UA 清单（生成 ai-crawler-control.conf） | [licenses/ai-robots-txt/](../licenses/ai-robots-txt/) |
 | vektah/gqlparser/v2 | v2.5.60（go.mod 精确锁定） | MIT | GraphQL 文档 AST 解析（NG-GQL-01，gqlast 包装层自建资源硬边界） | [licenses/gqlparser/](../licenses/gqlparser/) |
 | Noto Sans CJK | noto-cjk main（sha256 见 server/assets/fonts/README.md） | OFL-1.1 | PDF 报告内嵌中文字体 | [licenses/noto-fonts/](../licenses/noto-fonts/) |
-| 纯真 CZ88 IP 库（qqwry.dat） | 快照 2026-08-09（sha256:cd4ec244…） | 免费数据库，版权归纯真网络所有，无标准开源许可证（负责人决策引入，仅大屏可视化） | 离线 IPv4→城市归属 | [licenses/cz88-qqwry/](../licenses/cz88-qqwry/) |
-| DB-IP City Lite（city.mmdb / city-ipv6.mmdb） | 2.3.2026060513 | CC BY 4.0（署名已履行：大屏地球面板带 "IP Geolocation by DB-IP" 链接） | 离线 IP→城市归属 | [licenses/dbip-city/](../licenses/dbip-city/) |
-| geo-whois-asn-country-mmdb（country.mmdb） | 2.3.2026061719 | CC0-1.0（含 NRO 统计数据 CC-BY-4.0，需注明 nro.net） | 离线 IP→国家归属（前端回退与服务端数据出境判定） | [licenses/geoip-country-mmdb/](../licenses/geoip-country-mmdb/) |
+| ip2region（ip2region_v4.xdb） | commit f8410adb（2026-11-09，sha256:a12ad5ac…） | Apache-2.0 OR MIT | 离线 IPv4→省市/运营商归属（服务端统一 GeoIP 引擎） | [licenses/ip2region/](../licenses/ip2region/) |
+| DB-IP City Lite（city.mmdb / city-ipv6.mmdb） | 2.3.2026060513 | CC BY 4.0（署名已履行：大屏地球面板带 "IP Geolocation by DB-IP" 链接） | 离线 IP→城市归属（服务端统一 GeoIP 引擎同时兼容官方 DB-IP Lite `.mmdb`） | [licenses/dbip-city/](../licenses/dbip-city/) |
+| geo-whois-asn-country-mmdb（country.mmdb） | 2.3.2026061719 | CC0-1.0（含 NRO 统计数据 CC-BY-4.0，需注明 nro.net） | 离线 IP→国家归属回退（前端降级回退与服务端统一 GeoIP 引擎） | [licenses/geoip-country-mmdb/](../licenses/geoip-country-mmdb/) |
 
 ## 五、构建/测试工具链（不随产品分发）
 
@@ -177,6 +177,6 @@
 
 1. **无 GPL / AGPL / SSPL / RSAL 组件**：全部直接依赖与镜像均为 Apache-2.0 / MIT / BSD / ISC / OFL-1.1 / CC0-1.0 / PostgreSQL License 等宽松许可证。
 2. **freetype-go 为 FTL/GPLv2+ 双许可**，本项目依据双许可条款**选择 FTL**（归档原文见 [licenses/freetype-go/](../licenses/freetype-go/)），不构成 GPL 污染。
-3. **非 OSI 标准许可的数据资产**：纯真 qqwry.dat 无标准开源许可证（版权归纯真网络，负责人决策引入，仅大屏可视化，不参与防护判定）；DB-IP City Lite 与 NRO 统计数据为 CC BY 4.0，署名义务已履行。
+3. **CC 许可数据资产**：原无标准开源许可的纯真 `qqwry.dat` 已彻底移除并由 `ip2region`（`Apache-2.0 OR MIT`）替代；DB-IP City Lite 与 NRO 统计数据为 CC BY 4.0，署名义务已履行。
 4. 许可证原文统一归档于 `licenses/` 按组件分目录保存；归档完整性、禁用许可证扫描、本清单与归档的同步核对由 `scripts/license-audit.sh`（`make license-audit`）执行，SBOM 由 `scripts/generate-sbom.sh` 生成。
 5. 引入或升级任何组件时，必须同步更新本清单、[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)、[DEPENDENCIES.md](DEPENDENCIES.md) 并重跑 `make license-audit`。

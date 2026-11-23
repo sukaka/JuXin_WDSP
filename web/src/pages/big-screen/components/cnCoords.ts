@@ -1,10 +1,10 @@
 /**
- * 中国省/市坐标表（供纯真库文字地址 → 经纬度映射，大屏地球用）。
+ * 中国省/市坐标表（供 ip2region 中文省市名 → 经纬度映射，大屏地球用）。
  * 坐标取各城市政府驻地近似经纬度（WGS84，0.01° 精度足够可视化）；
- * 未收录的城市回退到省会/省级坐标。
+ * 查表前自动剥离「省/市/自治区/特别行政区/地区/盟/自治州」后缀，未收录城市回退省级坐标。
  */
 
-/** 省级坐标（键为纯真库省级名，不含「省/市/自治区」后缀） */
+/** 省级坐标（键为去后缀后的省级名） */
 export const CN_PROVINCE_COORDS: Record<string, [number, number]> = {
   北京: [116.41, 39.9],
   天津: [117.2, 39.08],
@@ -166,9 +166,36 @@ export const CN_CITY_COORDS: Record<string, [number, number]> = {
   伊犁: [81.32, 43.92], 塔城: [82.98, 46.75], 阿勒泰: [88.14, 47.85], 石河子: [86.04, 44.3],
 }
 
+const CN_REGION_SUFFIXES = [
+  '维吾尔自治区',
+  '壮族自治区',
+  '回族自治区',
+  '特别行政区',
+  '自治区',
+  '自治州',
+  '地区',
+  '省',
+  '市',
+  '盟',
+]
+
+function normalizeCnRegionKey(raw: string): string {
+  const s = raw.trim()
+  if (!s) return ''
+  for (const suf of CN_REGION_SUFFIXES) {
+    if (s.endsWith(suf) && s.length > suf.length) {
+      return s.slice(0, -suf.length)
+    }
+  }
+  return s
+}
+
 /** 中国地址 → 坐标：城市级命中用城市坐标，否则回退省级坐标；无法识别返回 null */
 export function cnLocationCoords(province: string, city: string): [number, number] | null {
-  if (city && CN_CITY_COORDS[city]) return CN_CITY_COORDS[city]
-  if (province && CN_PROVINCE_COORDS[province]) return CN_PROVINCE_COORDS[province]
+  const c = normalizeCnRegionKey(city)
+  if (c && CN_CITY_COORDS[c]) return CN_CITY_COORDS[c]
+  if (c && CN_PROVINCE_COORDS[c]) return CN_PROVINCE_COORDS[c]
+  const p = normalizeCnRegionKey(province)
+  if (p && CN_PROVINCE_COORDS[p]) return CN_PROVINCE_COORDS[p]
   return null
 }

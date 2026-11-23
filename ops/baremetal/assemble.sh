@@ -58,6 +58,8 @@ cp "${REPO_ROOT}/server/assets/fonts/NotoSansCJKsc-VF.ttf" "${DIST_DIR}/assets/f
 cp "${REPO_ROOT}/server/assets/fonts/NotoSansCJKsc-Regular.otf" "${DIST_DIR}/assets/fonts/"
 
 mkdir -p "${DIST_DIR}/geoip"
+cp "${REPO_ROOT}/server/assets/geoip/ip2region_v4.xdb" "${DIST_DIR}/geoip/ip2region_v4.xdb"
+cp "${REPO_ROOT}/web/public/assets/geo/city-ipv6.mmdb" "${DIST_DIR}/geoip/city-ipv6.mmdb"
 cp "${REPO_ROOT}/web/public/assets/geo/country.mmdb" "${DIST_DIR}/geoip/country.mmdb"
 
 # ops/：console-cert.sh 依赖 ops/lib/common.sh——拷入库并改写引用路径为包内相对位置
