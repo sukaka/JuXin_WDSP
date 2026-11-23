@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jiuzhang-waf/server/internal/response"
+	"github.com/jiuzhang-waf/server/internal/wafrules"
 )
 
 // ErrEventNotFound 来源安全事件不存在。
@@ -177,11 +178,11 @@ WHERE client_ip = $1::inet AND occurred_at >= $2`, ip, since).Scan(&count, &last
 // hitRules24h 聚合同 IP 近 24h 命中规则（按命中次数降序，最多 10 条）。
 func (s *Store) hitRules24h(ctx context.Context, ip string, since time.Time) ([]HitRuleStat, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT m.rule_id, COALESCE(m.rule_name, ''), count(*) AS hits
+SELECT m.rule_id, COALESCE(MAX(m.rule_name), ''), count(*) AS hits
 FROM security_event_matches m
 JOIN security_events e ON e.id = m.event_id
 WHERE e.client_ip = $1::inet AND e.occurred_at >= $2
-GROUP BY m.rule_id, m.rule_name
+GROUP BY m.rule_id
 ORDER BY hits DESC, m.rule_id
 LIMIT 10`, ip, since)
 	if err != nil {
@@ -194,6 +195,7 @@ LIMIT 10`, ip, since)
 		if err := rows.Scan(&h.RuleID, &h.RuleName, &h.Hits); err != nil {
 			return nil, err
 		}
+		h.RuleName = wafrules.LocalizeRule(h.RuleID, "", h.RuleName)
 		out = append(out, h)
 	}
 	return out, rows.Err()

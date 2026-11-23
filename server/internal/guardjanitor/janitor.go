@@ -15,6 +15,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/exceptions"
 	"github.com/jiuzhang-waf/server/internal/temporaryblocks"
+	"github.com/jiuzhang-waf/server/internal/urlwhitelists"
 )
 
 // DefaultInterval 默认调度间隔。
@@ -27,12 +28,25 @@ func SweepOnce(ctx context.Context, rules *accessrules.Store, blocks *temporaryb
 
 // SweepOnceFull 到期标记（含临时例外；可选写入访问控制事件）。
 func SweepOnceFull(ctx context.Context, rules *accessrules.Store, blocks *temporaryblocks.Store, exceptionStore *exceptions.Store, auditSvc *audits.Service, acEvents *accesscontrolevents.Store) (rulesExpired, blocksExpired int, err error) {
+	return SweepOnceWithURLWhitelists(ctx, rules, nil, blocks, exceptionStore, auditSvc, acEvents)
+}
+
+// SweepOnceWithURLWhitelists 到期标记（含 IP 黑白名单、URL 白名单、临时封禁与临时例外）。
+func SweepOnceWithURLWhitelists(ctx context.Context, rules *accessrules.Store, urlRules *urlwhitelists.Store, blocks *temporaryblocks.Store, exceptionStore *exceptions.Store, auditSvc *audits.Service, acEvents *accesscontrolevents.Store) (rulesExpired, blocksExpired int, err error) {
 	now := time.Now().UTC()
 	if rules != nil {
 		rulesExpired, err = rules.MarkExpired(ctx, now)
 		if err != nil {
 			return rulesExpired, blocksExpired, fmt.Errorf("expire access rules: %w", err)
 		}
+	}
+	urlRulesExpired := 0
+	if urlRules != nil {
+		urlRulesExpired, err = urlRules.MarkExpired(ctx, now)
+		if err != nil {
+			return rulesExpired, blocksExpired, fmt.Errorf("expire url whitelists: %w", err)
+		}
+		rulesExpired += urlRulesExpired
 	}
 	if blocks != nil {
 		expiredBlocks, berr := blocks.MarkExpiredReturning(ctx, now)
@@ -94,6 +108,11 @@ func Run(ctx context.Context, interval time.Duration, rules *accessrules.Store, 
 
 // RunFull 周期调度（含临时例外到期与 CC 到期事件）。
 func RunFull(ctx context.Context, interval time.Duration, rules *accessrules.Store, blocks *temporaryblocks.Store, exceptionStore *exceptions.Store, auditSvc *audits.Service, acEvents *accesscontrolevents.Store) {
+	RunWithURLWhitelists(ctx, interval, rules, nil, blocks, exceptionStore, auditSvc, acEvents)
+}
+
+// RunWithURLWhitelists 周期调度（含 URL 白名单临时到期标记）。
+func RunWithURLWhitelists(ctx context.Context, interval time.Duration, rules *accessrules.Store, urlRules *urlwhitelists.Store, blocks *temporaryblocks.Store, exceptionStore *exceptions.Store, auditSvc *audits.Service, acEvents *accesscontrolevents.Store) {
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
@@ -105,7 +124,7 @@ func RunFull(ctx context.Context, interval time.Duration, rules *accessrules.Sto
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			re, be, err := SweepOnceFull(ctx, rules, blocks, exceptionStore, auditSvc, acEvents)
+			re, be, err := SweepOnceWithURLWhitelists(ctx, rules, urlRules, blocks, exceptionStore, auditSvc, acEvents)
 			if err != nil {
 				slog.Error("guard janitor sweep failed", "error", err)
 				continue

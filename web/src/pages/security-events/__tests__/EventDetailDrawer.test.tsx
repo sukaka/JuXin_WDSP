@@ -582,4 +582,81 @@ describe('EventDetailDrawer 命中规则 CNNVD/CVE 编号（CNNVD 兼容性 P1�
     expect(await screen.findByText('命中虚拟补丁')).toBeInTheDocument()
     expect(screen.queryByText('漏洞编号：')).not.toBeInTheDocument()
   })
+
+  it('历史英文 CRS 命中记录自动转为中文（含异常总分）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetch({
+        ...EVENT_DETAIL,
+        matches: [
+          {
+            rule_id: 943120,
+            rule_name: 'Possible Session Fixation Attack: SessionID Parameter Name with No Referer',
+            rule_source: 'OWASP_CRS',
+            severity: 'HIGH',
+            message: 'Possible Session Fixation Attack: SessionID Parameter Name with No Referer',
+            matched_variable: 'ARGS_NAMES:sessionId',
+            matched_data: '0',
+            tags: ['attack-fixation'],
+            phase: 2,
+          },
+          {
+            rule_id: 949110,
+            rule_name: 'Inbound Anomaly Score Exceeded (Total Score: 5)',
+            rule_source: 'OWASP_CRS',
+            severity: 'INFO',
+            message: 'Inbound Anomaly Score Exceeded (Total Score: 5)',
+            matched_variable: '',
+            matched_data: '',
+            tags: [],
+            phase: 2,
+          },
+        ],
+      }),
+    )
+    renderDrawer()
+
+    expect(await screen.findByText('疑似会话固定攻击：SessionID 参数无 Referer')).toBeInTheDocument()
+    expect(screen.getByText('入站异常评分超限（总分：5）')).toBeInTheDocument()
+    expect(
+      screen.queryByText('Possible Session Fixation Attack: SessionID Parameter Name with No Referer'),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText('Inbound Anomaly Score Exceeded (Total Score: 5)')).not.toBeInTheDocument()
+  })
+})
+
+describe('EventDetailDrawer 处置操作收敛与加入白名单入口', () => {
+  beforeEach(() => {
+    useProductStore.setState({ apmEnabled: false, initialized: true })
+    useAuthStore.setState({
+      user: makeUser([
+        'security_events.read',
+        'security_events.disposition',
+        'access_rules.manage',
+        'exceptions.manage',
+      ]),
+      csrfToken: 'csrf-1',
+      initialized: true,
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    useProductStore.getState().reset()
+    useAuthStore.setState({ user: null, csrfToken: null, initialized: false })
+  })
+
+  it('底部处置操作收敛为研判下拉 + 执行处置/仅添备注，并提供加入黑名单/加入白名单/创建例外草稿', async () => {
+    vi.stubGlobal('fetch', mockFetch())
+    renderDrawer()
+
+    expect(await screen.findByRole('button', { name: '执行处置' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '仅添备注' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '加入黑名单' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '加入白名单' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '创建例外草稿' })).toBeInTheDocument()
+    // 原平铺的多余状态按钮已收进下拉，不再平铺占满三行
+    expect(screen.queryByRole('button', { name: '标记分析中' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '忽略' })).not.toBeInTheDocument()
+  })
 })

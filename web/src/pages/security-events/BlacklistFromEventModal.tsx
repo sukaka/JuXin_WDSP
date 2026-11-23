@@ -16,6 +16,7 @@ import {
 import { ApiError } from '../../api/client'
 import { accessRulesApi } from '../../api/accessRules'
 import { securityEventsApi } from '../../api/securityEvents'
+import { ruleNameZh } from '../../utils/crsRuleNames'
 import { formatDateTime } from '../../utils/format'
 import { generateIdempotencyKey } from '../../utils/idempotency'
 import { ATTACK_TYPE_META, EVENT_SEVERITY_META } from '../../utils/stage4'
@@ -184,7 +185,7 @@ export default function BlacklistFromEventModal({
               {prefill.hit_rules.length > 0 ? (
                 <Space wrap size={4}>
                   {prefill.hit_rules.map((h) => (
-                    <Tag key={h.rule_id}>{`${h.rule_id} ${h.rule_name || ''}（${h.hits} 次）`}</Tag>
+                    <Tag key={h.rule_id}>{`${h.rule_id} ${ruleNameZh({ rule_id: h.rule_id, name: h.rule_name })}（${h.hits} 次）`}</Tag>
                   ))}
                 </Space>
               ) : (

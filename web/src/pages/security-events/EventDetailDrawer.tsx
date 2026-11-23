@@ -10,6 +10,7 @@ import {
   Empty,
   Input,
   List,
+  Select,
   Space,
   Tag,
   Tooltip,
@@ -24,10 +25,12 @@ import VulnIdTags from '../../components/VulnIdTags'
 import { useAuthStore } from '../../stores/auth'
 import { useProductStore } from '../../stores/product'
 import { buildEventApmTraceHref } from '../../utils/apm'
+import { ruleMessageZh } from '../../utils/crsRuleNames'
 import { formatDateTime } from '../../utils/format'
 import { DECISION_REASON_CODE_LABELS } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import BlacklistFromEventModal from './BlacklistFromEventModal'
+import WhitelistFromEventModal from './WhitelistFromEventModal'
 import {
   ATTACK_TYPE_META,
   DISPOSITION_STATUS_META,
@@ -67,6 +70,7 @@ const EXECUTOR_MODULE_META: Record<string, { color: string; label: string }> = {
   PROTECTED_ADDRESS: { color: 'geekblue', label: '保护地址' },
   MANUAL_BAN: { color: 'red', label: '人工临时封禁' },
   IP_ALLOWLIST: { color: 'green', label: 'IP 白名单' },
+  URL_ALLOWLIST: { color: 'green', label: 'URL 白名单' },
   IP_BLACKLIST: { color: 'red', label: 'IP 黑名单' },
   L7_ACL: { color: 'red', label: 'L7 访问控制' },
   AUTO_BAN: { color: 'red', label: '自动临时封禁' },
@@ -321,7 +325,7 @@ function MatchCard({ match }: { match: SecurityEventMatch }) {
     <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12, marginBottom: 8 }}>
       <Space wrap style={{ marginBottom: 8 }}>
         <Typography.Text code>{match.rule_id}</Typography.Text>
-        <Typography.Text strong>{match.message || match.rule_name || '-'}</Typography.Text>
+        <Typography.Text strong>{ruleMessageZh(match) || '-'}</Typography.Text>
         <StatusTag value={match.severity} map={EVENT_SEVERITY_META} />
         <Tag>{`阶段 ${match.phase}`}</Tag>
       </Space>
@@ -442,7 +446,11 @@ export default function EventDetailDrawer({
   const apmEnabled = useProductStore((s) => s.apmEnabled)
   const canApmTraces = apmEnabled && hasPermission(permissions, 'apm.traces.read')
   const [noteText, setNoteText] = useState('')
+  const [selectedDisposition, setSelectedDisposition] = useState<
+    'confirm-attack' | 'confirm-false-positive' | 'resolve' | 'mark-analyzing' | 'ignore'
+  >('confirm-attack')
   const [blacklistOpen, setBlacklistOpen] = useState(false)
+  const [whitelistOpen, setWhitelistOpen] = useState(false)
 
   const detailQuery = useQuery({
     queryKey: ['security-event', eventId],
@@ -601,6 +609,12 @@ export default function EventDetailDrawer({
             <Descriptions.Item label="域名">{evt.domain || '-'}</Descriptions.Item>
             <Descriptions.Item label="客户端 IP">{evt.client_ip || '-'}</Descriptions.Item>
             <Descriptions.Item label="网关节点">{evt.gateway_node_id || '-'}</Descriptions.Item>
+            <Descriptions.Item label="IP 归属地">
+              {evt.client_ip_geo?.label || '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="运营商">
+              {evt.client_ip_geo?.isp || '-'}
+            </Descriptions.Item>
             <Descriptions.Item label="响应状态码">{evt.response_status || '-'}</Descriptions.Item>
             <Descriptions.Item label="规则匹配数">{evt.rule_match_count}</Descriptions.Item>
           </Descriptions>
@@ -852,7 +866,7 @@ export default function EventDetailDrawer({
           {(canDispose || canManageExceptions || canManageAccessRules) && (
             <>
               <Typography.Title level={5}>处置操作</Typography.Title>
-              <Space direction="vertical" style={{ width: '100%' }}>
+              <Space direction="vertical" style={{ width: '100%' }} size={12}>
                 <Input.TextArea
                   rows={2}
                   maxLength={1000}
@@ -862,37 +876,35 @@ export default function EventDetailDrawer({
                 />
                 {canDispose && (
                   <Space wrap>
-                    <Button
-                      danger
-                      loading={dispositionMutation.isPending}
-                      onClick={() => runDisposition('confirm-attack', '确认为真实攻击')}
-                    >
-                      确认攻击
-                    </Button>
-                    <Button
-                      loading={dispositionMutation.isPending}
-                      onClick={() => runDisposition('confirm-false-positive', '确认为误报')}
-                    >
-                      确认误报
-                    </Button>
-                    <Button
-                      loading={dispositionMutation.isPending}
-                      onClick={() => runDisposition('ignore', '忽略')}
-                    >
-                      忽略
-                    </Button>
+                    <Select
+                      aria-label="处置结论"
+                      style={{ width: 150 }}
+                      value={selectedDisposition}
+                      onChange={setSelectedDisposition}
+                      options={[
+                        { value: 'confirm-attack', label: '确认攻击' },
+                        { value: 'confirm-false-positive', label: '确认误报' },
+                        { value: 'resolve', label: '标记已处置' },
+                        { value: 'mark-analyzing', label: '标记分析中' },
+                        { value: 'ignore', label: '忽略' },
+                      ]}
+                    />
                     <Button
                       type="primary"
+                      danger={selectedDisposition === 'confirm-attack'}
                       loading={dispositionMutation.isPending}
-                      onClick={() => runDisposition('resolve', '标记为已处置')}
+                      onClick={() => {
+                        const labelMap: Record<typeof selectedDisposition, string> = {
+                          'confirm-attack': '确认为真实攻击',
+                          'confirm-false-positive': '确认为误报',
+                          resolve: '标记为已处置',
+                          'mark-analyzing': '标记为分析中',
+                          ignore: '忽略',
+                        }
+                        runDisposition(selectedDisposition, labelMap[selectedDisposition])
+                      }}
                     >
-                      标记已处置
-                    </Button>
-                    <Button
-                      loading={dispositionMutation.isPending}
-                      onClick={() => runDisposition('mark-analyzing', '标记为分析中')}
-                    >
-                      标记分析中
+                      执行处置
                     </Button>
                     <Button
                       loading={noteMutation.isPending}
@@ -905,28 +917,40 @@ export default function EventDetailDrawer({
                         noteMutation.mutate(note)
                       }}
                     >
-                      添加备注
+                      仅添备注
                     </Button>
                   </Space>
                 )}
-                {canManageExceptions && (
-                  <Button
-                    loading={createExceptionMutation.isPending}
-                    onClick={() =>
-                      modal.confirm({
-                        title: '从事件创建例外草稿',
-                        content: '将基于该事件的域名、URI 与匹配规则生成例外草稿（停用前的草稿需到例外策略页面审核）。确定继续吗？',
-                        onOk: () => createExceptionMutation.mutate(),
-                      })
-                    }
-                  >
-                    从事件创建例外草稿
-                  </Button>
-                )}
-                {canManageAccessRules && evt.client_ip && (
-                  <Button danger onClick={() => setBlacklistOpen(true)}>
-                    加入黑名单
-                  </Button>
+                {(canManageAccessRules || canManageExceptions) && (
+                  <Space wrap>
+                    {canManageAccessRules && evt.client_ip && (
+                      <Button danger onClick={() => setBlacklistOpen(true)}>
+                        加入黑名单
+                      </Button>
+                    )}
+                    {canManageAccessRules && (evt.client_ip || evt.request_uri) && (
+                      <Button
+                        style={{ borderColor: '#52c41a', color: '#389e0d' }}
+                        onClick={() => setWhitelistOpen(true)}
+                      >
+                        加入白名单
+                      </Button>
+                    )}
+                    {canManageExceptions && (
+                      <Button
+                        loading={createExceptionMutation.isPending}
+                        onClick={() =>
+                          modal.confirm({
+                            title: '创建例外草稿',
+                            content: '将基于该事件的域名、URI 与匹配规则生成例外草稿（草稿需到「例外策略」页面审核启用）。确定继续吗？',
+                            onOk: () => createExceptionMutation.mutate(),
+                          })
+                        }
+                      >
+                        创建例外草稿
+                      </Button>
+                    )}
+                  </Space>
                 )}
               </Space>
             </>
@@ -936,6 +960,10 @@ export default function EventDetailDrawer({
       <BlacklistFromEventModal
         eventId={blacklistOpen ? eventId : null}
         onClose={() => setBlacklistOpen(false)}
+      />
+      <WhitelistFromEventModal
+        eventId={whitelistOpen ? eventId : null}
+        onClose={() => setWhitelistOpen(false)}
       />
     </Drawer>
   )

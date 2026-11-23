@@ -82,6 +82,7 @@ describe('BlacklistFromEventModal', () => {
     expect(screen.getByText('3 次')).toBeInTheDocument()
     expect(screen.getByText(/建议 24 小时/)).toBeInTheDocument()
     expect(screen.getByText(/942100/)).toBeInTheDocument()
+    expect(screen.getByText(/通过 libinjection 检测到 SQL 注入攻击/)).toBeInTheDocument()
     expect(screen.getByText('疑似共享出口/代理')).toBeInTheDocument()
     // 名称/原因预填
     expect(screen.getByDisplayValue('事件封禁-198.51.100.77')).toBeInTheDocument()

@@ -90,3 +90,26 @@ func TestSuggestBlacklistNameAndReason(t *testing.T) {
 		t.Fatalf("suggestBlacklistReason 超过500字符上限")
 	}
 }
+
+func TestWhitelistPrefillHelpers(t *testing.T) {
+	if got := extractRequestPath("/api/orders?id=1#top"); got != "/api/orders" {
+		t.Fatalf("extractRequestPath = %q", got)
+	}
+	if got := extractRequestPath("healthz?ok=1"); got != "/healthz" {
+		t.Fatalf("extractRequestPath relative = %q", got)
+	}
+	if got := extractRequestPath(""); got != "" {
+		t.Fatalf("extractRequestPath empty = %q", got)
+	}
+	if got := suggestWhitelistIPName("203.0.113.9"); got != "事件白名单-203.0.113.9" {
+		t.Fatalf("suggestWhitelistIPName = %q", got)
+	}
+	if got := suggestWhitelistURLName("/api/v1/health"); got != "事件URL白名单-/api/v1/health" {
+		t.Fatalf("suggestWhitelistURLName = %q", got)
+	}
+	id := uuid.MustParse("11111111-2222-3333-4444-555555555555")
+	reason := suggestWhitelistReason("SCANNER", id)
+	if !strings.Contains(reason, "SCANNER") || !strings.Contains(reason, id.String()) {
+		t.Fatalf("suggestWhitelistReason = %q", reason)
+	}
+}
