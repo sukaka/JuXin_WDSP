@@ -4,6 +4,7 @@ package tproxyd
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -18,32 +19,34 @@ import (
 // resolveDstFunc 解析连接原始目的地址（生产为 SO_ORIGINAL_DST；测试可注入桩）。
 type resolveDstFunc func(conn *net.TCPConn) (*net.TCPAddr, error)
 
+// dialContextFunc 拨号上游（生产为 net.Dialer.DialContext；测试可注入桩）。
+type dialContextFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
 // isTimeoutErr 判定错误链中是否含网络读超时（嗅探读超时场景）。
 func isTimeoutErr(err error) bool {
 	return errors.Is(err, os.ErrDeadlineExceeded)
 }
 
-// sniProtected 判定 SNI 是否命中防护域名集合。
-func sniProtected(set map[string]struct{}, sni string) bool {
-	_, ok := set[sni]
-	return ok
-}
-
 // Server 牵引服务。
 type Server struct {
-	cfg            Config
-	stats          *Stats
-	ln             *net.TCPListener
-	sem            chan struct{} // 并发连接上限令牌（背压护栏）
-	resolveDst     resolveDstFunc
-	protectSet     map[string]struct{} // SNI 防护域名集合（nil = 功能关闭）
-	passthroughSet map[string]struct{} // 显式允许端到端透传的 SNI 白名单（nil = 禁止任意未列明 SNI 透传）
-	localAddrs     func() ([]net.IP, error)
+	cfg                Config
+	stats              *Stats
+	ln                 *net.TCPListener
+	sem                chan struct{} // 并发连接上限令牌（背压护栏）
+	resolveDst         resolveDstFunc
+	dialContext        dialContextFunc
+	protectMatcher     *hostMatcher // SNI 防护域名匹配器（nil = 功能关闭）
+	passthroughMatcher *hostMatcher // 显式允许端到端透传的 SNI 白名单匹配器（nil = 禁止未列明 SNI 透传）
+	localAddrs         func() ([]net.IP, error)
 
-	closing atomic.Bool
-	wg      sync.WaitGroup
-	mu      sync.Mutex
-	conns   map[net.Conn]struct{} // 在途连接（两端均登记，供优雅退出强制断开）
+	ctx         context.Context
+	cancel      context.CancelFunc
+	closing     atomic.Bool
+	wg          sync.WaitGroup
+	mu          sync.Mutex
+	closed      bool                  // mu 保护：与 wg.Add(1) 互斥，防止 Shutdown 后并发 wg.Add 竞态
+	forceClosed bool                  // mu 保护：宽限超时强制断连后拒绝新登记连接
+	conns       map[net.Conn]struct{} // 在途连接（两端均登记，供优雅退出强制断开）
 }
 
 // NewServer 绑定监听地址并返回服务（失败直接返回错误，不静默降级）。
@@ -59,16 +62,21 @@ func NewServer(cfg Config, stats *Stats) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("监听 %s 失败: %w", cfg.Listen, err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	dialer := &net.Dialer{Timeout: cfg.DialTimeout}
 	return &Server{
-		cfg:            cfg,
-		stats:          stats,
-		ln:             ln,
-		sem:            make(chan struct{}, cfg.MaxConns),
-		resolveDst:     originalDst,
-		protectSet:     cfg.protectHostSet(),
-		passthroughSet: cfg.passthroughHostSet(),
-		localAddrs:     defaultLocalAddrs,
-		conns:          make(map[net.Conn]struct{}),
+		cfg:                cfg,
+		stats:              stats,
+		ln:                 ln,
+		sem:                make(chan struct{}, cfg.MaxConns),
+		resolveDst:         originalDst,
+		dialContext:        dialer.DialContext,
+		protectMatcher:     cfg.protectHostMatcher(),
+		passthroughMatcher: cfg.passthroughHostMatcher(),
+		localAddrs:         defaultLocalAddrs,
+		ctx:                ctx,
+		cancel:             cancel,
+		conns:              make(map[net.Conn]struct{}),
 	}, nil
 }
 
@@ -110,6 +118,15 @@ func (s *Server) isLocalInterfaceIP(ip net.IP) bool {
 		}
 	}
 	return false
+}
+
+// isLocalPassthroughIP 判定透传目标 IP 是否指向本机（回环、未指定或任意本机接口 IP）。
+// 透传路径按原始目的直连，对所有端口禁止指向本机，防止借透传白名单绕过本地防火墙/访问控制台等 SSRF。
+func (s *Server) isLocalPassthroughIP(ip net.IP) bool {
+	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+		return true
+	}
+	return s.isLocalInterfaceIP(ip)
 }
 
 // isSelfTarget 判定原始目的地址是否指向 tproxyd 自身监听地址/端口（或任意本机接口 IP 的
@@ -159,10 +176,21 @@ func (s *Server) Serve() error {
 			_ = conn.Close()
 			continue
 		}
-		s.track(conn)
+		// 原子化登记连接与 wg.Add(1)：与 Shutdown 的 closed 标记经 s.mu 互斥，
+		// 彻底杜绝 Serve 调用 wg.Add(1) 与 Shutdown 调用 wg.Wait() 的数据竞争。
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			<-s.sem
+			_ = conn.Close()
+			return nil
+		}
+		s.conns[conn] = struct{}{}
+		s.wg.Add(1)
+		s.mu.Unlock()
+
 		s.stats.ConnAccepted.Add(1)
 		s.stats.ActiveConns.Add(1)
-		s.wg.Add(1)
 		go s.serveConn(conn)
 	}
 }
@@ -171,11 +199,11 @@ func (s *Server) Serve() error {
 // （按需）写 PROXY 头 → 双向透传。
 func (s *Server) serveConn(client *net.TCPConn) {
 	defer func() {
-		s.wg.Done()
 		<-s.sem
 		s.untrack(client)
 		_ = client.Close()
 		s.stats.ActiveConns.Add(-1)
+		s.wg.Done()
 	}()
 
 	src, ok := client.RemoteAddr().(*net.TCPAddr)
@@ -216,14 +244,23 @@ func (s *Server) serveConn(client *net.TCPConn) {
 			return
 		case sniffErr != nil && errors.Is(sniffErr, errNotTLS):
 			// 明文 HTTP：维持原 Target 路径
+		case sniffErr != nil && !isTLS && (errors.Is(sniffErr, io.EOF) || errors.Is(sniffErr, io.ErrUnexpectedEOF)):
+			// 对端在发送满 5 字节 record 头前即断开（如 TCP 探活/空连接）：安静关闭，不拨号 TargetTLS
+			return
 		case sniffErr != nil:
 			s.stats.SniffErrors.Add(1)
 			upstream = s.cfg.TargetTLS
 			log.Printf("[tproxyd] ClientHello 解析失败 src=%s orig=%s，倒向 TLS 检测路径: %v", src, orig, sniffErr)
-		case isTLS && sniProtected(s.protectSet, sni):
+		case isTLS && s.protectMatcher.match(sni):
 			upstream = s.cfg.TargetTLS
 			s.stats.ConnsProtected.Add(1)
-		case isTLS && sniProtected(s.passthroughSet, sni):
+		case isTLS && s.passthroughMatcher.match(sni):
+			// 透传路径禁止指向本机任意地址与端口（防本地服务 SSRF / 控制台绕过）
+			if s.isLocalPassthroughIP(orig.IP) {
+				s.stats.OrigDstErrors.Add(1)
+				log.Printf("[tproxyd] 拒绝透传指向本机地址的原始目的 src=%s orig=%s sni=%q", src, orig, sni)
+				return
+			}
 			// 仅显式列入透传白名单的域名允许按原始目的透传（TLS 端到端，不可注入 PROXY 头）
 			upstream = orig.String()
 			sendProxy = false
@@ -236,7 +273,13 @@ func (s *Server) serveConn(client *net.TCPConn) {
 		}
 	}
 
-	target, err := net.DialTimeout("tcp", upstream, s.cfg.DialTimeout)
+	dialFn := s.dialContext
+	if dialFn == nil {
+		dialFn = (&net.Dialer{Timeout: s.cfg.DialTimeout}).DialContext
+	}
+	dialCtx, dialCancel := context.WithTimeout(s.ctx, s.cfg.DialTimeout)
+	target, err := dialFn(dialCtx, "tcp", upstream)
+	dialCancel()
 	if err != nil {
 		s.stats.DialErrors.Add(1)
 		log.Printf("[tproxyd] 连接下游 %s 失败 src=%s orig=%s: %v", upstream, src, orig, err)
@@ -248,7 +291,10 @@ func (s *Server) serveConn(client *net.TCPConn) {
 		log.Printf("[tproxyd] 下游连接类型异常: %T", target)
 		return
 	}
-	s.track(tc)
+	if !s.track(tc) {
+		_ = tc.Close()
+		return
+	}
 	defer func() {
 		s.untrack(tc)
 		_ = tc.Close()
@@ -300,8 +346,26 @@ func (w renewOnWrite) Write(p []byte) (int, error) {
 // 整体拒连。写 deadline 同属必需：对端只收不读（接收窗口归零）时写侧阻塞同样
 // 会在超时后被解除。
 func (s *Server) relay(client *net.TCPConn, br *bufio.Reader, tc *net.TCPConn) {
+	// 节流续期：最多每 min(RelayIdleTimeout/4, 1s) 调用一次 SetDeadline，避免每 32KB 块触发两次系统调用
+	minRenewInterval := s.cfg.RelayIdleTimeout / 4
+	if minRenewInterval > time.Second {
+		minRenewInterval = time.Second
+	}
+	var lastRenew atomic.Int64
 	renew := func() {
-		deadline := time.Now().Add(s.cfg.RelayIdleTimeout)
+		now := time.Now()
+		nowNS := now.UnixNano()
+		prev := lastRenew.Load()
+		if prev != 0 && nowNS-prev < int64(minRenewInterval) {
+			return
+		}
+		if prev != 0 && !lastRenew.CompareAndSwap(prev, nowNS) {
+			return
+		}
+		if prev == 0 {
+			lastRenew.Store(nowNS)
+		}
+		deadline := now.Add(s.cfg.RelayIdleTimeout)
 		_ = client.SetDeadline(deadline)
 		_ = tc.SetDeadline(deadline)
 	}
@@ -339,24 +403,33 @@ func (s *Server) relay(client *net.TCPConn, br *bufio.Reader, tc *net.TCPConn) {
 	}
 }
 
-// Shutdown 优雅退出：关监听（不再接新连接）→ 宽限期内等待在途连接结束 →
-// 超时强制断开剩余连接。返回前保证 Serve 与全部连接处理协程退出。
+// Shutdown 优雅退出：先在锁内标记 closed 并关闭监听（保证不再有新 wg.Add(1)），
+// 再在宽限期内等待在途连接结束，超时则取消在途拨号并强制断开剩余连接。
 func (s *Server) Shutdown(grace time.Duration) {
-	if !s.closing.CompareAndSwap(false, true) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
 		return
 	}
+	s.closed = true
+	s.closing.Store(true)
+	s.mu.Unlock()
+
 	_ = s.ln.Close()
 
 	done := make(chan struct{})
 	go func() { s.wg.Wait(); close(done) }()
 	select {
 	case <-done:
+		s.cancel()
 		return
 	case <-time.After(grace):
 	}
-	// 宽限超时：强制断开在途连接（两端均关，解除双向 io.Copy 阻塞）
+	// 宽限超时：取消在途拨号上下文，并强制断开在途连接（两端均关，解除双向 io.Copy 阻塞）
+	s.cancel()
 	forced := 0
 	s.mu.Lock()
+	s.forceClosed = true
 	for c := range s.conns {
 		_ = c.Close()
 		forced++
@@ -366,10 +439,14 @@ func (s *Server) Shutdown(grace time.Duration) {
 	<-done
 }
 
-func (s *Server) track(c net.Conn) {
+func (s *Server) track(c net.Conn) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.forceClosed {
+		return false
+	}
 	s.conns[c] = struct{}{}
-	s.mu.Unlock()
+	return true
 }
 
 func (s *Server) untrack(c net.Conn) {

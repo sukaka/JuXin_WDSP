@@ -11,7 +11,7 @@ IMAGES_TAR=""
 NEW_COMPOSE_FILE=""
 SERVER_IMAGE=""
 GATEWAY_IMAGE=""
-USER="${JZ_ADMIN_USER:-jiuzhang_admin}"
+USER=""
 TIMEOUT=600
 PREVIOUS_COMPOSE_FILE=""
 CURRENT_LINK=""
@@ -19,6 +19,7 @@ SERVICES=()
 TARGET_IMAGES=()
 OLD_IMAGES=()
 OLD_IDS=()
+API_EXTRA_NETWORKS=()
 SWITCH_STARTED=false
 
 usage() {
@@ -34,7 +35,7 @@ usage() {
   --previous-compose-file FILE
                            原 Compose，供自动/手工回滚恢复原 release 入口
   --current-link FILE      可选的 current 符号链接，只在全部健康后由调用方切换
-  -u, --user USER          管理员用户名（默认 jiuzhang_admin）
+  -u, --user USER          管理员用户名（默认读取 .env 的 INITIAL_ADMIN_USERNAME，缺省 admin）
   --api-url URL            管理 API（默认 http://127.0.0.1:18081）
   -c, --compose-file FILE  当前 Compose（默认 docker-compose.yml）
   -e, --env-file FILE      当前及目标环境变量文件（默认 .env）
@@ -65,10 +66,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { log_err "--timeout 必须为正整数"; exit 2; }
-for cmd in docker curl jq base64 timeout; do require_cmd "$cmd"; done
+for cmd in docker curl jq base64 timeout cmp mktemp; do require_cmd "$cmd"; done
 [[ -f "$JZ_COMPOSE_FILE" && -f "$JZ_ENV_FILE" ]] || die "当前 Compose 或 env 文件不存在"
 JZ_COMPOSE_FILE="$(cd "$(dirname "$JZ_COMPOSE_FILE")" && pwd -P)/$(basename "$JZ_COMPOSE_FILE")"
 JZ_ENV_FILE="$(cd "$(dirname "$JZ_ENV_FILE")" && pwd -P)/$(basename "$JZ_ENV_FILE")"
+[[ -n "$USER" ]] || USER="$(resolve_default_admin_user "$JZ_ENV_FILE")"
 
 render_compose() { docker compose -f "$1" --env-file "$2" config --format json 2>/dev/null; }
 compose_service_image() { jq -er --arg service "$2" '.services[$service].image | select(type == "string" and length > 0)' <<<"$1"; }
@@ -96,18 +98,255 @@ schema_version() {
   local pg="$1"
   docker exec "$pg" sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT COALESCE(MAX(version),0) FROM schema_migrations"' 2>/dev/null
 }
+ensure_owner_1000() {
+  [[ "$(id -u)" == "0" ]] || return 0
+  chown 1000:1000 "$1"
+}
+file_mode_octal() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || true
+}
+compose_volume_source() {
+  local compose_json="$1" service="$2" target="$3"
+  jq -r --arg s "$service" --arg t "$target" '
+    [.services[$s].volumes[]? | select(.type == "volume" and .target == $t) | .source]
+    | if length == 1 then .[0] | select(type == "string" and length > 0) else empty end
+  ' <<<"$compose_json" 2>/dev/null || true
+}
+compose_volume_name() {
+  local compose_json="$1" vol_key="$2"
+  jq -r --arg k "$vol_key" '
+    (.volumes[$k].name // empty) as $explicit |
+    (.name // empty) as $proj |
+    if ($explicit | length) > 0 then $explicit
+    elif ($proj | length) > 0 then ($proj + "_" + $k)
+    else $k end
+  ' <<<"$compose_json" 2>/dev/null || true
+}
+container_mount_source() {
+  local cid="$1" dest="$2"
+  [[ "$cid" =~ ^[a-fA-F0-9]+$ ]] || return 0
+  docker inspect --format '{{json .Mounts}}' "$cid" 2>/dev/null \
+    | jq -r --arg dst "$dest" '
+      [.[]? | select(.Destination == $dst) | .Source]
+      | if length == 1 then .[0] | select(type == "string" and startswith("/")) else empty end
+    ' 2>/dev/null || true
+}
+copy_cert_file_to_vol() {
+  local src="$1" dst_dir="$2" name="$3"
+  local dest="$dst_dir/$name" tmp="" cur_mode=""
+  [[ ! -L "$src" && -f "$src" && -s "$src" ]] || return 1
+  [[ ! -L "$dest" ]] || die "目标证书卷中存在符号链接: $name（未切换容器）"
+  if [[ -e "$dest" ]]; then
+    [[ -f "$dest" ]] && cmp -s "$src" "$dest" \
+      || die "目标证书卷已存在同名但内容不同的文件: $name，拒绝覆盖（未切换容器）"
+    ensure_owner_1000 "$dest" || die "无法设置证书文件属主: $dest"
+    cur_mode="$(file_mode_octal "$dest")"
+    if [[ "$name" == *.key ]]; then
+      [[ "$cur_mode" == "600" ]] || chmod 0600 "$dest" || die "无法收紧私钥权限: $dest"
+    elif [[ "$cur_mode" != "600" && "$cur_mode" != "644" ]]; then
+      chmod 0600 "$dest" || die "无法修正证书权限: $dest"
+    fi
+    return 2
+  fi
+  tmp="$(mktemp "$dst_dir/.wdsp-cert-migrate.XXXXXX")" || die "无法在证书卷创建临时文件: $dst_dir"
+  if ! cat "$src" > "$tmp" || ! ensure_owner_1000 "$tmp" || ! chmod 0600 "$tmp" || ! mv -f "$tmp" "$dest"; then
+    rm -f -- "$tmp"
+    die "迁移证书文件失败: $name（未切换容器）"
+  fi
+  return 0
+}
+migrate_gateway_certs_if_needed() {
+  local target_gw_vol target_api_vol target_vol_name project_name
+  local old_gw_vol old_api_vol old_vol_name=""
+  target_gw_vol="$(compose_volume_source "$TARGET_COMPOSE_JSON" gateway /etc/caddy/certs)"
+  target_api_vol="$(compose_volume_source "$TARGET_COMPOSE_JSON" api /app/runtime/certificates)"
+  [[ -n "$target_gw_vol" && "$target_gw_vol" == "$target_api_vol" ]] || return 0
 
-log_info "步骤 1/5：升级前健康检查"
-if [[ -x "$SCRIPT_DIR/../healthcheck/check.sh" ]]; then
-  "$SCRIPT_DIR/../healthcheck/check.sh" -c "$JZ_COMPOSE_FILE" -e "$JZ_ENV_FILE" --api-url "$JZ_API_BASE" \
-    || die "升级前健康检查未通过，已中止"
+  target_vol_name="$(compose_volume_name "$TARGET_COMPOSE_JSON" "$target_gw_vol")"
+  [[ -n "$target_vol_name" ]] || die "无法解析目标证书卷名（compose 卷键: $target_gw_vol）"
+  project_name="$(jq -r '.name // empty' <<<"$TARGET_COMPOSE_JSON")"
+
+  old_gw_vol="$(compose_volume_source "$OLD_COMPOSE_JSON" gateway /etc/caddy/certs)"
+  old_api_vol="$(compose_volume_source "$OLD_COMPOSE_JSON" api /app/runtime/certificates)"
+  if [[ -n "$old_gw_vol" && "$old_gw_vol" == "$old_api_vol" ]]; then
+    old_vol_name="$(compose_volume_name "$OLD_COMPOSE_JSON" "$old_gw_vol")"
+  fi
+  # 已在使用同一共享证书卷时无需跨卷迁移
+  [[ -n "$old_vol_name" && "$old_vol_name" == "$target_vol_name" ]] && return 0
+
+  if ! docker volume inspect "$target_vol_name" >/dev/null 2>&1; then
+    local create_args=()
+    [[ -z "$project_name" ]] || create_args+=(--label "com.docker.compose.project=$project_name")
+    create_args+=(--label "com.docker.compose.volume=$target_gw_vol")
+    docker volume create "${create_args[@]}" "$target_vol_name" >/dev/null \
+      || die "创建目标证书卷失败: $target_vol_name（未切换容器）"
+  fi
+  local dst
+  dst="$(docker volume inspect --format '{{.Mountpoint}}' "$target_vol_name" 2>/dev/null || true)"
+  [[ -n "$dst" && "$dst" == /* && -d "$dst" && ! -L "$dst" ]] \
+    || die "无法解析目标证书卷挂载目录: $target_vol_name（未切换容器）"
+  ensure_owner_1000 "$dst" || die "无法设置目标证书卷属主为 1000:1000: $dst"
+  chmod 0700 "$dst" || die "无法设置目标证书卷权限: $dst"
+
+  local old_api_id old_gw_id src_dirs=() candidate_dir old_rt_vol old_rt_name old_rt_mp old_gw_cert_dir
+  old_api_id="$(docker compose -f "$OLD_COMPOSE_FILE" --env-file "$JZ_ENV_FILE" ps -q api 2>/dev/null || true)"
+  old_gw_id="$(docker compose -f "$OLD_COMPOSE_FILE" --env-file "$JZ_ENV_FILE" ps -q gateway 2>/dev/null || true)"
+
+  candidate_dir="$(container_mount_source "$old_api_id" /app/runtime/certificates)"
+  if [[ -z "$candidate_dir" ]]; then
+    old_rt_mp="$(container_mount_source "$old_api_id" /app/runtime)"
+    if [[ -z "$old_rt_mp" ]]; then
+      old_rt_vol="$(compose_volume_source "$OLD_COMPOSE_JSON" api /app/runtime)"
+      if [[ -n "$old_rt_vol" ]]; then
+        old_rt_name="$(compose_volume_name "$OLD_COMPOSE_JSON" "$old_rt_vol")"
+        old_rt_mp="$(docker volume inspect --format '{{.Mountpoint}}' "$old_rt_name" 2>/dev/null || true)"
+      fi
+    fi
+    [[ -z "$old_rt_mp" ]] || candidate_dir="$old_rt_mp/certificates"
+  fi
+  [[ -n "$candidate_dir" && "$candidate_dir" != "$dst" && -d "$candidate_dir" && ! -L "$candidate_dir" ]] \
+    && src_dirs+=("$candidate_dir")
+
+  old_gw_cert_dir="$(container_mount_source "$old_gw_id" /etc/caddy/certs)"
+  if [[ -n "$old_gw_cert_dir" && "$old_gw_cert_dir" != "$dst" && "$old_gw_cert_dir" != "${candidate_dir:-}" && -d "$old_gw_cert_dir" && ! -L "$old_gw_cert_dir" ]]; then
+    src_dirs+=("$old_gw_cert_dir")
+  fi
+
+  local migrated=0 src_dir entry base rc
+  shopt -s nullglob
+  for src_dir in "${src_dirs[@]}"; do
+    for entry in "$src_dir"/*; do
+      base="$(basename "$entry")"
+      [[ "$base" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.(pem|key)$ ]] || continue
+      [[ ! -L "$entry" && -f "$entry" && -s "$entry" ]] || continue
+      rc=0
+      copy_cert_file_to_vol "$entry" "$dst" "$base" || rc=$?
+      [[ "$rc" -eq 0 ]] && migrated=$((migrated + 1))
+    done
+  done
+  shopt -u nullglob
+
+  # 按当前网关持久化 autosave.json 做 fail-closed 复核：避免新 gateway 启动后缺证书崩溃循环
+  local old_cfg_mp old_cfg_vol old_cfg_name autosave verified_refs=0 ref rel
+  old_cfg_mp="$(container_mount_source "$old_gw_id" /config)"
+  if [[ -z "$old_cfg_mp" ]]; then
+    old_cfg_vol="$(compose_volume_source "$OLD_COMPOSE_JSON" gateway /config)"
+    if [[ -n "$old_cfg_vol" ]]; then
+      old_cfg_name="$(compose_volume_name "$OLD_COMPOSE_JSON" "$old_cfg_vol")"
+      old_cfg_mp="$(docker volume inspect --format '{{.Mountpoint}}' "$old_cfg_name" 2>/dev/null || true)"
+    fi
+  fi
+  autosave="${old_cfg_mp:+$old_cfg_mp/caddy/autosave.json}"
+  if [[ -n "$autosave" && -f "$autosave" && ! -L "$autosave" && -r "$autosave" ]]; then
+    local autosave_refs
+    autosave_refs="$(jq -r '
+      [.apps.tls.certificates.load_files[]? | .certificate, .key]
+      | map(select(type == "string" and startswith("/etc/caddy/certs/")))
+      | unique[]
+    ' "$autosave" 2>/dev/null)" || die "无法解析当前网关 autosave.json 的证书引用: $autosave（未切换容器）"
+    while IFS= read -r ref; do
+      [[ -n "$ref" ]] || continue
+      rel="${ref#/etc/caddy/certs/}"
+      [[ -n "$rel" && "$rel" != */* && "$rel" != "." && "$rel" != ".." ]] \
+        || die "网关 autosave.json 含非法证书路径引用: $ref（未切换容器）"
+      [[ -f "$dst/$rel" && ! -L "$dst/$rel" && -s "$dst/$rel" ]] \
+        || die "目标证书卷 ${target_vol_name} 缺少当前网关配置引用的证书文件: ${rel}（未切换容器）"
+      verified_refs=$((verified_refs + 1))
+    done <<< "$autosave_refs"
+  fi
+  if (( migrated > 0 || verified_refs > 0 )); then
+    log_info "已完成跨版本证书卷迁移与核验（卷: ${target_vol_name}，本次迁移 ${migrated} 个文件，autosave 核验 ${verified_refs} 项）"
+  fi
+}
+reconcile_sidecars_permissions_for_netmgrd() {
+  # 目标 Compose 中 netmgrd 使用 cap_drop: [ALL] + group_add: ["1000"]（无 CAP_DAC_OVERRIDE）时，
+  # 需确保既有 gateway-admin 卷的 sidecars 与 sidecars/diag 目录为 1000:1000 0770，
+  # 且待消费的 diag 请求/停止文件为 0640（不触碰 0600 的 capability.json / ha-vip.json）。
+  jq -e '
+    .services.netmgrd as $n |
+    ($n != null) and
+    (($n.cap_drop // []) | index("ALL") != null) and
+    (($n.group_add // []) | map(tostring) | index("1000") != null)
+  ' <<<"$TARGET_COMPOSE_JSON" >/dev/null 2>&1 || return 0
+
+  local admin_dir="" old_gw_id old_api_id admin_vol admin_vol_name
+  old_gw_id="$(docker compose -f "$OLD_COMPOSE_FILE" --env-file "$JZ_ENV_FILE" ps -q gateway 2>/dev/null || true)"
+  admin_dir="$(container_mount_source "$old_gw_id" /var/run/caddy)"
+  if [[ -z "$admin_dir" ]]; then
+    old_api_id="$(docker compose -f "$OLD_COMPOSE_FILE" --env-file "$JZ_ENV_FILE" ps -q api 2>/dev/null || true)"
+    admin_dir="$(container_mount_source "$old_api_id" /var/run/caddy)"
+  fi
+  if [[ -z "$admin_dir" ]]; then
+    admin_vol="$(compose_volume_source "$TARGET_COMPOSE_JSON" netmgrd /var/run/caddy)"
+    if [[ -n "$admin_vol" ]]; then
+      admin_vol_name="$(compose_volume_name "$TARGET_COMPOSE_JSON" "$admin_vol")"
+      admin_dir="$(docker volume inspect --format '{{.Mountpoint}}' "$admin_vol_name" 2>/dev/null || true)"
+    fi
+  fi
+  [[ -n "$admin_dir" && "$admin_dir" == /* && -d "$admin_dir" && ! -L "$admin_dir" ]] || return 0
+
+  local admin_mode
+  admin_mode="$(file_mode_octal "$admin_dir")"
+  if [[ "$admin_mode" =~ ^[0-7]{3,4}$ ]] && (( (8#$admin_mode & 8#050) != 8#050 )); then
+    chmod g+rx "$admin_dir" || die "无法开放 gateway-admin 卷组遍历权限: $admin_dir"
+  fi
+  local sidecars_dir="$admin_dir/sidecars"
+  [[ ! -L "$sidecars_dir" ]] || die "sidecars 路径为符号链接，拒绝修改权限: $sidecars_dir"
+  if [[ -d "$sidecars_dir" ]]; then
+    ensure_owner_1000 "$sidecars_dir" || die "无法修正 sidecars 目录属主: $sidecars_dir"
+    chmod 0770 "$sidecars_dir" || die "无法修正 sidecars 目录权限: $sidecars_dir"
+    local diag_dir="$sidecars_dir/diag"
+    [[ ! -L "$diag_dir" ]] || die "sidecars/diag 路径为符号链接，拒绝修改权限: $diag_dir"
+    if [[ -d "$diag_dir" ]]; then
+      ensure_owner_1000 "$diag_dir" || die "无法修正 sidecars/diag 目录属主: $diag_dir"
+      chmod 0770 "$diag_dir" || die "无法修正 sidecars/diag 目录权限: $diag_dir"
+      local item
+      shopt -s nullglob
+      for item in "$diag_dir"/request-*.json "$diag_dir"/stop-*; do
+        [[ ! -L "$item" && -f "$item" ]] || continue
+        ensure_owner_1000 "$item" || die "无法修正诊断任务文件属主: $item"
+        chmod 0640 "$item" || die "无法修正诊断任务文件权限: $item"
+      done
+      shopt -u nullglob
+    fi
+    log_info "已对齐 sidecars 共享目录权限（1000:1000 0770，适配无 CAP_DAC_OVERRIDE 的 netmgrd）"
+  fi
+}
+
+pre_upgrade_health() {
+  if [[ -x "$SCRIPT_DIR/../healthcheck/check.sh" ]]; then
+    "$SCRIPT_DIR/../healthcheck/check.sh" -c "$JZ_COMPOSE_FILE" -e "$JZ_ENV_FILE" --api-url "$JZ_API_BASE" \
+      || die "升级前健康检查未通过，已中止"
+  else
+    wait_http_ok "$JZ_API_BASE/api/v1/health" 10 || die "管理 API 不可达，已中止"
+  fi
+}
+
+login_checkpoint=""
+login_attempts=1
+if [[ "$FULL_UPGRADE" == true ]]; then
+  login_attempts=5
+  login_checkpoint="${WDSP_FULL_LOGIN_CHECKPOINT:-}"
+fi
+resume_login=false
+if [[ -n "$login_checkpoint" && -f "$login_checkpoint" ]]; then
+  resume_login=true
+  log_info "从步骤 2/5 的备份登录继续"
 else
-  wait_http_ok "$JZ_API_BASE/api/v1/health" 10 || die "管理 API 不可达，已中止"
+  log_info "步骤 1/5：升级前健康检查"
+  pre_upgrade_health
+  if [[ -n "$login_checkpoint" ]]; then
+    tmp_checkpoint="$(mktemp "${login_checkpoint}.XXXXXX")"
+    printf '%s\n' "$WDSP_FULL_LOGIN_DIGEST" > "$tmp_checkpoint"
+    mv -f -- "$tmp_checkpoint" "$login_checkpoint"
+  fi
 fi
 
 log_info "步骤 2/5：创建并验证 FULL 加密备份"
 trap api_cleanup EXIT
-api_login "$USER"
+api_login "$USER" "$login_attempts"
+if [[ "$resume_login" == true ]]; then pre_upgrade_health; fi
+if [[ -n "$login_checkpoint" ]]; then rm -f -- "$login_checkpoint"; fi
 resp="$(api_req POST /api/v1/backups '{"backup_type":"FULL"}')"
 [[ "$(api_code "$resp")" == "SUCCESS" ]] || die "创建备份失败: $(printf '%s' "$resp" | jq -r '.message // "未知错误"')"
 BACKUP_JOB_ID="$(printf '%s' "$resp" | jq -r '.data.job.id // empty')"
@@ -143,11 +382,17 @@ CUR_GATEWAY_IMAGE="$(compose_service_image "$TARGET_COMPOSE_JSON" gateway)" || d
 candidates=(api web gateway netmgrd logrotator containerops)
 if [[ "$FULL_UPGRADE" == true ]]; then
   SERVICES=("${candidates[@]}")
+  if jq -e '.services.mirrorcap.image | strings' <<<"$TARGET_COMPOSE_JSON" >/dev/null 2>&1; then
+    SERVICES+=(mirrorcap)
+  fi
+  if jq -e '.services.tproxyd.image | strings' <<<"$TARGET_COMPOSE_JSON" >/dev/null 2>&1; then
+    SERVICES+=(tproxyd)
+  fi
   if jq -e '.services.pcapd.image | strings' <<<"$OLD_COMPOSE_JSON" >/dev/null 2>&1; then
     SERVICES+=(pcapd)
   fi
 else
-  for service in "${candidates[@]}"; do
+  for service in "${candidates[@]}" mirrorcap tproxyd; do
     jq -e --arg s "$service" '.services[$s].image' <<<"$OLD_COMPOSE_JSON" >/dev/null 2>&1 || continue
     jq -e --arg s "$service" '.services[$s].image' <<<"$TARGET_COMPOSE_JSON" >/dev/null 2>&1 || continue
     SERVICES+=("$service")
@@ -198,6 +443,18 @@ esac
 [[ "$SERVER_IMAGE" == "$CUR_SERVER_IMAGE" ]] || docker image inspect "$SERVER_IMAGE" >/dev/null
 NEW_SERVER_IMAGE_ID="$(docker image inspect "$SERVER_IMAGE" --format '{{.Id}}')" || die "无法读取目标 API 镜像 ID"
 
+migrate_gateway_certs_if_needed
+reconcile_sidecars_permissions_for_netmgrd
+
+API_EXTRA_NETWORKS=()
+if printf '%s\n' "${SERVICES[@]}" | grep -Fxq api; then
+  OLD_API_ID="$(docker compose -f "$OLD_COMPOSE_FILE" --env-file "$JZ_ENV_FILE" ps -q api 2>/dev/null || true)"
+  while IFS= read -r _net; do
+    [[ -n "$_net" ]] && API_EXTRA_NETWORKS+=("$_net")
+  done < <(collect_api_extra_networks "$OLD_API_ID" "$TARGET_COMPOSE_JSON" "$OLD_COMPOSE_JSON")
+  unset _net
+fi
+
 JZ_COMPOSE_FILE="$TARGET_COMPOSE_FILE"
 umask 077
 cat > "$STATE_FILE" <<EOF
@@ -218,6 +475,7 @@ UPGRADE_SERVICES=$(printf '%s,' "${SERVICES[@]}" | sed 's/,$//')
 TARGET_IMAGES_B64=$(array_encode "${TARGET_IMAGES[@]}")
 OLD_IMAGES_B64=$(array_encode "${OLD_IMAGES[@]}")
 OLD_IDS_B64=$(array_encode "${OLD_IDS[@]}")
+API_EXTRA_NETWORKS_B64=$(array_encode ${API_EXTRA_NETWORKS[@]+"${API_EXTRA_NETWORKS[@]}"})
 BACKUP_JOB_ID=$BACKUP_JOB_ID
 UPGRADE_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 EOF
@@ -246,6 +504,11 @@ SWITCH_STARTED=true
 log_info "步骤 4/5：同次重建 ${SERVICES[*]}（PCAP profile 不启动）"
 compose rm -sf "${SERVICES[@]}" >/dev/null 2>&1 || true
 compose up -d --no-deps --force-recreate "${SERVICES[@]}" || die "新容器创建失败"
+if ((${#API_EXTRA_NETWORKS[@]} > 0)); then
+  NEW_API_ID="$(compose ps -q api 2>/dev/null || true)"
+  reattach_api_extra_networks "$NEW_API_ID" strict "${API_EXTRA_NETWORKS[@]}" \
+    || die "恢复 api 附加网络失败（ClickHouse 等数据面将不可达），开始自动回滚"
+fi
 wait_selected_services() {
   local deadline=$((SECONDS + TIMEOUT)) service id snapshot state health image restarts started extra ready
   while (( SECONDS < deadline )); do
@@ -258,13 +521,15 @@ wait_selected_services() {
       IFS='|' read -r state health image restarts started extra <<<"$snapshot"
       expected="$(docker image inspect "${TARGET_IMAGES[$i]}" --format '{{.Id}}' 2>/dev/null)" || { ready=false; break; }
       if [[ "$state" != running || -n "$extra" || ( -n "$health" && "$health" != healthy ) || "$image" != "$expected" || ! "$restarts" =~ ^[0-9]+$ || -z "$started" ]]; then
-        log_warn "$service 尚未运行目标镜像并通过自身健康检查"
+        log_warn "$service 尚未运行目标镜像并通过自身健康检查（状态=${state:-unknown} 健康=${health:-未配置} 重启=${restarts:-?} 镜像=$image 预期=$expected）"
         ready=false; break
       fi
       case "$service" in
         api) timeout 8 docker exec "$id" wget -q -T 5 -O /dev/null http://127.0.0.1:8080/api/v1/health || { ready=false; break; } ;;
         web) timeout 12 docker exec "$id" sh -ec 'wget -q -T 5 -O /dev/null http://127.0.0.1:8080/ && wget -q -T 5 -O /dev/null http://127.0.0.1:8080/api/v1/health' || { ready=false; break; } ;;
         netmgrd) timeout 8 docker exec "$id" /usr/local/bin/netmgrd --healthcheck || { ready=false; break; } ;;
+        mirrorcap) timeout 8 docker exec "$id" /usr/local/bin/mirrorcap --healthcheck || { ready=false; break; } ;;
+        tproxyd) timeout 8 docker exec "$id" /usr/local/bin/tproxyd --healthcheck || { ready=false; break; } ;;
       esac
     done
     if [[ "$ready" == true ]] && curl -fsS --max-time 5 "$JZ_API_BASE/api/v1/health" >/dev/null 2>&1; then
@@ -283,7 +548,7 @@ wait_selected_services || die "组件镜像、运行状态或 HTTP 健康检查�
 
 log_info "步骤 5/5：完整健康检查及 hostctl 单元更新"
 if [[ -x "$SCRIPT_DIR/../healthcheck/check.sh" ]]; then
-  "$SCRIPT_DIR/../healthcheck/check.sh" -c "$TARGET_COMPOSE_FILE" -e "$JZ_ENV_FILE" --api-url "$JZ_API_BASE" \
+  "$SCRIPT_DIR/../healthcheck/check.sh" -c "$TARGET_COMPOSE_FILE" -e "$JZ_ENV_FILE" --api-url "$JZ_API_BASE" --strict-clickhouse-network \
     || die "升级后健康检查失败"
 fi
 bash "$TARGET_INSTALL_ROOT/ops/install/install-hostctl.sh" --install-root "$TARGET_INSTALL_ROOT" --strict \

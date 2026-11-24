@@ -7,7 +7,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -19,6 +21,31 @@ type Runner interface {
 	Query(ctx context.Context, name string, args ...string) ([]byte, error)
 	// Exec 执行变更命令；失败返回 *CmdError（含 stderr 摘要）。
 	Exec(ctx context.Context, name string, args ...string) error
+}
+
+// ProcSysReader 可选扩展接口：读取 /proc/sys/<key> 当前值，避免对已满足目标值的
+// sysctl 重复执行 sysctl -w（在非特权只读 /proc/sys 容器内防 EROFS）。
+type ProcSysReader interface {
+	ReadProcSys(key string) (string, error)
+}
+
+// readProcSysKey 从 root（默认 /proc/sys）读取 sysctl 键对应的当前字符串值。
+func readProcSysKey(root, key string) (string, error) {
+	if root == "" {
+		root = "/proc/sys"
+	}
+	parts := strings.Split(strings.TrimSpace(key), ".")
+	for _, p := range parts {
+		if p == "" || p == "." || p == ".." || strings.ContainsAny(p, `/\`) {
+			return "", fmt.Errorf("非法 sysctl 键: %q", key)
+		}
+	}
+	path := filepath.Join(append([]string{root}, parts...)...)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 // CmdError 命令失败详情（非零退出或超时），Stderr 供状态信息摘录。
@@ -44,6 +71,13 @@ func (e *CmdError) Unwrap() error { return e.Err }
 type ExecRunner struct {
 	// Timeout 单动作超时（<=0 取 DefaultCmdTimeout）。
 	Timeout time.Duration
+	// ProcSysRoot 可选 /proc/sys 根目录（默认 "/proc/sys"，测试可覆盖）。
+	ProcSysRoot string
+}
+
+// ReadProcSys 实现 ProcSysReader：只读读取 /proc/sys 对应 sysctl 键当前值。
+func (r ExecRunner) ReadProcSys(key string) (string, error) {
+	return readProcSysKey(r.ProcSysRoot, key)
 }
 
 func (r ExecRunner) timeout() time.Duration {
@@ -95,6 +129,14 @@ type DryRunner struct {
 // Query 实现 Runner（真实执行只读查询）。
 func (d *DryRunner) Query(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return d.Real.Query(ctx, name, args...)
+}
+
+// ReadProcSys 委托底层真实执行器读取 /proc/sys，保证 dry-run 计划与生产一致。
+func (d *DryRunner) ReadProcSys(key string) (string, error) {
+	if pr, ok := d.Real.(ProcSysReader); ok {
+		return pr.ReadProcSys(key)
+	}
+	return "", os.ErrNotExist
 }
 
 // Exec 实现 Runner（只打印不执行，永远返回成功）。

@@ -19,7 +19,7 @@ usage() {
 选项:
   -b, --backup-id ID     备份任务ID（必填；可用 ops/backup/create.sh 产生）
   -s, --scope SCOPE      恢复范围 FULL|CONFIG|DATABASE|CERTIFICATE（默认 FULL）
-  -u, --user USER        管理员用户名（默认 jiuzhang_admin）
+  -u, --user USER        管理员用户名（默认读取 .env 的 INITIAL_ADMIN_USERNAME，缺省 admin）
       --api-url URL      管理 API 地址（默认 http://127.0.0.1:18081）
       --timeout SEC      等待隔离恢复秒数（默认 3600）
   -y, --yes              跳过交互确认（仅自动化场景；高风险，慎用）
@@ -34,7 +34,7 @@ EOF
 
 BACKUP_ID=""
 SCOPE="FULL"
-USER="${JZ_ADMIN_USER:-jiuzhang_admin}"
+USER=""
 TIMEOUT=3600
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -48,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     *) log_err "未知参数: $1"; usage; exit 2 ;;
   esac
 done
+[[ -n "$USER" ]] || USER="$(resolve_default_admin_user "$JZ_ENV_FILE")"
 
 UUID_RE='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 [[ -n "$BACKUP_ID" ]] || { log_err "必须指定 --backup-id"; usage; exit 2; }

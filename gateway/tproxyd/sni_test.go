@@ -139,20 +139,115 @@ func TestPeekSNIFragmentedDelivery(t *testing.T) {
 }
 
 func TestNormalizeHosts(t *testing.T) {
-	hosts, err := normalizeHosts(" Www.Test.COM. ,www.test.com, api.test.com,,")
+	hosts, err := normalizeHosts(" Www.Test.COM. ,www.test.com, *.Wild.Test.COM., api.test.com,,")
 	if err != nil {
 		t.Fatalf("normalizeHosts: %v", err)
 	}
-	if len(hosts) != 2 || hosts[0] != "www.test.com" || hosts[1] != "api.test.com" {
+	if len(hosts) != 3 || hosts[0] != "www.test.com" || hosts[1] != "*.wild.test.com" || hosts[2] != "api.test.com" {
 		t.Fatalf("归一化/去重/保序错误: %v", hosts)
 	}
-	if _, err := normalizeHosts("bad host.com"); err == nil {
-		t.Fatal("含空白域名应报错")
+	for _, bad := range []string{
+		"bad host.com",
+		"*",
+		"*.",
+		"*.com",
+		"*.*.test.com",
+		"foo.*.test.com",
+		"*foo.test.com",
+		".test.com",
+		"a..test.com",
+		strings.Repeat("a", 254),
+	} {
+		if _, err := normalizeHosts(bad); err == nil {
+			t.Fatalf("非法域名 %q 应报错", bad)
+		}
 	}
-	if _, err := normalizeHosts("*.test.com"); err == nil {
-		t.Fatal("通配符域名应报错（仅精确匹配）")
+}
+
+// buildFragmentedRecords 把单条 ClientHello 握手载荷按 chunkSize 拆分为多条 0x16 TLS record。
+func buildFragmentedRecords(hsPayload []byte, chunkSize int) []byte {
+	var out []byte
+	for len(hsPayload) > 0 {
+		n := chunkSize
+		if n > len(hsPayload) {
+			n = len(hsPayload)
+		}
+		chunk := hsPayload[:n]
+		hsPayload = hsPayload[n:]
+		out = append(out, tlsRecordHandshake, tlsRecordVersionMajor, 0x03, byte(n>>8), byte(n))
+		out = append(out, chunk...)
 	}
-	if _, err := normalizeHosts(strings.Repeat("a", 254)); err == nil {
-		t.Fatal("超长域名应报错")
+	return out
+}
+
+func TestPeekSNIMultiRecordFragmentedClientHello(t *testing.T) {
+	ch := clientHelloBytes(t, "pq.example.com")
+	// 原始单条 record 的握手载荷在 ch[5:]
+	hs := ch[5:]
+	// 场景1：跨多个小 record（甚至首条 record 仅 2 字节，把 4 字节握手头也拆开）
+	frag := append(buildFragmentedRecords(hs[:2], 2), buildFragmentedRecords(hs[2:], 64)...)
+	br := bufio.NewReaderSize(bytes.NewReader(frag), sniffBufSize)
+	sni, isTLS, err := peekClientHelloSNI(br)
+	if err != nil || !isTLS || sni != "pq.example.com" {
+		t.Fatalf("多 record 分片解析失败: sni=%q isTLS=%v err=%v", sni, isTLS, err)
+	}
+	// Peek 不得消费字节：完整多 record 字节流应原样保留
+	rest, err := io.ReadAll(br)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(rest, frag) {
+		t.Fatal("多 record 分片 Peek 后字节流损坏")
+	}
+}
+
+func TestPeekSNIFragmentedPQSizedClientHello(t *testing.T) {
+	// 模拟后量子混合密钥交换（X25519MLKEM768 等）：在 extensions 中构造 ~2400 字节填充扩展，
+	// 并将整个 ClientHello 拆分到多个 TLS 1.3 handshake record。
+	host := []byte("pq-hybrid.example.com")
+	var sniExt []byte
+	listLen := 1 + 2 + len(host)
+	sniExt = append(sniExt, byte(listLen>>8), byte(listLen), 0x00, byte(len(host)>>8), byte(len(host)))
+	sniExt = append(sniExt, host...)
+
+	padData := bytes.Repeat([]byte{0x42}, 2048)
+	var exts []byte
+	// padding ext (type 21) placed BEFORE server_name ext so SNI lands in a later record
+	exts = append(exts, 0x00, 21, byte(len(padData)>>8), byte(len(padData)))
+	exts = append(exts, padData...)
+	exts = append(exts, 0x00, 0x00, byte(len(sniExt)>>8), byte(len(sniExt)))
+	exts = append(exts, sniExt...)
+
+	var body []byte
+	body = append(body, 0x03, 0x03)              // client_version
+	body = append(body, make([]byte, 32)...)     // random
+	body = append(body, 0x00)                    // session_id len
+	body = append(body, 0x00, 0x02, 0x13, 0x01)  // cipher_suites
+	body = append(body, 0x01, 0x00)              // compression_methods
+	body = append(body, byte(len(exts)>>8), byte(len(exts)))
+	body = append(body, exts...)
+
+	hs := make([]byte, 0, 4+len(body))
+	hs = append(hs, tlsHsClientHello, byte(len(body)>>16), byte(len(body)>>8), byte(len(body)))
+	hs = append(hs, body...)
+
+	// 拆分为 4 个 600 字节 record，SNI 位于最后一个 record
+	frag := buildFragmentedRecords(hs, 600)
+	sni, isTLS, err := peekSNI(t, frag)
+	if err != nil || !isTLS || sni != "pq-hybrid.example.com" {
+		t.Fatalf("PQ 分片 ClientHello 解析失败: sni=%q isTLS=%v err=%v", sni, isTLS, err)
+	}
+}
+
+func TestPeekSNIRejectsOversizedFragmentedClientHello(t *testing.T) {
+	// 声明长度超 16 KiB 上限，必须拒绝（fail-closed）
+	oversized := []byte{
+		tlsRecordHandshake, tlsRecordVersionMajor, 0x03, 0x00, 0x08,
+		tlsHsClientHello, 0x00, 0x40, 0x01, // hsLen = 16385 -> 4+16385 > 16384
+		0x03, 0x03, 0x00, 0x00,
+	}
+	_, isTLS, err := peekSNI(t, oversized)
+	if !isTLS || err == nil {
+		t.Fatalf("超 16 KiB ClientHello 应报错: isTLS=%v err=%v", isTLS, err)
 	}
 }

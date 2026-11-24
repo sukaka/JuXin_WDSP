@@ -8,6 +8,7 @@ require (
 	github.com/jiuzhang-waf/gateway/dynamic_security v0.0.0
 	github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard v0.0.0
 	github.com/jiuzhang-waf/gateway/pcapevidence v0.0.0
+	golang.org/x/sys v0.47.0
 )
 
 require (
@@ -29,7 +30,6 @@ require (
 	github.com/vektah/gqlparser/v2 v2.5.60 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	rsc.io/binaryregexp v0.2.0 // indirect

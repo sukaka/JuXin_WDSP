@@ -79,8 +79,10 @@ services:
       VALKEY_PORT: 6379
       VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
       COOKIE_SECURE: "false"
-      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-jiuzhang_admin}
-      # INITIAL_ADMIN_PASSWORD: 不设置则由服务生成一次性随机密码（首次启动stdout打印）
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
+      INITIAL_OPER_ADMIN_USERNAME: ${INITIAL_OPER_ADMIN_USERNAME:-operadmin}
+      INITIAL_AUDIT_ADMIN_USERNAME: ${INITIAL_AUDIT_ADMIN_USERNAME:-auditor}
+      # INITIAL_*_PASSWORD: 不设置则由服务生成一次性随机密码（首次启动stdout打印）
       MIGRATIONS_DIR: /app/migrations
       # 采集器批量/周期 flush 阈值（W20 批量化修复；作用于 API 运行时事件与全量访问日志采集器）
       WAF_COLLECTOR_FLUSH_BATCH: ${WAF_COLLECTOR_FLUSH_BATCH:-2000}

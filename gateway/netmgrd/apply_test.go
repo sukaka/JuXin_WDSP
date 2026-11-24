@@ -3,6 +3,8 @@ package netmgrd
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -10,23 +12,44 @@ import (
 	"time"
 )
 
-// fakeRunner 脚本化执行桩：Query 返回预置的 `ip -j -d addr show` 输出，
-// Exec 按命令前缀注入失败并记录全部变更命令。
+// fakeRunner 脚本化执行桩：Query 返回预置的 `ip -j -d addr show` 或 iptables 查询输出，
+// Exec 按命令前缀注入失败并记录全部变更命令；支持可选 procSys 模拟 /proc/sys 只读检查。
 type fakeRunner struct {
-	mu       sync.Mutex
-	dump     []byte
-	dumpErr  error
-	failExec map[string]string // 命令前缀 → 错误信息
-	execs    []string
+	mu          sync.Mutex
+	dump        []byte
+	dumpErr     error
+	failExec    map[string]string // 命令前缀 → 错误信息
+	execs       []string
+	procSys     map[string]string // sysctl key → 当前值（模拟 /proc/sys 读取）
+	queryHook   func(name string, args ...string) ([]byte, error)
+}
+
+func (f *fakeRunner) ReadProcSys(key string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.procSys != nil {
+		if v, ok := f.procSys[key]; ok {
+			return v, nil
+		}
+	}
+	return "", os.ErrNotExist
 }
 
 func (f *fakeRunner) Query(_ context.Context, name string, args ...string) ([]byte, error) {
+	f.mu.Lock()
+	hook := f.queryHook
+	dump := f.dump
+	dumpErr := f.dumpErr
+	f.mu.Unlock()
+	if hook != nil {
+		return hook(name, args...)
+	}
 	want := []string{"ip", "-j", "-d", "addr", "show"}
 	got := append([]string{name}, args...)
 	if !reflect.DeepEqual(got, want) {
 		return nil, fmt.Errorf("未预期的查询命令: %s", strings.Join(got, " "))
 	}
-	return f.dump, f.dumpErr
+	return dump, dumpErr
 }
 
 func (f *fakeRunner) Exec(_ context.Context, name string, args ...string) error {
@@ -74,9 +97,10 @@ func TestApplyFreshSystemFullSequence(t *testing.T) {
 	st := Apply(context.Background(), cfg, f, testNow)
 
 	wantExecs := []string{
-		"ip link add br0 type bridge",
+		"ip link add br0 type bridge stp_state 0 forward_delay 0",
 		"ip link set eth2 master br0",
 		"ip link set eth3 master br0",
+		"ip link set eth3 up",
 		"ip link set br0 up",
 		"sysctl -w net.ipv4.ip_forward=1",
 		"ip route replace 10.9.0.0/24 via 192.168.50.254",
@@ -323,7 +347,7 @@ func TestApplyMutationErrorAbortsBridge(t *testing.T) {
 	// 桥创建成功 → 挂 eth2 失败 → 放弃该桥其余变更（不挂 eth3、不 set up）；
 	// 独立的 sysctl 照常执行
 	wantExecs := []string{
-		"ip link add br0 type bridge",
+		"ip link add br0 type bridge stp_state 0 forward_delay 0",
 		"ip link set eth2 master br0",
 		"sysctl -w net.ipv4.ip_forward=1",
 	}
@@ -335,5 +359,106 @@ func TestApplyMutationErrorAbortsBridge(t *testing.T) {
 	}
 	if st.OK {
 		t.Fatal("应整体不 ok")
+	}
+}
+
+func TestApplySkipsHeldDownLinkPairPort(t *testing.T) {
+	// eth3 处于管理 DOWN，但被 LinkPairMonitor 持有 PROPAGATED_DOWN：Apply 不得将其拉 UP。
+	f := &fakeRunner{dump: []byte(`[
+		{"ifindex":2,"ifname":"br0","flags":["UP"],"linkinfo":{"info_kind":"bridge"},"addr_info":[]},
+		{"ifindex":3,"ifname":"eth2","flags":["UP","LOWER_UP"],"master":"br0","addr_info":[]},
+		{"ifindex":4,"ifname":"eth3","flags":["BROADCAST","MULTICAST"],"master":"br0","addr_info":[]}
+	]`)}
+	cfg := applyCfg(t, `{"bridges":[{"name":"br0","ports":["eth2","eth3"]}]}`)
+
+	st := ApplyWithOptions(context.Background(), cfg, f, testNow, ApplyOptions{
+		HeldDownPorts: map[string]bool{"eth3": true},
+	})
+	if !st.OK {
+		t.Fatalf("应成功: %+v", st)
+	}
+	for _, cmd := range f.execLog() {
+		if cmd == "ip link set eth3 up" {
+			t.Fatalf("被 LinkPairMonitor 持有 PROPAGATED_DOWN 的端口不应被拉 UP: %v", f.execLog())
+		}
+	}
+}
+
+func TestApplyProcSysAlreadyMatchesSkipsSysctlWrite(t *testing.T) {
+	// 宿主机已预设 ip_forward=1 且容器内 /proc/sys 只读（sysctl -w 会 EROFS）：读取命中后应跳过写入并返回 StateOK。
+	f := &fakeRunner{
+		dump:     []byte(`[]`),
+		procSys:  map[string]string{"net.ipv4.ip_forward": "1"},
+		failExec: map[string]string{"sysctl -w": "Read-only file system"},
+	}
+	cfg := applyCfg(t, `{"ip_forward":true}`)
+	st := Apply(context.Background(), cfg, f, testNow)
+	if !st.OK || st.IPForward != StateOK {
+		t.Fatalf("已为 1 时应跳过 sysctl -w 且成功: %+v", st)
+	}
+	if len(f.execLog()) != 0 {
+		t.Fatalf("不应执行 sysctl -w: %v", f.execLog())
+	}
+
+	// 验证真实 ExecRunner.ReadProcSys 读取临时 /proc/sys 文件
+	root := t.TempDir()
+	p := filepath.Join(root, "net", "ipv4", "ip_forward")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	er := ExecRunner{ProcSysRoot: root}
+	got, err := er.ReadProcSys("net.ipv4.ip_forward")
+	if err != nil || got != "1" {
+		t.Fatalf("ExecRunner.ReadProcSys = %q, %v; want \"1\", nil", got, err)
+	}
+}
+
+func TestApplyRefusePortOwnedByOtherMaster(t *testing.T) {
+	// 成员口已隶属 bond0 / docker0：拒绝抢占且零变更。
+	f := &fakeRunner{dump: []byte(`[
+		{"ifindex":2,"ifname":"eth2","flags":["UP"],"addr_info":[]},
+		{"ifindex":3,"ifname":"eth3","flags":["UP"],"master":"bond0","addr_info":[]}
+	]`)}
+	cfg := applyCfg(t, `{"bridges":[{"name":"br0","ports":["eth2","eth3"]}]}`)
+
+	st := Apply(context.Background(), cfg, f, testNow)
+	if st.OK || st.Bridges[0].State != StateError || !strings.Contains(st.Bridges[0].Message, "bond0") {
+		t.Fatalf("已隶属其他主设备的端口应被拒绝: %+v", st.Bridges)
+	}
+	if len(f.execLog()) != 0 {
+		t.Fatalf("拒绝时应零变更: %v", f.execLog())
+	}
+}
+
+func TestApplyTearsDownRemovedManagedBridgeOnly(t *testing.T) {
+	// br0 为 netmgrd 此前托管的桥（已从配置移除），docker0 为未托管桥：仅拆除 br0，绝不碰 docker0。
+	f := &fakeRunner{dump: []byte(`[
+		{"ifindex":2,"ifname":"br0","flags":["UP"],"linkinfo":{"info_kind":"bridge"},"addr_info":[]},
+		{"ifindex":3,"ifname":"eth2","flags":["UP"],"master":"br0","addr_info":[]},
+		{"ifindex":4,"ifname":"eth3","flags":["UP"],"master":"br0","addr_info":[]},
+		{"ifindex":5,"ifname":"docker0","flags":["UP"],"linkinfo":{"info_kind":"bridge"},"addr_info":[]},
+		{"ifindex":6,"ifname":"veth0","flags":["UP"],"master":"docker0","addr_info":[]}
+	]`)}
+	cfg := applyCfg(t, `{"bridges":[]}`)
+	st := ApplyWithOptions(context.Background(), cfg, f, testNow, ApplyOptions{
+		ManagedBridges: []string{"br0"},
+	})
+	if !st.OK {
+		t.Fatalf("拆除托管桥应成功: %+v", st)
+	}
+	wantExecs := []string{
+		"ip link set eth2 nomaster",
+		"ip link set eth3 nomaster",
+		"ip link set br0 down",
+		"ip link del br0",
+	}
+	if got := f.execLog(); !reflect.DeepEqual(got, wantExecs) {
+		t.Fatalf("拆除命令序列不符:\n got=%v\nwant=%v", got, wantExecs)
+	}
+	if len(st.ManagedBridges) != 0 {
+		t.Fatalf("拆除完成后 ManagedBridges 应为空: %v", st.ManagedBridges)
 	}
 }

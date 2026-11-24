@@ -99,20 +99,57 @@ if args[:1] == ["inspect"]:
     fmt = args[args.index("--format") + 1]
     container_id = args[-1]
     running = next((v for v in fixture.get("running", {}).values() if v["id"] == container_id), None)
-    if running is None:
+    extra_c = fixture.get("extra_containers", {}).get(container_id)
+    target = running if running is not None else extra_c
+    if target is None:
         sys.exit(1)
     log({"kind": "container-inspect", "id": container_id, "format": fmt})
     if fmt == "{{.State.Status}}":
-        print(running.get("state", "running"))
+        print(target.get("state", "running"))
+    elif fmt == "{{.State.Running}}|{{.Name}}":
+        is_running = "true" if target.get("running", target.get("state", "running") == "running") else "false"
+        cname = target.get("name", container_id)
+        if not cname.startswith("/"):
+            cname = "/" + cname
+        print(f"{is_running}|{cname}")
+    elif fmt == "{{json .NetworkSettings.Networks}}":
+        print(json.dumps({n: {} for n in target.get("networks", [])}))
     elif fmt == "{{json .Mounts}}":
-        print("[]")
+        print(json.dumps(target.get("mounts", [])))
     else:
-        image_id = running.get("image_id", running["image"])
+        image_id = target.get("image_id", target.get("image", ""))
         if fmt.endswith("{{.State.StartedAt}}"):
-            print(f"{running.get('state', 'running')}|{running.get('health', 'healthy')}|{image_id}|0|2026-11-18T00:00:00Z")
+            print(f"{target.get('state', 'running')}|{target.get('health', 'healthy')}|{image_id}|0|2026-11-18T00:00:00Z")
         else:
-            print(f"{running.get('state', 'running')}|{running.get('health', 'healthy')}|{image_id}")
+            print(f"{target.get('state', 'running')}|{target.get('health', 'healthy')}|{image_id}")
     sys.exit(0)
+
+if args[:1] == ["network"]:
+    sub = args[1] if len(args) > 1 else ""
+    if sub == "inspect" and len(args) >= 3:
+        net = args[2]
+        log({"kind": "network-inspect", "network": net})
+        sys.exit(0 if net in fixture.get("networks", []) else 1)
+    if sub == "connect" and len(args) >= 4:
+        net, cid = args[2], args[3]
+        log({"kind": "network-connect", "network": net, "container": cid})
+        if fixture.get("fail_network_connect_once"):
+            fixture["fail_network_connect_once"] = False
+            Path(os.environ["DOCKER_FIXTURE"]).write_text(json.dumps(fixture))
+            sys.exit(1)
+        if fixture.get("fail_network_connect"):
+            sys.exit(1)
+        if net not in fixture.get("networks", []):
+            sys.exit(1)
+        target = next((v for v in fixture.get("running", {}).values() if v["id"] == cid), None)
+        if target is None:
+            sys.exit(1)
+        nets = target.setdefault("networks", [])
+        if net not in nets:
+            nets.append(net)
+        Path(os.environ["DOCKER_FIXTURE"]).write_text(json.dumps(fixture))
+        sys.exit(0)
+    sys.exit(1)
 
 if args[:1] == ["exec"]:
     log({"kind": "exec", "args": args})
@@ -136,6 +173,60 @@ if args[:1] == ["exec"]:
             fixture["schema"] = fixture["target_schema"]
         Path(os.environ["DOCKER_FIXTURE"]).write_text(json.dumps(fixture))
     sys.exit(0 if not fixture.get("fail_probe") else 1)
+
+if args[:1] == ["volume"]:
+    sub = args[1] if len(args) > 1 else ""
+    volumes = fixture.setdefault("volumes", {})
+    if sub == "inspect":
+        fmt = ""
+        name = ""
+        rest = args[2:]
+        idx = 0
+        while idx < len(rest):
+            if rest[idx] == "--format":
+                fmt = rest[idx + 1]
+                idx += 2
+                continue
+            if rest[idx].startswith("--format="):
+                fmt = rest[idx].split("=", 1)[1]
+            elif not rest[idx].startswith("-"):
+                name = rest[idx]
+            idx += 1
+        log({"kind": "volume-inspect", "name": name, "format": fmt})
+        vol = volumes.get(name)
+        if vol is None:
+            sys.exit(1)
+        if fmt == "{{.Mountpoint}}":
+            print(vol["mountpoint"])
+        else:
+            print(json.dumps(vol))
+        sys.exit(0)
+    if sub == "create":
+        labels = {}
+        name = ""
+        rest = args[2:]
+        idx = 0
+        while idx < len(rest):
+            if rest[idx] == "--label":
+                k, _, v = rest[idx + 1].partition("=")
+                labels[k] = v
+                idx += 2
+                continue
+            if rest[idx].startswith("--label="):
+                k, _, v = rest[idx].split("=", 1)[1].partition("=")
+                labels[k] = v
+            elif not rest[idx].startswith("-"):
+                name = rest[idx]
+            idx += 1
+        root = Path(fixture.get("volume_root", str(Path(os.environ["DOCKER_FIXTURE"]).parent / "volumes")))
+        mp = root / name / "_data"
+        mp.mkdir(parents=True, exist_ok=True)
+        volumes[name] = {"mountpoint": str(mp), "labels": labels}
+        Path(os.environ["DOCKER_FIXTURE"]).write_text(json.dumps(fixture))
+        log({"kind": "volume-create", "name": name, "labels": labels, "mountpoint": str(mp)})
+        print(name)
+        sys.exit(0)
+    sys.exit(1)
 
 if args[:1] == ["compose"]:
     files = []
@@ -163,10 +254,29 @@ if args[:1] == ["compose"]:
             if service.startswith("-") or service not in rendered["services"]:
                 continue
             ref = rendered["services"][service]["image"]
+            svc_nets = rendered["services"][service].get("networks")
+            top_nets = rendered.get("networks") or {}
+            proj = rendered.get("name") or ""
+            resolved_nets = []
+            if isinstance(svc_nets, list):
+                keys = svc_nets
+            elif isinstance(svc_nets, dict):
+                keys = list(svc_nets.keys())
+            else:
+                keys = []
+            for key in keys:
+                explicit = (top_nets.get(key) or {}).get("name") if isinstance(top_nets.get(key), dict) else None
+                if explicit:
+                    resolved_nets.append(explicit)
+                elif proj:
+                    resolved_nets.append(f"{proj}_{key}")
+                else:
+                    resolved_nets.append(key)
             running[service] = {
                 "id": f"{list(rendered['services']).index(service) + 1:064x}",
                 "image": ref,
                 "image_id": image(ref)["id"],
+                "networks": resolved_nets,
             }
         Path(os.environ["DOCKER_FIXTURE"]).write_text(json.dumps(fixture))
         sys.exit(0)
@@ -349,7 +459,7 @@ class GatewayRuntimeContractTests(unittest.TestCase):
         }
         self.fixture_file.write_text(json.dumps({"images": images, "bad_override": bad_override}))
 
-    def run_script(self, script, *args):
+    def run_script(self, script, *args, stdin=None, timeout=120):
         env = os.environ.copy()
         env.update({
             "PATH": str(self.bin) + os.pathsep + env["PATH"],
@@ -364,13 +474,19 @@ class GatewayRuntimeContractTests(unittest.TestCase):
             "LC_ALL": "C",
             "LANG": "C",
         })
+        if stdin is not None:
+            env.pop("JZ_ADMIN_PASSWORD", None)
+        # Full-upgrade + automatic rollback across 7-9 services and 13 images runs 120+
+        # docker stub subprocesses plus apply.sh's 10s post-start stability hold,
+        # which can exceed 45s under concurrent test load without any real hang.
         return subprocess.run(
             ["/bin/bash", str(script)] + [str(arg) for arg in args],
             cwd=self.work,
+            input=stdin,
             env=env,
             capture_output=True,
             text=True,
-            timeout=45,
+            timeout=timeout,
         )
 
     def run_apply(self, dual_compose=True):

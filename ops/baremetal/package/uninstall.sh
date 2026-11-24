@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 R="${INSTALL_ROOT:-${SCRIPT_DIR}}"
 R="${R%/}"
 RUN_USER="jiuzhang"
-UNIT_LIST="jiuzhang-logrotator jiuzhang-netmgrd jiuzhang-web jiuzhang-api jiuzhang-gateway jiuzhang-valkey jiuzhang-postgres"
+UNIT_LIST="jiuzhang-logrotator jiuzhang-tproxyd jiuzhang-mirrorcap jiuzhang-netmgrd jiuzhang-web jiuzhang-api jiuzhang-gateway jiuzhang-valkey jiuzhang-postgres"
 
 PURGE=0
 ASSUME_YES=0
@@ -78,10 +78,10 @@ fi
 
 # ---------- 2. 删除单元与 tmpfiles 配置 ----------
 log_info "[2/4] 移除单元文件与 tmpfiles 配置"
-for unit in jiuzhang-postgres jiuzhang-valkey jiuzhang-gateway jiuzhang-api jiuzhang-web jiuzhang-netmgrd jiuzhang-logrotator; do
+for unit in jiuzhang-postgres jiuzhang-valkey jiuzhang-gateway jiuzhang-api jiuzhang-web jiuzhang-netmgrd jiuzhang-mirrorcap jiuzhang-tproxyd jiuzhang-logrotator; do
   rm -f "/etc/systemd/system/${unit}.service"
 done
-rm -f /etc/tmpfiles.d/jiuzhang.conf
+rm -f /etc/tmpfiles.d/jiuzhang.conf /etc/modules-load.d/jiuzhang-transparent.conf
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload
 fi

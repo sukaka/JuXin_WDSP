@@ -5,8 +5,8 @@
 // 透传回源站（TLS 端到端不断开，WAF 无需其证书）。解析失败一律倒向检测路径，
 // 攻击者无法靠畸形 ClientHello 绕过防护直通源站。
 //
-// 边界：ClientHello 跨多个 TLS record 分片（实测未见于主流栈）按解析失败处理；
-// ECH 加密 ClientHello 时 SNI 不可见，同样倒向检测路径。
+// 边界：支持跨多个 TLS handshake record 分片的 ClientHello 重组（如 TLS 1.3 PQ 混合
+// 密钥交换大包，重组上限 16 KiB）；超限或畸形/ECH 加密 ClientHello 均倒向检测路径。
 package tproxyd
 
 import (
@@ -23,10 +23,16 @@ const (
 	tlsHsClientHello      = 1    // handshake 类型：ClientHello
 	tlsExtServerName      = 0    // 扩展类型：server_name（SNI）
 	tlsSNIHostName        = 0    // SNI 名称类型：host_name
-	// maxTLSRecord 单个 TLS record 载荷上限 16384 + 5 字节头（RFC 5246 §6.2.1）。
-	maxTLSRecord = 16384 + 5
-	// sniffBufSize 嗅探缓冲：容纳一个满载 record（Peek 上限）。
-	sniffBufSize = maxTLSRecord
+	// maxTLSRecordPayload 单个 TLS record 载荷上限 16384 字节（RFC 5246 §6.2.1）。
+	maxTLSRecordPayload = 16384
+	// maxTLSRecord 单个 TLS record 上限 16384 + 5 字节头。
+	maxTLSRecord = maxTLSRecordPayload + 5
+	// maxClientHelloSize 跨 record 重组的 ClientHello 握手载荷上限（16 KiB）。
+	maxClientHelloSize = 16384
+	// maxHandshakeRecords 允许 ClientHello 跨越多 record 分片的最大 record 数。
+	maxHandshakeRecords = 64
+	// sniffBufSize 嗅探缓冲：容纳 16 KiB 握手载荷 + 多 record 头部开销（64*5 字节，留足余量）。
+	sniffBufSize = maxClientHelloSize + 1024
 )
 
 // errNotTLS 首字节非 TLS 握手 record（明文 HTTP 等），属正常分支而非错误。
@@ -34,34 +40,99 @@ var errNotTLS = errors.New("非 TLS 握手流量")
 
 // peekClientHelloSNI 从 br 嗅探 TLS ClientHello 的 SNI server_name。
 // 仅 Peek 不消费：返回后连接字节流保持完整，由调用方原样转发。
+// 支持跨多个 0x16 握手 record 分片的 TLS 1.3 ClientHello（重组上限 16 KiB）。
 //
 // 返回 (sni, isTLS, err)：
-//   - isTLS=false：首字节非 TLS 握手（明文 HTTP 等），sni/err 为零值；
+//   - isTLS=false：首字节非 TLS 握手（明文 HTTP 等）或不足 5 字节即 EOF；
 //   - isTLS=true、sni 非空：成功解析出 SNI（已小写归一、去末尾点）；
-//   - err 非空：TLS 已识别但解析失败（截断/畸形/跨 record 分片/无 SNI 扩展）。
+//   - err 非空：TLS 已识别但解析失败（截断/畸形/超 16 KiB 上限/无 SNI 扩展）。
 func peekClientHelloSNI(br *bufio.Reader) (string, bool, error) {
-	// record 头 5 字节：type(1) version(2) length(2)
-	hdr, err := br.Peek(5)
-	if err != nil {
-		return "", false, fmt.Errorf("读取 record 头失败: %w", err)
+	var (
+		offset    int
+		records   int
+		handshake []byte
+	)
+	for {
+		if records >= maxHandshakeRecords {
+			return "", true, fmt.Errorf("ClientHello 跨 record 分片数超过上限 %d", maxHandshakeRecords)
+		}
+		if offset+5 > sniffBufSize {
+			return "", true, fmt.Errorf("ClientHello 原始字节长度超过嗅探缓冲上限 %d", sniffBufSize)
+		}
+		// record 头 5 字节：type(1) version(2) length(2)
+		buf, err := br.Peek(offset + 5)
+		if err != nil {
+			if records == 0 {
+				return "", false, fmt.Errorf("读取 record 头失败: %w", err)
+			}
+			return "", true, fmt.Errorf("读取后续 record 头失败: %w", err)
+		}
+		hdr := buf[offset : offset+5]
+		if hdr[0] != tlsRecordHandshake || hdr[1] != tlsRecordVersionMajor {
+			if records == 0 {
+				return "", false, errNotTLS
+			}
+			return "", true, fmt.Errorf("后续 record 非 TLS 握手: type=0x%02x ver=%d.%d", hdr[0], hdr[1], hdr[2])
+		}
+		recLen := int(hdr[3])<<8 | int(hdr[4])
+		if recLen <= 0 || recLen > maxTLSRecordPayload {
+			return "", true, fmt.Errorf("record 长度非法: %d", recLen)
+		}
+		if len(handshake)+recLen > maxClientHelloSize {
+			return "", true, fmt.Errorf("ClientHello 重组长度超过上限 %d 字节", maxClientHelloSize)
+		}
+		if offset+5+recLen > sniffBufSize {
+			return "", true, fmt.Errorf("ClientHello 原始字节长度超过嗅探缓冲上限 %d", sniffBufSize)
+		}
+		// 取完整 record（Peek 阻塞至字节齐备或连接读超时/对端关闭）
+		buf, err = br.Peek(offset + 5 + recLen)
+		if err != nil {
+			return "", true, fmt.Errorf("读取 record 载荷失败（截断或对端关闭）: %w", err)
+		}
+		payload := buf[offset+5 : offset+5+recLen]
+		offset += 5 + recLen
+		records++
+
+		// 单 record 快路径：无需额外拷贝，直接解析
+		if records == 1 && len(payload) >= 4 {
+			if payload[0] != tlsHsClientHello {
+				return "", true, fmt.Errorf("首个握手消息非 ClientHello: type=%d", payload[0])
+			}
+			hsLen := int(payload[1])<<16 | int(payload[2])<<8 | int(payload[3])
+			if 4+hsLen <= len(payload) {
+				sni, err := parseClientHelloSNI(payload)
+				if err != nil {
+					return "", true, err
+				}
+				return sni, true, nil
+			}
+			if 4+hsLen > maxClientHelloSize {
+				return "", true, fmt.Errorf("ClientHello 声明长度 %d 超过上限 %d", hsLen, maxClientHelloSize)
+			}
+			handshake = make([]byte, 0, 4+hsLen)
+			handshake = append(handshake, payload...)
+			continue
+		}
+
+		handshake = append(handshake, payload...)
+		if len(handshake) < 4 {
+			continue
+		}
+		if handshake[0] != tlsHsClientHello {
+			return "", true, fmt.Errorf("首个握手消息非 ClientHello: type=%d", handshake[0])
+		}
+		hsLen := int(handshake[1])<<16 | int(handshake[2])<<8 | int(handshake[3])
+		if 4+hsLen > maxClientHelloSize {
+			return "", true, fmt.Errorf("ClientHello 声明长度 %d 超过上限 %d", hsLen, maxClientHelloSize)
+		}
+		if len(handshake) >= 4+hsLen {
+			sni, err := parseClientHelloSNI(handshake)
+			if err != nil {
+				return "", true, err
+			}
+			return sni, true, nil
+		}
 	}
-	if hdr[0] != tlsRecordHandshake || hdr[1] != tlsRecordVersionMajor {
-		return "", false, errNotTLS
-	}
-	recLen := int(hdr[3])<<8 | int(hdr[4])
-	if recLen <= 0 || recLen > maxTLSRecord-5 {
-		return "", true, fmt.Errorf("record 长度非法: %d", recLen)
-	}
-	// 取完整 record（Peek 阻塞至字节齐备或连接读超时/对端关闭）
-	rec, err := br.Peek(5 + recLen)
-	if err != nil {
-		return "", true, fmt.Errorf("读取 record 载荷失败（截断或对端关闭）: %w", err)
-	}
-	sni, err := parseClientHelloSNI(rec[5:])
-	if err != nil {
-		return "", true, err
-	}
-	return sni, true, nil
 }
 
 // parseClientHelloSNI 解析 ClientHello 握手消息体，提取 SNI host_name。

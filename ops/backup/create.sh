@@ -14,7 +14,7 @@ usage() {
 选项:
   -t, --type TYPE        备份类型 FULL|CONFIG_ONLY（默认 FULL）
   -o, --output DIR       下载目录（默认当前目录）
-  -u, --user USER        管理员用户名（默认 jiuzhang_admin，或 JZ_ADMIN_USER）
+  -u, --user USER        管理员用户名（默认读取 .env 的 INITIAL_ADMIN_USERNAME，缺省 admin，或 JZ_ADMIN_USER）
       --api-url URL      管理 API 地址（默认 http://127.0.0.1:18081）
       --timeout SEC      等待备份完成秒数（默认 1800）
   -h, --help             显示帮助
@@ -28,7 +28,7 @@ EOF
 
 BACKUP_TYPE="FULL"
 OUT_DIR="."
-USER="${JZ_ADMIN_USER:-jiuzhang_admin}"
+USER=""
 TIMEOUT=1800
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +41,7 @@ while [[ $# -gt 0 ]]; do
     *) log_err "未知参数: $1"; usage; exit 2 ;;
   esac
 done
+[[ -n "$USER" ]] || USER="$(resolve_default_admin_user "$JZ_ENV_FILE")"
 
 [[ "$BACKUP_TYPE" == "FULL" || "$BACKUP_TYPE" == "CONFIG_ONLY" ]] || { log_err "无效备份类型: $BACKUP_TYPE"; exit 2; }
 [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || { log_err "--timeout 必须为整数"; exit 2; }

@@ -281,3 +281,92 @@ func TestFlowMetaFrom(t *testing.T) {
 		t.Errorf("meta=%+v", m)
 	}
 }
+
+// TestMalformedLongLivedStreamRemainsBoundedByMaxStreamConns 验证三条异常终止分支
+// （ReadRequest 畸形、头部精确复核超限、captureBody 畸形 chunked）均同步排空 rs，
+// 在对端 FIN/空闲冲刷前持续占用 MaxStreamConns 名额，避免异常长连接逃逸并发上限。
+func TestMalformedLongLivedStreamRemainsBoundedByMaxStreamConns(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "malformed_request_line",
+			payload: "NOT_VALID_HTTP\r\n\r\n",
+		},
+		{
+			name:    "header_precise_recheck_over_limit",
+			payload: "GET / HTTP/1.1\r\nHost: h\r\nX-Pad: " + strings.Repeat("B", 70<<10) + "\r\n\r\n",
+		},
+		{
+			name:    "malformed_chunked_body",
+			payload: "POST /c HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\nZZZZ\r\n",
+		},
+	}
+
+	cliIP, srvIP := net.ParseIP("10.3.0.10").To4(), net.ParseIP("10.3.0.20").To4()
+	flow := gopacket.NewFlow(layers.EndpointIPv4, cliIP, srvIP)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stats := &Stats{}
+			h := &collectHandler{ch: make(chan *http.Request, 4)}
+			pool := tcpassembly.NewStreamPool(NewStreamFactory(h, 65536, 1, stats))
+			asm := tcpassembly.NewAssembler(pool)
+			now := time.Now()
+
+			// 流 1：发送异常载荷但不发 FIN（模拟长连接保持打开）
+			const base1 = uint32(7000)
+			bad := []byte(tc.payload)
+			asm.AssembleWithTimestamp(flow, tcpPacket(31001, 8080, base1, true, false, false, nil), now)
+			asm.AssembleWithTimestamp(flow, tcpPacket(31001, 8080, base1+1, false, true, false, bad), now.Add(time.Millisecond))
+
+			// 等待解析错误已触发并进入同步排空
+			deadline := time.Now().Add(2 * time.Second)
+			for stats.RequestErrors.Load() == 0 && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			if stats.RequestErrors.Load() != 1 {
+				t.Fatalf("RequestErrors=%d want 1", stats.RequestErrors.Load())
+			}
+			if stats.StreamsClosed.Load() != 0 {
+				t.Fatalf("StreamsClosed=%d want 0（未 FIN 前异常流应仍占名额）", stats.StreamsClosed.Load())
+			}
+
+			// 流 2：在流 1 尚未 FIN 时打开，应因 MaxStreamConns=1 被拒绝
+			const base2 = uint32(8000)
+			okReq := []byte("GET /blocked HTTP/1.1\r\nHost: h\r\n\r\n")
+			asm.AssembleWithTimestamp(flow, tcpPacket(31002, 8080, base2, true, false, false, nil), now.Add(2*time.Millisecond))
+			asm.AssembleWithTimestamp(flow, tcpPacket(31002, 8080, base2+1, false, true, false, okReq), now.Add(3*time.Millisecond))
+			asm.AssembleWithTimestamp(flow, tcpPacket(31002, 8080, base2+1+uint32(len(okReq)), false, true, true, nil), now.Add(4*time.Millisecond))
+			if stats.StreamsRejected.Load() != 1 {
+				t.Fatalf("StreamsRejected=%d want 1", stats.StreamsRejected.Load())
+			}
+
+			// 给流 1 发送 FIN：同步排空收到 EOF 后释放名额
+			asm.AssembleWithTimestamp(flow, tcpPacket(31001, 8080, base1+1+uint32(len(bad)), false, true, true, nil), now.Add(5*time.Millisecond))
+			if !waitStreamClosed(stats, 1) {
+				t.Fatal("流 1 在 FIN 后未关闭")
+			}
+
+			// 流 3：名额释放后可正常解析
+			const base3 = uint32(9000)
+			goodReq := []byte("GET /after-release HTTP/1.1\r\nHost: h\r\n\r\n")
+			asm.AssembleWithTimestamp(flow, tcpPacket(31003, 8080, base3, true, false, false, nil), now.Add(6*time.Millisecond))
+			asm.AssembleWithTimestamp(flow, tcpPacket(31003, 8080, base3+1, false, true, false, goodReq), now.Add(7*time.Millisecond))
+			asm.AssembleWithTimestamp(flow, tcpPacket(31003, 8080, base3+1+uint32(len(goodReq)), false, true, true, nil), now.Add(8*time.Millisecond))
+
+			select {
+			case r := <-h.ch:
+				if r.URL.Path != "/after-release" {
+					t.Fatalf("got %s, want /after-release", r.URL.Path)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("流 1 释放后流 3 未被解析")
+			}
+			if !waitStreamClosed(stats, 2) {
+				t.Fatal("流 3 未关闭")
+			}
+		})
+	}
+}

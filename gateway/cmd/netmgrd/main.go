@@ -21,6 +21,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -36,14 +37,17 @@ func main() {
 
 func run() error {
 	var (
-		configPath  = flag.String("config", netmgrd.DefaultConfigPath, "期望配置文件路径（network.json）")
-		statusPath  = flag.String("status", netmgrd.DefaultStatusPath, "状态回写路径（network-status.json）")
-		interval    = flag.Int("interval", int(netmgrd.DefaultPollInterval/time.Second), "轮询周期（秒，daemon 模式）")
-		timeout     = flag.Int("timeout", int(netmgrd.DefaultCmdTimeout/time.Second), "单个 ip/sysctl 动作超时（秒）")
-		once        = flag.Bool("once", false, "执行一次后退出（lab/运维验证）")
-		dryRun      = flag.Bool("dry-run", false, "只打印将执行的变更命令，不执行、不写 status")
-		nodeName    = flag.String("node", os.Getenv("NODE_NAME"), "诊断请求认领节点名（缺省空=认领全部节点；也可用 NODE_NAME 环境变量）")
-		healthcheck = flag.Bool("healthcheck", false, "通过本地 Unix Socket 只读检查 daemon 就绪状态，不执行网络变更")
+		configPath    = flag.String("config", netmgrd.DefaultConfigPath, "期望配置文件路径（network.json）")
+		statusPath    = flag.String("status", netmgrd.DefaultStatusPath, "状态回写路径（network-status.json）")
+		tproxydConfig = flag.String("tproxyd-config", "", "透明牵引侧车配置文件路径（缺省与 --config 同目录 tproxyd.json）")
+		tproxydHealth = flag.String("tproxyd-health", netmgrd.DefaultTproxydHealthURL, "tproxyd 健康检查端点 URL")
+		caddySocket   = flag.String("caddy-socket", netmgrd.DefaultCaddyAdminSocket, "Caddy Admin Unix Socket 路径（透明 fail-open 探活用）")
+		interval      = flag.Int("interval", int(netmgrd.DefaultPollInterval/time.Second), "轮询周期（秒，daemon 模式）")
+		timeout       = flag.Int("timeout", int(netmgrd.DefaultCmdTimeout/time.Second), "单个 ip/sysctl 动作超时（秒）")
+		once          = flag.Bool("once", false, "执行一次后退出（lab/运维验证）")
+		dryRun        = flag.Bool("dry-run", false, "只打印将执行的变更命令，不执行、不写 status")
+		nodeName      = flag.String("node", os.Getenv("NODE_NAME"), "诊断请求认领节点名（缺省空=认领全部节点；也可用 NODE_NAME 环境变量）")
+		healthcheck   = flag.Bool("healthcheck", false, "通过本地 Unix Socket 只读检查 daemon 就绪状态，不执行网络变更")
 	)
 	flag.Parse()
 	if *healthcheck {
@@ -105,6 +109,13 @@ func run() error {
 	sup := netmgrd.NewSupervisor(*configPath, *statusPath,
 		time.Duration(*interval)*time.Second, runner)
 	sup.Diag.NodeName = *nodeName
+	if *tproxydConfig != "" {
+		sup.Transparent.TproxydConfigPath = *tproxydConfig
+	} else {
+		sup.Transparent.TproxydConfigPath = filepath.Join(filepath.Dir(*configPath), "tproxyd.json")
+	}
+	sup.Transparent.TproxydHealthURL = *tproxydHealth
+	sup.Transparent.CaddySocket = *caddySocket
 	healthServer, err := sup.StartHealthServer(netmgrd.DefaultHealthSocket)
 	if err != nil {
 		return err
@@ -114,13 +125,14 @@ func run() error {
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	log.Printf("[netmgrd] start config=%s status=%s poll=%ds cmd_timeout=%ds node=%q diag_dir=%s",
-		*configPath, *statusPath, *interval, *timeout, *nodeName, sup.Diag.Dir)
+	log.Printf("[netmgrd] start config=%s status=%s tproxyd_cfg=%s tproxyd_health=%s caddy_sock=%s poll=%ds cmd_timeout=%ds node=%q diag_dir=%s",
+		*configPath, *statusPath, sup.Transparent.TproxydConfigPath, sup.Transparent.TproxydHealthURL, sup.Transparent.CaddySocket,
+		*interval, *timeout, *nodeName, sup.Diag.Dir)
 
 	done := make(chan struct{})
 	go func() { sup.Run(); close(done) }()
 	sig := <-sigCh
-	log.Printf("[netmgrd] signal %s received, shutting down（不拆除网络状态）", sig)
+	log.Printf("[netmgrd] signal %s received, shutting down（冲刷透明牵引规则，不拆除网桥与路由）", sig)
 	sup.Close()
 	<-done
 	return nil

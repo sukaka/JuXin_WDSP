@@ -12,6 +12,7 @@ Type=simple
 # 严格收敛能力集至 CAP_NET_ADMIN CAP_NET_RAW。
 User=root
 Group=root
+SupplementaryGroups=__USER__
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 ExecStart=__ROOT__/bin/netmgrd --config __ROOT__/data/run/caddy/sidecars/network.json --status __ROOT__/data/run/caddy/sidecars/network-status.json --node __NODE_NAME__

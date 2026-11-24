@@ -32,7 +32,7 @@ usage() {
   6. 安装 jiuzhang-hostctl systemd 单元（系统控制：重启/关机/恢复出厂；无 systemd 告警跳过）
   7. 启动 compose 项目并等待健康
   8. 安装并启用宿主机升级执行器（完整包必装，供 Web 升级调用）
-  9. 初始化三权管理员账号（安全/审计管理员经 API 创建，临时口令仅打印一次）
+  9. 初始化三权管理员账号（默认 admin / operadmin / auditor，首次登录强制改密，临时口令仅打印一次）
 
 选项:
   -c, --compose-file FILE  docker compose 文件（默认 docker-compose.yml）
@@ -358,7 +358,20 @@ fi
 POSTGRES_PASSWORD="$(random_hex 24)"
 VALKEY_PASSWORD="$(random_hex 24)"
 JIUZHANG_MASTER_KEY="$(random_hex 32)"
-INITIAL_ADMIN_PASSWORD="$(random_hex 12)"
+INITIAL_ADMIN_PASSWORD="$(random_hex 12)Aa!"
+INITIAL_OPER_ADMIN_PASSWORD="$(random_hex 12)Aa!"
+INITIAL_AUDIT_ADMIN_PASSWORD="$(random_hex 12)Aa!"
+# 收集宿主机非回环 IPv4（供 Agent 一键部署按 IP 自动对接；跳过 127.* 与 link-local 169.254.*）
+collect_host_ips() {
+  local raw=""
+  if command -v ip >/dev/null 2>&1; then
+    raw="$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]}' || true)"
+  elif command -v hostname >/dev/null 2>&1; then
+    raw="$(hostname -I 2>/dev/null | tr ' ' '\n' || true)"
+  fi
+  printf '%s\n' "$raw" | awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $0 !~ /^127\./ && $0 !~ /^169\.254\./ && !seen[$0]++' | paste -sd ',' -
+}
+WDSP_HOST_IPS="$(collect_host_ips)"
 (
   umask 077
   cat > "$JZ_ENV_FILE" <<EOF
@@ -372,12 +385,17 @@ POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 VALKEY_PASSWORD=$VALKEY_PASSWORD
 JIUZHANG_MASTER_KEY=$JIUZHANG_MASTER_KEY
 COOKIE_SECURE=true
-INITIAL_ADMIN_USERNAME=jiuzhang_admin
-# 初始化完成后请删除下一行（初始口令仅用于首次登录）
+INITIAL_ADMIN_USERNAME=admin
+INITIAL_OPER_ADMIN_USERNAME=operadmin
+INITIAL_AUDIT_ADMIN_USERNAME=auditor
+# 初始化完成后请删除以下三行初始口令并重启服务（初始口令仅用于首次登录）
 INITIAL_ADMIN_PASSWORD=$INITIAL_ADMIN_PASSWORD
+INITIAL_OPER_ADMIN_PASSWORD=$INITIAL_OPER_ADMIN_PASSWORD
+INITIAL_AUDIT_ADMIN_PASSWORD=$INITIAL_AUDIT_ADMIN_PASSWORD
 API_PORT=$API_PORT
 WEB_PORT=$WEB_PORT
 WEB_HTTPS_PORT=$WEB_HTTPS_PORT
+WDSP_HOST_IPS=$WDSP_HOST_IPS
 PRODUCT_EDITION=$PKG_EDITION
 API_DYNAMIC_PROTECTION_ENABLED=$PKG_API_DYNAMIC
 WEB_WAF_ENABLED=$PKG_WEB_WAF
@@ -481,6 +499,19 @@ if [[ -n "$pkg_manifest" ]]; then
 else
   compose up -d
 fi
+if command -v jq >/dev/null 2>&1; then
+  INSTALL_COMPOSE_JSON="$(compose config --format json 2>/dev/null || true)"
+  INSTALL_API_EXTRA_NETS=()
+  while IFS= read -r _net; do
+    [[ -n "$_net" ]] && INSTALL_API_EXTRA_NETS+=("$_net")
+  done < <(collect_api_extra_networks "" "$INSTALL_COMPOSE_JSON")
+  if ((${#INSTALL_API_EXTRA_NETS[@]} > 0)); then
+    INSTALL_API_ID="$(compose ps -q api 2>/dev/null || true)"
+    reattach_api_extra_networks "$INSTALL_API_ID" strict "${INSTALL_API_EXTRA_NETS[@]}" \
+      || die "无法为 api 容器接入同机 ClickHouse/附加网络"
+  fi
+  unset INSTALL_COMPOSE_JSON INSTALL_API_EXTRA_NETS INSTALL_API_ID _net
+fi
 log_info "等待管理 API 健康检查（最长 180s）..."
 wait_http_ok "$JZ_API_BASE/api/v1/health" 180 || die "管理 API 启动超时，请用 ops/diagnostics/collect.sh 收集诊断信息"
 log_info "管理 API 已就绪"
@@ -509,60 +540,21 @@ if [[ "$SKIP_ACCOUNTS" == "true" ]]; then
   log_warn "已跳过三权账号初始化（--skip-accounts）"
   exit 0
 fi
-log_info "步骤 9/9：初始化三权管理员账号"
-require_cmd jq
-JZ_ADMIN_PASSWORD="$INITIAL_ADMIN_PASSWORD"
-trap api_cleanup EXIT
-api_login "jiuzhang_admin"
-
-# 初始管理员首次登录强制改密：改为安装期生成的正式口令（仅本次打印）
-FINAL_ADMIN_PASSWORD="$(random_hex 12)Aa!"
-chg="$(api_req POST /api/v1/auth/change-password "$(jq -n --arg o "$INITIAL_ADMIN_PASSWORD" --arg n "$FINAL_ADMIN_PASSWORD" \
-  '{old_password:$o, new_password:$n}')"
-)" || die "修改初始管理员密码失败"
-api_cleanup
-INITIAL_ADMIN_PASSWORD="$FINAL_ADMIN_PASSWORD"
-JZ_ADMIN_PASSWORD="$FINAL_ADMIN_PASSWORD"
-api_login "jiuzhang_admin"
-
-declare -a created
-create_account() { # create_account USERNAME DISPLAY ROLE
-  local username="$1" display="$2" role="$3"
-  local body resp code tmp_pwd
-  body="$(jq -n --arg u "$username" --arg d "$display" --arg r "$role" \
-    '{username:$u, display_name:$d, role_code:$r}')"
-  resp="$(api_req POST /api/v1/users "$body")"
-  code="$(api_code "$resp")"
-  if [[ "$code" != "SUCCESS" ]]; then
-    if printf '%s' "$resp" | grep -qi "已存在\|conflict\|duplicate"; then
-      log_warn "账号 $username 已存在，跳过创建"
-      return 0
-    fi
-    die "创建账号 $username 失败: $(printf '%s' "$resp" | jq -r '.message // "未知错误"')"
-  fi
-  tmp_pwd="$(printf '%s' "$resp" | jq -r '.data.temporary_password // empty')"
-  [[ -n "$tmp_pwd" ]] || die "创建账号 $username 后未返回临时口令"
-  created+=("$username|$role|$tmp_pwd")
-}
-
-create_account "jiuzhang_secadmin" "安全管理员" "SECURITY_ADMIN"
-create_account "jiuzhang_auditadmin" "审计管理员" "AUDIT_ADMIN"
+log_info "步骤 9/9：三权管理员账号已随管理 API 首次启动自动初始化"
 
 cat <<EOF
 
 ==================== 初始账号（仅打印一次，请立即记录并妥善保管） ====================
-  系统管理员: jiuzhang_admin
+  系统管理员 (SYSTEM_ADMIN): admin
     初始口令: $INITIAL_ADMIN_PASSWORD
-EOF
-for entry in "${created[@]:-}"; do
-  [[ -z "$entry" ]] && continue
-  IFS='|' read -r u r p <<< "$entry"
-  printf '  %s (%s)\n    临时口令: %s\n' "$u" "$r" "$p"
-done
-cat <<'EOF'
+  运维管理员 (SECURITY_ADMIN): operadmin
+    初始口令: $INITIAL_OPER_ADMIN_PASSWORD
+  审计管理员 (AUDIT_ADMIN): auditor
+    初始口令: $INITIAL_AUDIT_ADMIN_PASSWORD
 ====================================================================================
   提示: 所有初始/临时口令首次登录后必须修改；
-        确认账号可用后，请从 .env 中删除 INITIAL_ADMIN_PASSWORD 并重启服务。
+        确认账号可用后，请从 .env 中删除 INITIAL_ADMIN_PASSWORD、
+        INITIAL_OPER_ADMIN_PASSWORD、INITIAL_AUDIT_ADMIN_PASSWORD 并重启服务。
 EOF
 cat <<EOF
 

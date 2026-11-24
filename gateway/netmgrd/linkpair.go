@@ -37,12 +37,11 @@ type pairRuntime struct {
 	specKey   string // 期望指纹（端口+参数）：变化则重置运行态（含 SUPPRESSED 复位）
 	configVer string // 最近配置版本戳（updated_at）：SUPPRESSED 复位判定用
 
-	downCandidate string    // 防抖候选口（carrier 丢失但未达 hold_down）
-	downSince     time.Time // 候选起点
-	downPort      string    // 已认定故障口（PROPAGATED_DOWN 期间）
-	propPort      string    // 被联动 down 的配对口
-	upSince       time.Time // 故障口恢复候选起点（PROPAGATED_DOWN 期间防抖）
-	flaps         []time.Time
+	downSince map[string]time.Time // 每端口独立记录物理掉载波起点（避免双口同时掉载波时互相覆盖活锁）
+	downPort  string               // 已认定故障口（PROPAGATED_DOWN 期间）
+	propPort  string               // 被联动 down 的配对口
+	upSince   time.Time            // 故障口恢复候选起点（PROPAGATED_DOWN 期间防抖）
+	flaps     []time.Time
 
 	lastEventAt time.Time
 	message     string
@@ -52,8 +51,10 @@ type pairRuntime struct {
 type LinkPairMonitor struct {
 	// Runner 命令执行器（生产 ExecRunner；测试注入桩）。
 	Runner Runner
-	// StatusPath network-status.json 路径（联动状态合并回写）。
+	// StatusPath network-status.json 路径（独立构造时使用；Supervisor 下优先经 StatusWriter）。
 	StatusPath string
+	// StatusWriter 跨组件共享的互斥状态写入器（可选；空时按 StatusPath 构造默认写入器）。
+	StatusWriter *StatusWriter
 	// Interval carrier 轮询周期（<=0 取 DefaultLinkPairInterval）。
 	Interval time.Duration
 
@@ -72,12 +73,38 @@ type LinkPairMonitor struct {
 // NewLinkPairMonitor 创建监控器。
 func NewLinkPairMonitor(statusPath string, r Runner) *LinkPairMonitor {
 	return &LinkPairMonitor{
-		Runner:     r,
-		StatusPath: statusPath,
-		pairs:      map[string]*pairRuntime{},
-		stopCh:     make(chan struct{}),
-		now:        time.Now,
+		Runner:       r,
+		StatusPath:   statusPath,
+		StatusWriter: NewStatusWriter(statusPath),
+		pairs:        map[string]*pairRuntime{},
+		stopCh:       make(chan struct{}),
+		now:          time.Now,
 	}
+}
+
+// statusWriter 返回有效的共享状态写入器。
+func (m *LinkPairMonitor) statusWriter() *StatusWriter {
+	if m.StatusWriter != nil {
+		return m.StatusWriter
+	}
+	return NewStatusWriter(m.StatusPath)
+}
+
+// HeldDownPorts 返回当前处于 PROPAGATED_DOWN 且由本组件联动标记持有的配对口集合，
+// 供 Apply 拉起网桥成员口时跳过这些口。
+func (m *LinkPairMonitor) HeldDownPorts() map[string]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var held map[string]bool
+	for _, rt := range m.pairs {
+		if rt.state == LinkPairPropagatedDown && rt.propPort != "" {
+			if held == nil {
+				held = map[string]bool{}
+			}
+			held[rt.propPort] = true
+		}
+	}
+	return held
 }
 
 // interval 轮询周期（零值取默认）。
@@ -197,7 +224,7 @@ func pairSpecKey(b BridgeSpec) string {
 // PROPAGATED_DOWN 的桥恢复对应运行态（downPort/propPort 以 status 为准；
 // 无标记的一 up 一 down 不动作，仅由首个监控周期如实上送）。
 func (m *LinkPairMonitor) restoreFromStatusLocked(want map[string]BridgeSpec) {
-	st := loadStatusFile(m.StatusPath)
+	st := m.statusWriter().Read()
 	if st == nil {
 		return // 无历史状态：全新启动
 	}
@@ -224,7 +251,18 @@ func (m *LinkPairMonitor) restoreFromStatusLocked(want map[string]BridgeSpec) {
 func (m *LinkPairMonitor) cycle(ctx context.Context) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed || len(m.pairs) == 0 {
+	if m.closed {
+		return
+	}
+	// 即使最后一个联动桥已被移除（len==0），仍须把 m.dirty 刷盘以清除遗留 link_pairs 状态。
+	if len(m.pairs) == 0 {
+		if m.dirty {
+			if werr := m.writeStatusLocked(); werr != nil {
+				m.logOnce("werr", "联动状态回写失败（下周期重试）: %v", werr)
+				return
+			}
+			m.dirty = false
+		}
 		return
 	}
 
@@ -262,35 +300,42 @@ func (m *LinkPairMonitor) evaluateLocked(ctx context.Context, rt *pairRuntime, s
 	return false
 }
 
-// evalBothUpLocked BOTH_UP：找 carrier 持续丢失达 hold_down 的口并联动。
+// evalBothUpLocked BOTH_UP：每端口独立跟踪物理载波丢失时长（管理 UP 且无 LOWER_UP），
+// 避免双口同时掉载波时的单候选覆盖活锁，也绝不从运维手工管理 DOWN 的口触发联动。
 func (m *LinkPairMonitor) evalBothUpLocked(ctx context.Context, rt *pairRuntime, snap map[string]linkEntry, now time.Time) bool {
+	if rt.downSince == nil {
+		rt.downSince = map[string]time.Time{}
+	}
 	p0, p1 := rt.spec.Ports[0], rt.spec.Ports[1]
+	var triggered string
 	for _, p := range [2]string{p0, p1} {
-		if carrierLost(snap, p) {
-			if rt.downCandidate != p {
-				rt.downCandidate, rt.downSince = p, now
+		if physicalCarrierLost(snap, p) {
+			since, ok := rt.downSince[p]
+			if !ok {
+				rt.downSince[p] = now
 				continue
 			}
-			if now.Sub(rt.downSince) < time.Duration(rt.spec.LinkPair.HoldDownMs)*time.Millisecond {
-				continue // 防抖窗口内
+			if now.Sub(since) >= time.Duration(rt.spec.LinkPair.HoldDownMs)*time.Millisecond && triggered == "" {
+				triggered = p
 			}
-			return m.propagateLocked(ctx, rt, p, peerOf(p0, p1, p), snap, now)
+		} else {
+			delete(rt.downSince, p)
 		}
-		if rt.downCandidate == p {
-			rt.downCandidate, rt.downSince = "", time.Time{} // 窗口内恢复：撤销候选
-		}
+	}
+	if triggered != "" {
+		return m.propagateLocked(ctx, rt, triggered, peerOf(p0, p1, triggered), snap, now)
 	}
 	return false
 }
 
 // propagateLocked 执行联动 down（BOTH_UP → PROPAGATED_DOWN 的唯一入口）：
-// 抑制判定 → 安全红线（配对口带 IP 拒绝）→ 幂等执行 → 打标记 + 计 flap。
+// 抑制判定 → 安全红线（配对口缺失 / 带 IP / 已被运维管理 DOWN 均拒绝接管）→ 执行 → 打标记 + 计 flap。
 func (m *LinkPairMonitor) propagateLocked(ctx context.Context, rt *pairRuntime, downPort, propPort string, snap map[string]linkEntry, now time.Time) bool {
 	// 抑制判定：近 1 小时联动次数超限 → SUPPRESSED（冻结，如实记录）。
 	rt.flaps = pruneFlaps(rt.flaps, now)
 	if rt.spec.LinkPair.MaxFlapsPerHour > 0 && len(rt.flaps) >= rt.spec.LinkPair.MaxFlapsPerHour {
 		rt.state = LinkPairSuppressed
-		rt.downCandidate, rt.downSince = "", time.Time{}
+		rt.downSince = nil
 		rt.lastEventAt = now
 		rt.message = fmt.Sprintf("联动频率超限（1h 内 %d 次 ≥ 上限 %d），进入抑制态；请检查物理链路后保存一次网络配置或重启 netmgrd 复位",
 			len(rt.flaps), rt.spec.LinkPair.MaxFlapsPerHour)
@@ -298,21 +343,32 @@ func (m *LinkPairMonitor) propagateLocked(ctx context.Context, rt *pairRuntime, 
 		return true
 	}
 
+	e, ok := snap[propPort]
+	if !ok {
+		return m.setMessageLocked(rt, now,
+			fmt.Sprintf("安全红线：配对口 %s 不存在，无法执行联动 down", propPort))
+	}
 	// 安全红线：配对口带 IP 地址（管理口/业务口）拒绝联动 down。
-	if e, ok := snap[propPort]; ok && e.hasIP() {
+	if e.hasIP() {
 		return m.setMessageLocked(rt, now,
 			fmt.Sprintf("安全红线：配对口 %s 已配置 IP 地址，拒绝联动 down（防误断管理/业务通道）", propPort))
+	}
+	// 安全红线：配对口已处于管理 DOWN（运维手工 down），绝不执行联动或认领联动标记
+	// （否则后续故障口恢复时会把运维手工 down 的口错误拉 UP）。
+	if !e.isAdminUp() {
+		return m.setMessageLocked(rt, now,
+			fmt.Sprintf("安全红线：配对口 %s 已处于管理 DOWN（非本组件联动），拒绝认领联动标记", propPort))
 	}
 
 	if err := m.Runner.Exec(ctx, "ip", "link", "set", propPort, "down"); err != nil {
 		// 执行失败：保持 BOTH_UP，撤销候选避免每周期重试，下一个 hold_down 周期再试
-		rt.downCandidate, rt.downSince = "", time.Time{}
+		delete(rt.downSince, downPort)
 		return m.setMessageLocked(rt, now, fmt.Sprintf("联动 down %s 执行失败（按周期重试）: %v", propPort, err))
 	}
 
 	rt.state = LinkPairPropagatedDown
 	rt.downPort, rt.propPort = downPort, propPort
-	rt.downCandidate, rt.downSince = "", time.Time{}
+	rt.downSince = nil
 	rt.upSince = time.Time{}
 	rt.flaps = append(rt.flaps, now)
 	rt.lastEventAt = now
@@ -322,10 +378,10 @@ func (m *LinkPairMonitor) propagateLocked(ctx context.Context, rt *pairRuntime, 
 	return true
 }
 
-// evalPropagatedLocked PROPAGATED_DOWN：故障口恢复持续 hold_up → 配对口回 up。
+// evalPropagatedLocked PROPAGATED_DOWN：故障口恢复（管理 UP 且有 LOWER_UP）持续 hold_up → 配对口回 up。
 func (m *LinkPairMonitor) evalPropagatedLocked(ctx context.Context, rt *pairRuntime, snap map[string]linkEntry, now time.Time) bool {
-	if carrierLost(snap, rt.downPort) {
-		rt.upSince = time.Time{} // 仍故障：撤销恢复候选
+	if !carrierHealthy(snap, rt.downPort) {
+		rt.upSince = time.Time{} // 仍故障或已被管理 DOWN：撤销恢复候选
 		return false
 	}
 	if rt.upSince.IsZero() {
@@ -360,20 +416,23 @@ func (m *LinkPairMonitor) setMessageLocked(rt *pairRuntime, now time.Time, msg s
 	return true
 }
 
-// carrierLost carrier 判定：接口存在且 flags 无 LOWER_UP = 链路故障；
-// 接口不存在按「无法判定」处理（不误动作——成员口后插入属正常瞬态，
-// 由 Apply 侧 reconcile 负责补入桥）。
-func carrierLost(snap map[string]linkEntry, ifname string) bool {
+// physicalCarrierLost 判定物理链路掉载波：接口存在、处于管理 UP 且无 LOWER_UP。
+// 接口不存在或被运维手工管理 DOWN（无 UP 标志）均返回 false，绝不误触发联动。
+func physicalCarrierLost(snap map[string]linkEntry, ifname string) bool {
 	e, ok := snap[ifname]
 	if !ok {
 		return false
 	}
-	for _, f := range e.Flags {
-		if f == "LOWER_UP" {
-			return false
-		}
+	return e.isAdminUp() && !e.hasLowerUp()
+}
+
+// carrierHealthy 判定接口已恢复正常：存在、管理 UP 且具备物理载波 LOWER_UP。
+func carrierHealthy(snap map[string]linkEntry, ifname string) bool {
+	e, ok := snap[ifname]
+	if !ok {
+		return false
 	}
-	return true
+	return e.isAdminUp() && e.hasLowerUp()
 }
 
 // peerOf 返回配对口。
@@ -428,13 +487,8 @@ func loadStatusFile(path string) *Status {
 	return &st
 }
 
-// writeStatusLocked 合并回写：读现有 status（保留 Apply 侧 bridges/routes/
-// ip_forward/applied_at/message），覆盖 link_pairs 段后原子写。
+// writeStatusLocked 经共享 StatusWriter 互斥合并回写 link_pairs 段。
 func (m *LinkPairMonitor) writeStatusLocked() error {
-	st := loadStatusFile(m.StatusPath)
-	if st == nil {
-		st = &Status{OK: true, Bridges: []BridgeStatus{}, Routes: []RouteStatus{}, Message: ""}
-	}
 	pairs := make([]LinkPairStatus, 0, len(m.pairs))
 	for _, name := range sortedKeys(m.pairs) {
 		rt := m.pairs[name]
@@ -452,6 +506,5 @@ func (m *LinkPairMonitor) writeStatusLocked() error {
 		}
 		pairs = append(pairs, ls)
 	}
-	st.LinkPairs = pairs
-	return WriteStatusAtomic(m.StatusPath, *st)
+	return m.statusWriter().WriteLinkPairs(pairs)
 }

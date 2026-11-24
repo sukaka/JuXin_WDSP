@@ -79,8 +79,8 @@ usage() {
   arm64   ARM64
 
 包内：
-  images/             docker save 的 server/gateway/web/logrotator/netmgrd/containerops/pcapd/postgres/valkey
-                      及 APM 数据面镜像 clickhouse/opentelemetry-collector-contrib（共 11 个）
+  images/             docker save 的 server/gateway/web/logrotator/netmgrd/mirrorcap/tproxyd/containerops/pcapd/postgres/valkey
+                      及 APM 数据面镜像 clickhouse/opentelemetry-collector-contrib（共 13 个）
   gateway-linux-<arch>.tar.gz  裸机网关包（caddy 二进制 + sha256sums + VERSION + rules +
                       blockpage + bootstrap + unit + 安装/验收脚本）
   gateway/            生产 compose gateway 服务挂载源（rules/bootstrap Caddyfile/blockpage）
@@ -105,6 +105,7 @@ usage() {
 
 环境变量:
   WDSP_AGENT_BINARY      可选，同架构 Linux Agent 发布二进制；随包复制至 agents/wdsp-agent。
+  WDSP_AGENT_PACKAGES_DIR 可选，多平台 Agent 安装包目录（含 manifest.json 与 rpm/deb/pkg/zip）；随包复制至 agents/packages/。
   WDSP_SIGNING_KEY       发布签名 Ed25519 私钥路径（openssl genpkey -algorithm ED25519 生成，
                          绝不入库）。设置后对整包与内嵌裸机网关包产出旁车 .sig；
                          正式构建必需；未设置时必须显式加 --development。
@@ -119,7 +120,7 @@ usage() {
   ops/offline-package/build-all.sh -v 2.0.0
 
 前置条件:
-  - 本机已按目标架构构建 jiuzhang-server/gateway/web/logrotator/netmgrd/containerops:{version}
+  - 本机已按目标架构构建 jiuzhang-server/gateway/web/logrotator/netmgrd/mirrorcap/tproxyd/pcapd/containerops:{version}
     （docker buildx build --platform linux/{arch}；containerops 用 -f deployment/containerops/Dockerfile，上下文=仓库根）
   - 已生成 docs/SBOM.spdx.json / docs/SBOM.cyclonedx.json（可选但建议）
 
@@ -252,6 +253,8 @@ WEB_IMAGE="jiuzhang-web:$VERSION"
 # 构建上下文 gateway/images/logrotator，基础镜像 alpine:3.24 digest 在其 Dockerfile 内锁定）
 LOGROTATOR_IMAGE="jiuzhang-logrotator:$VERSION"
 NETMGRD_IMAGE="jiuzhang-netmgrd:$VERSION"
+MIRRORCAP_IMAGE="jiuzhang-mirrorcap:$VERSION"
+TPROXYD_IMAGE="jiuzhang-tproxyd:$VERSION"
 PCAPD_IMAGE="jiuzhang-pcapd:$VERSION"
 # 容器运维 sidecar（本地构建镜像；唯一挂载 docker.sock 的组件，构建上下文=仓库根，
 # Dockerfile 为 deployment/containerops/Dockerfile，基础镜像 digest 在其文件内锁定）
@@ -296,7 +299,7 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
       docker pull --platform "linux/${ARCH}" "$img" || die "拉取失败: $img"
     fi
   done
-  for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$PCAPD_IMAGE" "$CONTAINEROPS_IMAGE"; do
+  for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$MIRRORCAP_IMAGE" "$TPROXYD_IMAGE" "$PCAPD_IMAGE" "$CONTAINEROPS_IMAGE"; do
     docker image inspect "$img" >/dev/null 2>&1 \
       || die "镜像不存在: ${img}（请先用 docker buildx build --platform linux/${ARCH} 构建）"
   done
@@ -309,6 +312,8 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
   check_image_arch "$WEB_IMAGE" "请用 docker buildx build --platform linux/${ARCH} -t ${WEB_IMAGE} web/ 重新构建"
   check_image_arch "$LOGROTATOR_IMAGE" "请用 docker buildx build --platform linux/${ARCH} -t ${LOGROTATOR_IMAGE} gateway/images/logrotator 重新构建"
   check_image_arch "$NETMGRD_IMAGE" "请构建 gateway/images/netmgrd/Dockerfile"
+  check_image_arch "$MIRRORCAP_IMAGE" "请构建 gateway/images/mirrorcap/Dockerfile"
+  check_image_arch "$TPROXYD_IMAGE" "请构建 gateway/images/tproxyd/Dockerfile"
   check_image_arch "$PCAPD_IMAGE" "请构建 gateway/images/pcapd/Dockerfile"
   check_image_arch "$CONTAINEROPS_IMAGE" "请用 docker buildx build --platform linux/${ARCH} -f deployment/containerops/Dockerfile -t ${CONTAINEROPS_IMAGE} . 重新构建"
 fi
@@ -349,8 +354,14 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
   save_image SERVER_IMAGE "$pkg_dir/images/jiuzhang-server.tar"
   save_image GATEWAY_IMAGE "$pkg_dir/images/jiuzhang-gateway.tar"
   save_image WEB_IMAGE "$pkg_dir/images/jiuzhang-web.tar"
+  docker run --rm --pull=never --network=none --platform "linux/${ARCH}" \
+    --read-only --cap-drop=ALL --security-opt=no-new-privileges:true \
+    --entrypoint /usr/bin/caddy "$WEB_IMAGE" version >/dev/null \
+    || die "Web 镜像的 Caddy 无法按交付权限运行: ${WEB_IMAGE}"
   save_image LOGROTATOR_IMAGE "$pkg_dir/images/jiuzhang-logrotator.tar"
   save_image NETMGRD_IMAGE "$pkg_dir/images/jiuzhang-netmgrd.tar"
+  save_image MIRRORCAP_IMAGE "$pkg_dir/images/jiuzhang-mirrorcap.tar"
+  save_image TPROXYD_IMAGE "$pkg_dir/images/jiuzhang-tproxyd.tar"
   save_image PCAPD_IMAGE "$pkg_dir/images/jiuzhang-pcapd.tar"
   save_image CONTAINEROPS_IMAGE "$pkg_dir/images/jiuzhang-containerops.tar"
   save_image POSTGRES_IMAGE "$pkg_dir/images/postgres.tar"
@@ -359,7 +370,7 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
   save_image OTEL_COLLECTOR_IMAGE "$pkg_dir/images/opentelemetry-collector-contrib.tar"
 fi
 if [[ "$RUNTIME_ONLY" != "true" || "$SKIP_IMAGES" == "true" ]]; then
-for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$PCAPD_IMAGE" "$CONTAINEROPS_IMAGE" "$POSTGRES_IMAGE" "$VALKEY_IMAGE" "$CLICKHOUSE_IMAGE" "$OTEL_COLLECTOR_IMAGE"; do
+for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$MIRRORCAP_IMAGE" "$TPROXYD_IMAGE" "$PCAPD_IMAGE" "$CONTAINEROPS_IMAGE" "$POSTGRES_IMAGE" "$VALKEY_IMAGE" "$CLICKHOUSE_IMAGE" "$OTEL_COLLECTOR_IMAGE"; do
   if [[ "$SKIP_IMAGES" != "true" ]]; then
     digest="$(docker image inspect --platform "linux/${ARCH}" "$img" --format '{{.Id}}' 2>/dev/null || docker image inspect "$img" --format '{{.Id}}')"
   else
@@ -514,8 +525,12 @@ services:
       GATEWAY_PUBLISH_SMOKE_ADDR: \${GATEWAY_PUBLISH_SMOKE_ADDR:-host.docker.internal}
       VALKEY_PASSWORD: \${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
       COOKIE_SECURE: \${COOKIE_SECURE:-true}
-      INITIAL_ADMIN_USERNAME: \${INITIAL_ADMIN_USERNAME:-jiuzhang_admin}
+      INITIAL_ADMIN_USERNAME: \${INITIAL_ADMIN_USERNAME:-admin}
       INITIAL_ADMIN_PASSWORD: \${INITIAL_ADMIN_PASSWORD:-}
+      INITIAL_OPER_ADMIN_USERNAME: \${INITIAL_OPER_ADMIN_USERNAME:-operadmin}
+      INITIAL_OPER_ADMIN_PASSWORD: \${INITIAL_OPER_ADMIN_PASSWORD:-}
+      INITIAL_AUDIT_ADMIN_USERNAME: \${INITIAL_AUDIT_ADMIN_USERNAME:-auditor}
+      INITIAL_AUDIT_ADMIN_PASSWORD: \${INITIAL_AUDIT_ADMIN_PASSWORD:-}
       JIUZHANG_MASTER_KEY: \${JIUZHANG_MASTER_KEY:?JIUZHANG_MASTER_KEY is required}
       # 离线授权：验签公钥随正式构建内嵌；这里只配置宿主机指纹文件路径（卷挂载见下）
       LICENSE_HOST_FINGERPRINT_FILE: \${LICENSE_HOST_FINGERPRINT_FILE:-/app/runtime/license/host_fingerprint}
@@ -539,6 +554,7 @@ services:
       # 开发默认值 runtime/logs/*（容器内不存在），事件采集链路静默中断，必须显式下发。
       # GATEWAY_* 为下发给网关侧的日志输出路径。
       WAF_AUDIT_LOG: /var/log/caddy-audit/coraza-audit.log
+      GATEWAY_AUDIT_LOG: /var/log/caddy/coraza-audit.log
       WAF_GUARD_EVENTS_LOG: /var/log/caddy-audit/guard-events.log
       GATEWAY_GUARD_EVENTS_LOG: /var/log/caddy/guard-events.log
       WAF_NODE_IFACES_LOG: /var/log/caddy-audit/node-interfaces.jsonl
@@ -546,6 +562,11 @@ services:
       WAF_API_EVENTS_LOG: /var/log/caddy-audit/api-runtime-events.log
       GATEWAY_API_EVENTS_LOG: /var/log/caddy/api-runtime-events.log
       WAF_SITE_DISCOVERY_LOG: /var/log/caddy-audit/site-discovery.jsonl
+      GATEWAY_SITE_DISCOVERY_LOG: /var/log/caddy/site-discovery.jsonl
+      # 透明串接模式（tproxyd）：下发 tproxyd.json 与 Caddy 内部代理协议监听端口（避开控制台 8080/8443）
+      GATEWAY_TPROXY_LISTEN: \${GATEWAY_TPROXY_LISTEN:-0.0.0.0:15000}
+      GATEWAY_TPROXY_TARGET: \${GATEWAY_TPROXY_TARGET:-127.0.0.1:15080}
+      GATEWAY_TPROXY_TARGET_TLS: \${GATEWAY_TPROXY_TARGET_TLS:-127.0.0.1:15443}
       WAF_ACCESS_FULL_LOG: /var/log/caddy-audit/access-full.jsonl
       GATEWAY_ACCESS_FULL_LOG: /var/log/caddy/access-full.jsonl
       # 采集器批量/周期 flush 旋钮（崩溃重扫量有界；默认值与 server config.go 一致，可经 .env 覆盖）
@@ -564,6 +585,12 @@ services:
       REQUEST_PCAP_MIN_FREE_PERCENT: \${REQUEST_PCAP_MIN_FREE_PERCENT:-10}
       # 容器运维通道：经共享卷上的 Unix Socket 访问 containerops sidecar（API 不直接持有 docker.sock）
       CONTAINEROPS_SOCKET: /app/runtime/containerops/containerops.sock
+      # 分布式流量采集 Agent 跨平台安装包分发目录（只读挂载包内 agents/packages）
+      TRAFFIC_AGENT_PACKAGES_DIR: \${TRAFFIC_AGENT_PACKAGES_DIR:-/app/runtime/agent-packages}
+      # Agent 一键安装自动识别宿主机 IP 与控制台 HTTPS 端口（可选 TRAFFIC_AGENT_PUBLIC_URL 覆盖）
+      WEB_HTTPS_PORT: \${WEB_HTTPS_PORT:-8443}
+      WDSP_HOST_IPS: \${WDSP_HOST_IPS:-}
+      TRAFFIC_AGENT_PUBLIC_URL: \${TRAFFIC_AGENT_PUBLIC_URL:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -592,6 +619,8 @@ services:
       - ./runtime/pcap-public:/app/runtime/pcap-public
       - \${REQUEST_PCAP_HOT_DIR:-./runtime/pcap-hot}:/app/runtime/pcap-hot
       - \${REQUEST_PCAP_WARM_DIR:-./runtime/pcap-warm}:/app/runtime/pcap-warm
+      # 跨平台流量采集 Agent 安装包只读分发目录（CentOS rpm / Debian deb / macOS pkg+targz / Windows zip）
+      - ./agents/packages:/app/runtime/agent-packages:ro
     depends_on:
       postgres: {condition: service_healthy}
       valkey:   {condition: service_healthy}
@@ -674,6 +703,10 @@ services:
     image: $NETMGRD_IMAGE
     restart: unless-stopped
     network_mode: service:gateway
+    # netmgrd 以 root(NET_ADMIN/NET_RAW) 运行且 cap_drop: [ALL]（无 CAP_DAC_OVERRIDE）；
+    # 加入共享组 1000，使之可读写 api/gateway(1000:1000) 所属的 sidecars 与 sidecars/diag 目录
+    # （不触碰 0600 的 capability.json / ha-vip.json）。
+    group_add: ["1000"]
     read_only: true
     cap_drop: [ALL]
     cap_add: [NET_RAW, NET_ADMIN]
@@ -700,6 +733,55 @@ services:
     security_opt: [no-new-privileges:true]
     tmpfs: ["/tmp:size=8m,mode=1777"]
     networks: [jiuzhang-internal]
+
+  # 镜像旁路采集与站点资产发现 sidecar（mirrorcap）：
+  # 无镜像/发现配置时自动空转不抓包；配置镜像口后热启 AF_PACKET 只读抓包，绝不向网络回注报文。
+  # 启动时由 root 经 MIRROR_DROP_PRIVS=1 立即降权为 1000:1000 并仅保留 ambient NET_RAW/NET_ADMIN。
+  mirrorcap:
+    image: $MIRRORCAP_IMAGE
+    container_name: jiuzhang-mirrorcap
+    restart: unless-stopped
+    network_mode: host
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_RAW, NET_ADMIN, SETUID, SETGID, SETPCAP]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    environment:
+      GATEWAY_NODE_NAME: \${GATEWAY_NODE_NAME:-gateway-poc-01}
+      MIRROR_DROP_PRIVS: "1"
+      MIRROR_RULES_DIR: /etc/caddy/rules
+    volumes:
+      - gateway-admin:/var/run/caddy:ro
+      - gateway-logs:/var/log/caddy
+      - ./gateway/rules:/etc/caddy/rules:ro
+    depends_on:
+      gateway: {condition: service_started}
+
+  # 透明串接前置牵引 sidecar（tproxyd）：
+  # 无透明站点时自动空转不监听；轮询只读 /var/run/caddy/sidecars/tproxyd.json 启停。
+  # SO_ORIGINAL_DST 无需特权，全程以非 root 1000:1000 + cap_drop: [ALL] 运行。
+  tproxyd:
+    image: $TPROXYD_IMAGE
+    container_name: jiuzhang-tproxyd
+    restart: unless-stopped
+    network_mode: host
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=8m,mode=1777"]
+    environment:
+      TPROXY_CONFIG_FILE: /var/run/caddy/sidecars/tproxyd.json
+      TPROXY_LISTEN: \${GATEWAY_TPROXY_LISTEN:-0.0.0.0:15000}
+      TPROXY_TARGET: \${GATEWAY_TPROXY_TARGET:-127.0.0.1:15080}
+      TPROXY_TARGET_TLS: \${GATEWAY_TPROXY_TARGET_TLS:-127.0.0.1:15443}
+      TPROXY_HEALTH_ADDR: \${TPROXY_HEALTH_ADDR:-127.0.0.1:15001}
+    volumes:
+      - gateway-admin:/var/run/caddy:ro
+    depends_on:
+      gateway: {condition: service_started}
 
   # 请求PCAP为显式启用的独立组件；默认profile不会启动持续抓包。
   pcapd:
@@ -740,7 +822,7 @@ services:
       DOCKER_HOST: unix:///var/run/docker.sock
       # 仅允许运维本 compose 项目内、且在白名单中的服务（双重校验，fail-closed）
       CONTAINEROPS_PROJECT: jiuzhang-${PRODUCT}
-      CONTAINEROPS_ALLOWED_SERVICES: api,web,gateway,postgres,valkey,logrotator,netmgrd,pcapd
+      CONTAINEROPS_ALLOWED_SERVICES: api,web,gateway,postgres,valkey,logrotator,netmgrd,mirrorcap,tproxyd,pcapd
     volumes:
       # 全栈唯一 docker.sock 挂载点（安全底线；严禁复制到 api 或其他服务）
       - /var/run/docker.sock:/var/run/docker.sock
@@ -850,11 +932,19 @@ if [[ "$RUNTIME_ONLY" == "true" ]]; then
     mv "$notice" "${notice%.md}.NOTICE"
   done < <(find "$pkg_dir/licenses" -type f -name '*.md' -print0)
 fi
+mkdir -p "$pkg_dir/agents/packages"
 if [[ -n "${WDSP_AGENT_BINARY:-}" ]]; then
   [[ -f "$WDSP_AGENT_BINARY" && ! -L "$WDSP_AGENT_BINARY" ]] || die "Agent 二进制不存在或为符号链接"
-  mkdir -p "$pkg_dir/agents"
   cp "$WDSP_AGENT_BINARY" "$pkg_dir/agents/wdsp-agent"
   chmod 0755 "$pkg_dir/agents/wdsp-agent"
+fi
+if [[ -n "${WDSP_AGENT_PACKAGES_DIR:-}" ]]; then
+  [[ -d "$WDSP_AGENT_PACKAGES_DIR" && ! -L "$WDSP_AGENT_PACKAGES_DIR" ]] || die "Agent 多平台安装包目录不存在或为符号链接"
+  while IFS= read -r -d '' pkg_item; do
+    [[ -f "$pkg_item" && ! -L "$pkg_item" ]] || continue
+    cp "$pkg_item" "$pkg_dir/agents/packages/$(basename "$pkg_item")"
+    chmod 0644 "$pkg_dir/agents/packages/$(basename "$pkg_item")"
+  done < <(find "$WDSP_AGENT_PACKAGES_DIR" -maxdepth 1 -type f -print0)
 fi
 # 生产 compose 模板 gateway 服务的 ./gateway/* 挂载源（rules/bootstrap Caddyfile/blockpage）
 mkdir -p "$pkg_dir/gateway"

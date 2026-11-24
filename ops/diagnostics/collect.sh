@@ -177,6 +177,118 @@ curl -sS --max-time 5 "$JZ_API_BASE/api/v1/health" 2>/dev/null | redact_stream >
   docker system df 2>/dev/null || true
 } > "$work/disk.txt"
 
+# ---- 透明串接 / 网桥 / 路由 / 内核参数 / Netfilter 诊断（只读 allowlist，全部脱敏） ----
+{
+  echo "== ip -d link show =="
+  if command -v ip >/dev/null 2>&1; then
+    ip -d link show 2>&1 || true
+  else
+    echo "(ip unavailable)"
+  fi
+  echo
+  echo "== bridge link show =="
+  if command -v bridge >/dev/null 2>&1; then
+    bridge link show 2>&1 || true
+  else
+    echo "(bridge unavailable)"
+  fi
+  echo
+  echo "== ip route show =="
+  if command -v ip >/dev/null 2>&1; then
+    ip route show 2>&1 || true
+    echo "-- ipv6 --"
+    ip -6 route show 2>&1 || true
+  else
+    echo "(ip unavailable)"
+  fi
+  echo
+  echo "== sysctl (transparent allowlist) =="
+  for _key in \
+    net.ipv4.ip_forward \
+    net.bridge.bridge-nf-call-iptables \
+    net.bridge.bridge-nf-call-ip6tables \
+    net.ipv4.conf.all.route_localnet \
+    net.ipv4.conf.default.route_localnet \
+    net.netfilter.nf_conntrack_max \
+    net.netfilter.nf_conntrack_count; do
+    _proc="/proc/sys/${_key//./\/}"
+    if [[ -r "$_proc" ]]; then
+      printf '%s = %s\n' "$_key" "$(cat "$_proc" 2>/dev/null || echo unreadable)"
+    elif command -v sysctl >/dev/null 2>&1; then
+      sysctl -n "$_key" >/dev/null 2>&1 && sysctl "$_key" 2>&1 || true
+    fi
+  done
+  shopt -s nullglob
+  for _proc in /proc/sys/net/ipv4/conf/br*/route_localnet; do
+    [[ -r "$_proc" ]] || continue
+    _if="${_proc#/proc/sys/net/ipv4/conf/}"
+    _if="${_if%/route_localnet}"
+    printf 'net.ipv4.conf.%s.route_localnet = %s\n' "$_if" "$(cat "$_proc" 2>/dev/null || echo unreadable)"
+  done
+  shopt -u nullglob
+  echo
+  echo "== netfilter (iptables/nft read-only) =="
+  if command -v iptables >/dev/null 2>&1; then
+    echo "-- iptables -t nat -S --"
+    (iptables -t nat -S 2>&1 | head -n 200) || true
+    echo "-- iptables -t filter -S FORWARD --"
+    (iptables -t filter -S FORWARD 2>&1 | head -n 200) || true
+    echo "-- iptables -t filter -S INPUT --"
+    (iptables -t filter -S INPUT 2>&1 | head -n 200) || true
+  else
+    echo "(iptables unavailable)"
+  fi
+  if command -v nft >/dev/null 2>&1; then
+    echo "-- nft list tables --"
+    nft list tables 2>&1 || true
+    echo "-- nft list ruleset (bounded) --"
+    (nft list ruleset 2>&1 | head -n 400) || true
+  else
+    echo "(nft unavailable)"
+  fi
+} | redact_stream > "$work/network-transparent.txt"
+
+# ---- Sidecar 非密配置（严格白名单，绝不采集 capability.json / ha-vip.json） ----
+sidecar_dir=""
+if [[ -n "${GATEWAY_SIDECAR_DIR:-}" && -d "$GATEWAY_SIDECAR_DIR" && ! -L "$GATEWAY_SIDECAR_DIR" ]]; then
+  sidecar_dir="$GATEWAY_SIDECAR_DIR"
+elif command -v docker >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && [[ -f "$JZ_COMPOSE_FILE" ]]; then
+  _gw_id=""
+  if [[ -f "$JZ_ENV_FILE" ]]; then
+    _gw_id="$(compose ps -q gateway 2>/dev/null | head -n 1 || true)"
+  else
+    _gw_id="$(docker compose -f "$JZ_COMPOSE_FILE" ps -q gateway 2>/dev/null | head -n 1 || true)"
+  fi
+  if [[ "$_gw_id" =~ ^[a-fA-F0-9]+$ ]]; then
+    _admin_dir="$(docker inspect --format '{{json .Mounts}}' "$_gw_id" 2>/dev/null \
+      | jq -er '[.[] | select(.Destination == "/var/run/caddy") | .Source] | if length == 1 then .[0] else empty end' 2>/dev/null || true)"
+    if [[ -n "$_admin_dir" && -d "$_admin_dir/sidecars" && ! -L "$_admin_dir/sidecars" ]]; then
+      sidecar_dir="$_admin_dir/sidecars"
+    fi
+  fi
+fi
+if [[ -z "$sidecar_dir" && -d /var/run/caddy/sidecars && ! -L /var/run/caddy/sidecars ]]; then
+  sidecar_dir="/var/run/caddy/sidecars"
+fi
+{
+  echo "== sidecars (allowlist: network.json, network-status.json, tproxyd.json) =="
+  if [[ -n "$sidecar_dir" ]]; then
+    echo "source_dir=$sidecar_dir"
+    for _fname in network.json network-status.json tproxyd.json; do
+      _fpath="$sidecar_dir/$_fname"
+      echo "-- $_fname --"
+      if [[ -f "$_fpath" && ! -L "$_fpath" && -r "$_fpath" ]]; then
+        head -c 65536 "$_fpath" 2>/dev/null || true
+        echo
+      else
+        echo "(not present or unreadable)"
+      fi
+    done
+  else
+    echo "(sidecar directory unavailable)"
+  fi
+} | redact_stream > "$work/sidecars.txt"
+
 # ---- 诊断包清单 ----
 # 清单本身不包含诊断内容，只记录 allowlist 文件名、大小和 SHA-256，便于支持侧
 # 复核包是否在传输过程中被替换。禁止把临时目录之外的文件递归打入压缩包。

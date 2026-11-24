@@ -96,6 +96,10 @@ class RequestPcapDeliveryTest(unittest.TestCase):
                 sorted(default["services"]["netmgrd"]["cap_add"]),
                 sorted(["NET_ADMIN", "NET_RAW"]),
             )
+            self.assertIn(
+                "1000",
+                [str(g) for g in (default["services"]["netmgrd"].get("group_add") or [])],
+            )
             self.assertTrue(any(
                 m.get("source") == "gateway-certs" and m.get("target") == "/app/runtime/certificates"
                 for m in default["services"]["api"]["volumes"]

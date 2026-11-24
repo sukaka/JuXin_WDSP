@@ -1,0 +1,25 @@
+# 九章 WDSP 镜像旁路采集与站点资产发现 sidecar mirrorcap（裸机）
+# __ROOT__/__USER__/__NODE_NAME__ 由 install.sh 渲染替换后安装到 /etc/systemd/system/
+[Unit]
+Description=JiuZhang WDSP mirrorcap (passive mirror capture & site discovery, baremetal)
+After=network-online.target jiuzhang-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+UMask=0027
+EnvironmentFile=__ROOT__/env
+ExecStart=__ROOT__/bin/mirrorcap
+# 非 root 运行，仅授予只读抓包与混杂模式所需的最小网络能力
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=__ROOT__/data/logs/caddy /tmp/coraza
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -16,10 +16,10 @@ import (
 
 // 默认值。
 const (
-	defaultListen        = "127.0.0.1:15000" // 生产由编排显式下发桥地址监听（如 0.0.0.0:15000）
-	defaultTarget        = "127.0.0.1:8080"
-	defaultTargetTLS     = "127.0.0.1:8443"
-	defaultMaxConns      = 1024 // 并发连接上限（防内存/句柄失控，对齐现有组件有界纪律）
+	defaultListen        = "0.0.0.0:15000"   // 生产由桥上 REDIRECT 牵引至此端口
+	defaultTarget        = "127.0.0.1:15080" // 专用透明 HTTP 回环下游（避开控制台 8080）
+	defaultTargetTLS     = "127.0.0.1:15443" // 专用透明 HTTPS 回环下游（避开控制台 8443）
+	defaultMaxConns      = 1024              // 并发连接上限（防内存/句柄失控，对齐现有组件有界纪律）
 	defaultStatsInterval = 60 * time.Second
 	defaultDialTimeout   = 10 * time.Second
 	defaultShutdownGrace = 5 * time.Second
@@ -27,6 +27,8 @@ const (
 	// defaultRelayIdleTimeout 透传滚动空闲超时：任一方向搬运数据即续期，
 	// 两端静默超过该时长即关闭连接释放并发令牌（防空闲连接占满 MaxConns 整体 DoS）。
 	defaultRelayIdleTimeout = 300 * time.Second
+	// DefaultHealthAddr /healthz 默认监听地址（TPROXY_HEALTH_ADDR 可覆盖）。
+	DefaultHealthAddr = "127.0.0.1:15001"
 )
 
 // Config 牵引进程配置。
@@ -47,11 +49,11 @@ type Config struct {
 	// 全部流量按原路径送 Target）。非空时启用 TLS 嗅探分流：清单内域名的 TLS 连接送
 	// TargetTLS 终结检测；未列明域名默认 fail-closed 倒向 TargetTLS，仅显式列入
 	// PassthroughAllowlist 的域名才按原始目的端到端透传。
-	// 精确匹配，小写归一、容忍末尾点，不支持通配符。
+	// 支持精确域名与 RFC 单级前导通配符（*.example.com，仅匹配单级子域名），小写归一、容忍末尾点。
 	ProtectHosts []string
 	// PassthroughAllowlist 显式允许按原始目的端到端透传的 TLS SNI 域名白名单
 	// （TPROXY_PASSTHROUGH_ALLOWLIST，逗号分隔；默认空 = 禁止任意未列明 SNI 绕过检测）。
-	// ProtectHosts 优先级高于本白名单；精确匹配，小写归一、容忍末尾点，不支持通配符。
+	// ProtectHosts 优先级高于本白名单；支持精确域名与 RFC 单级前导通配符（*.example.com）。
 	PassthroughAllowlist []string
 	// TargetTLS 下游 Caddy TLS 监听器地址（TPROXY_TARGET_TLS；仅 ProtectHosts 非空时
 	// 生效，listener 同样需挂 proxy_protocol wrapper）。
@@ -63,6 +65,16 @@ type Config struct {
 	// 连接（释放 MaxConns 令牌）。长连接业务（SSE/WebSocket）依赖心跳保活，心跳
 	// 间隔必须小于该值。
 	RelayIdleTimeout time.Duration
+}
+
+// FileConfigPath 返回配置文件路径（TPROXY_CONFIG_FILE 覆盖 DefaultFileConfigPath）。
+func FileConfigPath() string {
+	return envOr("TPROXY_CONFIG_FILE", DefaultFileConfigPath)
+}
+
+// HealthAddrFromEnv 返回健康检查 HTTP 监听地址（TPROXY_HEALTH_ADDR 覆盖 DefaultHealthAddr）。
+func HealthAddrFromEnv() string {
+	return envOr("TPROXY_HEALTH_ADDR", DefaultHealthAddr)
 }
 
 // Defaults 返回内置默认配置基线。
@@ -126,8 +138,8 @@ func FromEnv() (Config, error) {
 	return cfg, cfg.Validate()
 }
 
-// normalizeHosts 归一化域名清单：小写、去末尾点、去重保序；拒绝空白与非法字符
-// （仅允许 DNS 标签字符 a-z 0-9 . - _ 与冒号外的可见 ASCII；精确匹配不支持通配符）。
+// normalizeHosts 归一化域名清单：小写、去末尾点、去重保序；拒绝空白与非法字符。
+// 支持精确域名与 RFC 单级前导通配符（*.example.com）。
 func normalizeHosts(s string) ([]string, error) {
 	parts := strings.Split(s, ",")
 	seen := map[string]struct{}{}
@@ -149,46 +161,111 @@ func normalizeHosts(s string) ([]string, error) {
 	return hosts, nil
 }
 
-// validHostName 宽松校验：DNS 标签字符集（含国际化域名的 punycode 形态）。
+// validHostName 校验归一化后的域名（允许精确域名或 RFC 单级前导通配符 *.example.com）。
 func validHostName(h string) bool {
-	if len(h) > 253 {
+	if len(h) == 0 || len(h) > 253 {
 		return false
 	}
-	for _, r := range h {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '-', r == '_':
-		default:
+	base := h
+	isWildcard := false
+	if strings.HasPrefix(h, "*.") {
+		isWildcard = true
+		base = h[2:]
+		// 单级通配符基础域必须至少包含两级标签（如 example.com），拒绝 * / *. / *.com
+		if !strings.Contains(base, ".") {
 			return false
 		}
 	}
+	if len(base) == 0 || base[0] == '.' || base[len(base)-1] == '.' {
+		return false
+	}
+	prevDot := false
+	for _, r := range base {
+		if r == '.' {
+			if prevDot {
+				return false
+			}
+			prevDot = true
+			continue
+		}
+		prevDot = false
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			// 非法字符（含任意位置的额外 '*'，阻止 *.*.example.com / foo.*.com / *foo.com）
+			return false
+		}
+	}
+	_ = isWildcard
 	return true
 }
 
-// protectHostSet 返回防护域名匹配集合（nil 表示功能关闭）。
-func (c Config) protectHostSet() map[string]struct{} {
-	return hostSet(c.ProtectHosts)
+// hostMatcher 支持精确域名与单级前导通配符（*.example.com）的 O(1) 域名匹配器。
+// 遵循 RFC 6125 单级通配语义：*.example.com 匹配 sub.example.com，不匹配 example.com，
+// 也不匹配多级子域 a.b.example.com。
+type hostMatcher struct {
+	exact     map[string]struct{}
+	wildcards map[string]struct{} // "*.example.com" 存为 "example.com"
 }
 
-// passthroughHostSet 返回显式透传白名单匹配集合（nil 表示禁止任何未列明 SNI 透传）。
-func (c Config) passthroughHostSet() map[string]struct{} {
-	return hostSet(c.PassthroughAllowlist)
-}
-
-func hostSet(hosts []string) map[string]struct{} {
+func newHostMatcher(hosts []string) *hostMatcher {
 	if len(hosts) == 0 {
 		return nil
 	}
-	set := make(map[string]struct{}, len(hosts))
+	m := &hostMatcher{}
 	for _, h := range hosts {
 		norm := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(h), "."))
-		if norm != "" {
-			set[norm] = struct{}{}
+		if norm == "" {
+			continue
 		}
+		if strings.HasPrefix(norm, "*.") && len(norm) > 2 {
+			if m.wildcards == nil {
+				m.wildcards = make(map[string]struct{})
+			}
+			m.wildcards[norm[2:]] = struct{}{}
+			continue
+		}
+		if m.exact == nil {
+			m.exact = make(map[string]struct{})
+		}
+		m.exact[norm] = struct{}{}
 	}
-	if len(set) == 0 {
+	if len(m.exact) == 0 && len(m.wildcards) == 0 {
 		return nil
 	}
-	return set
+	return m
+}
+
+func (m *hostMatcher) match(host string) bool {
+	if m == nil {
+		return false
+	}
+	norm := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if norm == "" {
+		return false
+	}
+	if _, ok := m.exact[norm]; ok {
+		return true
+	}
+	if len(m.wildcards) == 0 {
+		return false
+	}
+	idx := strings.IndexByte(norm, '.')
+	if idx <= 0 || idx >= len(norm)-1 {
+		return false
+	}
+	_, ok := m.wildcards[norm[idx+1:]]
+	return ok
+}
+
+// protectHostMatcher 返回防护域名匹配器（nil 表示功能关闭）。
+func (c Config) protectHostMatcher() *hostMatcher {
+	return newHostMatcher(c.ProtectHosts)
+}
+
+// passthroughHostMatcher 返回显式透传白名单匹配器（nil 表示禁止任何未列明 SNI 透传）。
+func (c Config) passthroughHostMatcher() *hostMatcher {
+	return newHostMatcher(c.PassthroughAllowlist)
 }
 
 // sniDispatchEnabled 是否启用 SNI 嗅探分流。

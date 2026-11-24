@@ -61,6 +61,13 @@ func renderConfig(cfg Config, self MemberSpec, selfSrcIP string) string {
 		}
 		b.WriteString("  }\n")
 	}
+	if len(cfg.VRRP.TrackInterfaces) > 0 {
+		b.WriteString("  track_interface {\n")
+		for _, tif := range cfg.VRRP.TrackInterfaces {
+			fmt.Fprintf(&b, "    %s\n", tif)
+		}
+		b.WriteString("  }\n")
+	}
 	b.WriteString("  virtual_ipaddress {\n")
 	for _, vip := range cfg.VRRP.VIPs {
 		fmt.Fprintf(&b, "    %s dev %s\n", vip, cfg.VRRP.Iface)

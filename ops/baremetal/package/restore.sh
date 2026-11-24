@@ -25,8 +25,8 @@ PG_OSSL="${R}/bin/pg/syslib/ossl-modules"
 PG_BIN="${R}/bin/pg/lib/postgresql/16/bin"
 RUN_USER="jiuzhang"
 SKIP_SYSTEMD="${JZ_SKIP_SYSTEMD:-0}"
-UNIT_START_ORDER="jiuzhang-postgres jiuzhang-valkey jiuzhang-gateway jiuzhang-api jiuzhang-web jiuzhang-netmgrd jiuzhang-logrotator"
-UNIT_STOP_ORDER="jiuzhang-web jiuzhang-api jiuzhang-netmgrd jiuzhang-logrotator jiuzhang-gateway jiuzhang-valkey"
+UNIT_START_ORDER="jiuzhang-postgres jiuzhang-valkey jiuzhang-gateway jiuzhang-api jiuzhang-web jiuzhang-netmgrd jiuzhang-mirrorcap jiuzhang-tproxyd jiuzhang-logrotator"
+UNIT_STOP_ORDER="jiuzhang-web jiuzhang-api jiuzhang-netmgrd jiuzhang-mirrorcap jiuzhang-tproxyd jiuzhang-logrotator jiuzhang-gateway jiuzhang-valkey"
 
 ARCHIVE=""
 ASSUME_YES=0
@@ -252,7 +252,10 @@ log_info "[6/7] 修正属主与权限"
 chown -R "${RUN_USER}:${RUN_USER}" "${R}/data" "${R}/certificates" 2>/dev/null || true
 chmod 0750 "${R}/data" 2>/dev/null || true
 chmod 0700 "${R}/data/pgdata" "${R}/data/caddy" "${R}/data/caddy-console" "${R}/certificates" 2>/dev/null || true
-chmod 0755 "${R}/data/run/caddy/sidecars" 2>/dev/null || true
+chmod 0770 "${R}/data/run/caddy/sidecars" 2>/dev/null || true
+if [[ -d "${R}/data/run/caddy/sidecars/diag" ]]; then
+  chmod 0770 "${R}/data/run/caddy/sidecars/diag" 2>/dev/null || true
+fi
 
 # ---------- 7. 起服务与健康等待 ----------
 wait_for() {

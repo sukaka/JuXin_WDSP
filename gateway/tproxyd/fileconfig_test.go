@@ -95,21 +95,21 @@ func TestLoadFileConfigSNIDispatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tproxyd.json")
 	writeFile(t, path, `{
 		"enabled": true,
-		"protect_hosts": ["Www.Test.COM.", "www.test.com", "api.test.com"],
-		"passthrough_allowlist": ["Pass.Test.COM.", "pass.test.com"],
-		"target_tls": "127.0.0.1:8443"
+		"protect_hosts": ["Www.Test.COM.", "www.test.com", "*.Example.COM.", "api.test.com"],
+		"passthrough_allowlist": ["Pass.Test.COM.", "pass.test.com", "*.Bypass.Example.COM"],
+		"target_tls": "127.0.0.1:15443"
 	}`)
 	fc, err := LoadFileConfig(path)
 	if err != nil {
 		t.Fatalf("LoadFileConfig: %v", err)
 	}
-	if !reflect.DeepEqual(fc.ProtectHosts, []string{"www.test.com", "api.test.com"}) {
+	if !reflect.DeepEqual(fc.ProtectHosts, []string{"www.test.com", "*.example.com", "api.test.com"}) {
 		t.Fatalf("ProtectHosts 归一化/去重错误: %v", fc.ProtectHosts)
 	}
-	if !reflect.DeepEqual(fc.PassthroughAllowlist, []string{"pass.test.com"}) {
+	if !reflect.DeepEqual(fc.PassthroughAllowlist, []string{"pass.test.com", "*.bypass.example.com"}) {
 		t.Fatalf("PassthroughAllowlist 归一化/去重错误: %v", fc.PassthroughAllowlist)
 	}
-	if fc.TargetTLS != "127.0.0.1:8443" {
+	if fc.TargetTLS != "127.0.0.1:15443" {
 		t.Fatalf("TargetTLS=%q", fc.TargetTLS)
 	}
 }
@@ -121,9 +121,11 @@ func TestLoadFileConfigRejectsBadSNIDispatch(t *testing.T) {
 	}{
 		{"target_tls 非法", `{"enabled":true,"target_tls":"no-port"}`},
 		{"protect_hosts 非法域名", `{"enabled":true,"protect_hosts":["bad host.com"]}`},
-		{"protect_hosts 通配符", `{"enabled":true,"protect_hosts":["*.test.com"]}`},
+		{"protect_hosts 多级通配符", `{"enabled":true,"protect_hosts":["*.*.test.com"]}`},
+		{"protect_hosts 顶级域通配符", `{"enabled":true,"protect_hosts":["*.com"]}`},
+		{"protect_hosts 中间通配符", `{"enabled":true,"protect_hosts":["foo.*.test.com"]}`},
 		{"passthrough_allowlist 非法域名", `{"enabled":true,"passthrough_allowlist":["bad host.com"]}`},
-		{"passthrough_allowlist 通配符", `{"enabled":true,"passthrough_allowlist":["*.test.com"]}`},
+		{"passthrough_allowlist 裸星号", `{"enabled":true,"passthrough_allowlist":["*"]}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -133,6 +135,33 @@ func TestLoadFileConfigRejectsBadSNIDispatch(t *testing.T) {
 				t.Fatal("应报错")
 			}
 		})
+	}
+}
+
+// 空 protect_hosts: [] 必须覆盖 env TPROXY_PROTECT_HOSTS（避免环境残留阻止下发清空）。
+func TestResolveOverlayEmptyProtectHostsClearsEnv(t *testing.T) {
+	base := Defaults()
+	base.ProtectHosts = []string{"env.example.com"}
+
+	path := filepath.Join(t.TempDir(), "tproxyd.json")
+	writeFile(t, path, `{"enabled":true,"protect_hosts":[]}`)
+	s := NewSupervisor(base, nil, path, time.Minute, &Stats{}, nil)
+	d, err := s.resolve()
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(d.cfg.ProtectHosts) != 0 {
+		t.Fatalf("文件 protect_hosts=[] 应清空 env ProtectHosts, got %v", d.cfg.ProtectHosts)
+	}
+
+	// 未携带 protect_hosts 字段时仍沿用 env 基线
+	writeFile(t, path, `{"enabled":true}`)
+	d2, err := s.resolve()
+	if err != nil {
+		t.Fatalf("resolve omitted: %v", err)
+	}
+	if !reflect.DeepEqual(d2.cfg.ProtectHosts, []string{"env.example.com"}) {
+		t.Fatalf("缺省 protect_hosts 应沿用 env 基线, got %v", d2.cfg.ProtectHosts)
 	}
 }
 

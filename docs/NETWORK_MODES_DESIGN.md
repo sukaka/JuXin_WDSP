@@ -31,6 +31,7 @@
 | `node_name` | 网关节点名（对应 GATEWAY_NODE_NAME） |
 | `ifname` | 当前接口名（eth0 / enp3s0f0） |
 | `mac` | MAC 地址（稳定标识之一） |
+| `ip_addresses` | 当前绑定的全局单播 IPv4/IPv6 地址列表（`TEXT[]`，CIDR 形式，IPv4 优先；过滤回环/链路本地地址） |
 | `pci_path` | PCI 拓扑路径（如 0000:03:00.0，换内核不变的物理位置标识） |
 | `driver` | 驱动（igb/ixgbe/i40e/e1000…） |
 | `media_type` | 介质类型：`TP`（电口）/ `FIBRE`（光口）/ `UNKNOWN`（ethtool port 字段 + 驱动推断） |
@@ -44,15 +45,17 @@
 ### 2.3 采集与上报
 
 - 网关侧周期性（启动 + 每 60s）读取 `/sys/class/net/*`（ifname/MAC/operstate/speed），
-  结合 ethtool netlink（驱动/bus-info/port 类型）组装清单，随心跳上报管理端。
+  结合 `net.Interfaces()` 采集当前网络命名空间内各网口的全局单播 IPv4/IPv6（CIDR 形式，
+  生产 `network_mode: host` 与裸机部署下即宿主机实际 IP）及 ethtool（驱动/bus-info/port 类型）
+  组装清单，写 `node-interfaces.jsonl` 快照由服务端采集入库。
 - 管理端 UPSERT 清单（保留用户已设定的 `sort_order`/`role`，新发现的口排末尾）。
 - 纯 Docker/容器内采集降级：无 ethtool 权限时 `media_type=UNKNOWN`，界面提示
   「需在宿主机运行 ops 脚本补全介质识别」。
 
 ### 2.4 排序与保存
 
-- 管理界面「系统运维 → 网口管理」页：按节点分组展示网口表格（名称/介质/速率/MAC/
-  PCI 路径/角色），拖拽或上下移动排序，保存写 `sort_order`。
+- 管理界面「系统运维 → 网口管理」页：按节点分组展示网口表格（名称/IP 地址/介质/速率/MAC/
+  PCI 路径/角色/状态），拖拽或上下移动排序，保存写 `sort_order`。
 - 排序语义：**仅作展示与配置引用顺序**（部署配置中的接口选择器按此序展示），
   不改写 OS 接口名。
 - 可选增强「命名固化」：按排序结果生成 udev/.link 规则（按 MAC/PCI 路径绑定

@@ -10,10 +10,10 @@ func TestFromEnvDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Listen != "127.0.0.1:15000" {
+	if cfg.Listen != "0.0.0.0:15000" {
 		t.Fatalf("Listen = %q", cfg.Listen)
 	}
-	if cfg.Target != "127.0.0.1:8080" {
+	if cfg.Target != "127.0.0.1:15080" {
 		t.Fatalf("Target = %q", cfg.Target)
 	}
 	if cfg.MaxConns != 1024 {
@@ -25,7 +25,7 @@ func TestFromEnvDefaults(t *testing.T) {
 	if cfg.DialTimeout != 10*time.Second || cfg.ShutdownGrace != 5*time.Second {
 		t.Fatalf("DialTimeout=%s ShutdownGrace=%s", cfg.DialTimeout, cfg.ShutdownGrace)
 	}
-	if cfg.TargetTLS != "127.0.0.1:8443" || cfg.SniffTimeout != 3*time.Second {
+	if cfg.TargetTLS != "127.0.0.1:15443" || cfg.SniffTimeout != 3*time.Second {
 		t.Fatalf("TargetTLS=%q SniffTimeout=%s", cfg.TargetTLS, cfg.SniffTimeout)
 	}
 	if cfg.RelayIdleTimeout != 300*time.Second {
@@ -34,21 +34,38 @@ func TestFromEnvDefaults(t *testing.T) {
 	if len(cfg.ProtectHosts) != 0 || cfg.sniDispatchEnabled() {
 		t.Fatalf("默认应关闭 SNI 分流: %v", cfg.ProtectHosts)
 	}
+	if got := FileConfigPath(); got != DefaultFileConfigPath {
+		t.Fatalf("FileConfigPath = %q, want %q", got, DefaultFileConfigPath)
+	}
+	if got := HealthAddrFromEnv(); got != DefaultHealthAddr {
+		t.Fatalf("HealthAddrFromEnv = %q, want %q", got, DefaultHealthAddr)
+	}
+}
+
+func TestConfigAndHealthPathEnvOverrides(t *testing.T) {
+	t.Setenv("TPROXY_CONFIG_FILE", "/opt/jiuzhang/data/run/caddy/sidecars/tproxyd.json")
+	t.Setenv("TPROXY_HEALTH_ADDR", "127.0.0.1:15999")
+	if got := FileConfigPath(); got != "/opt/jiuzhang/data/run/caddy/sidecars/tproxyd.json" {
+		t.Fatalf("FileConfigPath = %q", got)
+	}
+	if got := HealthAddrFromEnv(); got != "127.0.0.1:15999" {
+		t.Fatalf("HealthAddrFromEnv = %q", got)
+	}
 }
 
 func TestFromEnvSNIDispatch(t *testing.T) {
-	t.Setenv("TPROXY_PROTECT_HOSTS", "Www.Test.COM., api.test.com")
-	t.Setenv("TPROXY_PASSTHROUGH_ALLOWLIST", "Pass.Test.COM., other.test.com")
+	t.Setenv("TPROXY_PROTECT_HOSTS", "Www.Test.COM., *.Example.COM., api.test.com")
+	t.Setenv("TPROXY_PASSTHROUGH_ALLOWLIST", "Pass.Test.COM., *.Bypass.Example.COM.")
 	t.Setenv("TPROXY_TARGET_TLS", "127.0.0.1:9443")
 	t.Setenv("TPROXY_SNIFF_TIMEOUT", "5")
 	cfg, err := FromEnv()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(cfg.ProtectHosts) != 2 || cfg.ProtectHosts[0] != "www.test.com" || cfg.ProtectHosts[1] != "api.test.com" {
+	if len(cfg.ProtectHosts) != 3 || cfg.ProtectHosts[0] != "www.test.com" || cfg.ProtectHosts[1] != "*.example.com" || cfg.ProtectHosts[2] != "api.test.com" {
 		t.Fatalf("ProtectHosts 归一化错误: %v", cfg.ProtectHosts)
 	}
-	if len(cfg.PassthroughAllowlist) != 2 || cfg.PassthroughAllowlist[0] != "pass.test.com" || cfg.PassthroughAllowlist[1] != "other.test.com" {
+	if len(cfg.PassthroughAllowlist) != 2 || cfg.PassthroughAllowlist[0] != "pass.test.com" || cfg.PassthroughAllowlist[1] != "*.bypass.example.com" {
 		t.Fatalf("PassthroughAllowlist 归一化错误: %v", cfg.PassthroughAllowlist)
 	}
 	if cfg.TargetTLS != "127.0.0.1:9443" || cfg.SniffTimeout != 5*time.Second {
@@ -62,7 +79,7 @@ func TestFromEnvSNIDispatch(t *testing.T) {
 func TestFromEnvSNIDispatchRejectsInvalid(t *testing.T) {
 	cases := map[string]string{
 		"TPROXY_PROTECT_HOSTS":         "bad host.com",
-		"TPROXY_PASSTHROUGH_ALLOWLIST": "*.evil.com",
+		"TPROXY_PASSTHROUGH_ALLOWLIST": "*.*.evil.com",
 		"TPROXY_TARGET_TLS":            "no-port",
 		"TPROXY_SNIFF_TIMEOUT":         "0",
 	}
@@ -77,6 +94,29 @@ func TestFromEnvSNIDispatchRejectsInvalid(t *testing.T) {
 				t.Fatalf("%s=%q 应报错", key, val)
 			}
 		})
+	}
+}
+
+func TestHostMatcherWildcardSemantics(t *testing.T) {
+	m := newHostMatcher([]string{"exact.example.com", "*.wild.example.com"})
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"exact.example.com", true},
+		{"EXACT.EXAMPLE.COM.", true},
+		{"sub.wild.example.com", true},
+		{"API.WILD.EXAMPLE.COM.", true},
+		{"wild.example.com", false},       // 裸域不匹配 *.wild.example.com
+		{"a.b.wild.example.com", false},   // 多级子域不匹配单级通配符
+		{".wild.example.com", false},      // 空标签不匹配
+		{"sub.other.example.com", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := m.match(tc.host); got != tc.want {
+			t.Errorf("match(%q) = %v, want %v", tc.host, got, tc.want)
+		}
 	}
 }
 

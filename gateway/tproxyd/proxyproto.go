@@ -2,6 +2,7 @@
 package tproxyd
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 )
@@ -32,12 +33,14 @@ func BuildProxyV1Header(src, dst *net.TCPAddr) ([]byte, error) {
 
 // DecodeOriginalDst 把内核 getsockopt(SO_ORIGINAL_DST) 返回的 sockaddr_in
 // 字段解码为 TCPAddr。portBE 为 RawSockaddrInet4.Port 的原样值——内存中为网络
-// 字节序（大端），小端主机按 uint16 读出后需交换字节还原主机序端口。
+// 字节序（大端），经 NativeEndian 写回两字节后再按 BigEndian 解码，大小端主机均正确。
 func DecodeOriginalDst(family, portBE uint16, addr [4]byte) (*net.TCPAddr, error) {
 	if family != afInet {
 		return nil, fmt.Errorf("原始目的地址族非 IPv4（AF_INET）: family=%d", family)
 	}
-	port := int(portBE>>8) | int(portBE&0xff)<<8
+	var portBytes [2]byte
+	binary.NativeEndian.PutUint16(portBytes[:], portBE)
+	port := int(binary.BigEndian.Uint16(portBytes[:]))
 	if port < 1 || port > 65535 {
 		return nil, fmt.Errorf("原始目的端口非法: %d", port)
 	}

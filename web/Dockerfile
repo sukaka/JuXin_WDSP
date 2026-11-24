@@ -12,6 +12,9 @@ RUN npm run build
 
 FROM caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
 
+# Web 只监听 8080/8443，移除基础镜像的文件能力，使 Caddy 能在 cap_drop: ALL 下启动。
+RUN setcap -r /usr/bin/caddy
+
 COPY --from=builder /build/dist /usr/share/caddy
 COPY Caddyfile.docker /etc/caddy/Caddyfile
 COPY Caddyfile.docker.http-only /etc/caddy/Caddyfile.http-only

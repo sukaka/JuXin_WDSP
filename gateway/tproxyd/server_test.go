@@ -3,6 +3,7 @@ package tproxyd
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -310,19 +311,14 @@ func TestSNIProtectedTLSRoutesToTargetTLS(t *testing.T) {
 	}
 }
 
-// 显式透传白名单内域名的 TLS 连接：按原始目的端到端透传，不注入 PROXY 头、不进任何下游。
+// 显式透传白名单内域名的 TLS 连接：按原始目的（非本机远端 IP）端到端透传，不注入 PROXY 头、不进任何下游。
 func TestSNIPassthroughToOriginalDst(t *testing.T) {
 	httpAddr, httpConns := startCountingEcho(t, true, nil)
 	tlsAddr, tlsConns := startCountingEcho(t, true, nil)
 	originAddr, _ := startCountingEcho(t, false, nil) // 假源站：原样 echo
-	_, originPort, _ := net.SplitHostPort(originAddr)
-	port := 0
-	_, _ = fmt.Sscanf(originPort, "%d", &port)
 
-	// 原始目的桩返回假源站地址（透传路径应 dial 该地址）
-	resolve := func(conn *net.TCPConn) (*net.TCPAddr, error) {
-		return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}, nil
-	}
+	// 原始目的桩返回远端测试网段 IP（避免触发本地 SSRF 阻断）；通过 dialContext 路由至本地假源站
+	resolve := fakeOriginDst("198.51.100.20", 443)
 	srv, stats := startSNIServer(t, Config{
 		Target:               httpAddr,
 		TargetTLS:            tlsAddr,
@@ -330,6 +326,17 @@ func TestSNIPassthroughToOriginalDst(t *testing.T) {
 		PassthroughAllowlist: []string{"www.test1.com"},
 		SniffTimeout:         time.Second,
 	}, resolve)
+	srv.localAddrs = func() ([]net.IP, error) {
+		return []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("10.20.30.40")}, nil
+	}
+	var dialedAddr atomic.Value
+	srv.dialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialedAddr.Store(addr)
+		if addr == "198.51.100.20:443" {
+			return (&net.Dialer{}).DialContext(ctx, network, originAddr)
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}
 
 	client, err := net.DialTimeout("tcp", srv.Addr(), 2*time.Second)
 	if err != nil {
@@ -351,10 +358,157 @@ func TestSNIPassthroughToOriginalDst(t *testing.T) {
 	if !bytes.Equal(buf, ch) {
 		t.Fatal("透传路径字节流被改动（疑似注入了 PROXY 头）")
 	}
+	if got, _ := dialedAddr.Load().(string); got != "198.51.100.20:443" {
+		t.Fatalf("透传拨号目标 = %q, want 198.51.100.20:443", got)
+	}
 	if httpConns.Load() != 0 || tlsConns.Load() != 0 {
 		t.Fatalf("透传流量不应到达下游: http=%d tls=%d", httpConns.Load(), tlsConns.Load())
 	}
 	waitFor(t, "ConnsPassthrough 计数", func() bool { return stats.ConnsPassthrough.Load() == 1 })
+}
+
+// 防本地服务 SSRF/控制台绕过：即使 SNI 命中透传白名单，原始目的指向回环/未指定/任意本机接口 IP
+// 的任意端口（不限于 15000）也必须拒绝拨号。
+func TestSNIPassthroughBlocksLocalHostSSRF(t *testing.T) {
+	httpAddr, httpConns := startCountingEcho(t, true, nil)
+	tlsAddr, tlsConns := startCountingEcho(t, true, nil)
+	localConsoleAddr, consoleConns := startCountingEcho(t, false, nil)
+	_, consolePortStr, _ := net.SplitHostPort(localConsoleAddr)
+	consolePort := 0
+	_, _ = fmt.Sscanf(consolePortStr, "%d", &consolePort)
+
+	var targetAddr atomic.Value
+	srv, stats := startSNIServer(t, Config{
+		Target:               httpAddr,
+		TargetTLS:            tlsAddr,
+		ProtectHosts:         []string{"www.test.com"},
+		PassthroughAllowlist: []string{"pass.test.com"},
+		SniffTimeout:         time.Second,
+	}, func(conn *net.TCPConn) (*net.TCPAddr, error) {
+		return targetAddr.Load().(*net.TCPAddr), nil
+	})
+	srv.localAddrs = func() ([]net.IP, error) {
+		return []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("10.20.30.40")}, nil
+	}
+
+	cases := []struct {
+		name string
+		ip   string
+		port int
+	}{
+		{"回环地址非监听端口", "127.0.0.1", consolePort},
+		{"未指定地址443", "0.0.0.0", 443},
+		{"本机接口IP管理端口8443", "10.20.30.40", 8443},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			targetAddr.Store(&net.TCPAddr{IP: net.ParseIP(tc.ip), Port: tc.port})
+			client, err := net.DialTimeout("tcp", srv.Addr(), 2*time.Second)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer client.Close()
+			_, _ = client.Write(clientHelloBytes(t, "pass.test.com"))
+			_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+			if _, err := client.Read(make([]byte, 1)); err == nil {
+				t.Fatalf("指向本机 %s:%d 的透传连接应被拒绝关闭", tc.ip, tc.port)
+			}
+			wantErrs := uint64(i + 1)
+			waitFor(t, "OrigDstErrors 递增", func() bool { return stats.OrigDstErrors.Load() == wantErrs })
+			if consoleConns.Load() != 0 || httpConns.Load() != 0 || tlsConns.Load() != 0 || stats.ConnsPassthrough.Load() != 0 {
+				t.Fatalf("本机 SSRF 阻断不应产生任何上游拨号: console=%d http=%d tls=%d pass=%d",
+					consoleConns.Load(), httpConns.Load(), tlsConns.Load(), stats.ConnsPassthrough.Load())
+			}
+		})
+	}
+}
+
+// 通配符域名匹配：*.protect.example.com 匹配单级子域送 TargetTLS，*.pass.example.com 匹配单级子域透传；
+// 裸域与多级子域不匹配单级通配符，按未列明 SNI fail-closed 倒向 TargetTLS。
+func TestSNIWildcardProtectAndPassthrough(t *testing.T) {
+	tlsHeader := make(chan string, 4)
+	httpAddr, _ := startCountingEcho(t, true, nil)
+	tlsAddr, _ := startCountingEcho(t, true, tlsHeader)
+	originAddr, originConns := startCountingEcho(t, false, nil)
+
+	srv, stats := startSNIServer(t, Config{
+		Target:               httpAddr,
+		TargetTLS:            tlsAddr,
+		ProtectHosts:         []string{"*.protect.example.com"},
+		PassthroughAllowlist: []string{"*.pass.example.com"},
+		SniffTimeout:         time.Second,
+	}, fakeOriginDst("198.51.100.30", 443))
+	srv.localAddrs = func() ([]net.IP, error) { return []net.IP{net.ParseIP("127.0.0.1")}, nil }
+	srv.dialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if addr == "198.51.100.30:443" {
+			return (&net.Dialer{}).DialContext(ctx, network, originAddr)
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}
+
+	sendSNI := func(sni string) {
+		client, err := net.DialTimeout("tcp", srv.Addr(), 2*time.Second)
+		if err != nil {
+			t.Fatalf("dial(%s): %v", sni, err)
+		}
+		defer client.Close()
+		ch := clientHelloBytes(t, sni)
+		if _, err := client.Write(ch); err != nil {
+			t.Fatalf("write(%s): %v", sni, err)
+		}
+		buf := make([]byte, len(ch))
+		_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if _, err := io.ReadFull(client, buf); err != nil {
+			t.Fatalf("read(%s): %v", sni, err)
+		}
+	}
+
+	sendSNI("app.protect.example.com")  // 命中通配防护
+	sendSNI("cdn.pass.example.com")     // 命中通配透传
+	sendSNI("pass.example.com")         // 裸域不匹配 *.pass.example.com -> unlisted fail-closed
+	sendSNI("a.b.pass.example.com")     // 多级子域不匹配 *.pass.example.com -> unlisted fail-closed
+
+	waitFor(t, "通配计数归位", func() bool {
+		return stats.ConnsProtected.Load() == 1 &&
+			stats.ConnsPassthrough.Load() == 1 &&
+			stats.ConnsUnlistedTLS.Load() == 2
+	})
+	if originConns.Load() != 1 {
+		t.Fatalf("仅单级子域 cdn.pass.example.com 应直通源站, got originConns=%d", originConns.Load())
+	}
+}
+
+// 小于 5 字节即 EOF（如 TCP 健康探测/空连接）：安静关闭，不拨号 TargetTLS，不污染 SniffErrors。
+func TestShortEOFClosesCleanlyWithoutDialingTargetTLS(t *testing.T) {
+	httpAddr, httpConns := startCountingEcho(t, true, nil)
+	tlsAddr, tlsConns := startCountingEcho(t, true, nil)
+	srv, stats := startSNIServer(t, Config{
+		Target:       httpAddr,
+		TargetTLS:    tlsAddr,
+		ProtectHosts: []string{"www.test.com"},
+		SniffTimeout: time.Second,
+	}, fakeOriginDst("192.168.50.20", 80))
+
+	for _, payload := range [][]byte{nil, []byte("HI!")} {
+		client, err := net.DialTimeout("tcp", srv.Addr(), 2*time.Second)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		if len(payload) > 0 {
+			_, _ = client.Write(payload)
+		}
+		_ = client.Close()
+	}
+
+	waitFor(t, "两个短连接处理完毕", func() bool {
+		return stats.ConnAccepted.Load() == 2 && stats.ActiveConns.Load() == 0
+	})
+	if tlsConns.Load() != 0 || httpConns.Load() != 0 {
+		t.Fatalf("<5 字节 EOF 不应拨号任何下游: tls=%d http=%d", tlsConns.Load(), httpConns.Load())
+	}
+	if stats.SniffErrors.Load() != 0 {
+		t.Fatalf("<5 字节 EOF 不应计入 SniffErrors, got %d", stats.SniffErrors.Load())
+	}
 }
 
 // 未列明 SNI（既不在 ProtectHosts 也不在 PassthroughAllowlist）：默认 fail-closed 倒向 TargetTLS，
@@ -721,5 +875,60 @@ func TestShutdownForceCloseInflight(t *testing.T) {
 	}
 	if stats.ShutdownForceCx.Load() == 0 {
 		t.Fatal("应有强制断开计数")
+	}
+}
+
+// 在途拨号阻塞超时长于 ShutdownGrace：Shutdown 必须通过取消 DialContext 按宽限期准时返回。
+func TestShutdownCancelsInflightDialWithinGrace(t *testing.T) {
+	dialStarted := make(chan struct{}, 1)
+	cfg := Config{
+		Listen:           "127.0.0.1:0",
+		Target:           "127.0.0.1:15080",
+		MaxConns:         8,
+		StatsInterval:    time.Minute,
+		DialTimeout:      10 * time.Second,
+		ShutdownGrace:    100 * time.Millisecond,
+		RelayIdleTimeout: 30 * time.Second,
+	}
+	stats := &Stats{}
+	srv, err := NewServer(cfg, stats)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.resolveDst = fakeOriginDst("192.168.50.20", 80)
+	srv.dialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		select {
+		case dialStarted <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve() }()
+
+	client, err := net.DialTimeout("tcp", srv.Addr(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	select {
+	case <-dialStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("未进入阻塞拨号")
+	}
+
+	start := time.Now()
+	srv.Shutdown(100 * time.Millisecond)
+	elapsed := time.Since(start)
+	if elapsed > 2*time.Second {
+		t.Fatalf("Shutdown 未取消阻塞拨号，耗时 %v 远超 ShutdownGrace", elapsed)
+	}
+	if err := <-serveErr; err != nil {
+		t.Fatalf("Serve error: %v", err)
+	}
+	if stats.DialErrors.Load() != 1 {
+		t.Fatalf("被取消的拨号应计入 DialErrors, got %d", stats.DialErrors.Load())
 	}
 }

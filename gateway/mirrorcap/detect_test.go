@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/corazawaf/coraza/v3"
 	corazatypes "github.com/corazawaf/coraza/v3/types"
@@ -44,6 +45,9 @@ func TestMirrorDirectives(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Include /etc/caddy/rules/coraza.conf",
+		"SecAuditEngine RelevantOnly",
+		"SecAuditLogParts ABIJDEFHZ",
+		"SecAuditLog /var/log/caddy/coraza-audit.log",
 		"Include /etc/caddy/rules/crs/crs-setup.conf",
 		"Include /etc/caddy/rules/crs/rules/*.conf",
 		"Include /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf",
@@ -52,8 +56,18 @@ func TestMirrorDirectives(t *testing.T) {
 			t.Errorf("指令序列缺少 %q", want)
 		}
 	}
+	corazaIdx := strings.Index(d, "Include /etc/caddy/rules/coraza.conf")
+	auditIdx := strings.Index(d, "SecAuditEngine RelevantOnly")
+	partsIdx := strings.Index(d, "SecAuditLogParts ABIJDEFHZ")
+	if auditIdx <= corazaIdx || partsIdx <= corazaIdx {
+		t.Errorf("SecAuditEngine/SecAuditLogParts 必须位于 coraza.conf 之后以覆写 POC 默认: %s", d)
+	}
 	if strings.Contains(d, "SecRuleEngine On") || strings.Contains(d, "SecRuleEngine DetectionOnly\nSecRuleEngine") {
 		t.Error("指令序列不得包含防护模式")
+	}
+	off := mirrorDirectivesWithAudit("/etc/caddy/rules", "off")
+	if !strings.Contains(off, "SecAuditEngine Off") {
+		t.Errorf("auditLog=off 应输出 SecAuditEngine Off: %s", off)
 	}
 }
 
@@ -194,6 +208,133 @@ func TestHandleRequestBenign(t *testing.T) {
 	}
 	if recs[0]["response_status"] != float64(0) {
 		t.Errorf("response_status=%v want 0（镜像不采集响应）", recs[0]["response_status"])
+	}
+}
+
+// 静态资源路径无安全命中时跳过事件输出；命中 WAF 攻击规则时照常告警且 is_api=false。
+func TestHandleRequestStaticAssetSuppression(t *testing.T) {
+	dir := t.TempDir()
+	evPath := filepath.Join(dir, "api-runtime-events.log")
+	d := newTestDetector(t, evPath)
+
+	// 无攻击的静态 JS（带 Cookie）：不产出事件
+	benignStatic, err := httpReadRaw("GET /astro/page.BsuiZEAU.js HTTP/1.1\r\nHost: web.example.com\r\nCookie: sid=abc\r\n\r\n")
+	if err != nil {
+		t.Fatalf("构造静态请求: %v", err)
+	}
+	d.HandleRequest(benignStatic, FlowMeta{SrcIP: "10.0.0.5", SrcPort: 40001, DstIP: "10.0.0.6", DstPort: 80}, false)
+	if _, statErr := os.Stat(evPath); statErr == nil {
+		recs := readEventRecords(t, evPath)
+		if len(recs) != 0 {
+			t.Fatalf("无攻击静态资源不应输出事件，实际输出 %d 条: %+v", len(recs), recs)
+		}
+	}
+
+	// 静态路径携带攻击参数：WAF 命中后照常输出安全事件，但 is_api=false
+	attackStatic, err := httpReadRaw("GET /favicon.ico?x=attack HTTP/1.1\r\nHost: web.example.com\r\n\r\n")
+	if err != nil {
+		t.Fatalf("构造攻击静态请求: %v", err)
+	}
+	d.HandleRequest(attackStatic, FlowMeta{SrcIP: "10.0.0.5", SrcPort: 40002, DstIP: "10.0.0.6", DstPort: 80}, false)
+	recs := readEventRecords(t, evPath)
+	if len(recs) != 1 {
+		t.Fatalf("命中 WAF 的静态请求应输出 1 条安全告警，实际 %d 条", len(recs))
+	}
+	if recs[0]["is_api"] != false {
+		t.Fatalf("静态路径告警 is_api 应为 false，实际 %v", recs[0]["is_api"])
+	}
+}
+
+// bodyTruncated=true 时屏蔽因 64KB 截断产生的 200002/200003 解析误报，但真实攻击规则照常检出。
+func TestHandleRequestTruncatedBodySuppressesParserFalsePositive(t *testing.T) {
+	dir := t.TempDir()
+	evPath := filepath.Join(dir, "api-runtime-events.log")
+	waf, err := coraza.NewWAF(coraza.NewWAFConfig().WithDirectives(strings.Join([]string{
+		"SecRuleEngine DetectionOnly",
+		"SecRequestBodyAccess On",
+		`SecRule REQUEST_HEADERS:Content-Type "^application/json" "id:200001,phase:1,t:none,t:lowercase,pass,nolog,ctl:requestBodyProcessor=JSON"`,
+		`SecRule REQBODY_ERROR "!@eq 0" "id:200002,phase:2,t:none,log,deny,status:400,msg:'Failed to parse request body.',severity:2"`,
+		`SecRule REQUEST_URI "@contains attack" "id:100100,phase:1,t:none,log,msg:'real attack',severity:'CRITICAL'"`,
+	}, "\n")))
+	if err != nil {
+		t.Fatalf("NewWAF: %v", err)
+	}
+	events, err := apievents.NewLogger(evPath, "mirror-test-node")
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	t.Cleanup(func() { _ = events.Close() })
+	d := &Detector{cfg: Config{BodyMax: 64}, waf: waf, events: events, stats: &Stats{}}
+
+	// 截断的不完整 JSON：200002 应被抑制（不应出现 detector=waf rule_id=200002）
+	truncBody := `{"key":"truncat`
+	req, err := httpReadRaw("POST /api/upload HTTP/1.1\r\nHost: api.example.com\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n" + truncBody)
+	if err != nil {
+		t.Fatalf("构造截断请求: %v", err)
+	}
+	d.HandleRequest(req, FlowMeta{SrcIP: "10.0.0.1", SrcPort: 12345, DstIP: "10.0.0.2", DstPort: 80}, true)
+
+	// 同样畸形 JSON 但 bodyTruncated=false：200002 应照常触发
+	req2, err := httpReadRaw("POST /api/upload HTTP/1.1\r\nHost: api.example.com\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n" + truncBody)
+	if err != nil {
+		t.Fatalf("构造未截断畸形请求: %v", err)
+	}
+	d.HandleRequest(req2, FlowMeta{SrcIP: "10.0.0.1", SrcPort: 12346, DstIP: "10.0.0.2", DstPort: 80}, false)
+
+	recs := readEventRecords(t, evPath)
+	if len(recs) != 2 {
+		t.Fatalf("事件数=%d want 2", len(recs))
+	}
+	for _, raw := range recs[0]["details"].([]any) {
+		m := raw.(map[string]any)
+		if m["detector"] == "waf" && m["rule_id"] == "200002" {
+			t.Fatalf("截断请求体不应误报 200002: %+v", m)
+		}
+	}
+	var saw200002 bool
+	for _, raw := range recs[1]["details"].([]any) {
+		m := raw.(map[string]any)
+		if m["detector"] == "waf" && m["rule_id"] == "200002" {
+			saw200002 = true
+		}
+	}
+	if !saw200002 {
+		t.Fatalf("未截断畸形 JSON 应正常触发 200002: %+v", recs[1]["details"])
+	}
+}
+
+// 域名过滤生效但站点发现仍记录全量观察，且按接口精确 source_mode / SniffDisabled 控流。
+func TestHandleRequestDomainFilterAndPerInterfaceDiscoveryMode(t *testing.T) {
+	dir := t.TempDir()
+	evPath := filepath.Join(dir, "api-runtime-events.log")
+	discPath := filepath.Join(dir, "site-discovery.jsonl")
+	d := newTestDetector(t, evPath)
+	d.cfg.Domains = []string{"shop.example.com", "*.api.example.com"}
+
+	agg, err := NewDiscoveryAggregator("gw-1", "ROUTED", discPath, time.Hour, &Stats{})
+	if err != nil {
+		t.Fatalf("NewDiscoveryAggregator: %v", err)
+	}
+	d.SetDiscovery(agg)
+
+	// 1. 不在目标域名列表中，但该接口承担 MIRROR 发现角色：跳过检测事件，但记录 MIRROR 发现
+	otherReq, _ := httpReadRaw("GET /api/x HTTP/1.1\r\nHost: other.example.com\r\n\r\n")
+	d.HandleRequest(otherReq, FlowMeta{SrcIP: "10.0.0.1", DstIP: "10.0.0.2", DstPort: 80, SourceMode: "MIRROR"}, false)
+
+	// 2. 命中泛域名，但接口为纯检测（SniffDisabled=true）：产出检测事件，但不写发现
+	matchReq, _ := httpReadRaw("GET /api/orders HTTP/1.1\r\nHost: v2.api.example.com\r\n\r\n")
+	d.HandleRequest(matchReq, FlowMeta{SrcIP: "10.0.0.1", DstIP: "10.0.0.3", DstPort: 80, SniffDisabled: true}, false)
+
+	if err := agg.Close(); err != nil {
+		t.Fatalf("agg.Close: %v", err)
+	}
+	recs := readEventRecords(t, evPath)
+	if len(recs) != 1 || recs[0]["domain"] != "v2.api.example.com" {
+		t.Fatalf("仅目标域名应输出检测事件, got %+v", recs)
+	}
+	discRecs := readDiscoveryRecords(t, discPath)
+	if len(discRecs) != 1 || discRecs[0].Domain != "other.example.com" || discRecs[0].SourceMode != "MIRROR" {
+		t.Fatalf("站点发现应仅含开启嗅探接口的记录且使用精确 source_mode=MIRROR, got %+v", discRecs)
 	}
 }
 

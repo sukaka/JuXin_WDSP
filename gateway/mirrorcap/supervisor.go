@@ -151,8 +151,10 @@ func (d desired) stateKey() string {
 	sort.Strings(ifs)
 	ports := append([]uint16(nil), d.cfg.Ports...)
 	sort.Slice(ports, func(i, j int) bool { return ports[i] < ports[j] })
-	return fmt.Sprintf("%s|enabled=%v|ifaces=%s|ports=%v|log=%s|node=%s|disc=%v|%s",
-		d.source, d.enabled, strings.Join(ifs, ","), ports, d.cfg.EventsLog, d.cfg.NodeName,
+	doms := append([]string(nil), d.cfg.Domains...)
+	sort.Strings(doms)
+	return fmt.Sprintf("%s|enabled=%v|ifaces=%s|ports=%v|domains=%s|log=%s|audit=%s|node=%s|disc=%v|%s",
+		d.source, d.enabled, strings.Join(ifs, ","), ports, strings.Join(doms, ","), d.cfg.EventsLog, d.cfg.AuditLog, d.cfg.NodeName,
 		d.disc.enabled, d.disc.key())
 }
 
@@ -299,7 +301,9 @@ func (s *Supervisor) applyLocked(d desired) {
 
 	// 检测资源收敛（独立启停；发现运行状态不受影响）
 	if d.enabled {
-		key := d.cfg.EventsLog + "|" + d.cfg.NodeName
+		doms := append([]string(nil), d.cfg.Domains...)
+		sort.Strings(doms)
+		key := d.cfg.EventsLog + "|" + d.cfg.AuditLog + "|" + d.cfg.NodeName + "|" + strings.Join(doms, ",")
 		if s.gen.handler == nil || s.gen.key != key {
 			s.startDetectLocked(d, key)
 		}

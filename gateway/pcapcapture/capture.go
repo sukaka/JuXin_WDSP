@@ -19,7 +19,12 @@ type mirrorRequestHandler struct {
 }
 
 func (h mirrorRequestHandler) HandleRequest(request *http.Request, meta mirrorcap.FlowMeta, bodyTruncated bool) {
-	h.linker.HandleRequest(request, pcapevidence.FlowMeta(meta), bodyTruncated)
+	h.linker.HandleRequest(request, pcapevidence.FlowMeta{
+		SrcIP:   meta.SrcIP,
+		SrcPort: meta.SrcPort,
+		DstIP:   meta.DstIP,
+		DstPort: meta.DstPort,
+	}, bodyTruncated)
 }
 
 func NewCapture(config CaptureConfig) (*Capture, error) {

@@ -80,8 +80,12 @@ services:
       VALKEY_PORT: 6379
       VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-jiuzhang_admin}
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      INITIAL_OPER_ADMIN_USERNAME: ${INITIAL_OPER_ADMIN_USERNAME:-operadmin}
+      INITIAL_OPER_ADMIN_PASSWORD: ${INITIAL_OPER_ADMIN_PASSWORD:-}
+      INITIAL_AUDIT_ADMIN_USERNAME: ${INITIAL_AUDIT_ADMIN_USERNAME:-auditor}
+      INITIAL_AUDIT_ADMIN_PASSWORD: ${INITIAL_AUDIT_ADMIN_PASSWORD:-}
       JIUZHANG_MASTER_KEY: ${JIUZHANG_MASTER_KEY:-}
       # 离线授权：验签公钥随正式构建内嵌；这里只配置宿主机指纹文件路径（卷挂载见下）
       LICENSE_HOST_FINGERPRINT_FILE: ${LICENSE_HOST_FINGERPRINT_FILE:-/app/runtime/license/host_fingerprint}
@@ -92,6 +96,7 @@ services:
       WAF_CRS_DIR: /etc/caddy/rules/crs/rules
       WAF_CRS_VERSION: 4.28.0
       WAF_AUDIT_LOG: /var/log/caddy-audit/coraza-audit.log
+      GATEWAY_AUDIT_LOG: /var/log/caddy/coraza-audit.log
       GATEWAY_NODE_NAME: gateway-stage5-01
       # 阶段5：采集网关 guard 事件日志（只读卷）+ 下发网关的事件日志路径
       WAF_GUARD_EVENTS_LOG: /var/log/caddy-audit/guard-events.log
@@ -123,6 +128,11 @@ services:
       GATEWAY_IDENTITY_EVENTS_LOG: /var/log/caddy/identity-events.log
       # 站点资产发现：采集 mirrorcap 站点发现记录（只读卷；网关侧路径由 sidecar 下发）
       WAF_SITE_DISCOVERY_LOG: /var/log/caddy-audit/site-discovery.jsonl
+      GATEWAY_SITE_DISCOVERY_LOG: /var/log/caddy/site-discovery.jsonl
+      # 透明串接模式（tproxyd）：下发 tproxyd.json 与 Caddy 内部代理协议监听端口（避开控制台 8080/8443）
+      GATEWAY_TPROXY_LISTEN: ${GATEWAY_TPROXY_LISTEN:-0.0.0.0:15000}
+      GATEWAY_TPROXY_TARGET: ${GATEWAY_TPROXY_TARGET:-127.0.0.1:15080}
+      GATEWAY_TPROXY_TARGET_TLS: ${GATEWAY_TPROXY_TARGET_TLS:-127.0.0.1:15443}
       # 全量访问日志（二期）：采集网关 JSON Lines 日志（只读卷）+ 下发网关的日志路径
       WAF_ACCESS_FULL_LOG: /var/log/caddy-audit/access-full.jsonl
       GATEWAY_ACCESS_FULL_LOG: /var/log/caddy/access-full.jsonl
@@ -137,6 +147,11 @@ services:
       HOSTCTL_DIR: /app/runtime/hostctl
       # 容器运维通道：经共享卷上的 Unix Socket 访问 containerops sidecar（API 不直接持有 docker.sock）
       CONTAINEROPS_SOCKET: /app/runtime/containerops/containerops.sock
+      # 分布式流量采集 Agent 跨平台安装包分发目录与自动对接地址探测配置
+      TRAFFIC_AGENT_PACKAGES_DIR: ${TRAFFIC_AGENT_PACKAGES_DIR:-/app/runtime/agent-packages}
+      WEB_HTTPS_PORT: ${WEB_HTTPS_PORT:-8443}
+      WDSP_HOST_IPS: ${WDSP_HOST_IPS:-}
+      TRAFFIC_AGENT_PUBLIC_URL: ${TRAFFIC_AGENT_PUBLIC_URL:-}
     ports:
       - "127.0.0.1:${API_PORT:-18081}:8080"
     volumes:
@@ -251,14 +266,91 @@ services:
     container_name: jiuzhang-stage5-netmgrd
     restart: unless-stopped
     network_mode: service:gateway
+    group_add:
+      - "1000"
+    read_only: true
+    cap_drop:
+      - ALL
     cap_add:
       - NET_RAW
       - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
     environment:
       NODE_NAME: gateway-stage5-01
     volumes:
       # 与防护网关共享 Admin Socket 卷（文件契约轮询通道）
       - stage5-gateway-admin:/var/run/caddy
+    depends_on:
+      gateway:
+        condition: service_started
+
+  # mirrorcap 镜像旁路采集与站点资产发现 sidecar：
+  # 与网关共享网络命名空间（network_mode: service:gateway），未配置镜像口时自动空转不抓包；
+  # 启动后由 MIRROR_DROP_PRIVS=1 降权至 1000:1000 并仅保留 ambient CAP_NET_RAW/CAP_NET_ADMIN。
+  mirrorcap:
+    image: jiuzhang-mirrorcap:stage5
+    build:
+      context: ../gateway
+      dockerfile: images/mirrorcap/Dockerfile
+    container_name: jiuzhang-stage5-mirrorcap
+    restart: unless-stopped
+    network_mode: service:gateway
+    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+      - SETUID
+      - SETGID
+      - SETPCAP
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    environment:
+      GATEWAY_NODE_NAME: gateway-stage5-01
+      MIRROR_DROP_PRIVS: "1"
+      MIRROR_RULES_DIR: /etc/caddy/rules
+    volumes:
+      - stage5-gateway-admin:/var/run/caddy:ro
+      - stage5-gateway-logs:/var/log/caddy
+      - ../gateway/rules:/etc/caddy/rules:ro
+    depends_on:
+      gateway:
+        condition: service_started
+
+  # tproxyd 透明串接前置牵引 sidecar：
+  # 与网关共享网络命名空间（network_mode: service:gateway），轮询只读 /var/run/caddy/sidecars/tproxyd.json；
+  # 未启用透明站点时自动空转不监听；SO_ORIGINAL_DST 无需特权，全程以非 root 1000:1000 + cap_drop ALL 运行。
+  tproxyd:
+    image: jiuzhang-tproxyd:stage5
+    build:
+      context: ../gateway
+      dockerfile: images/tproxyd/Dockerfile
+    container_name: jiuzhang-stage5-tproxyd
+    restart: unless-stopped
+    network_mode: service:gateway
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    environment:
+      TPROXY_CONFIG_FILE: /var/run/caddy/sidecars/tproxyd.json
+      TPROXY_LISTEN: ${GATEWAY_TPROXY_LISTEN:-0.0.0.0:15000}
+      TPROXY_TARGET: ${GATEWAY_TPROXY_TARGET:-127.0.0.1:15080}
+      TPROXY_TARGET_TLS: ${GATEWAY_TPROXY_TARGET_TLS:-127.0.0.1:15443}
+      TPROXY_HEALTH_ADDR: ${TPROXY_HEALTH_ADDR:-127.0.0.1:15001}
+    volumes:
+      - stage5-gateway-admin:/var/run/caddy:ro
     depends_on:
       gateway:
         condition: service_started
@@ -304,7 +396,7 @@ services:
       DOCKER_HOST: unix:///var/run/docker.sock
       # 仅允许运维本 compose 项目内、且在白名单中的服务（双重校验，fail-closed）
       CONTAINEROPS_PROJECT: jiuzhang-stage5
-      CONTAINEROPS_ALLOWED_SERVICES: api,gateway,postgres,valkey,logrotator,netmgrd,testorigin,ollama
+      CONTAINEROPS_ALLOWED_SERVICES: api,gateway,postgres,valkey,logrotator,netmgrd,mirrorcap,tproxyd,testorigin,ollama
     volumes:
       # 全栈唯一 docker.sock 挂载点（安全底线；严禁复制到 api 或其他服务）
       - /var/run/docker.sock:/var/run/docker.sock

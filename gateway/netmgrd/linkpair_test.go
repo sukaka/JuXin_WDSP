@@ -493,4 +493,99 @@ func TestSupervisorWiresLinkPairMonitor(t *testing.T) {
 	}
 }
 
+// ---------- P1-3: 双口同时掉载波无活锁 ----------
+
+func TestLinkPairDualPortCarrierLossNoLivelock(t *testing.T) {
+	// eth2 与 eth3 均处于管理 UP 但同时失去 LOWER_UP：每口独立计时，达 hold_down 后完成联动而非互相覆盖活锁。
+	fr := &fakeRunner{dump: lpSnapshot(map[string]bool{"eth2": false, "eth3": false})}
+	m, clk := newTestMonitor(t, fr)
+	m.SetConfig([]BridgeSpec{lpSpec(1000, 5000, 20)}, "v1")
+	ctx := context.Background()
+
+	m.cycle(ctx)
+	clk.advance(500 * time.Millisecond)
+	m.cycle(ctx)
+	if rt := m.pairOf("br0"); rt.state != LinkPairBothUp {
+		t.Fatalf("防抖窗口内应保持 BOTH_UP: %s", rt.state)
+	}
+	clk.advance(600 * time.Millisecond) // 累计 1.1s >= 1000ms
+	m.cycle(ctx)
+	rt := m.pairOf("br0")
+	if rt.state != LinkPairPropagatedDown || rt.downPort != "eth2" || rt.propPort != "eth3" {
+		t.Fatalf("双口掉载波达 hold_down 应进入 PROPAGATED_DOWN（无活锁）: %+v", rt)
+	}
+}
+
+// ---------- P1-3: 运维管理 DOWN 安全红线 ----------
+
+func lpSnapshotCustomFlags(flagsByPort map[string][]string) []byte {
+	entries := make([]map[string]any, 0, len(flagsByPort))
+	for name, flags := range flagsByPort {
+		entries = append(entries, map[string]any{
+			"ifname": name, "flags": flags, "addr_info": []map[string]string{},
+		})
+	}
+	data, _ := json.Marshal(entries)
+	return data
+}
+
+func TestLinkPairIgnoresOperatorAdminDown(t *testing.T) {
+	ctx := context.Background()
+
+	// 场景1：运维手工 ip link set eth2 down（无 UP 标志）→ 绝不触发联动 down eth3。
+	fr1 := &fakeRunner{dump: lpSnapshotCustomFlags(map[string][]string{
+		"eth2": {"BROADCAST", "MULTICAST"},              // admin DOWN
+		"eth3": {"BROADCAST", "MULTICAST", "UP", "LOWER_UP"},
+	})}
+	m1, clk1 := newTestMonitor(t, fr1)
+	m1.SetConfig([]BridgeSpec{lpSpec(500, 1000, 20)}, "v1")
+	m1.cycle(ctx)
+	clk1.advance(2 * time.Second)
+	m1.cycle(ctx)
+	if rt := m1.pairOf("br0"); rt.state != LinkPairBothUp || len(fr1.execLog()) != 0 {
+		t.Fatalf("运维管理 DOWN 端口不得触发联动: state=%s execs=%v", rt.state, fr1.execLog())
+	}
+
+	// 场景2：eth2 物理掉载波（UP 无 LOWER_UP），而配对口 eth3 已被运维管理 DOWN →
+	// 不执行 down 也不认领 PropagatedByLinkpair 标记（避免后续把运维手工 down 的口拉 UP）。
+	fr2 := &fakeRunner{dump: lpSnapshotCustomFlags(map[string][]string{
+		"eth2": {"NO-CARRIER", "BROADCAST", "MULTICAST", "UP"}, // physical carrier lost
+		"eth3": {"BROADCAST", "MULTICAST"},                     // operator admin DOWN
+	})}
+	m2, clk2 := newTestMonitor(t, fr2)
+	m2.SetConfig([]BridgeSpec{lpSpec(500, 1000, 20)}, "v1")
+	m2.cycle(ctx)
+	clk2.advance(1 * time.Second)
+	m2.cycle(ctx)
+	if rt := m2.pairOf("br0"); rt.state != LinkPairBothUp || len(fr2.execLog()) != 0 {
+		t.Fatalf("已管理 DOWN 的配对口不得被联动接管: state=%s msg=%q execs=%v", rt.state, rt.message, fr2.execLog())
+	}
+	if !strings.Contains(m2.pairOf("br0").message, "管理 DOWN") {
+		t.Fatalf("应记录拒绝接管说明: %q", m2.pairOf("br0").message)
+	}
+}
+
+// ---------- P1-3: 移除最后一个联动桥刷新 status ----------
+
+func TestLinkPairRemovingLastPairFlushesStatus(t *testing.T) {
+	fr := &fakeRunner{dump: lpSnapshot(map[string]bool{"eth2": true, "eth3": true})}
+	m, _ := newTestMonitor(t, fr)
+	ctx := context.Background()
+
+	m.SetConfig([]BridgeSpec{lpSpec(1000, 5000, 20)}, "v1")
+	m.cycle(ctx)
+	st := readStatusFile(t, m.StatusPath)
+	if len(st.LinkPairs) != 1 {
+		t.Fatalf("应写入 1 条 link_pairs: %+v", st.LinkPairs)
+	}
+
+	// 移除最后一个联动配置后，cycle 必须即使 len(pairs)==0 也刷盘清空 link_pairs。
+	m.SetConfig(nil, "v2")
+	m.cycle(ctx)
+	st = readStatusFile(t, m.StatusPath)
+	if len(st.LinkPairs) != 0 {
+		t.Fatalf("移除最后一个联动桥后应清空 status.link_pairs, got %+v", st.LinkPairs)
+	}
+}
+
 var _ = fmt.Sprintf // 保持 fmt 引用（调试输出备用）

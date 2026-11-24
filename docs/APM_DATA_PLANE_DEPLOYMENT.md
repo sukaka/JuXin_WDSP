@@ -46,7 +46,13 @@ export CLICKHOUSE_APM_WRITER_USER='apm_writer'          # 首次可用 default �
 export CLICKHOUSE_APM_WRITER_PASSWORD='<强随机>'
 # 3. 中央数据面（ClickHouse 首次启动自动执行 deployment/apm/clickhouse/*.sql 建表）：
 docker compose -f docker-compose.apm.yml --profile central up -d
-# 4. 本地 Collector（生产通常为 systemd 直装，compose 仅为可运行参考）：
+# 4. 同机部署时将管理面 api 容器接入 APM 数据面内网（首次启用执行一次；后续官方升级、回滚与
+#    PCAP 重建脚本会自动保留该网络并探测接入同机运行中的 jiuzhang-apm-clickhouse，且后端会在
+#    15 秒冷却后自动重连 ClickHouse，不再需要重启 api）：
+docker network connect jiuzhang-apm_apm-data jiuzhang-api
+#    随后在「系统设置 → APM 性能监控」或 .env 中配置 APM_CLICKHOUSE_DSN（如
+#    clickhouse://default:<口令>@clickhouse:9000/apm）。
+# 5. 本地 Collector（生产通常为 systemd 直装，compose 仅为可运行参考）：
 docker compose -f docker-compose.apm.yml --profile local up -d
 ```
 

@@ -39,6 +39,8 @@
 | postgres | 16.4-alpine | sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c | 主数据库 |
 | valkey/valkey | 8.1.8-alpine | sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885 | 缓存/锁/任务状态 |
 | alpine（mirrorcap PoC） | 3.20 | sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc | 阶段C 旁路采集器运行基镜像（本机 RepoDigest 锁定，Docker Hub 不可达环境可复现） |
+| debian | bookworm-slim | sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 | wdsp-agent `.deb` 包与一键安装脚本容器实测镜像 |
+| openeuler/openeuler | 24.03-lts-sp4 | sha256:17c15554be2a5bc46023acb6e04d609d77642b8c20e236e88deb18e41ae4558e | wdsp-agent `.rpm` 包与一键安装脚本容器实测镜像 |
 
 ## 多架构镜像锁定
 

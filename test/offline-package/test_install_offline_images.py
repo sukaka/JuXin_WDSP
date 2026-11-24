@@ -32,6 +32,8 @@ missing=$5
 config_error=$6
 log_info() { :; }
 die() { printf '%s\n' "$*" >&2; exit 1; }
+collect_api_extra_networks() { :; }
+reattach_api_extra_networks() { :; }
 docker() {
   printf 'docker %s\n' "$*" >&3
   case "$1 $2" in
@@ -41,14 +43,22 @@ docker() {
   esac
 }
 compose() {
-  printf 'compose %s\n' "$*" >&3
   case "$*" in
     'config --images')
+      printf 'compose %s\n' "$*" >&3
       [[ "$config_error" != true ]] || return 1
       printf '%s\n' 'jiuzhang-runtime-jiuzhang-web:50c8996de63e5299b2ce35b0'
       ;;
-    'up -d'|'up -d --pull never --no-build') ;;
-    *) return 99 ;;
+    'up -d'|'up -d --pull never --no-build')
+      printf 'compose %s\n' "$*" >&3
+      ;;
+    'config --format json')
+      printf '{}\n'
+      ;;
+    *)
+      printf 'compose %s\n' "$*" >&3
+      return 99
+      ;;
   esac
 }
 exec 3>"$pkg_dir/calls"

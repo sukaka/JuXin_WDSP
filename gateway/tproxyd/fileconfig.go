@@ -27,14 +27,15 @@ const (
 )
 
 // FileConfig tproxyd.json 下发契约：
-// {"enabled":bool,"listen":"127.0.0.1:15000","target":"127.0.0.1:8080","ports":[80],
+// {"enabled":bool,"listen":"0.0.0.0:15000","target":"127.0.0.1:15080","ports":[80],
 //
-//	"protect_hosts":["www.test.com"],"target_tls":"127.0.0.1:8443"}
+//	"protect_hosts":["www.test.com","*.example.com"],"target_tls":"127.0.0.1:15443"}
 //
 // ports 为牵引端口集合（编排层据其安装 REDIRECT 牵引规则）；本进程数据面只消费
 // listen/target，ports 在此仅校验并记入状态日志，不参与转发逻辑。
 // protect_hosts 非空时启用 TLS SNI 嗅探分流（清单内域名送 target_tls 终结检测，
-// 清单外按原始目的透传），语义与 env TPROXY_PROTECT_HOSTS 一致。
+// 清单外默认 fail-closed 倒向 target_tls，仅 passthrough_allowlist 内域名按原始目的透传）。
+// 两者均支持精确域名与 RFC 单级前导通配符（*.example.com）。
 type FileConfig struct {
 	// Enabled 启停开关（false = 关闭监听进入空转；缺省零值同为 false，不擅自监听）。
 	Enabled bool `json:"enabled"`
@@ -44,7 +45,7 @@ type FileConfig struct {
 	Target string `json:"target"`
 	// Ports 牵引端口集合（信息性字段，见类型注释）。
 	Ports []uint16 `json:"ports"`
-	// ProtectHosts SNI 防护域名清单（空回退 env TPROXY_PROTECT_HOSTS 语义）。
+	// ProtectHosts SNI 防护域名清单（nil 回退 env TPROXY_PROTECT_HOSTS；空数组 [] 显式清空）。
 	ProtectHosts []string `json:"protect_hosts"`
 	// PassthroughAllowlist 显式允许端到端透传的 TLS SNI 域名白名单（空 = 禁止任意未列明 SNI 透传）。
 	PassthroughAllowlist []string `json:"passthrough_allowlist,omitempty"`

@@ -32,6 +32,7 @@ WORKDIR /src
 # netmgrd 本身零第三方依赖，无需 go mod download 全量模块图）
 COPY go.mod go.sum ./
 COPY dynamic_security/go.mod dynamic_security/go.mod
+COPY pcapevidence/go.mod pcapevidence/go.mod
 COPY modules/jiuzhang_guard/go.mod modules/jiuzhang_guard/go.mod
 
 # netmgrd 包自包含（仅标准库），cmd/netmgrd 仅依赖本包
@@ -51,8 +52,10 @@ FROM alpine:3.24${ALPINE_IMAGE_DIGEST:+@$ALPINE_IMAGE_DIGEST}
 #   iputils    —— ping（diag ping 动作；tracepath 回退）
 #   traceroute —— diag traceroute 动作
 #   tcpdump    —— diag capture 动作
+#   iptables   —— 透明串接模式 nat/PREROUTING REDIRECT 与 filter/FORWARD、INPUT 规则管理
+#   nftables   —— 透明串接模式 nft 规则管理（匹配宿主机 nftables 后端）
 # netmgrd 需要 root（NET_ADMIN + 主机网络命名空间操作），不建非 root 用户
-RUN apk add --no-cache iproute2 iputils tcpdump traceroute
+RUN apk add --no-cache iproute2 iputils tcpdump traceroute iptables nftables
 
 COPY --from=builder /netmgrd /usr/local/bin/netmgrd
 

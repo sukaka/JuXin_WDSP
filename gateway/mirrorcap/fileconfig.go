@@ -40,8 +40,13 @@ type FileConfig struct {
 	Ifaces []string `json:"interfaces"`
 	// Ports 目标 TCP 端口集合（仅重组目的端口命中集合的流；空回退 env MIRROR_PORTS）。
 	Ports []uint16 `json:"ports"`
+	// Domains 目标站点域名过滤集合（可选；空 = 端口上全部流量进入检测，非空 = 仅命中
+	// 精确域名或 *.泛域名的流量进入检测，站点发现仍记录全量观察）。
+	Domains []string `json:"domains,omitempty"`
 	// EventsLog 事件输出路径（空回退 env MIRROR_EVENTS_LOG）。
 	EventsLog string `json:"events_log"`
+	// AuditLog Coraza 审计日志路径（空回退 env MIRROR_AUDIT_LOG；"off"/"none" 关闭）。
+	AuditLog string `json:"audit_log,omitempty"`
 	// Discovery 站点资产被动发现块（可选；缺省整块缺省 = 沿用 env 基线，块内
 	// enabled=false = 文件显式关闭发现——文件优先）。发现与检测独立启停。
 	Discovery *FileDiscovery `json:"discovery"`
@@ -118,8 +123,24 @@ func (fc *FileConfig) normalize() error {
 	}
 	fc.Ports = ports
 
+	seenDomain := map[string]struct{}{}
+	domains := make([]string, 0, len(fc.Domains))
+	for _, s := range fc.Domains {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "" {
+			continue
+		}
+		if _, ok := seenDomain[s]; ok {
+			continue
+		}
+		seenDomain[s] = struct{}{}
+		domains = append(domains, s)
+	}
+	fc.Domains = domains
+
 	fc.Node = strings.TrimSpace(fc.Node)
 	fc.EventsLog = strings.TrimSpace(fc.EventsLog)
+	fc.AuditLog = strings.TrimSpace(fc.AuditLog)
 	if fc.Enabled && len(fc.Ifaces) == 0 {
 		return fmt.Errorf("enabled=true 但 interfaces 为空")
 	}
@@ -176,8 +197,12 @@ func (fc FileConfig) overlay(base Config) Config {
 	if len(fc.Ports) > 0 {
 		cfg.Ports = fc.Ports
 	}
+	cfg.Domains = append([]string(nil), fc.Domains...)
 	if fc.EventsLog != "" {
 		cfg.EventsLog = fc.EventsLog
+	}
+	if fc.AuditLog != "" {
+		cfg.AuditLog = fc.AuditLog
 	}
 	if fc.Node != "" {
 		cfg.NodeName = fc.Node

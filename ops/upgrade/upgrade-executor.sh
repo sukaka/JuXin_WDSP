@@ -284,7 +284,7 @@ wait_selected_services() {
   return 1
 }
 
-declare -a SERVICES=() STABLE_IMAGES=() OLD_IDS=() NEW_SERVICES=()
+declare -a SERVICES=() STABLE_IMAGES=() OLD_IDS=() NEW_SERVICES=() API_EXTRA_NETWORKS=()
 CURRENT_JOB="" CURRENT_STAGE="APPLYING" CURRENT_MESSAGE="" INSTALLED_OVERRIDE=""
 IMAGE_SWITCH_STARTED=false
 
@@ -309,16 +309,141 @@ rollback_images() {
     [[ -z "${OLD_IDS[$i]:-}" ]] && docker rmi "${STABLE_IMAGES[$i]}" >/dev/null 2>&1 || true
   done
   if [[ "$IMAGE_SWITCH_STARTED" == true ]]; then
-    ((${#existed[@]} == 0)) || compose up -d --no-deps --force-recreate "${existed[@]}" >/dev/null 2>&1 || true
+    if ((${#existed[@]} > 0)); then
+      compose up -d --no-deps --force-recreate "${existed[@]}" >/dev/null 2>&1 || true
+      if printf '%s\n' "${existed[@]}" | grep -Fxq api; then
+        reattach_api_extra_networks rollback >/dev/null 2>&1 || true
+      fi
+    fi
     wait_api || true
   fi
+}
+
+exec_valid_docker_network_name() {
+  local name="${1:-}"
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || return 1
+  case "$name" in
+    none|host|bridge) return 1 ;;
+  esac
+  return 0
+}
+
+exec_container_network_names() {
+  local target="${1:-}" raw
+  [[ -n "$target" ]] || return 0
+  raw="$(docker inspect --format '{{json .NetworkSettings.Networks}}' "$target" 2>/dev/null || true)"
+  [[ -n "$raw" ]] || return 0
+  jq -r 'if type == "object" then keys[] else empty end' <<<"$raw" 2>/dev/null || true
+}
+
+exec_colocated_apm_clickhouse_container() {
+  local info cid
+  info="$(docker inspect --format '{{.State.Running}}|{{.Name}}' jiuzhang-apm-clickhouse 2>/dev/null || true)"
+  if [[ "$info" == "true|/jiuzhang-apm-clickhouse" || "$info" == "true|jiuzhang-apm-clickhouse" ]]; then
+    printf 'jiuzhang-apm-clickhouse\n'
+    return 0
+  fi
+  cid="$(docker ps -q --filter status=running \
+    --filter label=com.docker.compose.project=jiuzhang-apm \
+    --filter label=com.docker.compose.service=clickhouse 2>/dev/null | head -n 1 || true)"
+  if [[ "$cid" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+    info="$(docker inspect --format '{{.State.Running}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}' "$cid" 2>/dev/null || true)"
+    if [[ "$info" == "true|jiuzhang-apm|clickhouse" ]]; then
+      printf '%s\n' "$cid"
+      return 0
+    fi
+  fi
+  return 0
+}
+
+capture_api_extra_networks() {
+  API_EXTRA_NETWORKS=()
+  printf '%s\n' "${SERVICES[@]:-}" | grep -Fxq api || return 0
+  local compose_json old_api_id ch_cid net ex skip
+  local -a excluded=() candidates=()
+  compose_json="$(compose config --format json 2>/dev/null || true)"
+  if [[ -n "$compose_json" ]]; then
+    while IFS= read -r net; do
+      [[ -n "$net" ]] && excluded+=("$net")
+    done < <(jq -r '
+      (.name // "") as $proj |
+      (.networks // {}) as $top |
+      ((.services.api.networks // {}) | if type == "array" then . else keys end)[]? |
+      . as $k |
+      if ($top[$k].name // "") != "" then $top[$k].name
+      elif $proj != "" then ($proj + "_" + $k)
+      else $k end
+    ' <<<"$compose_json" 2>/dev/null || true)
+  fi
+  old_api_id="$(compose ps -q api 2>/dev/null || true)"
+  if [[ -n "$old_api_id" ]]; then
+    while IFS= read -r net; do
+      [[ -n "$net" ]] && candidates+=("$net")
+    done < <(exec_container_network_names "$old_api_id")
+  fi
+  ch_cid="$(exec_colocated_apm_clickhouse_container)"
+  if [[ -n "$ch_cid" ]]; then
+    while IFS= read -r net; do
+      [[ -n "$net" ]] && candidates+=("$net")
+    done < <(exec_container_network_names "$ch_cid")
+  fi
+  ((${#candidates[@]} > 0)) || return 0
+  while IFS= read -r net; do
+    [[ -n "$net" ]] || continue
+    exec_valid_docker_network_name "$net" || continue
+    skip=false
+    for ex in ${excluded[@]+"${excluded[@]}"}; do
+      if [[ "$net" == "$ex" ]]; then
+        skip=true
+        break
+      fi
+    done
+    [[ "$skip" == false ]] && API_EXTRA_NETWORKS+=("$net")
+  done < <(printf '%s\n' "${candidates[@]}" | LC_ALL=C sort -u)
+}
+
+reattach_api_extra_networks() {
+  local mode="${1:-strict}"
+  declare -p API_EXTRA_NETWORKS >/dev/null 2>&1 || return 0
+  ((${#API_EXTRA_NETWORKS[@]} > 0)) || return 0
+  local api_id current_nets net after_nets
+  api_id="$(compose ps -q api 2>/dev/null || true)"
+  if [[ ! "$api_id" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+    CURRENT_MESSAGE="无法定位重建后的 api 容器，无法恢复附加网络"
+    return 1
+  fi
+  current_nets="$(exec_container_network_names "$api_id")"
+  for net in "${API_EXTRA_NETWORKS[@]}"; do
+    exec_valid_docker_network_name "$net" || continue
+    if [[ -n "$current_nets" ]] && printf '%s\n' "$current_nets" | grep -Fxq "$net"; then
+      continue
+    fi
+    if ! docker network inspect "$net" >/dev/null 2>&1; then
+      if [[ "$mode" == "rollback" ]]; then
+        continue
+      fi
+      CURRENT_MESSAGE="api 附加网络不存在，无法恢复连接: $net"
+      return 1
+    fi
+    if ! docker network connect "$net" "$api_id" >/dev/null 2>&1; then
+      CURRENT_MESSAGE="为 api 容器恢复附加网络失败（如 ClickHouse 网络）: $net"
+      return 1
+    fi
+    after_nets="$(exec_container_network_names "$api_id")"
+    if ! printf '%s\n' "$after_nets" | grep -Fxq "$net"; then
+      CURRENT_MESSAGE="api 容器附加网络恢复校验失败: $net"
+      return 1
+    fi
+    current_nets="$after_nets"
+  done
+  return 0
 }
 
 process_job() {
   local job_file="$1" package_name expected_sha package version_from version_to job_id
   local work package_root manifest package_type
   CURRENT_STAGE="APPLYING"
-  SERVICES=(); STABLE_IMAGES=(); OLD_IDS=(); NEW_SERVICES=(); INSTALLED_OVERRIDE=""; IMAGE_SWITCH_STARTED=false
+  SERVICES=(); STABLE_IMAGES=(); OLD_IDS=(); NEW_SERVICES=(); API_EXTRA_NETWORKS=(); INSTALLED_OVERRIDE=""; IMAGE_SWITCH_STARTED=false
   [[ -f "$job_file" && ! -L "$job_file" ]] || { CURRENT_MESSAGE="任务文件无效或为符号链接"; return 1; }
   job_id="$(jq -er '.job_id | strings' "$job_file")" || return 1
   [[ "$job_id" =~ ^[0-9a-fA-F-]{36}$ ]] || return 1
@@ -409,6 +534,7 @@ process_runtime_patch() {
     OLD_IDS+=("$old")
     recreate_netmgrd=true
   fi
+  capture_api_extra_networks
   IMAGE_SWITCH_STARTED=true
   for i in "${!targets[@]}"; do
     docker tag "${targets[$i]}" "${STABLE_IMAGES[$i]}" || return 1
@@ -422,6 +548,7 @@ process_runtime_patch() {
   else
     compose up -d --no-deps "${SERVICES[@]}" || { CURRENT_MESSAGE="启动新版本容器失败"; return 1; }
   fi
+  reattach_api_extra_networks strict || return 1
   CURRENT_STAGE="VERIFYING"
   wait_selected_services || return 1
   return 0
@@ -774,6 +901,7 @@ PY
     [[ "${SERVICES[$i]}" == gateway ]] || continue
     validate_gateway_start_contract "${targets[$i]}" || return 1
   done
+  capture_api_extra_networks
 
   # gateway 重建会使 network_mode: service:gateway 的 netmgrd 失去原网络命名空间。
   # 即使升级包不更新 netmgrd 镜像，也要把现有服务纳入同次重建、健康检查与回滚。
@@ -798,6 +926,7 @@ PY
   # 直到新容器成功启动，再进入健康检查阶段。强制重建覆盖镜像未变化的 netmgrd。
   CURRENT_STAGE="MIGRATING"
   compose up -d --no-deps --force-recreate "${SERVICES[@]}" || { CURRENT_MESSAGE="启动新版本容器失败"; return 1; }
+  reattach_api_extra_networks strict || return 1
   CURRENT_STAGE="VERIFYING"
   wait_selected_services || return 1
   return 0

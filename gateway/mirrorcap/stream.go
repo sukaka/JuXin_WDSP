@@ -40,6 +40,10 @@ type FlowMeta struct {
 	SrcPort uint16
 	DstIP   string
 	DstPort uint16
+	// SourceMode 当前抓包接口的发现来源模式（MIRROR/ROUTED/TRANSPARENT；由流工厂按接口绑定）。
+	SourceMode string
+	// SniffDisabled 为 true 表示该抓包接口仅承担检测角色、未启用站点发现，检测路径不得顺带写发现记录。
+	SniffDisabled bool
 }
 
 // RequestHandler 消费还原出的请求（检测管线实现）。
@@ -150,6 +154,11 @@ func (f *streamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stream {
 		f.stats.StreamsOpened.Add(1)
 	}
 	meta := flowMetaFrom(netFlow, tcpFlow)
+	if f.sniff != nil {
+		meta.SourceMode = f.sniff.mode
+	} else {
+		meta.SniffDisabled = true
+	}
 	switch {
 	case f.detect != nil && f.isDetectPort(meta.DstPort):
 		go f.serve(&rs, meta)
@@ -186,6 +195,16 @@ func (f *streamFactory) serve(rs *tcpreader.ReaderStream, meta FlowMeta) {
 	}()
 	guard := &headerGuardReader{r: rs}
 	buf := bufio.NewReaderSize(guard, 32<<10)
+	// 防御性护栏：若检测端口误收到了 TLS 加密流（首两字节 0x16 0x03，如误配 443 端口），
+	// 且本接口启用了站点发现，则转交 TLS SNI 嗅探而不报错丢弃发现证据；嗅探后直接排空 rs
+	// 绕开 headerGuardReader 字节上限，避免大 TLS 流阻塞重组器。
+	if f.sniff != nil {
+		if head, _ := buf.Peek(2); len(head) >= 2 && head[0] == 0x16 && head[1] == 0x03 {
+			f.sniff.Sniff(io.LimitReader(buf, int64(f.sniff.maxBytes)), meta)
+			tcpreader.DiscardBytesToEOF(rs)
+			return
+		}
+	}
 	for {
 		guard.reset()
 		req, err := http.ReadRequest(buf)
@@ -195,8 +214,8 @@ func (f *streamFactory) serve(rs *tcpreader.ReaderStream, meta FlowMeta) {
 				if f.stats != nil {
 					f.stats.RequestErrors.Add(1)
 				}
-				// 终止解析后仍需排空该流：不消费会反压阻塞重组器（同 maxConns 拒绝路径纪律）
-				go tcpreader.DiscardBytesToEOF(rs)
+				// 终止解析后同步排空该流：不消费会反压阻塞重组器，且同步排空使异常长连接在 EOF/冲刷前持续计入 MaxStreamConns
+				tcpreader.DiscardBytesToEOF(rs)
 			}
 			return
 		}
@@ -206,7 +225,7 @@ func (f *streamFactory) serve(rs *tcpreader.ReaderStream, meta FlowMeta) {
 			if f.stats != nil {
 				f.stats.RequestErrors.Add(1)
 			}
-			go tcpreader.DiscardBytesToEOF(rs) // 排空防重组器反压
+			tcpreader.DiscardBytesToEOF(rs) // 同步排空防重组器反压并保持 MaxStreamConns 有界
 			return
 		}
 		body, truncated, err := captureBody(req, f.bodyMax)
@@ -214,11 +233,14 @@ func (f *streamFactory) serve(rs *tcpreader.ReaderStream, meta FlowMeta) {
 			if f.stats != nil {
 				f.stats.RequestErrors.Add(1)
 			}
-			go tcpreader.DiscardBytesToEOF(rs) // 终止解析后仍需排空该流，防重组器反压
+			tcpreader.DiscardBytesToEOF(rs) // 终止解析后同步排空该流，防重组器反压并保持 MaxStreamConns 有界
 			return
 		}
 		req.Body = io.NopCloser(bytes.NewReader(body))
 		req.ContentLength = int64(len(body))
+		if truncated && req.Header.Get("Content-Length") != "" {
+			req.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		}
 		// TransferEncoding 保留原值：Coraza 保真需要（CRS 920171 走私检测），
 		// 统一管线只读 r.Body，不受影响
 		// 旁路无 Caddy 入口注入 Request ID：缺失时本地生成，保证事件可关联

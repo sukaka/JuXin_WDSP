@@ -30,7 +30,6 @@ type Stats struct {
 func (s *Stats) Logger(interval time.Duration, kernelStats func() (packets, drops uint32, err error), stop <-chan struct{}) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
-	var lastDrops uint32
 	for {
 		select {
 		case <-stop:
@@ -39,14 +38,9 @@ func (s *Stats) Logger(interval time.Duration, kernelStats func() (packets, drop
 		}
 		if kernelStats != nil {
 			if _, dr, err := kernelStats(); err == nil {
-				// 内核计数自 socket 创建起累计，取差值得到本周期丢包；
-				// dr < lastDrops 说明抓包句柄已重建（配置热切换），计数归零按重置处理
-				if dr < lastDrops {
-					s.PacketsDropped.Add(uint64(dr))
-				} else {
-					s.PacketsDropped.Add(uint64(dr - lastDrops))
-				}
-				lastDrops = dr
+				// Linux PACKET_STATISTICS 每次读取后由内核清零，返回的是自上次调用以来的周期增量，
+				// 直接累加即可，不可再减去上周期值（否则持续丢包会被漏报）。
+				s.PacketsDropped.Add(uint64(dr))
 			}
 		}
 		log.Printf("[mirrorcap] stats packets=%d dropped=%d filtered=%d streams(open=%d closed=%d rejected=%d) requests=%d req_errors=%d events=%d event_errors=%d discovery_obs=%d discovery_flushed=%d discovery_err=%d discovery_keys_dropped=%d",

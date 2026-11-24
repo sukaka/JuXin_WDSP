@@ -48,6 +48,7 @@ type Supervisor struct {
 	stopCh    chan struct{}
 	closed    bool
 	everFile  bool // 文件曾成功解析（此后删除文件 = 收回配置 → 空转，不再回落 env）
+	enabled   bool // 当前收敛后的期望启用态（供 /healthz 上报）
 	srv       ServerRunner
 	done      chan error
 	drained   bool   // done 已被探活消费（stopLocked 不再重复等待）
@@ -164,7 +165,7 @@ func (s *Supervisor) resolve() (desired, error) {
 		if fc.TargetTLS != "" {
 			cfg.TargetTLS = fc.TargetTLS
 		}
-		if len(fc.ProtectHosts) > 0 {
+		if fc.ProtectHosts != nil {
 			cfg.ProtectHosts = fc.ProtectHosts
 		}
 		if fc.PassthroughAllowlist != nil {
@@ -193,6 +194,7 @@ func (s *Supervisor) resolve() (desired, error) {
 func (s *Supervisor) applyLocked(d desired) {
 	state := d.stateKey()
 	changed := state != s.lastState
+	s.enabled = d.enabled
 	defer func() { s.lastState = state }()
 
 	if !d.enabled {
@@ -208,13 +210,15 @@ func (s *Supervisor) applyLocked(d desired) {
 	key := cfgKey(d.cfg)
 	if s.srv != nil {
 		// 探活：Serve 意外退出（监听被外部关闭等）则按当前配置重建
-		alive := true
-		select {
-		case err := <-s.done:
-			log.Printf("[tproxyd] 服务意外退出（%v）", err)
-			alive = false
-			s.drained = true
-		default:
+		alive := !s.drained
+		if alive {
+			select {
+			case err := <-s.done:
+				log.Printf("[tproxyd] 服务意外退出（%v）", err)
+				alive = false
+				s.drained = true
+			default:
+			}
 		}
 		if alive && s.key == key {
 			return // 已监听同地址同下游：不重启

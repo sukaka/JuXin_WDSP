@@ -713,6 +713,206 @@ printf 'RESULT=%s MESSAGE=%s\n' "$result" "$CURRENT_MESSAGE"
         # Note: on non-root macOS `install -o root -g root` fails with permission denied, which proves it passed ALL security checks!
         self.assertTrue("RESULT=0" in out or "安装 compose 片段失败" in out, out)
 
+    def test_upgrade_executor_preserves_and_heals_api_clickhouse_networks(self):
+        state_file = self.base / "net-state.json"
+        net_mocks = r'''
+compose() {
+  printf 'compose %s\n' "$*" >>"$CALLS"
+  case "${1:-}" in
+    config)
+      if [[ "${2:-}" == --services ]]; then
+        printf '%s\n' "$COMPOSE_JSON" | jq -r '.services | keys[]'
+      elif [[ "${2:-}" == --format && "${3:-}" == json ]]; then
+        printf '%s\n' "$COMPOSE_JSON"
+      else
+        return 1
+      fi
+      ;;
+    ps)
+      if [[ "${2:-}" == -q && "${3:-}" == api ]]; then
+        python3 - "$NET_STATE" <<'PY'
+import json, sys
+print(json.loads(open(sys.argv[1]).read())["api_id"])
+PY
+        return 0
+      fi
+      return 1
+      ;;
+    up)
+      if printf '%s\n' "$@" | grep -Fxq api; then
+        python3 - "$NET_STATE" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+s = json.loads(p.read_text())
+s["recreate_count"] = s.get("recreate_count", 0) + 1
+s["api_id"] = f"api-container-{s['recreate_count']}"
+# 模拟 docker compose up 重建 api 后仅保留 compose 内声明的内部网络
+s["api_nets"] = ["jiuzhang-wdsp_jiuzhang-internal"]
+p.write_text(json.dumps(s))
+PY
+      fi
+      return 0
+      ;;
+    rm) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+docker() {
+  printf 'docker %s\n' "$*" >>"$CALLS"
+  if [[ "${1:-}" == load ]]; then
+    [[ "${2:-}" == -i ]] || cat >/dev/null
+    return 0
+  fi
+  if [[ "${1:-}" == image && "${2:-}" == inspect ]]; then
+    case "${5:-}" in
+      '{{.Id}}') printf 'sha256:old-%s\n' "${3##*:}" ;;
+      '{{json .Config.Entrypoint}}') printf 'null\n' ;;
+    esac
+    return 0
+  fi
+  if [[ "${1:-}" == inspect ]]; then
+    local fmt="${3:-}" target="${4:-}"
+    python3 - "$NET_STATE" "$fmt" "$target" <<'PY'
+import json, sys
+s = json.loads(open(sys.argv[1]).read())
+fmt, target = sys.argv[2], sys.argv[3]
+if target == "jiuzhang-apm-clickhouse":
+    if not s.get("ch_running"):
+        sys.exit(1)
+    if fmt == "{{.State.Running}}|{{.Name}}":
+        print("true|/jiuzhang-apm-clickhouse")
+    elif fmt == "{{json .NetworkSettings.Networks}}":
+        print(json.dumps({n: {} for n in s.get("ch_nets", [])}))
+    else:
+        sys.exit(1)
+elif target == s.get("api_id"):
+    if fmt == "{{json .NetworkSettings.Networks}}":
+        print(json.dumps({n: {} for n in s.get("api_nets", [])}))
+    else:
+        sys.exit(1)
+else:
+    sys.exit(1)
+PY
+    return $?
+  fi
+  if [[ "${1:-}" == network && "${2:-}" == inspect ]]; then
+    python3 - "$NET_STATE" "${3:-}" <<'PY'
+import json, sys
+s = json.loads(open(sys.argv[1]).read())
+sys.exit(0 if sys.argv[2] in s.get("host_nets", []) else 1)
+PY
+    return $?
+  fi
+  if [[ "${1:-}" == network && "${2:-}" == connect ]]; then
+    python3 - "$NET_STATE" "${3:-}" "${4:-}" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+s = json.loads(p.read_text())
+net, cid = sys.argv[2], sys.argv[3]
+if s.get("fail_connect"):
+    sys.exit(1)
+if cid != s.get("api_id") or net not in s.get("host_nets", []):
+    sys.exit(1)
+if net not in s["api_nets"]:
+    s["api_nets"].append(net)
+p.write_text(json.dumps(s))
+PY
+    return $?
+  fi
+  case "${1:-}" in
+    tag|rmi) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+'''
+
+        def run_net_case(kind, initial_state, wait_rc=0, do_rollback=False):
+            package = self.make_runtime_patch("api") if kind == "runtime" else self.make_upgrade_pack(("api",))
+            cfg = compose_config(True)
+            cfg["name"] = "jiuzhang-wdsp"
+            cfg["networks"] = {"jiuzhang-internal": {"name": "jiuzhang-wdsp_jiuzhang-internal"}}
+            cfg["services"]["api"]["networks"] = {"jiuzhang-internal": None}
+            compose_file = self.base / "compose-net.json"
+            compose_file.write_text(json.dumps(cfg), encoding="utf-8")
+            state_file.write_text(json.dumps(initial_state), encoding="utf-8")
+            calls = self.base / "calls-net.log"
+            if calls.exists():
+                calls.unlink()
+            env = dict(
+                os.environ,
+                PACKAGE_ROOT=str(package),
+                COMPOSE_JSON_FILE=str(compose_file),
+                COMPOSE_FILE=str(self.base / "docker-compose.yml"),
+                ENV_FILE=str(self.base / "executor.env"),
+                OVERRIDES_DIR=str(self.overrides),
+                STATE_DIR=str(self.state),
+                TEST_PUBKEY_FILE=str(self.sign_pub),
+                CALLS=str(calls),
+                NET_STATE=str(state_file),
+                GATEWAY_TARGET=image_for("gateway", "1.4.0"),
+                GATEWAY_ENTRYPOINT="null",
+                WAIT_RC=str(wait_rc),
+                DO_ROLLBACK="true" if do_rollback else "false",
+                KIND=kind,
+            )
+            script = "\n".join((MOCKS, net_mocks, SHA256_FILE, ROLLBACK_IMAGES, RUNTIME_PATCH, UPGRADE_PACK)) + r'''
+if [[ "$KIND" == runtime ]]; then
+  if process_runtime_patch "$PACKAGE_ROOT" "$PACKAGE_ROOT/manifest.json" 1.4.0 1.4.1; then result=0; else result=$?; fi
+else
+  if process_upgrade_pack "$PACKAGE_ROOT" "$PACKAGE_ROOT/manifest.json" 1.3.0 1.4.0; then result=0; else result=$?; fi
+fi
+if [[ "$DO_ROLLBACK" == true ]]; then
+  rollback_images
+fi
+printf 'RESULT=%s STAGE=%s MESSAGE=%s\n' "$result" "$CURRENT_STAGE" "$CURRENT_MESSAGE"
+'''
+            res = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, timeout=15)
+            self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+            calls_text = calls.read_text(encoding="utf-8") if calls.exists() else ""
+            return res.stdout, calls_text, json.loads(state_file.read_text())
+
+        # 1) runtime-patch 升级 api：保留原附加网络并自动补接同机 ClickHouse 网络
+        out, calls, final_state = run_net_case("runtime", {
+            "api_id": "api-old",
+            "api_nets": ["jiuzhang-wdsp_jiuzhang-internal", "jiuzhang-kafka_default"],
+            "ch_running": True,
+            "ch_nets": ["jiuzhang-apm_apm-data"],
+            "host_nets": ["jiuzhang-wdsp_jiuzhang-internal", "jiuzhang-kafka_default", "jiuzhang-apm_apm-data"],
+        })
+        self.assertIn("RESULT=0 STAGE=VERIFYING", out)
+        self.assertEqual(
+            set(final_state["api_nets"]),
+            {"jiuzhang-wdsp_jiuzhang-internal", "jiuzhang-kafka_default", "jiuzhang-apm_apm-data"},
+        )
+        self.assertIn("docker network connect jiuzhang-apm_apm-data api-container-1", calls)
+        self.assertIn("docker network connect jiuzhang-kafka_default api-container-1", calls)
+
+        # 2) upgrade 校验失败触发 rollback_images：回滚重建后的 api 同样恢复 ClickHouse 网络
+        out, calls, final_state = run_net_case("upgrade", {
+            "api_id": "api-old",
+            "api_nets": ["jiuzhang-wdsp_jiuzhang-internal", "jiuzhang-apm_apm-data"],
+            "ch_running": True,
+            "ch_nets": ["jiuzhang-apm_apm-data"],
+            "host_nets": ["jiuzhang-wdsp_jiuzhang-internal", "jiuzhang-apm_apm-data"],
+        }, wait_rc=1, do_rollback=True)
+        self.assertIn("RESULT=1 STAGE=VERIFYING", out)
+        self.assertEqual(final_state["api_id"], "api-container-2")
+        self.assertIn("jiuzhang-apm_apm-data", final_state["api_nets"])
+        self.assertIn("docker network connect jiuzhang-apm_apm-data api-container-2", calls)
+
+        # 3) docker network connect 失败时 fail-closed 返回非零
+        out, _, _ = run_net_case("upgrade", {
+            "api_id": "api-old",
+            "api_nets": ["jiuzhang-wdsp_jiuzhang-internal", "jiuzhang-apm_apm-data"],
+            "ch_running": True,
+            "ch_nets": ["jiuzhang-apm_apm-data"],
+            "host_nets": ["jiuzhang-wdsp_jiuzhang-internal", "jiuzhang-apm_apm-data"],
+            "fail_connect": True,
+        })
+        self.assertIn("RESULT=1", out)
+        self.assertIn("恢复附加网络失败", out)
+
 
 class BuildUpgradePackGateTests(unittest.TestCase):
     def setUp(self):

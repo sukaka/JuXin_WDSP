@@ -1,6 +1,7 @@
 package netmgrd
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -175,6 +176,144 @@ func TestSupervisorCloseIdempotent(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Close 后 Run 未及时返回")
+	}
+}
+
+// P1-2: Supervisor.tick() 回写 Apply 结果时不得覆盖 LinkPairMonitor 已持久化的 link_pairs 与 transparent 段。
+func TestSupervisorPreservesLinkPairsAndTransparentOnApply(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "network.json")
+	stPath := filepath.Join(dir, "network-status.json")
+	f := &fakeRunner{dump: lpSnapshot(map[string]bool{"eth2": false, "eth3": true})}
+	sup := NewSupervisor(cfgPath, stPath, time.Hour, f)
+	defer sup.Close()
+
+	clk := &lpClock{t: testNow}
+	sup.LinkPairs.now = clk.now
+
+	writeNetmgrCfg(t, cfgPath, `{"bridges":[{"name":"br0","ports":["eth2","eth3"],"link_pair":{"enabled":true,"hold_down_ms":500,"hold_up_ms":1000}}],"ip_forward":true,"updated_at":"v1"}`)
+	sup.tick()
+	sup.LinkPairs.cycle(t.Context())
+	clk.advance(time.Second)
+	sup.LinkPairs.cycle(t.Context())
+
+	// 同时写入一条透明状态
+	if err := sup.StatusWriter.WriteTransparent(&TransparentStatus{
+		State: TransparentStateActive, Enabled: true, RedirectActive: true, ListenPort: 15000, Ports: []uint16{80}, Bridges: []string{"br0"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 修改非桥字段（新增静态路由）触发 Supervisor.tick() 重新 Apply 写 status
+	writeNetmgrCfg(t, cfgPath, `{"bridges":[{"name":"br0","ports":["eth2","eth3"],"link_pair":{"enabled":true,"hold_down_ms":500,"hold_up_ms":1000}}],"ip_forward":true,"routes":[{"dst":"10.9.0.0/24","via":"192.168.50.1"}],"updated_at":"v2"}`)
+	sup.tick()
+
+	st, ok := readStatus(t, stPath)
+	if !ok || !st.OK {
+		t.Fatalf("新配置 Apply 应成功: %+v", st)
+	}
+	if len(st.LinkPairs) != 1 || st.LinkPairs[0].State != LinkPairPropagatedDown || !st.LinkPairs[0].PropagatedByLinkpair {
+		t.Fatalf("Supervisor.tick 不得擦除 link_pairs 联动标记: %+v", st.LinkPairs)
+	}
+	if st.Transparent == nil || st.Transparent.State != TransparentStateActive || !st.Transparent.RedirectActive {
+		t.Fatalf("Supervisor.tick 不得擦除 transparent 状态: %+v", st.Transparent)
+	}
+}
+
+// P1-4: 合法配置 A -> 坏配置（ok:false）-> 恢复回完全相同的合法配置 A（指纹不变）→ 必须重写健康状态 ok:true。
+func TestSupervisorRecoversSameConfigAfterBadConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "network.json")
+	stPath := filepath.Join(dir, "network-status.json")
+	f := &fakeRunner{dump: []byte(daemonDump)}
+	sup := NewSupervisor(cfgPath, stPath, time.Hour, f)
+	defer sup.Close()
+
+	validA := `{"bridges":[{"name":"br0","ports":["eth2"]}],"ip_forward":true,"updated_at":"t1"}`
+	writeNetmgrCfg(t, cfgPath, validA)
+	sup.tick()
+	st, ok := readStatus(t, stPath)
+	if !ok || !st.OK {
+		t.Fatalf("初始配置 A 应成功: %+v", st)
+	}
+
+	// 写入非法 JSON → status 变 ok:false
+	writeNetmgrCfg(t, cfgPath, `{"bridges": [broken`)
+	sup.tick()
+	st, ok = readStatus(t, stPath)
+	if !ok || st.OK {
+		t.Fatalf("坏配置应写入 ok=false: %+v", st)
+	}
+
+	// 原样恢复到配置 A（指纹与上次成功一致）→ 必须将 status 恢复为 ok=true
+	writeNetmgrCfg(t, cfgPath, validA)
+	sup.tick()
+	st, ok = readStatus(t, stPath)
+	if !ok || !st.OK || strings.Contains(st.Message, "配置不可用") {
+		t.Fatalf("恢复回同指纹合法配置 A 后 status 不得卡在 ok=false: %+v", st)
+	}
+	if err := sup.Readiness(); err != nil {
+		t.Fatalf("恢复后 Readiness 应健康: %v", err)
+	}
+}
+
+// P1-8 + P0-2: 从 network.json 移除已纳管网桥 br0 时，Supervisor 必须先冲刷透明牵引链再执行 nomaster/down/del。
+func TestSupervisorTearsDownManagedBridgeAndFlushesTransparent(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "network.json")
+	stPath := filepath.Join(dir, "network-status.json")
+	tpPath := filepath.Join(dir, "tproxyd.json")
+
+	f, _ := newIptablesFakeRunner()
+	f.dump = []byte(`[
+		{"ifindex":2,"ifname":"eth2","flags":["UP"],"addr_info":[]},
+		{"ifindex":3,"ifname":"eth3","flags":["UP"],"addr_info":[]}
+	]`)
+	sup := NewSupervisor(cfgPath, stPath, time.Hour, f)
+	defer sup.Close()
+	sup.Transparent.probeTproxyd = func(ctx context.Context) (tproxydHealthResp, error) {
+		return tproxydHealthResp{OK: true, Enabled: true, Listening: true, Listen: "0.0.0.0:15000"}, nil
+	}
+	sup.Transparent.probeCaddy = func(ctx context.Context, _ ...string) error { return nil }
+
+	// 1. 创建 br0 并激活透明牵引规则
+	writeNetmgrCfg(t, cfgPath, `{"bridges":[{"name":"br0","ports":["eth2","eth3"]}],"ip_forward":true,"updated_at":"t1"}`)
+	writeNetmgrCfg(t, tpPath, `{"enabled":true,"listen":"0.0.0.0:15000","ports":[80]}`)
+	sup.tick()
+	sup.Transparent.cycle(t.Context())
+
+	st, ok := readStatus(t, stPath)
+	if !ok || !st.OK || len(st.ManagedBridges) != 1 || st.ManagedBridges[0] != "br0" {
+		t.Fatalf("br0 应记录在 managed_bridges: %+v", st)
+	}
+	if st.Transparent == nil || st.Transparent.State != TransparentStateActive {
+		t.Fatalf("透明牵引应处于 ACTIVE: %+v", st.Transparent)
+	}
+
+	// 2. 从 network.json 移除 br0（模拟关闭透明网桥）→ 先冲刷 iptables 链，再拆除 br0
+	f.mu.Lock()
+	f.dump = []byte(`[
+		{"ifindex":10,"ifname":"br0","flags":["UP"],"linkinfo":{"info_kind":"bridge"},"addr_info":[]},
+		{"ifindex":2,"ifname":"eth2","flags":["UP"],"master":"br0","addr_info":[]},
+		{"ifindex":3,"ifname":"eth3","flags":["UP"],"master":"br0","addr_info":[]}
+	]`)
+	f.mu.Unlock()
+	beforeRemove := len(f.execLog())
+	writeNetmgrCfg(t, cfgPath, `{"bridges":[],"ip_forward":true,"updated_at":"t2"}`)
+	sup.tick()
+
+	after := f.execLog()[beforeRemove:]
+	flushIdx, delIdx := -1, -1
+	for i, cmd := range after {
+		if strings.Contains(cmd, "-F JIUZHANG_TPROXY_PRE") && flushIdx == -1 {
+			flushIdx = i
+		}
+		if cmd == "ip link del br0" && delIdx == -1 {
+			delIdx = i
+		}
+	}
+	if flushIdx == -1 || delIdx == -1 || flushIdx > delIdx {
+		t.Fatalf("必须先冲刷 JIUZHANG_TPROXY_PRE 再删除 br0: flushIdx=%d delIdx=%d cmds=%v", flushIdx, delIdx, after)
 	}
 }
 

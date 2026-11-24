@@ -252,6 +252,45 @@ func TestRenderConfig(t *testing.T) {
 	if !strings.Contains(out, "router_id JZ_HA_ha-main") {
 		t.Fatalf("router_id 未生成:\n%s", out)
 	}
+	if strings.Contains(out, "track_interface") {
+		t.Fatalf("未配置 track_interfaces 时不应输出 track_interface 块:\n%s", out)
+	}
+}
+
+func TestRenderConfigAndValidationTrackInterfaces(t *testing.T) {
+	dir := t.TempDir()
+	raw := strings.Replace(validConfigJSON("ENABLED"),
+		`"iface":"eth0",`,
+		`"iface":"eth0","track_interfaces":["eth2"," eth3 ","eth2"],`, 1)
+	p := filepath.Join(dir, "track.json")
+	if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatalf("合法 track_interfaces 不应报错: %v", err)
+	}
+	if len(cfg.VRRP.TrackInterfaces) != 2 || cfg.VRRP.TrackInterfaces[0] != "eth2" || cfg.VRRP.TrackInterfaces[1] != "eth3" {
+		t.Fatalf("track_interfaces 去重保序错误: %v", cfg.VRRP.TrackInterfaces)
+	}
+	self, _ := cfg.selfMember("gw-a")
+	out := renderConfig(cfg, self, "192.168.31.61")
+	wantBlock := "  track_interface {\n    eth2\n    eth3\n  }\n"
+	if !strings.Contains(out, wantBlock) {
+		t.Fatalf("生成配置缺少 track_interface 块:\n%s", out)
+	}
+
+	// 非法接口名（防配置行注入）必须拒绝
+	bad := strings.Replace(validConfigJSON("ENABLED"),
+		`"iface":"eth0",`,
+		`"iface":"eth0","track_interfaces":["eth2\n  priority 255"],`, 1)
+	badPath := filepath.Join(dir, "bad-track.json")
+	if err := os.WriteFile(badPath, []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(badPath); err == nil || !strings.Contains(err.Error(), "track_interfaces") {
+		t.Fatalf("非法 track_interfaces 应报错, got %v", err)
+	}
 }
 
 // ---------- 监督器生命周期 ----------

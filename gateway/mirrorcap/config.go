@@ -17,6 +17,7 @@ import (
 const (
 	defaultPorts          = "80,8080"
 	defaultEventsLog      = "/var/log/caddy/api-runtime-events.log"
+	defaultAuditLog       = "/var/log/caddy/coraza-audit.log"
 	defaultRulesDir       = "/etc/caddy/rules"
 	defaultBodyMax        = 64 << 10 // 65536
 	defaultStatsInterval  = 60 * time.Second
@@ -36,8 +37,14 @@ type Config struct {
 	// Ports 目标 TCP 端口（MIRROR_PORTS，逗号分隔；仅重组目的端口命中集合的流，
 	// 即 client→server 方向；响应方向流天然被过滤）。
 	Ports []uint16
+	// Domains 目标站点域名过滤集合（空 = 端口上全部流量进入检测；非空 = 仅命中
+	// 精确域名或 *.泛域名的流量进入检测，站点发现不受此限制仍记录全量观察）。
+	Domains []string
 	// EventsLog 事件输出路径（MIRROR_EVENTS_LOG，api-runtime-events JSONL 契约）。
 	EventsLog string
+	// AuditLog Coraza 审计日志路径（MIRROR_AUDIT_LOG；"off"/"none" 关闭审计落盘；
+	// 非空时以 SecAuditEngine RelevantOnly + SecAuditLogParts ABIJDEFHZ 覆写 coraza.conf）。
+	AuditLog string
 	// BodyMax 单请求 Body 捕获上限字节（MIRROR_BODY_MAX；超出部分仅透传丢弃不进内存分析）。
 	BodyMax int64
 	// NodeName 网关节点名（GATEWAY_NODE_NAME；写入事件 gateway_node_id）。
@@ -81,7 +88,9 @@ type DiscoveryIface struct {
 // 进程以该基线进入空转等待发布链路下发文件，而非启动即退出。
 func Defaults() Config {
 	return Config{
+		Ports:             []uint16{80, 8080},
 		EventsLog:         defaultEventsLog,
+		AuditLog:          defaultAuditLog,
 		NodeName:          "mirror-unknown",
 		RulesDir:          defaultRulesDir,
 		BodyMax:           defaultBodyMax,
@@ -95,11 +104,19 @@ func Defaults() Config {
 	}
 }
 
-// FromEnv 从环境变量读取配置（缺失项取默认值；非法值返回错误，不静默容忍）。
-func FromEnv() (Config, error) {
+// FileConfigPath 返回配置文件路径（MIRROR_CONFIG_FILE 覆盖 DefaultFileConfigPath，适配裸机自定义安装根）。
+func FileConfigPath() string {
+	return envOr("MIRROR_CONFIG_FILE", DefaultFileConfigPath)
+}
+
+// ParseEnv 仅解析环境变量到 Config 基线（不要求 MIRROR_IFACE 必填），供文件配置模式保留
+// MIRROR_RULES_DIR / MIRROR_IDENTITY_SALT / MIRROR_AUDIT_LOG 等运维环境变量。
+// 仅在环境变量取值格式非法时返回错误。
+func ParseEnv() (Config, error) {
 	cfg := Defaults()
 	cfg.Iface = strings.TrimSpace(os.Getenv("MIRROR_IFACE"))
 	cfg.EventsLog = envOr("MIRROR_EVENTS_LOG", cfg.EventsLog)
+	cfg.AuditLog = envOr("MIRROR_AUDIT_LOG", cfg.AuditLog)
 	cfg.NodeName = envOr("GATEWAY_NODE_NAME", cfg.NodeName)
 	cfg.IdentitySalt = os.Getenv("MIRROR_IDENTITY_SALT")
 	cfg.RulesDir = envOr("MIRROR_RULES_DIR", cfg.RulesDir)
@@ -157,6 +174,15 @@ func FromEnv() (Config, error) {
 			return Config{}, fmt.Errorf("SITE_DISCOVERY_IFACES: %w", err)
 		}
 		cfg.Discovery.Ifaces = ifaces
+	}
+	return cfg, nil
+}
+
+// FromEnv 从环境变量读取配置（缺失项取默认值；非法值返回错误，不静默容忍）。
+func FromEnv() (Config, error) {
+	cfg, err := ParseEnv()
+	if err != nil {
+		return Config{}, err
 	}
 	return cfg, cfg.Validate()
 }

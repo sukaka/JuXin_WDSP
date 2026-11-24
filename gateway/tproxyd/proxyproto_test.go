@@ -1,6 +1,7 @@
 package tproxyd
 
 import (
+	"encoding/binary"
 	"net"
 	"testing"
 )
@@ -56,8 +57,11 @@ func TestBuildProxyV1HeaderRejectsInvalid(t *testing.T) {
 }
 
 func TestDecodeOriginalDst(t *testing.T) {
-	// 8081 = 0x1F91；内存网络字节序 [0x1F 0x91]，小端主机按 uint16 读出为 0x911F
-	addr, err := DecodeOriginalDst(afInet, 0x911F, [4]byte{192, 168, 50, 20})
+	// 8081 = 0x1F91；网络字节序 [0x1F 0x91] 按主机原生字节序读入 RawSockaddrInet4.Port
+	var raw [2]byte
+	binary.BigEndian.PutUint16(raw[:], 8081)
+	portRaw := binary.NativeEndian.Uint16(raw[:])
+	addr, err := DecodeOriginalDst(afInet, portRaw, [4]byte{192, 168, 50, 20})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

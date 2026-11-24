@@ -49,6 +49,9 @@
 | Web 上传升级包出现 502 | 上传端点继承全局 30 秒读写超时，大文件或公网慢速上传可能被中断；前端也无真实进度，难以区分上传与服务端验签 | 1.8.1 仅对上传端点放宽读写期限至 10 分钟并增加真实进度；必须用慢速请求体和目标服务器实际上传验收，不能放大所有 API 的超时 |
 | 完整升级误拒旧环境 | 旧 release 未创建执行器锁目录时直接中止；Caddy Admin 正常但 `servers={}` 被误报为无法读取监听 | 1.8.1 自动初始化锁目录，只对明确合法的空站点对象放行；无效响应与 Socket 故障继续失败，禁止为升级跳过验签或健康检查 |
 | 目标 gateway 入口读取过早 | 完整升级在 `docker load` 前检查目标镜像入口，新主机尚未导入时备份后误中止 | 目标镜像加载和存在性检查先于入口/启动契约检查；回归夹具要求目标镜像仅在加载后可用，仍须先完成 FULL 备份 |
+| 1.8.1→1.10.1 升级网关因缺证书循环重启 | 1.9.0 新增独立命名卷 `gateway-certs`（分别挂载 `api:/app/runtime/certificates` 与 `gateway:/etc/caddy/certs:ro`），但升级未把旧 `runtime-data` 中的站点证书迁移到新卷；新建空卷导致 `gateway --resume` 加载 `autosave.json` 失败 | `apply.sh` 在切换容器前自动识别跨卷新增 `gateway-certs`，带 Compose 标签创建并迁移既有 `.pem/.key`，按 `autosave.json` 做 fail-closed 复核并设卷根目录 `1000:1000 0700`；冲突或缺失在停容器前即中止 |
+| 1.8.1→1.10.1 升级 `netmgrd` 健康检查持续 503 | 1.9.1+ 给 `netmgrd` 增加 `cap_drop: [ALL]`（移除 `CAP_DAC_OVERRIDE`）且以 `UID 0/GID 0` 运行，无法读写 `1000:1000 0750` 的 `gateway-admin` 卷 `sidecars`/`sidecars/diag` 及 `0600` 诊断请求文件 | 离线 Compose 为 `netmgrd` 增加 `group_add: ["1000"]`（裸机 `jiuzhang-netmgrd.service` 增加 `SupplementaryGroups=__USER__`），不恢复 `CAP_DAC_OVERRIDE`；`api`/`gateway` 显式 `chmod 0770` 对齐 `sidecars`/`diag`、诊断请求文件 `0640`（`capability.json`/`ha-vip.json` 仍保持 `0600`）；`apply.sh` 升级前自动收敛既有目录权限 |
+| 升级后数据流持续报 ClickHouse 存储不可用 | 主栈 `docker-compose.yml` 仅声明 `jiuzhang-internal`，升级/回滚/PCAP 切换重建 `api` 会丢失手工接入的 `jiuzhang-apm_apm-data` 等附加网络；同时 `CHManager.Resolve` 把首次建连失败永久缓存为 `nil`，事后接通网络也不会自愈 | 后端 `CHManager` 改为 15s 冷却自动退避重连、`PUT /api/v1/apm/settings` 绕过冷却强制重建并修复 `OpenClickHouse` Ping 失败连接泄漏；`apply.sh`、`rollback.sh`、`upgrade-executor.sh`、`install.sh` 与 `pcap_capture_control.py` 自动保留 `api` 附加网络并自动发现接入同机运行中的 APM ClickHouse 网络；`check.sh` 升级后以 `--strict-clickhouse-network` 强制校验（升级前仅告警不阻断旧故障主机升级） |
 
 ## 4. 后续发布禁止事项
 

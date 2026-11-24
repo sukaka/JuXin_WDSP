@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ import (
 	corazatypes "github.com/corazawaf/coraza/v3/types"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/apievents"
 
+	"github.com/jiuzhang-waf/gateway/dynamic_security/classifier"
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/decision"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
@@ -59,31 +61,82 @@ func (d *Detector) SetDiscovery(agg *DiscoveryAggregator) {
 
 // NewDetector 构建检测器：加载 Coraza/CRS 规则（目录布局与网关容器一致）。
 func NewDetector(cfg Config, events *apievents.Logger, stats *Stats) (*Detector, error) {
-	waf, err := coraza.NewWAF(coraza.NewWAFConfig().WithDirectives(mirrorDirectives(cfg.RulesDir)))
+	// 确保 Coraza SecDataDir 存在（read_only 容器挂载 /tmp tmpfs 时目录初始为空）
+	_ = os.MkdirAll("/tmp/coraza", 0o750)
+	waf, err := coraza.NewWAF(coraza.NewWAFConfig().WithDirectives(mirrorDirectivesWithAudit(cfg.RulesDir, cfg.AuditLog)))
 	if err != nil {
 		return nil, fmt.Errorf("加载 Coraza 规则（%s）: %w", cfg.RulesDir, err)
 	}
 	return &Detector{cfg: cfg, waf: waf, events: events, stats: stats}, nil
 }
 
-// mirrorDirectives 生成与网关 Caddyfile coraza_waf 一致的指令序列（加载顺序保持），
-// 唯一差异：SecRuleEngine 固定 DetectionOnly——旁路模式绝不产生阻断语义。
+// mirrorDirectives 生成与网关 Caddyfile coraza_waf 一致的指令序列（默认审计日志路径）。
 func mirrorDirectives(rulesDir string) string {
+	return mirrorDirectivesWithAudit(rulesDir, defaultAuditLog)
+}
+
+// mirrorDirectivesWithAudit 生成与网关一致的 Coraza 指令序列：
+//   - SecRuleEngine 固定 DetectionOnly（旁路绝不阻断）；
+//   - 显式覆写 coraza.conf 中的阶段1 POC 默认（SecAuditEngine On + Part C 原始请求体），
+//     遵循生产脱敏与磁盘防护底线（RelevantOnly + ABIJDEFHZ，与 generator.go 一致）。
+func mirrorDirectivesWithAudit(rulesDir, auditLog string) string {
 	d := strings.TrimRight(rulesDir, "/")
-	return strings.Join([]string{
+	lines := []string{
 		"SecRuleEngine DetectionOnly",
 		"Include " + d + "/coraza.conf",
-		"Include " + d + "/crs/crs-setup.conf",
-		"Include " + d + "/crs/plugins/*/plugins/*-config.conf",
-		"Include " + d + "/crs/plugins/*/plugins/*-before.conf",
-		"Include " + d + "/exclusions/before-crs.conf",
-		"Include " + d + "/crs/rules/*.conf",
-		"Include " + d + "/contrib/*/*.conf",
-		"Include " + d + "/crs/plugins/*/plugins/*-after.conf",
-		"Include " + d + "/exclusions/after-crs.conf",
-		"Include " + d + "/jiuzhang/jiuzhang-custom.conf",
-		"Include " + d + "/jiuzhang/post-contrib-blocking.conf",
-	}, "\n")
+	}
+	audit := strings.TrimSpace(auditLog)
+	if strings.EqualFold(audit, "off") || strings.EqualFold(audit, "none") {
+		lines = append(lines, "SecAuditEngine Off")
+	} else {
+		lines = append(lines,
+			"SecAuditEngine RelevantOnly",
+			"SecAuditLogParts ABIJDEFHZ",
+		)
+		if audit != "" {
+			lines = append(lines, "SecAuditLog "+audit)
+		}
+	}
+	lines = append(lines,
+		"Include "+d+"/crs/crs-setup.conf",
+		"Include "+d+"/crs/plugins/*/plugins/*-config.conf",
+		"Include "+d+"/crs/plugins/*/plugins/*-before.conf",
+		"Include "+d+"/exclusions/before-crs.conf",
+		"Include "+d+"/crs/rules/*.conf",
+		"Include "+d+"/contrib/*/*.conf",
+		"Include "+d+"/crs/plugins/*/plugins/*-after.conf",
+		"Include "+d+"/exclusions/after-crs.conf",
+		"Include "+d+"/jiuzhang/jiuzhang-custom.conf",
+		"Include "+d+"/jiuzhang/post-contrib-blocking.conf",
+	)
+	return strings.Join(lines, "\n")
+}
+
+// matchConfiguredDomain 判断请求 Host 是否命中已配置的镜像站点域名列表（支持精确与 *. 泛域名）。
+func matchConfiguredDomain(host string, domains []string) bool {
+	if len(domains) == 0 {
+		return true
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	for _, d := range domains {
+		d = strings.ToLower(strings.TrimSpace(d))
+		if d == "" {
+			continue
+		}
+		if d == host {
+			return true
+		}
+		if strings.HasPrefix(d, "*.") {
+			suffix := d[1:] // ".example.com"
+			if host == d[2:] || strings.HasSuffix(host, suffix) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // HandleRequest 实现 RequestHandler：单请求完整走「Coraza → 统一管线 → 事件」。
@@ -94,9 +147,21 @@ func (d *Detector) HandleRequest(req *http.Request, meta FlowMeta, bodyTruncated
 	if req.Header.Get("X-Request-Id") == "" {
 		req.Header.Set("X-Request-Id", "mirror-"+randHex16())
 	}
-	// 站点资产顺带发现：与检测结论无关（即便后续检测失败/跳过，资产证据已成立）
-	if agg := d.discovery.Load(); agg != nil {
-		agg.Observe(hostOnly(req.Host), meta, protoHTTP)
+	// 站点资产顺带发现：仅在当前接口承担发现角色时记录（使用该接口精确 source_mode，
+	// 避免多角色网口互相串标签，也不受域名白名单过滤影响）。
+	host := hostOnly(req.Host)
+	if !meta.SniffDisabled {
+		if agg := d.discovery.Load(); agg != nil {
+			if meta.SourceMode != "" {
+				agg.observe(meta.SourceMode, host, meta, protoHTTP)
+			} else {
+				agg.Observe(host, meta, protoHTTP)
+			}
+		}
+	}
+	// 配置了镜像站点域名范围时，非目标域名跳过 WAF/API 检测与事件输出（站点发现已记录）
+	if !matchConfiguredDomain(host, d.cfg.Domains) {
+		return
 	}
 	// Body 已在流层截断到 BodyMax：读出供 Coraza 使用后复位，供统一管线再次解析
 	var body []byte
@@ -112,7 +177,7 @@ func (d *Detector) HandleRequest(req *http.Request, meta FlowMeta, bodyTruncated
 		_ = req.Body.Close()
 		req.Body = io.NopCloser(bytes.NewReader(body))
 	}
-	wafMatches := d.runCoraza(req, meta, body)
+	wafMatches := d.runCoraza(req, meta, body, bodyTruncated)
 
 	res, err := pipeline.Process(req, pipeline.Config{
 		Enabled:      true,
@@ -128,14 +193,33 @@ func (d *Detector) HandleRequest(req *http.Request, meta FlowMeta, bodyTruncated
 	if res == nil || res.Skipped {
 		return
 	}
+	// 静态资源路径（图片/脚本/样式/字体/压缩包等）且无 WAF/实质检测命中时跳过事件输出，
+	// 避免旁路镜像刷爆 api-runtime-events 与污染端点发现；若命中安全规则则照常输出告警。
+	if !res.API.IsAPI && len(wafMatches) == 0 && !hasActionableMirrorMatches(res.Context.CopyMatches()) &&
+		classifier.IsStaticAssetPath(req.Method, req.URL.Path) {
+		return
+	}
 	// 任务书 §7：设备指纹与对象标识哈希进统一上下文（parser 纯函数，零网络 IO）
 	res.Context.DeviceFingerprint = parser.DeriveDeviceFingerprint(d.cfg.IdentitySalt, req.Header)
 	res.Context.SetObjectIdentifiers(parser.ExtractObjectIdentifiers(res.Parsed, d.cfg.IdentitySalt))
 	d.emit(req, meta, res, bodyTruncated, time.Since(start))
 }
 
+func hasActionableMirrorMatches(matches []dsctx.DetectorMatch) bool {
+	for _, m := range matches {
+		cat := strings.ToUpper(strings.TrimSpace(m.Category))
+		sev := strings.ToUpper(strings.TrimSpace(m.Severity))
+		if cat == "INFO" || sev == "INFO" {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // runCoraza 请求相位（1/2）检测；命中规则转为 waf 检测明细（脱敏：不含命中载荷值）。
-func (d *Detector) runCoraza(req *http.Request, meta FlowMeta, body []byte) []dsctx.DetectorMatch {
+// bodyTruncated 为 true 时屏蔽因 64KB 截断导致的请求体解析器误报（200002/200003）。
+func (d *Detector) runCoraza(req *http.Request, meta FlowMeta, body []byte, bodyTruncated bool) []dsctx.DetectorMatch {
 	tx := d.waf.NewTransaction()
 	defer tx.Close()
 	tx.ProcessConnection(meta.SrcIP, int(meta.SrcPort), meta.DstIP, int(meta.DstPort))
@@ -145,6 +229,10 @@ func (d *Detector) runCoraza(req *http.Request, meta FlowMeta, body []byte) []ds
 	}
 	tx.ProcessURI(uri, req.Method, req.Proto)
 	for k, vs := range req.Header {
+		if bodyTruncated && strings.EqualFold(k, "Content-Length") {
+			tx.AddRequestHeader("Content-Length", strconv.Itoa(len(body)))
+			continue
+		}
 		for _, v := range vs {
 			tx.AddRequestHeader(k, v)
 		}
@@ -168,14 +256,17 @@ func (d *Detector) runCoraza(req *http.Request, meta FlowMeta, body []byte) []ds
 	} else {
 		_, _ = tx.ProcessRequestBody()
 	}
-	// 落审计日志（SecAuditEngine On 时；与在线路径 coraza-caddy 的收尾一致）
-	tx.ProcessLogging()
 	matched := tx.MatchedRules()
 	out := make([]dsctx.DetectorMatch, 0, min(len(matched), maxWAFMatchDetails)) // min 为内建函数
 	for _, mr := range matched {
 		rule := mr.Rule()
 		// 仅收录带严重度声明的检测型规则；CRS 初始化/标记规则（无 severity）自然过滤
 		if rule.Severity() == corazatypes.RuleSeverityUnset {
+			continue
+		}
+		// 旁路按 MIRROR_BODY_MAX 截断大请求体（如 >64KB JSON/Multipart 上传）后，
+		// 解析器报错 200002/200003 属截断副作用而非攻击，予以抑制防误报。
+		if bodyTruncated && (rule.ID() == 200002 || rule.ID() == 200003) {
 			continue
 		}
 		if len(out) >= maxWAFMatchDetails {
@@ -196,6 +287,10 @@ func (d *Detector) runCoraza(req *http.Request, meta FlowMeta, body []byte) []ds
 				"tags":      joinTags(rule.Tags(), maxMatchTags),
 			},
 		})
+	}
+	// 仅存在实质规则命中时落 Coraza 审计日志（避免无命中或截断副作用写盘污染审计日志）
+	if len(out) > 0 {
+		tx.ProcessLogging()
 	}
 	return out
 }

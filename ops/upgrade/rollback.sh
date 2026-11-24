@@ -10,7 +10,7 @@ GATEWAY_VALUE_OVERRIDE=""
 RESTORE_BACKUP=false
 COMPOSE_FILE_EXPLICIT=false
 ENV_FILE_EXPLICIT=false
-USER="${JZ_ADMIN_USER:-jiuzhang_admin}"
+USER=""
 TIMEOUT=600
 
 usage() {
@@ -106,7 +106,7 @@ for cmd in docker jq mktemp base64 timeout; do require_cmd "$cmd"; done
 OLD_SERVER_IMAGE=""; OLD_GATEWAY_IMAGE=""; NEW_SERVER_IMAGE=""; NEW_GATEWAY_IMAGE=""; BACKUP_JOB_ID=""
 OLD_SERVER_IMAGE_ID=""; OLD_GATEWAY_IMAGE_ID=""; NEW_SERVER_IMAGE_ID=""
 TARGET_COMPOSE_FILE=""; TARGET_ENV_FILE=""; PREVIOUS_COMPOSE_FILE=""; CURRENT_LINK=""
-FULL_UPGRADE=false; SCHEMA_BEFORE=""; UPGRADE_SERVICES=""; TARGET_IMAGES_B64=""; OLD_IMAGES_B64=""; OLD_IDS_B64=""
+FULL_UPGRADE=false; SCHEMA_BEFORE=""; UPGRADE_SERVICES=""; TARGET_IMAGES_B64=""; OLD_IMAGES_B64=""; OLD_IDS_B64=""; API_EXTRA_NETWORKS_B64=""
 load_env_file "$STATE_FILE"
 [[ -n "$OLD_SERVER_IMAGE" && -n "$OLD_GATEWAY_IMAGE" ]] || die "回滚状态缺少旧镜像信息"
 [[ -n "$BACKUP_JOB_ID" ]] || log_warn "回滚状态无备份任务 ID"
@@ -125,6 +125,7 @@ if [[ "$FULL_UPGRADE" == true && "$COMPOSE_FILE_EXPLICIT" == false && -n "$PREVI
     JZ_ENV_FILE="$OLD_INSTALL_ROOT/.env"
   fi
 fi
+[[ -n "$USER" ]] || USER="$(resolve_default_admin_user "$JZ_ENV_FILE")"
 
 TARGET_COMPOSE_JSON="$(render_compose "$JZ_COMPOSE_FILE" "$JZ_ENV_FILE")" || die "无法渲染回滚 Compose"
 CUR_GATEWAY_IMAGE="$(compose_service_image "$TARGET_COMPOSE_JSON" gateway)" || die "回滚 Compose 无 gateway"
@@ -237,9 +238,45 @@ else
 fi
 EXISTING_SERVICES=()
 for i in "${!SERVICES[@]}"; do [[ -z "${OLD_IDS[$i]}" ]] || EXISTING_SERVICES+=("${SERVICES[$i]}"); done
+API_EXTRA_NETWORKS=()
+if printf '%s\n' "${EXISTING_SERVICES[@]}" | grep -Fxq api; then
+  CUR_API_ID="$(docker compose -f "$NEW_COMPOSE_FOR_CLEANUP" --env-file "$NEW_ENV_FOR_CLEANUP" ps -q api 2>/dev/null || true)"
+  [[ -n "$CUR_API_ID" ]] || CUR_API_ID="$(compose ps -q api 2>/dev/null || true)"
+  _raw_nets=()
+  if [[ -n "$API_EXTRA_NETWORKS_B64" ]]; then
+    while IFS= read -r _net; do
+      [[ -n "$_net" ]] && _raw_nets+=("$_net")
+    done < <(printf '%s' "$API_EXTRA_NETWORKS_B64" | base64 --decode 2>/dev/null | jq -r '.[]? | strings' 2>/dev/null || true)
+  fi
+  while IFS= read -r _net; do
+    [[ -n "$_net" ]] && _raw_nets+=("$_net")
+  done < <(collect_api_extra_networks "$CUR_API_ID" "$TARGET_COMPOSE_JSON")
+  if ((${#_raw_nets[@]} > 0)); then
+    _target_api_nets=()
+    while IFS= read -r _net; do
+      [[ -n "$_net" ]] && _target_api_nets+=("$_net")
+    done < <(compose_service_network_names "$TARGET_COMPOSE_JSON" api)
+    while IFS= read -r _net; do
+      [[ -n "$_net" ]] || continue
+      valid_docker_network_name "$_net" || continue
+      _skip=false
+      for _ex in ${_target_api_nets[@]+"${_target_api_nets[@]}"}; do
+        if [[ "$_net" == "$_ex" ]]; then _skip=true; break; fi
+      done
+      [[ "$_skip" == false ]] && API_EXTRA_NETWORKS+=("$_net")
+    done < <(printf '%s\n' "${_raw_nets[@]}" | LC_ALL=C sort -u)
+    unset _target_api_nets _skip _ex
+  fi
+  unset _raw_nets _net
+fi
 log_info "重建原组件: ${EXISTING_SERVICES[*]}"
 compose rm -sf "${EXISTING_SERVICES[@]}" >/dev/null 2>&1 || true
 compose up -d --no-deps --force-recreate "${EXISTING_SERVICES[@]}" || die "原容器重建失败"
+if ((${#API_EXTRA_NETWORKS[@]} > 0)); then
+  RESTORED_API_ID="$(compose ps -q api 2>/dev/null || true)"
+  reattach_api_extra_networks "$RESTORED_API_ID" rollback "${API_EXTRA_NETWORKS[@]}" \
+    || die "回滚后恢复 api 附加网络失败"
+fi
 cleanup_gateway_override
 trap - EXIT
 
@@ -257,6 +294,8 @@ while (( SECONDS < end )); do
       api) timeout 8 docker exec "$id" wget -q -T 5 -O /dev/null http://127.0.0.1:8080/api/v1/health || { ready=false; break; } ;;
       web) timeout 12 docker exec "$id" sh -ec 'wget -q -T 5 -O /dev/null http://127.0.0.1:8080/ && wget -q -T 5 -O /dev/null http://127.0.0.1:8080/api/v1/health' || { ready=false; break; } ;;
       netmgrd) timeout 8 docker exec "$id" /usr/local/bin/netmgrd --healthcheck || { ready=false; break; } ;;
+      mirrorcap) timeout 8 docker exec "$id" /usr/local/bin/mirrorcap --healthcheck || { ready=false; break; } ;;
+      tproxyd) timeout 8 docker exec "$id" /usr/local/bin/tproxyd --healthcheck || { ready=false; break; } ;;
     esac
   done
   [[ "$ready" == true ]] && curl -fsS --max-time 5 "$JZ_API_BASE/api/v1/health" >/dev/null 2>&1 && break

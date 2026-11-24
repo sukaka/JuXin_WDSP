@@ -124,7 +124,36 @@ write_limits_config() {
 sysctl_candidate() {
   local key="$1" value="$2" probe
   probe="$PROC_SYS_ROOT/$(printf '%s' "$key" | tr '.' '/')"
-  [[ -e "$probe" ]] && printf '%s = %s\n' "$key" "$value"
+  if [[ -e "$probe" ]]; then
+    printf '%s = %s\n' "$key" "$value"
+  fi
+}
+
+write_transparent_modules_config() {
+  local dir="$ETC_ROOT/modules-load.d" file
+  file="$dir/jiuzhang-transparent.conf"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log "将写入 $file"
+    return
+  fi
+  mkdir -p "$dir"
+  printf '%s\n' \
+    '# 九章 WDSP 透明串接模式所需内核模块（按需加载，缺模块不阻断非透明宿主启动）' \
+    'br_netfilter' \
+    'nf_conntrack' \
+    'xt_REDIRECT' > "$file"
+}
+
+load_transparent_modules() {
+  command -v modprobe >/dev/null 2>&1 || return 0
+  local mod
+  for mod in br_netfilter nf_conntrack xt_REDIRECT; do
+    if [[ "$DRY_RUN" == "true" ]]; then
+      log "将尝试加载内核模块：$mod"
+    else
+      modprobe "$mod" 2>/dev/null || warn "内核模块 ${mod} 加载失败或未内置（非透明串接模式可忽略）"
+    fi
+  done
 }
 
 write_sysctl_config() {
@@ -141,6 +170,7 @@ write_sysctl_config() {
     sysctl_candidate net.ipv4.tcp_keepalive_time 300
     sysctl_candidate net.ipv4.ip_local_port_range '10240 65535'
     sysctl_candidate net.netfilter.nf_conntrack_max 2097152
+    sysctl_candidate net.bridge.bridge-nf-call-iptables 1
   })"
   if [[ "$DRY_RUN" == "true" ]]; then
     log "将写入 $file"
@@ -275,6 +305,7 @@ check_runtime_dependencies() {
   fi
   for command_name in \
     "$ETC_ROOT/security/limits.d/99-jiuzhang-wdsp.conf" \
+    "$ETC_ROOT/modules-load.d/jiuzhang-transparent.conf" \
     "$ETC_ROOT/sysctl.d/99-jiuzhang-wdsp.conf" \
     "$ETC_ROOT/systemd/system/docker.service.d/99-jiuzhang-wdsp.conf"; do
     if [[ -f "$command_name" ]]; then
@@ -332,6 +363,8 @@ main() {
   ensure_runtime_dependencies
   if [[ "$skip_tuning" != "true" ]]; then
     write_limits_config
+    write_transparent_modules_config
+    load_transparent_modules
     write_sysctl_config
     write_docker_limits
     write_zhaoxin_cpu_tuning_service

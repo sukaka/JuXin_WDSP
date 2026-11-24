@@ -153,11 +153,13 @@ log "caddy 已启动（127.0.0.1:8080 + 127.0.0.1:8443, pid=$CADDY_PID, SEC_RULE
 # ---------- 5. 安装 REDIRECT 牵引规则 ----------
 install_redirect
 
-# ---------- 6. 启动 tproxyd 牵引进程（SNI 分流：清单内终结检测、清单外透传） ----------
+# ---------- 6. 启动 tproxyd 牵引进程（SNI 分流：清单内终结检测、透传白名单直通） ----------
+export TPROXY_PASSTHROUGH_ALLOWLIST="${TPROXY_PASSTHROUGH_ALLOWLIST:-$PASS_DOMAIN}"
 TPROXY_LISTEN="${TPROXY_LISTEN:-0.0.0.0:$TPROXY_PORT}" \
 TPROXY_TARGET="${TPROXY_TARGET:-127.0.0.1:8080}" \
 TPROXY_TARGET_TLS="${TPROXY_TARGET_TLS:-127.0.0.1:8443}" \
 TPROXY_PROTECT_HOSTS="${TPROXY_PROTECT_HOSTS:-$PROTECT_DOMAIN}" \
+TPROXY_PASSTHROUGH_ALLOWLIST="$TPROXY_PASSTHROUGH_ALLOWLIST" \
   tproxyd &
 TPD_PID=$!
 alive "$TPD_PID" || fail "tproxyd 启动即退出"

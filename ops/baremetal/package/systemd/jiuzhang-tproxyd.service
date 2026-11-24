@@ -1,0 +1,23 @@
+# 九章 WDSP 透明串接前置牵引 sidecar tproxyd（裸机）
+# __ROOT__/__USER__/__NODE_NAME__ 由 install.sh 渲染替换后安装到 /etc/systemd/system/
+[Unit]
+Description=JiuZhang WDSP tproxyd (transparent bridge redirect proxy, baremetal)
+After=network-online.target jiuzhang-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+UMask=0027
+EnvironmentFile=__ROOT__/env
+ExecStart=__ROOT__/bin/tproxyd
+# SO_ORIGINAL_DST（非特权端口 15000）无需任何 Linux 特权能力；能力集收紧为空
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

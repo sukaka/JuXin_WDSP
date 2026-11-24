@@ -17,7 +17,15 @@ import json, os, pathlib, sys
 args = sys.argv[1:]
 with open(os.environ["FAKE_DOCKER_LOG"], "a") as stream:
     stream.write(json.dumps(args) + "\n")
+net_state_path = os.environ.get("FAKE_NET_STATE")
 if args[:1] == ["compose"]:
+    if "config" in args and "--format" in args:
+        print(json.dumps({
+            "name": "jiuzhang-wdsp",
+            "networks": {"jiuzhang-internal": {"name": "jiuzhang-wdsp_jiuzhang-internal"}},
+            "services": {"api": {"networks": {"jiuzhang-internal": None}}},
+        }))
+        sys.exit(0)
     if "ps" in args:
         print("a" * 64 if args[-1] == "api" else "b" * 64)
         sys.exit(0)
@@ -27,12 +35,45 @@ if args[:1] == ["compose"]:
             public.mkdir(parents=True, exist_ok=True)
             (public / "pcap-public.json").write_text('{"fixture":true}')
             (public / "pcap-release.pub").write_text('fixture-public-key')
+            if net_state_path and pathlib.Path(net_state_path).exists():
+                st = json.loads(pathlib.Path(net_state_path).read_text())
+                st["api_nets"] = ["jiuzhang-wdsp_jiuzhang-internal"]
+                pathlib.Path(net_state_path).write_text(json.dumps(st))
         sys.exit(0)
     if "stop" in args:
         sys.exit(0)
+if args[:1] == ["network"]:
+    if net_state_path and pathlib.Path(net_state_path).exists():
+        st = json.loads(pathlib.Path(net_state_path).read_text())
+        if len(args) >= 3 and args[1] == "inspect":
+            sys.exit(0 if args[2] in st.get("host_nets", []) else 1)
+        if len(args) >= 4 and args[1] == "connect":
+            if args[2] not in st.get("host_nets", []):
+                sys.exit(1)
+            if args[2] not in st["api_nets"]:
+                st["api_nets"].append(args[2])
+            pathlib.Path(net_state_path).write_text(json.dumps(st))
+            sys.exit(0)
+    sys.exit(1)
 if args[:1] == ["inspect"]:
     if args[-1] == "jiuzhang-pcapd" and "--format" not in args and os.environ.get("PCAP_PRESENT") != "1":
         sys.exit(1)
+    if net_state_path and pathlib.Path(net_state_path).exists():
+        st = json.loads(pathlib.Path(net_state_path).read_text())
+        fmt = args[args.index("--format") + 1] if "--format" in args else ""
+        target = args[-1]
+        if target == "jiuzhang-apm-clickhouse":
+            if not st.get("ch_running"):
+                sys.exit(1)
+            if fmt == "{{.State.Running}}|{{.Name}}":
+                print("true|/jiuzhang-apm-clickhouse")
+                sys.exit(0)
+            if fmt == "{{json .NetworkSettings.Networks}}":
+                print(json.dumps({n: {} for n in st.get("ch_nets", [])}))
+                sys.exit(0)
+        if target == "a" * 64 and fmt == "{{json .NetworkSettings.Networks}}":
+            print(json.dumps({n: {} for n in st.get("api_nets", [])}))
+            sys.exit(0)
     if "{{.State.Running}}" in args:
         print("false")
     else:
@@ -306,6 +347,36 @@ class CaptureControlTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("HMAC", result.stderr)
         self.assertEqual(self.calls(), [])
+
+    def test_recreate_api_preserves_extra_and_clickhouse_networks(self):
+        net_state = self.root / "net-state.json"
+        net_state.write_text(json.dumps({
+            "api_nets": ["jiuzhang-wdsp_jiuzhang-internal", "jiuzhang-kafka_default"],
+            "ch_running": True,
+            "ch_nets": ["jiuzhang-apm_apm-data"],
+            "host_nets": ["jiuzhang-wdsp_jiuzhang-internal", "jiuzhang-kafka_default", "jiuzhang-apm_apm-data"],
+        }))
+        self.env["FAKE_NET_STATE"] = str(net_state)
+        self.command()
+        result = self.run_hostctl()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        final_state = json.loads(net_state.read_text())
+        self.assertEqual(
+            set(final_state["api_nets"]),
+            {"jiuzhang-wdsp_jiuzhang-internal", "jiuzhang-kafka_default", "jiuzhang-apm_apm-data"},
+        )
+        calls = self.calls()
+        api_up = next(i for i, args in enumerate(calls) if "up" in args and args[-1] == "api")
+        ch_connect = next(
+            i for i, args in enumerate(calls)
+            if args == ["network", "connect", "jiuzhang-apm_apm-data", "a" * 64]
+        )
+        kafka_connect = next(
+            i for i, args in enumerate(calls)
+            if args == ["network", "connect", "jiuzhang-kafka_default", "a" * 64]
+        )
+        self.assertGreater(ch_connect, api_up)
+        self.assertGreater(kafka_connect, api_up)
 
 
 if __name__ == "__main__":

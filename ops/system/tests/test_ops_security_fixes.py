@@ -64,9 +64,11 @@ class OpsSecurityRegressionTests(unittest.TestCase):
         self.assertIn("umask 077", backup_sh)
         self.assertIn("aof_rewrite_in_progress:0", backup_sh)
 
-        # M-O7: netmgrd systemd hardening
+        # M-O7: netmgrd systemd hardening + shared group access for sidecars without CAP_DAC_OVERRIDE
         self.assertIn("NoNewPrivileges=yes", netmgrd_unit)
         self.assertIn("CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW", netmgrd_unit)
+        self.assertIn("SupplementaryGroups=__USER__", netmgrd_unit)
+        self.assertIn('chmod 0770 "${R}/data/run/caddy/sidecars"', install_sh)
 
     def test_baremetal_restore_validates_tar_and_manifest_before_restoring(self):
         restore_sh = (ROOT / "ops/baremetal/package/restore.sh").read_text(encoding="utf-8")
@@ -337,6 +339,54 @@ class OpsSecurityRegressionTests(unittest.TestCase):
                     capture_output=True, text=True, timeout=10,
                 )
                 self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+
+    def test_default_three_admin_bootstrap_and_legacy_env_compat(self):
+        install_sh = (ROOT / "ops/install/install.sh").read_text(encoding="utf-8")
+        baremetal_env = (ROOT / "ops/baremetal/package/env.template").read_text(encoding="utf-8")
+        build_sh = (ROOT / "ops/offline-package/build.sh").read_text(encoding="utf-8")
+        for text in (install_sh, baremetal_env, build_sh):
+            for key in (
+                "INITIAL_ADMIN_USERNAME",
+                "INITIAL_OPER_ADMIN_USERNAME",
+                "INITIAL_AUDIT_ADMIN_USERNAME",
+                "INITIAL_ADMIN_PASSWORD",
+                "INITIAL_OPER_ADMIN_PASSWORD",
+                "INITIAL_AUDIT_ADMIN_PASSWORD",
+            ):
+                self.assertIn(key, text)
+        self.assertIn("INITIAL_ADMIN_USERNAME=admin", install_sh)
+        self.assertIn("INITIAL_OPER_ADMIN_USERNAME=operadmin", install_sh)
+        self.assertIn("INITIAL_AUDIT_ADMIN_USERNAME=auditor", install_sh)
+
+        with tempfile.TemporaryDirectory(prefix="wdsp-default-admin-") as tmp:
+            legacy_env = Path(tmp) / "legacy.env"
+            legacy_env.write_text('INITIAL_ADMIN_USERNAME="jiuzhang_admin"\n', encoding="utf-8")
+            missing_env = Path(tmp) / "missing.env"
+
+            # 1) Legacy .env preserves jiuzhang_admin
+            res = subprocess.run(
+                ["bash", "-ec", f'source "{ROOT / "ops/lib/common.sh"}"; resolve_default_admin_user "{legacy_env}"'],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(res.stdout.strip(), "jiuzhang_admin")
+
+            # 2) Fresh install / missing .env defaults to admin
+            res = subprocess.run(
+                ["bash", "-ec", f'source "{ROOT / "ops/lib/common.sh"}"; resolve_default_admin_user "{missing_env}"'],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(res.stdout.strip(), "admin")
+
+            # 3) Explicit JZ_ADMIN_USER takes precedence
+            env = dict(os.environ, JZ_ADMIN_USER="custom_sysadmin")
+            res = subprocess.run(
+                ["bash", "-ec", f'source "{ROOT / "ops/lib/common.sh"}"; resolve_default_admin_user "{legacy_env}"'],
+                capture_output=True, text=True, timeout=10, env=env,
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(res.stdout.strip(), "custom_sysadmin")
 
 
 if __name__ == "__main__":

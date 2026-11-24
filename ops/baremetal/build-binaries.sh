@@ -7,6 +7,8 @@
 #   - bin/caddy：与 gateway/Dockerfile 第 46-50 行一致（xcaddy 构建，xcaddy v0.4.5
 #     非 debug 模式默认即带 -trimpath -ldflags "-w -s"）；
 #   - bin/netmgrd：gateway/cmd/netmgrd，纯标准库；
+#   - bin/mirrorcap：gateway/cmd/mirrorcap；
+#   - bin/tproxyd：gateway/cmd/tproxyd，纯标准库；
 #   - bin/logrotator.sh：复制 gateway/images/logrotator/rotate.sh。
 #
 # 本脚本幂等，可重复执行：每次构建前先删除 bin/ 下对应产物再重建。
@@ -40,19 +42,19 @@ echo "==> 构建目标：linux/amd64 GOAMD64=${GOAMD64} CGO_ENABLED=${CGO_ENABLE
 echo "==> 产物目录：${BIN_DIR}"
 
 # ---------- 1. bin/jiuzhang-api（与 server/Dockerfile 第 43 行正式构建口径一致，不加 build tags） ----------
-echo "==> [1/4] 构建 jiuzhang-api"
+echo "==> [1/6] 构建 jiuzhang-api"
 rm -f "${BIN_DIR}/jiuzhang-api"
 (cd "${REPO_ROOT}/server" && go build -trimpath -ldflags="${LDFLAGS}" -o "${BIN_DIR}/jiuzhang-api" ./cmd/api)
 
 # ---------- 2. bin/caddy（复刻 gateway/Dockerfile 第 46-50 行 xcaddy 构建） ----------
-echo "==> [2/4] 安装 xcaddy@${XCADDY_VERSION}（本机宿主平台，仅为构建工具）"
+echo "==> [2/6] 安装 xcaddy@${XCADDY_VERSION}（本机宿主平台，仅为构建工具）"
 # xcaddy 本身须为本机可执行，构建它的 go install 必须剥掉交叉编译环境变量；
 # 交叉参数由 xcaddy 透传给底层构建 Caddy 的 go build。
 env -u GOOS -u GOARCH -u GOAMD64 -u CGO_ENABLED \
     go install "github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_VERSION}"
 "${XCADDY_BIN}" version
 
-echo "==> [2/4] xcaddy 构建 caddy ${CADDY_VERSION}（模块下载量大，请耐心等待）"
+echo "==> [2/6] xcaddy 构建 caddy ${CADDY_VERSION}（模块下载量大，请耐心等待）"
 rm -f "${BIN_DIR}/caddy"
 "${XCADDY_BIN}" build "${CADDY_VERSION}" \
     --with "github.com/corazawaf/coraza-caddy/v2@${CORAZA_CADDY_VERSION}" \
@@ -61,12 +63,22 @@ rm -f "${BIN_DIR}/caddy"
     --output "${BIN_DIR}/caddy"
 
 # ---------- 3. bin/netmgrd ----------
-echo "==> [3/4] 构建 netmgrd"
+echo "==> [3/6] 构建 netmgrd"
 rm -f "${BIN_DIR}/netmgrd"
 (cd "${REPO_ROOT}/gateway" && go build -trimpath -ldflags="${LDFLAGS}" -o "${BIN_DIR}/netmgrd" ./cmd/netmgrd)
 
-# ---------- 4. bin/logrotator.sh ----------
-echo "==> [4/4] 复制 logrotator.sh"
+# ---------- 4. bin/mirrorcap ----------
+echo "==> [4/6] 构建 mirrorcap"
+rm -f "${BIN_DIR}/mirrorcap"
+(cd "${REPO_ROOT}/gateway" && go build -trimpath -ldflags="${LDFLAGS}" -o "${BIN_DIR}/mirrorcap" ./cmd/mirrorcap)
+
+# ---------- 5. bin/tproxyd ----------
+echo "==> [5/6] 构建 tproxyd"
+rm -f "${BIN_DIR}/tproxyd"
+(cd "${REPO_ROOT}/gateway" && go build -trimpath -ldflags="${LDFLAGS}" -o "${BIN_DIR}/tproxyd" ./cmd/tproxyd)
+
+# ---------- 6. bin/logrotator.sh ----------
+echo "==> [6/6] 复制 logrotator.sh"
 rm -f "${BIN_DIR}/logrotator.sh"
 cp "${REPO_ROOT}/gateway/images/logrotator/rotate.sh" "${BIN_DIR}/logrotator.sh"
 chmod +x "${BIN_DIR}/logrotator.sh"
@@ -77,6 +89,6 @@ echo "==> 构建完成，产物清单："
 ls -la "${BIN_DIR}"
 echo ""
 echo "==> 文件类型核验（Go 二进制应为 ELF 64-bit x86-64 statically linked）："
-for name in jiuzhang-api caddy netmgrd logrotator.sh; do
+for name in jiuzhang-api caddy netmgrd mirrorcap tproxyd logrotator.sh; do
     file "${BIN_DIR}/${name}"
 done

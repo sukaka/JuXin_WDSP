@@ -220,8 +220,128 @@ def wait_service(root, service, seconds=90):
     raise RuntimeError(f"{service}未通过运行状态和健康检查")
 
 
+VALID_DOCKER_NET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+BUILTIN_DOCKER_NETS = frozenset({"none", "host", "bridge"})
+
+
+def _valid_extra_network(name):
+    return isinstance(name, str) and bool(VALID_DOCKER_NET.fullmatch(name)) and name not in BUILTIN_DOCKER_NETS
+
+
+def _container_networks(container):
+    if not container:
+        return []
+    result = subprocess.run(
+        ["docker", "inspect", "--format", "{{json .NetworkSettings.Networks}}", container],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        return []
+    try:
+        parsed = json.loads(result.stdout.strip())
+    except ValueError:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    return sorted(name for name in parsed.keys() if _valid_extra_network(name))
+
+
+def _compose_api_networks(root):
+    try:
+        result = compose(root, "config", "--format", "json")
+        rendered = json.loads(result.stdout)
+    except Exception:
+        return set()
+    if not isinstance(rendered, dict):
+        return set()
+    project = rendered.get("name") or ""
+    top_nets = rendered.get("networks") if isinstance(rendered.get("networks"), dict) else {}
+    api_svc = (rendered.get("services") or {}).get("api") or {}
+    raw_nets = api_svc.get("networks")
+    keys = list(raw_nets) if isinstance(raw_nets, list) else list(raw_nets.keys()) if isinstance(raw_nets, dict) else []
+    resolved = set()
+    for key in keys:
+        entry = top_nets.get(key) if isinstance(top_nets.get(key), dict) else {}
+        explicit = entry.get("name")
+        if isinstance(explicit, str) and explicit:
+            resolved.add(explicit)
+        elif isinstance(project, str) and project:
+            resolved.add(f"{project}_{key}")
+        else:
+            resolved.add(key)
+    return resolved
+
+
+def _colocated_apm_clickhouse_networks():
+    info = subprocess.run(
+        ["docker", "inspect", "--format", "{{.State.Running}}|{{.Name}}", "jiuzhang-apm-clickhouse"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if info.returncode == 0 and info.stdout.strip() in ("true|/jiuzhang-apm-clickhouse", "true|jiuzhang-apm-clickhouse"):
+        return _container_networks("jiuzhang-apm-clickhouse")
+    ps = subprocess.run(
+        [
+            "docker", "ps", "-q", "--filter", "status=running",
+            "--filter", "label=com.docker.compose.project=jiuzhang-apm",
+            "--filter", "label=com.docker.compose.service=clickhouse",
+        ],
+        capture_output=True, text=True, timeout=10,
+    )
+    if ps.returncode == 0:
+        cid = next((line.strip() for line in ps.stdout.splitlines() if line.strip()), "")
+        if cid and VALID_DOCKER_NET.fullmatch(cid):
+            lbl = subprocess.run(
+                [
+                    "docker", "inspect", "--format",
+                    '{{.State.Running}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}',
+                    cid,
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+            if lbl.returncode == 0 and lbl.stdout.strip() == "true|jiuzhang-apm|clickhouse":
+                return _container_networks(cid)
+    return []
+
+
+def _capture_api_extra_networks(root):
+    excluded = _compose_api_networks(root)
+    candidates = set()
+    try:
+        old_api = compose(root, "ps", "-q", "api").stdout.strip()
+    except Exception:
+        old_api = ""
+    if old_api:
+        candidates.update(_container_networks(old_api))
+    candidates.update(_colocated_apm_clickhouse_networks())
+    return sorted(net for net in candidates if _valid_extra_network(net) and net not in excluded)
+
+
+def _reattach_api_extra_networks(root, networks):
+    if not networks:
+        return
+    api_id = compose(root, "ps", "-q", "api").stdout.strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", api_id):
+        raise RuntimeError("重建 api 后无法定位容器 ID，无法恢复附加网络")
+    current = set(_container_networks(api_id))
+    for net in networks:
+        if net in current:
+            continue
+        insp = subprocess.run(["docker", "network", "inspect", net], capture_output=True, text=True, timeout=10)
+        if insp.returncode != 0:
+            raise RuntimeError(f"api 附加网络不存在，无法恢复连接: {net}")
+        conn = subprocess.run(["docker", "network", "connect", net, api_id], capture_output=True, text=True, timeout=15)
+        if conn.returncode != 0:
+            raise RuntimeError(f"为 api 容器恢复附加网络失败: {net}")
+        after = set(_container_networks(api_id))
+        if net not in after:
+            raise RuntimeError(f"api 容器附加网络恢复校验失败: {net}")
+        current = after
+
+
 def recreate_api(root):
+    extra_networks = _capture_api_extra_networks(root)
     compose(root, "up", "-d", "--no-deps", "--force-recreate", "api")
+    _reattach_api_extra_networks(root, extra_networks)
     wait_service(root, "api")
 
 

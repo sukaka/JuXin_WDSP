@@ -145,6 +145,7 @@ func LoadConfig(path string) (Config, error) {
 
 // normalize 去空白/去重/归一化并做合法性校验（任一违规整份拒绝）。
 func (c *Config) normalize() error {
+	seenBridge := map[string]struct{}{}
 	owner := map[string]string{} // port → bridge：同一口不得出现在两个桥
 	for bi := range c.Bridges {
 		b := &c.Bridges[bi]
@@ -152,6 +153,10 @@ func (c *Config) normalize() error {
 		if !ifNameRE.MatchString(b.Name) {
 			return fmt.Errorf("bridges[%d] 网桥名非法（需 1-15 位字母数字开头，仅含 ._-）: %q", bi, b.Name)
 		}
+		if _, dup := seenBridge[b.Name]; dup {
+			return fmt.Errorf("bridges[%d] 网桥名重复: %q", bi, b.Name)
+		}
+		seenBridge[b.Name] = struct{}{}
 		seen := map[string]struct{}{}
 		ports := make([]string, 0, len(b.Ports))
 		for pi, p := range b.Ports {

@@ -26,7 +26,7 @@ ENV_FILE="${R}/env"
 PG_LD="${R}/bin/pg/syslib:${R}/bin/pg/lib/postgresql/16/lib"
 PG_OSSL="${R}/bin/pg/syslib/ossl-modules"
 PG_BIN="${R}/bin/pg/lib/postgresql/16/bin"
-UNIT_LIST="jiuzhang-postgres jiuzhang-valkey jiuzhang-gateway jiuzhang-api jiuzhang-web jiuzhang-netmgrd jiuzhang-logrotator"
+UNIT_LIST="jiuzhang-postgres jiuzhang-valkey jiuzhang-gateway jiuzhang-api jiuzhang-web jiuzhang-netmgrd jiuzhang-mirrorcap jiuzhang-tproxyd jiuzhang-logrotator"
 LINK_LIST_FILE="${R}/data/runtime/host-compat-links.list"
 
 log_info() { printf '[INFO]  %s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
@@ -86,11 +86,11 @@ if [[ -n "${PORT_BUSY}" ]]; then
 fi
 
 # netmgrd 运行期依赖：缺失仅警告并给出 dnf 安装名
-NM_PKG_ip="iproute2"; NM_PKG_ping="iputils"; NM_PKG_traceroute="traceroute"; NM_PKG_tcpdump="tcpdump"
-for cmd in ip ping traceroute tcpdump; do
+NM_PKG_ip="iproute2"; NM_PKG_ping="iputils"; NM_PKG_traceroute="traceroute"; NM_PKG_tcpdump="tcpdump"; NM_PKG_iptables="iptables"
+for cmd in ip ping traceroute tcpdump iptables; do
   if ! command -v "${cmd}" >/dev/null 2>&1; then
     eval "pkg=\"\${NM_PKG_${cmd}}\""
-    log_warn "netmgrd 依赖命令 ${cmd} 缺失（网络诊断/多网口管理将不可用）：dnf install -y ${pkg}"
+    log_warn "netmgrd 依赖命令 ${cmd} 缺失（网络诊断/多网口/透明串接管理将受限）：dnf install -y ${pkg}"
   fi
 done
 
@@ -135,13 +135,17 @@ log_info "==> [4/16] 运行环境文件 ${ENV_FILE}"
 GEN_PG_PW="$(openssl rand -hex 24)"
 GEN_VK_PW="$(openssl rand -hex 24)"
 GEN_MASTER_KEY="$(openssl rand -hex 32)"
-GEN_ADMIN_PW="$(openssl rand -hex 8)"
+GEN_ADMIN_PW="$(openssl rand -hex 12)Aa!"
+GEN_OPER_ADMIN_PW="$(openssl rand -hex 12)Aa!"
+GEN_AUDIT_ADMIN_PW="$(openssl rand -hex 12)Aa!"
 render_env() {
   sed -e "s|__ROOT__|${R}|g" \
       -e "s|__POSTGRES_PASSWORD__|${GEN_PG_PW}|g" \
       -e "s|__VALKEY_PASSWORD__|${GEN_VK_PW}|g" \
       -e "s|__MASTER_KEY__|${GEN_MASTER_KEY}|g" \
       -e "s|__INITIAL_ADMIN_PASSWORD__|${GEN_ADMIN_PW}|g" \
+      -e "s|__INITIAL_OPER_ADMIN_PASSWORD__|${GEN_OPER_ADMIN_PW}|g" \
+      -e "s|__INITIAL_AUDIT_ADMIN_PASSWORD__|${GEN_AUDIT_ADMIN_PW}|g" \
       "${R}/env.template"
 }
 if [[ -f "${ENV_FILE}" ]]; then
@@ -188,8 +192,12 @@ chmod 0750 "${R}/data"
 chmod 0700 "${R}/backups"
 chmod 0700 "${R}/data/pgdata" "${R}/data/caddy" "${R}/data/caddy-console" "${R}/certificates"
 chmod 0750 "${R}/data/valkey" "${R}/data/runtime" "${R}/data/logs" "${R}/data/logs/caddy" "${R}/data/run" "${R}/data/run/caddy" "${R}/data/run/pg"
-# sidecars：api（jiuzhang）写 network.json，netmgrd（root）写回 status（0644 默认，jiuzhang 可读）
-chmod 0755 "${R}/data/run/caddy/sidecars"
+# sidecars：api（jiuzhang）写 network.json，netmgrd（root + SupplementaryGroups=jiuzhang、无 CAP_DAC_OVERRIDE）
+# 经组 1000 读写 sidecars 与 sidecars/diag，不开放 other 权限。
+chmod 0770 "${R}/data/run/caddy/sidecars"
+if [[ -d "${R}/data/run/caddy/sidecars/diag" ]]; then
+  chmod 0770 "${R}/data/run/caddy/sidecars/diag"
+fi
 
 # ---------- 6. PostgreSQL 初始化 ----------
 log_info "==> [6/16] PostgreSQL 数据目录"
@@ -356,6 +364,15 @@ for unit in ${UNIT_LIST}; do
 done
 cp "${R}/tmpfiles.d/jiuzhang.conf" /etc/tmpfiles.d/jiuzhang.conf
 chmod 644 /etc/tmpfiles.d/jiuzhang.conf
+if [[ -d /etc/modules-load.d ]]; then
+  cat > /etc/modules-load.d/jiuzhang-transparent.conf <<'EOF'
+# 九章 WDSP 透明串接模式所需内核模块
+br_netfilter
+nf_conntrack
+xt_REDIRECT
+EOF
+  chmod 644 /etc/modules-load.d/jiuzhang-transparent.conf
+fi
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload
 fi
@@ -449,11 +466,11 @@ else
   if [[ -s "${R}/certificates/console.crt" ]]; then
     echo "            https://${HOST_IP}:${WEB_HTTPS_PORT}/（自签证书，浏览器告警属预期）"
   fi
-  echo "  初始账号：$(env_get INITIAL_ADMIN_USERNAME)"
-  echo "  初始口令：见 ${ENV_FILE} 的 INITIAL_ADMIN_PASSWORD 行"
-  echo "            （首次登录强制改密；改密后请删除该行并 systemctl restart jiuzhang-api）"
-  echo "            若该行已被删除且库中无用户，api 启动日志会打印一次性随机密码："
-  echo "            journalctl -u jiuzhang-api | grep -A3 初始"
+  echo "  初始账号：系统管理员=$(env_get INITIAL_ADMIN_USERNAME)、运维管理员=$(env_get INITIAL_OPER_ADMIN_USERNAME)、审计管理员=$(env_get INITIAL_AUDIT_ADMIN_USERNAME)"
+  echo "  初始口令：见 ${ENV_FILE} 的 INITIAL_*_PASSWORD 行"
+  echo "            （首次登录强制改密；改密后请删除相关行并 systemctl restart jiuzhang-api）"
+  echo "            若未配置口令行且对应角色下无用户，api 启动日志会打印一次性随机密码："
+  echo "            journalctl -u jiuzhang-api | grep -A10 默认管理员"
 fi
 echo ""
 echo "  下一步："

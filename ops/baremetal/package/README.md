@@ -3,7 +3,7 @@
 九章 WEB 应用智能防护系统 V2.0（WDSP 产品线）的免 Docker 裸机交付包。
 面向 openEuler x86_64（含兆芯 KX/KH、海光 C86 等 x86-64 兼容信创平台）等
 不便或不允许运行 Docker 的生产环境：全部组件（PostgreSQL 16、Valkey 8、
-Caddy 网关/控制台、管理后端 API、netmgrd、logrotator）随包携带，
+Caddy 网关/控制台、管理后端 API、netmgrd、mirrorcap、tproxyd、logrotator）随包携带，
 由 systemd 托管，单一运行账户 `jiuzhang`（netmgrd 例外，以 root 运行）。
 
 - 默认安装根：`/opt/jiuzhang-wdsp`（下文记作 `$R`，可用 `INSTALL_ROOT` 覆盖）
@@ -12,7 +12,7 @@ Caddy 网关/控制台、管理后端 API、netmgrd、logrotator）随包携带�
 ## 目录结构
 
 ```
-bin/                   caddy / jiuzhang-api / netmgrd / logrotator.sh / pg/ / valkey/
+bin/                   caddy / jiuzhang-api / netmgrd / mirrorcap / tproxyd / logrotator.sh / pg/ / valkey/
 web/                   管理前端 SPA（web/dist 构建产物）
 console/               控制台 Caddyfile 模板（双栈 / 仅 HTTP）
 gateway/               Caddyfile.bootstrap.template、blockpage.html、rules/（CRS 等规则）
@@ -21,7 +21,7 @@ assets/fonts/          报表字体（NotoSansCJKsc）
 geoip/                 GeoIP 离线库（ip2region_v4.xdb、city-ipv6.mmdb、country.mmdb，支持放官方 DB-IP Lite .mmdb）
 env.template           运行环境模板（install.sh 渲染为 $R/env）
 ops/                   console-cert.sh / fingerprint.sh / backup.sh / restore.sh / lib/common.sh
-systemd/               7 个单元模板（install.sh 渲染安装）
+systemd/               9 个单元模板（install.sh 渲染安装）
 tmpfiles.d/jiuzhang.conf   Coraza 持久化目录声明（/tmp/coraza）
 install.sh uninstall.sh backup.sh restore.sh README.md
 ```
@@ -37,7 +37,7 @@ $R/data/caddy/                网关 XDG config/data（autosave.json 在此）
 $R/data/caddy-console/        控制台 Caddy XDG 目录（与网关隔离）
 $R/data/runtime/              api 数据（geoip/ license/ certificates/ configs/ backups/ hostctl/ …）
 $R/data/logs/caddy/           全部网关日志（caddy/access/coraza-audit/guard-events/api-runtime-events/…）
-$R/data/run/caddy/            admin.sock 与 sidecars/（network.json ↔ netmgrd）
+$R/data/run/caddy/            admin.sock 与 sidecars/（network.json ↔ netmgrd、mirrorcap.json ↔ mirrorcap、tproxyd.json ↔ tproxyd）
 $R/backups/                   backup.sh 产物
 ```
 
@@ -45,7 +45,7 @@ $R/backups/                   backup.sh 产物
 
 ```bash
 ops/baremetal/build-runtimes.sh   # 产出 bin/pg、bin/valkey（仅需在有更新时执行）
-ops/baremetal/build-binaries.sh   # 产出 bin/caddy、jiuzhang-api、netmgrd、logrotator.sh
+ops/baremetal/build-binaries.sh   # 产出 bin/caddy、jiuzhang-api、netmgrd、mirrorcap、tproxyd、logrotator.sh
 ops/baremetal/assemble.sh         # 构建前端并组装 dist/jiuzhang-wdsp-baremetal-linux-amd64/
                                   # + tar.gz + .sha256（不删 bin/，可重复执行）
 ```
@@ -70,13 +70,13 @@ sudo bash install.sh
 创建 `jiuzhang` 账户 → 部署文件 → 生成随机口令写入 `$R/env` → initdb +
 createdb（jiuzhang_waf）→ 渲染 valkey.conf → 生成控制台自签证书 →
 写宿主机指纹与 GeoIP → 渲染 Caddy 配置 → 建宿主兼容符号链接 →
-安装 7 个 systemd 单元 → 按序启动 → 健康等待（各 60s 上限）→ firewalld 放行。
+安装 9 个 systemd 单元 → 按序启动 → 健康等待（各 60s 上限）→ firewalld 放行。
 
 安装完成后：
 
 - 控制台：`http://<主机IP>:8080/`（证书齐备时另有 `https://<主机IP>:8443/`，自签告警属预期）
-- 初始账号 `jiuzhang_admin`，初始口令在 `$R/env` 的 `INITIAL_ADMIN_PASSWORD` 行
-  （首次登录强制改密；改密后删除该行并 `systemctl restart jiuzhang-api`）
+- 默认三权账号：`admin`（系统管理员）、`operadmin`（运维管理员）、`auditor`（审计管理员），初始口令在 `$R/env` 的 `INITIAL_*_PASSWORD` 行
+  （首次登录强制改密；改密后删除这些行并 `systemctl restart jiuzhang-api`）
 - 下一步：控制台「系统管理 → 授权管理」导入授权文件
 
 ## 从 docker 部署迁移
@@ -121,7 +121,7 @@ sudo systemctl start jiuzhang-api
 
 ```bash
 systemctl status jiuzhang-postgres jiuzhang-valkey jiuzhang-gateway \
-  jiuzhang-api jiuzhang-web jiuzhang-netmgrd jiuzhang-logrotator
+  jiuzhang-api jiuzhang-web jiuzhang-netmgrd jiuzhang-mirrorcap jiuzhang-tproxyd jiuzhang-logrotator
 journalctl -u jiuzhang-api --since '1 hour ago'        # 单服务日志
 journalctl -u 'jiuzhang-*' -f                          # 全部组件日志
 ```

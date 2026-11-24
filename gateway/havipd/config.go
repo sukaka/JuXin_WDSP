@@ -70,6 +70,9 @@ type VRRPSpec struct {
 	AuthPass string `json:"auth_pass,omitempty"`
 	// UnicastPeers 单播 VRRP 对端地址（可选；非空 = 单播模式，云上禁组播环境用）。
 	UnicastPeers []string `json:"unicast_peers,omitempty"`
+	// TrackInterfaces 需要由 keepalived 监控的关联接口列表（可选，如透明网桥成员口 eth2/eth3；
+	// 渲染为 vrrp_instance 内的 track_interface 块，链路故障时自动触发主备让位）。
+	TrackInterfaces []string `json:"track_interfaces,omitempty"`
 }
 
 // Config ha-vip.json 下发契约。
@@ -176,6 +179,22 @@ func (c *Config) normalize() error {
 			return fmt.Errorf("vrrp.unicast_peers[%d] 非法 IP: %q", i, p)
 		}
 		v.UnicastPeers[i] = p
+	}
+	if len(v.TrackInterfaces) > 0 {
+		seenTrack := map[string]bool{}
+		tracks := make([]string, 0, len(v.TrackInterfaces))
+		for i, tif := range v.TrackInterfaces {
+			tif = strings.TrimSpace(tif)
+			if !ifNameRE.MatchString(tif) {
+				return fmt.Errorf("vrrp.track_interfaces[%d] 接口名非法: %q", i, tif)
+			}
+			if seenTrack[tif] {
+				continue
+			}
+			seenTrack[tif] = true
+			tracks = append(tracks, tif)
+		}
+		v.TrackInterfaces = tracks
 	}
 	return nil
 }

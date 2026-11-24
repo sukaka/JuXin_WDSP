@@ -54,6 +54,27 @@ load_env_file() {
   done < "$f"
 }
 
+# resolve_default_admin_user [ENV_FILE] —— 推导默认管理员用户名：
+# 优先级：JZ_ADMIN_USER > ENV_FILE 中的 INITIAL_ADMIN_USERNAME（兼容历史 jiuzhang_admin）> admin。
+resolve_default_admin_user() {
+  if [[ -n "${JZ_ADMIN_USER:-}" ]]; then
+    printf '%s\n' "$JZ_ADMIN_USER"
+    return 0
+  fi
+  local env_file="${1:-${JZ_ENV_FILE:-.env}}"
+  if [[ -n "$env_file" && -f "$env_file" ]]; then
+    local val
+    val="$(awk '/^[[:space:]]*INITIAL_ADMIN_USERNAME=/{v=substr($0, index($0,"=")+1); gsub(/\r$/, "", v); last=v} END{print last}' "$env_file" 2>/dev/null || true)"
+    val="${val%\"}"; val="${val#\"}"
+    val="${val%\'}"; val="${val#\'}"
+    if [[ -n "$val" ]]; then
+      printf '%s\n' "$val"
+      return 0
+    fi
+  fi
+  printf 'admin\n'
+}
+
 # compose ARGS... —— 统一 docker compose 入口。
 compose() {
   docker compose -f "$JZ_COMPOSE_FILE" --env-file "$JZ_ENV_FILE" "$@"
@@ -127,19 +148,32 @@ detect_arch() {
 JZ_COOKIE_JAR=""
 JZ_CSRF_TOKEN=""
 
-# api_login USERNAME —— 口令从 JZ_ADMIN_PASSWORD 读；缺失时交互读取（不回显）。
+# api_login USERNAME [MAX_ATTEMPTS]
 api_login() {
-  local user="$1"
+  local user="$1" limit="${2:-1}" pass attempt
   require_cmd curl
   require_cmd jq
-  local pass="${JZ_ADMIN_PASSWORD:-}"
-  if [[ -z "$pass" ]]; then
-    read -r -s -p "请输入 $user 的密码: " pass
-    printf '\n' >&2
-  fi
-  [[ -n "$pass" ]] || die "密码不能为空"
-  JZ_COOKIE_JAR="$(mktemp "${TMPDIR:-/tmp}/jz_cookies.XXXXXX")"
-  chmod 600 "$JZ_COOKIE_JAR"
+  [[ -z "${JZ_ADMIN_PASSWORD:-}" ]] || limit=1
+  for ((attempt=1; attempt<=limit; attempt++)); do
+    pass="${JZ_ADMIN_PASSWORD:-}"
+    if [[ -z "$pass" ]]; then
+      printf '请输入 %s 的密码（%d/%d）: ' "$user" "$attempt" "$limit" >&2
+      IFS= read -rs pass || die "密码输入已中断"
+      printf '\n' >&2
+    fi
+    if [[ -z "$pass" ]]; then
+      log_warn "密码不能为空"
+    elif api_login_once "$user" "$pass"; then
+      return 0
+    fi
+  done
+  die "登录失败，已用完本次 $limit 次尝试"
+}
+
+api_login_once() {
+  local user="$1" pass="$2"
+  JZ_COOKIE_JAR="$(mktemp "${TMPDIR:-/tmp}/jz_cookies.XXXXXX")" || die "无法创建临时会话文件"
+  chmod 600 "$JZ_COOKIE_JAR" || die "无法保护临时会话文件"
   # 图形验证码：优先从本机 Valkey 容器读取（本地安装/运维场景），
   # 读不到时回退交互输入（JZ_CAPTCHA_CODE 可预置）。
   local capid capcode="${JZ_CAPTCHA_CODE:-}"
@@ -161,19 +195,23 @@ api_login() {
     fi
   fi
   if [[ -z "$capcode" ]]; then
-    read -r -p "请输入图形验证码（管理端登录页可见，或设置 login:captcha_enabled=false）: " capcode
+    read -r -p "请输入图形验证码: " capcode || die "验证码输入已中断"
   fi
   local body resp code msg
-  body="$(jq -n --arg u "$user" --arg p "$pass" --arg ci "${capid:-}" --arg cc "$capcode" \
-    '{username:$u, password:$p, captcha_id:$ci, captcha_code:$cc}')"
+  body="$(printf '%s' "$pass" | jq -Rs --arg u "$user" --arg ci "${capid:-}" --arg cc "$capcode" \
+    '{username:$u, password:., captcha_id:$ci, captcha_code:$cc}')" || die "无法生成登录请求"
   resp="$(curl -sS -c "$JZ_COOKIE_JAR" -H 'Content-Type: application/json' \
-    -d "$body" "$JZ_API_BASE/api/v1/auth/login")" || die "登录请求发送失败"
-  code="$(printf '%s' "$resp" | jq -r '.code // ""')"
+    --data-binary @- "$JZ_API_BASE/api/v1/auth/login" <<<"$body")" || die "登录请求发送失败"
+  code="$(printf '%s' "$resp" | jq -er '.code | strings')" || die "管理 API 登录响应无效"
   if [[ "$code" != "SUCCESS" ]]; then
     msg="$(printf '%s' "$resp" | jq -r '.message // "未知错误"')"
-    rm -f "$JZ_COOKIE_JAR"
+    api_cleanup
+    if [[ "$code" == UNAUTHENTICATED ]]; then
+      log_warn "登录失败：$msg"
+      return 1
+    fi
     if [[ "$code" == "CAPTCHA_INVALID" || "$code" == "CAPTCHA_REQUIRED" ]]; then
-      die "登录需要图形验证码：请先在系统设置中临时关闭 login:captcha_enabled 后重试（${msg}）"
+      die "登录需要图形验证码：请核对验证码后重试（${msg}）"
     fi
     die "登录失败：$msg"
   fi
@@ -183,6 +221,7 @@ api_login() {
 }
 
 api_cleanup() {
+  JZ_CSRF_TOKEN=""
   if [[ -n "$JZ_COOKIE_JAR" ]]; then
     rm -f "$JZ_COOKIE_JAR"
     JZ_COOKIE_JAR=""
@@ -235,6 +274,7 @@ sha256_check_sidecar() {
   [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || { log_err "旁车哈希格式非法: $sidecar"; return 1; }
   actual="$(sha256_of "$archive" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
   if [[ "$actual" == "$expected" ]]; then
+    if [[ "${2:-}" == --print-digest ]]; then printf '%s\n' "$actual"; fi
     return 0
   fi
   log_err "旁车哈希不匹配: ${archive}（期望 ${expected}，实际 ${actual}）"
@@ -281,5 +321,163 @@ manifest_files_verify() {
   done < <(find "$root" -type f | LC_ALL=C sort)
   (( extra > 5 )) && log_warn "  ……另有 $((extra - 5)) 个未收录文件"
   rm -f "$listed"
+  return 0
+}
+
+# ---- API 容器附加网络（如独立 APM ClickHouse 数据面网络）保留与自动接通 ----
+
+# valid_docker_network_name NAME —— 校验合法的非内建 Docker 网络名。
+valid_docker_network_name() {
+  local name="${1:-}"
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || return 1
+  case "$name" in
+    none|host|bridge) return 1 ;;
+  esac
+  return 0
+}
+
+# compose_service_network_names COMPOSE_JSON SERVICE —— 提取 Compose 为服务声明的实际网络名。
+compose_service_network_names() {
+  local compose_json="${1:-}" service="${2:-}"
+  [[ -n "$compose_json" && -n "$service" ]] || return 0
+  jq -r --arg s "$service" '
+    (.name // "") as $proj |
+    (.networks // {}) as $top |
+    ((.services[$s].networks // {}) | if type == "array" then . else keys end)[]? |
+    . as $k |
+    if ($top[$k].name // "") != "" then $top[$k].name
+    elif $proj != "" then ($proj + "_" + $k)
+    else $k end
+  ' <<<"$compose_json" 2>/dev/null || true
+}
+
+# compose_internal_network_name COMPOSE_JSON —— 提取旧/新 Compose 默认内部网 jiuzhang-internal 的实际网络名。
+compose_internal_network_name() {
+  local compose_json="${1:-}"
+  [[ -n "$compose_json" ]] || return 0
+  jq -r '
+    (.name // "") as $proj |
+    (.networks["jiuzhang-internal"] // null) as $n |
+    if $n == null then empty
+    elif ($n.name // "") != "" then $n.name
+    elif $proj != "" then ($proj + "_jiuzhang-internal")
+    else "jiuzhang-internal" end
+  ' <<<"$compose_json" 2>/dev/null || true
+}
+
+# container_network_names CONTAINER —— 输出容器当前接入的 Docker 网络名（每行一个）。
+container_network_names() {
+  local target="${1:-}" raw
+  [[ -n "$target" ]] || return 0
+  raw="$(docker inspect --format '{{json .NetworkSettings.Networks}}' "$target" 2>/dev/null || true)"
+  [[ -n "$raw" ]] || return 0
+  jq -r 'if type == "object" then keys[] else empty end' <<<"$raw" 2>/dev/null || true
+}
+
+# colocated_apm_clickhouse_container —— 查找同机运行中的独立 APM ClickHouse 容器（不存在/未运行返回空）。
+colocated_apm_clickhouse_container() {
+  local info cid
+  info="$(docker inspect --format '{{.State.Running}}|{{.Name}}' jiuzhang-apm-clickhouse 2>/dev/null || true)"
+  if [[ "$info" == "true|/jiuzhang-apm-clickhouse" || "$info" == "true|jiuzhang-apm-clickhouse" ]]; then
+    printf 'jiuzhang-apm-clickhouse\n'
+    return 0
+  fi
+  cid="$(docker ps -q --filter status=running \
+    --filter label=com.docker.compose.project=jiuzhang-apm \
+    --filter label=com.docker.compose.service=clickhouse 2>/dev/null | head -n 1 || true)"
+  if [[ "$cid" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+    info="$(docker inspect --format '{{.State.Running}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}' "$cid" 2>/dev/null || true)"
+    if [[ "$info" == "true|jiuzhang-apm|clickhouse" ]]; then
+      printf '%s\n' "$cid"
+      return 0
+    fi
+  fi
+  return 0
+}
+
+# collect_api_extra_networks OLD_API_ID TARGET_COMPOSE_JSON [OLD_COMPOSE_JSON]
+# 收集需要在重建 api 后恢复/接入的附加网络（去重排序）：
+#   1) 重建前 api 容器实际已接入、但不在目标 Compose 声明内的额外网络（含用户手工 connect 或旧 Compose 附加的网络）；
+#   2) 同机运行中的独立 APM ClickHouse 容器所在数据面网络（如 jiuzhang-apm_apm-data），避免此前升级断网遗留无法自愈。
+collect_api_extra_networks() {
+  local old_api_id="${1:-}" target_compose_json="${2:-}" old_compose_json="${3:-}"
+  local ch_cid net
+  local -a excluded=() candidates=()
+  if [[ -n "$target_compose_json" ]]; then
+    while IFS= read -r net; do
+      [[ -n "$net" ]] && excluded+=("$net")
+    done < <(compose_service_network_names "$target_compose_json" api)
+  fi
+  if [[ -n "$old_compose_json" ]]; then
+    net="$(compose_internal_network_name "$old_compose_json")"
+    [[ -n "$net" ]] && excluded+=("$net")
+  fi
+  if [[ -n "$old_api_id" ]]; then
+    while IFS= read -r net; do
+      [[ -n "$net" ]] && candidates+=("$net")
+    done < <(container_network_names "$old_api_id")
+  fi
+  ch_cid="$(colocated_apm_clickhouse_container)"
+  if [[ -n "$ch_cid" ]]; then
+    while IFS= read -r net; do
+      [[ -n "$net" ]] && candidates+=("$net")
+    done < <(container_network_names "$ch_cid")
+  fi
+  ((${#candidates[@]} > 0)) || return 0
+  local skip ex
+  for net in "${candidates[@]}"; do
+    valid_docker_network_name "$net" || continue
+    skip=false
+    for ex in ${excluded[@]+"${excluded[@]}"}; do
+      if [[ "$net" == "$ex" ]]; then
+        skip=true
+        break
+      fi
+    done
+    [[ "$skip" == false ]] && printf '%s\n' "$net"
+  done | LC_ALL=C sort -u
+}
+
+# reattach_api_extra_networks API_ID MODE NETWORKS...
+# 将附加网络重新接入重建后的 api 容器并逐一校验（MODE=strict|rollback）。
+reattach_api_extra_networks() {
+  local api_id="${1:-}" mode="${2:-strict}"
+  shift 2 || return 0
+  (($# > 0)) || return 0
+  [[ "$api_id" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || {
+    log_err "无法定位重建后的 api 容器 ID，无法恢复附加网络"
+    return 1
+  }
+  local current_nets net after_nets
+  local -a connected=()
+  current_nets="$(container_network_names "$api_id")"
+  for net in "$@"; do
+    valid_docker_network_name "$net" || continue
+    if [[ -n "$current_nets" ]] && printf '%s\n' "$current_nets" | grep -Fxq "$net"; then
+      continue
+    fi
+    if ! docker network inspect "$net" >/dev/null 2>&1; then
+      if [[ "$mode" == "rollback" ]]; then
+        log_warn "回滚跳过宿主机上已不存在的 api 附加网络: $net"
+        continue
+      fi
+      log_err "api 附加网络不存在，无法恢复连接: $net"
+      return 1
+    fi
+    if ! docker network connect "$net" "$api_id" >/dev/null 2>&1; then
+      log_err "为 api 容器接入附加网络失败: $net"
+      return 1
+    fi
+    after_nets="$(container_network_names "$api_id")"
+    if ! printf '%s\n' "$after_nets" | grep -Fxq "$net"; then
+      log_err "api 容器附加网络接入校验失败（inspect 未见网络）: $net"
+      return 1
+    fi
+    current_nets="$after_nets"
+    connected+=("$net")
+  done
+  if ((${#connected[@]} > 0)); then
+    log_info "已为 api 容器恢复/接入附加网络: ${connected[*]}"
+  fi
   return 0
 }

@@ -88,6 +88,7 @@ func TestLoadConfigValidation(t *testing.T) {
 		{"口名非法", `{"bridges":[{"name":"br0","ports":["eth 2"]}]}`, "接口名非法"},
 		{"口名注入", `{"bridges":[{"name":"br0","ports":["eth2,$(id)"]}]}`, "接口名非法"},
 		{"自身为成员", `{"bridges":[{"name":"br0","ports":["br0"]}]}`, "自身"},
+		{"重复网桥名", `{"bridges":[{"name":"br0","ports":["eth2"]},{"name":"br0","ports":["eth3"]}]}`, "网桥名重复"},
 		{"口跨两桥", `{"bridges":[{"name":"br0","ports":["eth2"]},{"name":"br1","ports":["eth2"]}]}`, "同时出现"},
 		{"dst缺掩码", `{"routes":[{"dst":"10.9.0.0","via":"192.168.50.1"}]}`, "dst 非法"},
 		{"dst掩码越界", `{"routes":[{"dst":"10.9.0.0/33","via":"192.168.50.1"}]}`, "dst 非法"},

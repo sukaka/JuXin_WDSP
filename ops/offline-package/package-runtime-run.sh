@@ -89,6 +89,8 @@ fi
 [[ -f "$REPO_ROOT/web/Dockerfile" ]] || die '缺少 web Dockerfile'
 [[ -f "$REPO_ROOT/gateway/Dockerfile" ]] || die '缺少 gateway Dockerfile'
 [[ -f "$REPO_ROOT/gateway/images/netmgrd/Dockerfile" ]] || die '缺少 netmgrd Dockerfile'
+[[ -f "$REPO_ROOT/gateway/images/mirrorcap/Dockerfile" ]] || die '缺少 mirrorcap Dockerfile'
+[[ -f "$REPO_ROOT/gateway/images/tproxyd/Dockerfile" ]] || die '缺少 tproxyd Dockerfile'
 [[ -f "$REPO_ROOT/gateway/images/pcapd/Dockerfile" ]] || die '缺少 pcapd Dockerfile'
 [[ -f "$REPO_ROOT/gateway/images/logrotator/Dockerfile" ]] || die '缺少 logrotator Dockerfile'
 [[ -f "$REPO_ROOT/deployment/containerops/Dockerfile" ]] || die '缺少 containerops Dockerfile'
@@ -321,7 +323,7 @@ verify_delivery() {
   jq -e --arg version "$VERSION" --arg delivery_mode "$expected_delivery_mode" \
     --argjson expected_signed "$expected_signed" \
     '.edition == "wdsp" and .version == $version and .arch == "amd64" and
-     .delivery_mode == $delivery_mode and .signed == $expected_signed and (.images | length) == 11 and
+     .delivery_mode == $delivery_mode and .signed == $expected_signed and (.images | length) == 13 and
      any(.files[]; .path == "agents/wdsp-agent")' "$payload_dir/manifest.json" >/dev/null \
     || die '基础离线包 manifest 的版本、架构、交付模式、签名、镜像或 Agent 清单不完整'
 
@@ -335,7 +337,7 @@ verify_delivery() {
       docker compose -f "$payload_dir/docker-compose.yml" --env-file /dev/null config --format json
   )" || die '基础离线包 docker-compose.yml 无法渲染'
   jq -e '
-    .services.gateway as $gateway | .services.netmgrd as $netmgrd |
+    .services.gateway as $gateway | .services.netmgrd as $netmgrd | .services.mirrorcap as $mirrorcap | .services.tproxyd as $tproxyd |
     ($gateway.user == "0:0") and
     ($gateway.entrypoint == ["/usr/local/bin/wdsp-gateway-bind"]) and
     ($gateway.environment.HOME == "/var/lib/caddy") and
@@ -344,10 +346,21 @@ verify_delivery() {
     (($gateway.security_opt // []) | index("no-new-privileges:true") != null) and
     ($gateway.network_mode == "host") and
     (($gateway.sysctls // {}) | has("net.ipv4.ip_unprivileged_port_start") | not) and
-    ($netmgrd.network_mode == "service:gateway")
+    ($netmgrd.network_mode == "service:gateway") and
+    ($mirrorcap.network_mode == "host") and
+    ($mirrorcap.read_only == true) and
+    ($mirrorcap.cap_drop == ["ALL"]) and
+    (($mirrorcap.cap_add | sort) == (["NET_RAW", "NET_ADMIN", "SETUID", "SETGID", "SETPCAP"] | sort)) and
+    ($mirrorcap.environment.MIRROR_DROP_PRIVS == "1") and
+    ($tproxyd.network_mode == "host") and
+    ($tproxyd.user == "1000:1000") and
+    ($tproxyd.read_only == true) and
+    ($tproxyd.cap_drop == ["ALL"]) and
+    (($tproxyd.cap_add // []) | length == 0) and
+    (($tproxyd.security_opt // []) | index("no-new-privileges:true") != null)
   ' <<<"$compose_json" >/dev/null \
-    || die '最终 .run 的 gateway 低端口入口、最小 capability 或 netmgrd 网络约束不符合交付基线'
-  required_images=(jiuzhang-server jiuzhang-web jiuzhang-gateway jiuzhang-netmgrd jiuzhang-logrotator jiuzhang-containerops jiuzhang-pcapd postgres valkey clickhouse opentelemetry-collector-contrib)
+    || die '最终 .run 的 gateway 低端口入口、最小 capability、netmgrd、mirrorcap 或 tproxyd 约束不符合交付基线'
+  required_images=(jiuzhang-server jiuzhang-web jiuzhang-gateway jiuzhang-netmgrd jiuzhang-mirrorcap jiuzhang-tproxyd jiuzhang-logrotator jiuzhang-containerops jiuzhang-pcapd postgres valkey clickhouse opentelemetry-collector-contrib)
   for image_name in "${required_images[@]}"; do
     grep -q "/images/${image_name}\.tar$" "$archive_listing" \
       || die "基础离线包缺少运行镜像：$image_name"
@@ -355,7 +368,7 @@ verify_delivery() {
   if grep -Eq '(^|/)(test|tests|__tests__|docs)(/|$)' "$archive_listing"; then
     die '基础离线包混入测试目录或产品文档目录'
   fi
-  log_info "最终验收通过：${verification_scope}、哈希、11 个运行镜像（含默认不启动的 pcapd）、Agent、${#packaged_rpms[@]} 个 RPM、内容扫描均有效"
+  log_info "最终验收通过：${verification_scope}、哈希、13 个运行镜像（含默认空转的 mirrorcap/tproxyd 与默认不启动的 pcapd）、Agent、${#packaged_rpms[@]} 个 RPM、内容扫描均有效"
   log_warn 'RPM 依赖闭包仍须在干净的目标 x86-64 测试机完成离线安装验收'
 }
 
@@ -394,6 +407,8 @@ build_image 'jiuzhang-server' 'server/Dockerfile' '.'
 build_image 'jiuzhang-web' 'web/Dockerfile' 'web'
 build_image 'jiuzhang-gateway' 'gateway/Dockerfile' 'gateway'
 build_image 'jiuzhang-netmgrd' 'gateway/images/netmgrd/Dockerfile' 'gateway'
+build_image 'jiuzhang-mirrorcap' 'gateway/images/mirrorcap/Dockerfile' 'gateway'
+build_image 'jiuzhang-tproxyd' 'gateway/images/tproxyd/Dockerfile' 'gateway'
 build_image 'jiuzhang-pcapd' 'gateway/images/pcapd/Dockerfile' 'gateway'
 build_image 'jiuzhang-logrotator' 'gateway/images/logrotator/Dockerfile' 'gateway/images/logrotator'
 build_image 'jiuzhang-containerops' 'deployment/containerops/Dockerfile' '.'
@@ -414,6 +429,13 @@ else
 fi
 
 export WDSP_AGENT_BINARY="$AGENT_BINARY"
+if [[ "$DRY_RUN" != true && -x "$REPO_ROOT/packaging/wdsp-agent/build-packages.sh" ]]; then
+  AGENT_PACKAGES_DIR="$WORK_DIR/agent-packages"
+  log_info "构建全平台 WDSP Agent 安装包（rpm / deb / darwin / windows）"
+  bash "$REPO_ROOT/packaging/wdsp-agent/build-packages.sh" \
+    --version "$VERSION" --output "$AGENT_PACKAGES_DIR"
+  export WDSP_AGENT_PACKAGES_DIR="$AGENT_PACKAGES_DIR"
+fi
 run_args=(--version "$VERSION" --output "$OUTPUT_DIR" --rpm-dir "$RPM_DIR")
 [[ -z "$ALINUX_RPM_DIR" ]] || run_args+=(--alinux-rpm-dir "$ALINUX_RPM_DIR")
 [[ "$DEVELOPMENT" != true ]] || run_args+=(--development)

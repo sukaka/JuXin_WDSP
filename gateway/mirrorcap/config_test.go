@@ -163,3 +163,30 @@ func TestFromEnvDiscoveryInvalid(t *testing.T) {
 		t.Error("flush_interval 负数应报错")
 	}
 }
+
+func TestParseEnvPreservesSettingsWithoutIface(t *testing.T) {
+	t.Setenv("MIRROR_IFACE", "")
+	t.Setenv("MIRROR_RULES_DIR", "/opt/jiuzhang/rules")
+	t.Setenv("MIRROR_IDENTITY_SALT", "prod-salt")
+	t.Setenv("MIRROR_AUDIT_LOG", "/opt/jiuzhang/logs/coraza-audit.log")
+	t.Setenv("MIRROR_PORTS", "8081,8082")
+	t.Setenv("MIRROR_BODY_MAX", "131072")
+
+	cfg, err := ParseEnv()
+	if err != nil {
+		t.Fatalf("ParseEnv 不应因缺 MIRROR_IFACE 报错: %v", err)
+	}
+	if cfg.RulesDir != "/opt/jiuzhang/rules" || cfg.IdentitySalt != "prod-salt" ||
+		cfg.AuditLog != "/opt/jiuzhang/logs/coraza-audit.log" || cfg.BodyMax != 131072 {
+		t.Fatalf("ParseEnv 未保留运维环境变量: %+v", cfg)
+	}
+	if len(cfg.Ports) != 2 || cfg.Ports[0] != 8081 || cfg.Ports[1] != 8082 {
+		t.Fatalf("ParseEnv Ports=%v want [8081 8082]", cfg.Ports)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("缺 MIRROR_IFACE 时 Validate 仍应报错")
+	}
+	if def := Defaults(); len(def.Ports) == 0 {
+		t.Fatal("Defaults().Ports 不得为空")
+	}
+}
