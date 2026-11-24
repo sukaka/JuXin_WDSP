@@ -1,6 +1,9 @@
 package customrules
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -388,5 +391,174 @@ func TestGenerateActions(t *testing.T) {
 		if action == "OBSERVE" && strings.Contains(gen, "ctl:ruleEngine=DetectionOnly") {
 			t.Errorf("OBSERVE must not disable the whole transaction: %s", gen)
 		}
+	}
+}
+
+func TestInferPhase(t *testing.T) {
+	cases := []struct {
+		name string
+		vars []string
+		want int
+	}{
+		{"empty defaults to phase 1", nil, 1},
+		{"REQUEST_URI header only", []string{"REQUEST_URI"}, 1},
+		{"ARGS_GET header only", []string{"ARGS_GET", "ARGS_GET:id"}, 1},
+		{"headers and cookies only", []string{"REQUEST_HEADERS:User-Agent", "REQUEST_COOKIES:sid", "HTTP_USER_AGENT", "QUERY_STRING", "REMOTE_ADDR", "REQUEST_METHOD", "REQUEST_FILENAME", "REQUEST_BASENAME", "CONTENT_TYPE", "REQUEST_PROTOCOL", "REQUEST_LINE", "REQUEST_HEADERS_NAMES"}, 1},
+		{"REQUEST_BODY", []string{"REQUEST_BODY"}, 2},
+		{"ARGS_POST", []string{"ARGS_POST"}, 2},
+		{"ARGS", []string{"ARGS"}, 2},
+		{"ARGS_NAMES", []string{"ARGS_NAMES"}, 2},
+		{"selector ARGS:id", []string{"ARGS:id"}, 2},
+		{"selector ARGS_POST:comment", []string{"ARGS_POST:comment"}, 2},
+		{"selector ARGS_NAMES:key", []string{"ARGS_NAMES:key"}, 2},
+		{"mixed header and body", []string{"REQUEST_URI", "HTTP_USER_AGENT", "ARGS:id"}, 2},
+		{"mixed header and REQUEST_BODY", []string{"REQUEST_HEADERS:Host", "REQUEST_BODY"}, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := InferPhase(tc.vars); got != tc.want {
+				t.Errorf("InferPhase(%v) = %d, want %d", tc.vars, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateInputAutoInferPhase(t *testing.T) {
+	t.Run("header-only vars derive phase 1", func(t *testing.T) {
+		r := validRule()
+		r.Phase = 0
+		r.TargetVariables = []string{"REQUEST_URI", "REQUEST_HEADERS:User-Agent"}
+		gen, err := ValidateInput(r)
+		if err != nil {
+			t.Fatalf("ValidateInput failed: %v", err)
+		}
+		if r.Phase != 1 {
+			t.Errorf("r.Phase = %d, want 1", r.Phase)
+		}
+		if !strings.Contains(gen, "phase:1") {
+			t.Errorf("generated rule should contain phase:1, got: %s", gen)
+		}
+	})
+
+	t.Run("body vars derive phase 2", func(t *testing.T) {
+		for _, vars := range [][]string{
+			{"REQUEST_BODY"},
+			{"ARGS_POST"},
+			{"ARGS:id"},
+			{"REQUEST_URI", "ARGS_NAMES"},
+		} {
+			r := validRule()
+			r.Phase = 0
+			r.TargetVariables = vars
+			gen, err := ValidateInput(r)
+			if err != nil {
+				t.Fatalf("ValidateInput(%v) failed: %v", vars, err)
+			}
+			if r.Phase != 2 {
+				t.Errorf("vars=%v: r.Phase = %d, want 2", vars, r.Phase)
+			}
+			if !strings.Contains(gen, "phase:2") {
+				t.Errorf("vars=%v: generated rule should contain phase:2, got: %s", vars, gen)
+			}
+		}
+	})
+
+	t.Run("invalid target variable rejected before phase inference", func(t *testing.T) {
+		r := validRule()
+		r.Phase = 0
+		r.TargetVariables = []string{"INVALID_VAR"}
+		if _, err := ValidateInput(r); err == nil {
+			t.Fatal("invalid target variable should be rejected")
+		}
+		if r.Phase != 0 {
+			t.Errorf("phase should not be mutated on target variable validation failure, got %d", r.Phase)
+		}
+	})
+}
+
+func TestValidateInputExplicitPhaseCompatibility(t *testing.T) {
+	for phase := 1; phase <= 5; phase++ {
+		r := validRule()
+		r.Phase = phase
+		r.TargetVariables = []string{"REQUEST_URI"}
+		gen, err := ValidateInput(r)
+		if err != nil {
+			t.Fatalf("explicit phase %d should be allowed: %v", phase, err)
+		}
+		if r.Phase != phase {
+			t.Errorf("explicit phase %d was mutated to %d", phase, r.Phase)
+		}
+		want := "phase:" + string(rune('0'+phase))
+		if !strings.Contains(gen, want) {
+			t.Errorf("generated rule missing %s: %s", want, gen)
+		}
+	}
+
+	for _, badPhase := range []int{-1, 6, 99} {
+		r := validRule()
+		r.Phase = badPhase
+		if _, err := ValidateInput(r); err == nil {
+			t.Errorf("phase %d should be rejected", badPhase)
+		}
+	}
+}
+
+func TestHandlerValidateAutoPhase(t *testing.T) {
+	h := NewHandler(nil, nil)
+
+	callValidate := func(body string) (bool, string, string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/custom-rules/new/validate", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.Validate(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var env struct {
+			Data struct {
+				Valid         bool   `json:"valid"`
+				Error         string `json:"error"`
+				GeneratedRule string `json:"generated_rule"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshal response: %v (%s)", err, rec.Body.String())
+		}
+		return env.Data.Valid, env.Data.GeneratedRule, env.Data.Error
+	}
+
+	// 1. 缺省 phase + 请求头变量 -> 自动推导 phase:1
+	valid, gen, errMsg := callValidate(`{"rule_id":7100001,"name":"header rule","operator":"rx","operator_value":"admin","target_variables":["REQUEST_URI"],"action":"BLOCK"}`)
+	if !valid || !strings.Contains(gen, "phase:1") {
+		t.Errorf("omitted phase + REQUEST_URI: valid=%v gen=%q err=%q", valid, gen, errMsg)
+	}
+
+	// 2. 缺省 phase + 请求体变量 -> 自动推导 phase:2
+	valid, gen, errMsg = callValidate(`{"rule_id":7100002,"name":"body rule","operator":"rx","operator_value":"(?i)union","target_variables":["REQUEST_BODY"],"action":"BLOCK"}`)
+	if !valid || !strings.Contains(gen, "phase:2") {
+		t.Errorf("omitted phase + REQUEST_BODY: valid=%v gen=%q err=%q", valid, gen, errMsg)
+	}
+
+	// 3. phase=0 + ARGS:id -> 自动推导 phase:2
+	valid, gen, errMsg = callValidate(`{"rule_id":7100003,"name":"args rule","phase":0,"operator":"contains","operator_value":"test","target_variables":["ARGS:id"],"action":"BLOCK"}`)
+	if !valid || !strings.Contains(gen, "phase:2") {
+		t.Errorf("phase=0 + ARGS:id: valid=%v gen=%q err=%q", valid, gen, errMsg)
+	}
+
+	// 4. 显式 phase=3 保持向后兼容
+	valid, gen, errMsg = callValidate(`{"rule_id":7100004,"name":"explicit phase","phase":3,"operator":"contains","operator_value":"test","target_variables":["REQUEST_URI"],"action":"OBSERVE"}`)
+	if !valid || !strings.Contains(gen, "phase:3") {
+		t.Errorf("explicit phase=3: valid=%v gen=%q err=%q", valid, gen, errMsg)
+	}
+
+	// 5. 非法 phase=-1 / 6 拒绝
+	valid, _, _ = callValidate(`{"rule_id":7100005,"name":"bad phase","phase":-1,"operator":"contains","operator_value":"test","target_variables":["REQUEST_URI"],"action":"BLOCK"}`)
+	if valid {
+		t.Error("phase=-1 should fail validation")
+	}
+	valid, _, _ = callValidate(`{"rule_id":7100006,"name":"bad phase 6","phase":6,"operator":"contains","operator_value":"test","target_variables":["REQUEST_URI"],"action":"BLOCK"}`)
+	if valid {
+		t.Error("phase=6 should fail validation")
 	}
 }

@@ -14,11 +14,12 @@ Include crs/crs-setup.conf
 Include crs/plugins/*/plugins/*-config.conf     # CRS 官方插件（配置段）
 Include crs/plugins/*/plugins/*-before.conf     # CRS 官方插件（前置规则）
 Include exclusions/before-crs.conf + 运行时例外 + 规则覆盖
+管理面自定义规则                                # 位于例外/规则覆盖之后、CRS 主规则之前（避免 phase:2 阻断被 CRS 949 抢占）
 Include crs/rules/*.conf                        # OWASP CRS 主规则（当前 4.28.0，622 条入库）
 Include contrib/*/*.conf                        # 第三方包 + 自建包
 Include crs/plugins/*/plugins/*-after.conf      # CRS 官方插件（后置规则）
 Include exclusions/after-crs.conf
-Include jiuzhang/jiuzhang-custom.conf + 管理面自定义规则
+Include jiuzhang/jiuzhang-custom.conf
 Include jiuzhang/post-contrib-blocking.conf    # 二次阻断评估（必须最后加载）
 ```
 
@@ -100,7 +101,7 @@ Include jiuzhang/post-contrib-blocking.conf    # 二次阻断评估（必须最�
 
 ## 二次阻断评估（post-contrib-blocking.conf）
 
-- 问题：CRS 阻断评估 `REQUEST-949` 位于 `crs/rules/` 内部，晚于它加载的规则（contrib 包、插件 after、after-crs、管理面自定义规则）命中后只累加异常分数，不会再次进入阈值评估——若无二次评估，CUSTOM_PACK 的 CRITICAL 命中在 PROTECT 模式下也只出事件不阻断。
+- 问题：CRS 阻断评估 `REQUEST-949` 位于 `crs/rules/` 内部，晚于它加载的规则（contrib 包、插件 after、after-crs、静态 `jiuzhang-custom.conf`）命中后只累加异常分数，不会再次进入阈值评估——若无二次评估，CUSTOM_PACK 的 CRITICAL 命中在 PROTECT 模式下也只出事件不阻断。（注：管理面自定义规则已调整至例外/规则覆盖之后、`crs/rules/*.conf` 之前加载，使 `phase:2` 自定义 BLOCK 规则直接优先于 CRS `949` 阻断，同时仍受例外与规则覆盖控制。）
 - 修复：`gateway/rules/jiuzhang/post-contrib-blocking.conf` 在全部计分规则之后重新汇总 `tx.inbound_anomaly_score_pl1..pl4` 到独立变量 `tx.jz_blocking_inbound_score`（phase:1/phase:2 各一组，ID 9000101-9000104），达到 `tx.inbound_anomaly_score_threshold` 即 `deny,status:403`；不改动 CRS 任何文件。DetectionOnly（观察模式）下引擎自动把 deny 降级为仅记录。
 - 加载位置约束：该文件必须是 WAF 指令链中**最后一条 Include**（生成器 `buildWAFDirectivesWithPolicy` 与静态 `gateway/configs/Caddyfile` 均已固定）；任何新增计分规则包都必须早于它加载，否则其命中仍然无法阻断。
 

@@ -52,6 +52,27 @@ var allowedVariables = map[string]bool{
 	"REQUEST_PROTOCOL": true, "REQUEST_LINE": true,
 }
 
+// 依赖请求体解析后才完整可用的检测变量基名集合。
+var bodyDependentVariables = map[string]bool{
+	"REQUEST_BODY": true,
+	"ARGS_POST":    true,
+	"ARGS":         true,
+	"ARGS_NAMES":   true,
+}
+
+// InferPhase 根据 target_variables 自动推导 Coraza 执行阶段：
+// 若任一变量（取 ":" 前的基名）属于请求体相关集合（REQUEST_BODY / ARGS_POST / ARGS / ARGS_NAMES），
+// 返回 2（请求体阶段）；否则返回 1（请求头阶段）。
+func InferPhase(targetVariables []string) int {
+	for _, v := range targetVariables {
+		base := strings.Split(v, ":")[0]
+		if bodyDependentVariables[base] {
+			return 2
+		}
+	}
+	return 1
+}
+
 // 检测变量形态白名单：变量名[:选择器]，整体限定字符集。
 // GenerateSecLang 将变量以 | 原样拼接进 SecRule 首参，不转义——
 // 必须在此拒绝引号、空白与一切控制字符，否则可注入独立指令行（如 SecAction ctl:ruleEngine=Off）。
@@ -177,9 +198,12 @@ func ValidateInput(r *CustomRule) (generated string, err error) {
 	if !allowedActions[action] {
 		return "", fmt.Errorf("%w: 不支持的动作 %q（允许 LOG/OBSERVE/BLOCK）", ErrInvalidRule, action)
 	}
-	// 阶段
-	if r.Phase < 1 || r.Phase > 5 {
+	// 阶段：未指定或为 0 时按已校验的检测变量自动推导；显式提供 1-5 保持向后兼容
+	if r.Phase < 0 || r.Phase > 5 {
 		return "", fmt.Errorf("%w: 执行阶段必须在1至5之间", ErrInvalidRule)
+	}
+	if r.Phase == 0 {
+		r.Phase = InferPhase(r.TargetVariables)
 	}
 	// 风险等级
 	sev := strings.ToUpper(strings.TrimSpace(r.Severity))

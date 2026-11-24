@@ -7,6 +7,7 @@ import {
   Card,
   Col,
   Descriptions,
+  Divider,
   Drawer,
   Form,
   Input,
@@ -18,10 +19,11 @@ import {
   Space,
   Statistic,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { PlusOutlined, SyncOutlined } from '@ant-design/icons'
+import { EditOutlined, PlusOutlined, SyncOutlined, UndoOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
 import { applicationsApi } from '../../api/applications'
 import { protectionPoliciesApi } from '../../api/protectionPolicies'
@@ -34,6 +36,13 @@ import { useAuthStore } from '../../stores/auth'
 import { ruleMessageZh, ruleNameZh } from '../../utils/crsRuleNames'
 import { hasPermission } from '../../utils/permission'
 import {
+  formatRulePhaseZh,
+  resolveWafRuleDetail,
+  ruleTagTooltipZh,
+  WAF_RULE_DETAIL_SOURCE_META,
+  WAF_RULE_TYPE_META,
+} from '../../utils/wafRuleDetails'
+import {
   ATTACK_TYPE_META,
   EXCEPTION_SCOPE_META,
   parseWafRuleTags,
@@ -41,7 +50,7 @@ import {
   RULE_SEVERITY_META,
   RULE_SOURCE_META,
 } from '../../utils/stage4'
-import type { WafRuleItem } from '../../types'
+import type { WafRuleDescriptionPayload, WafRuleItem } from '../../types'
 
 interface Filters {
   rule_id?: number
@@ -140,6 +149,48 @@ export default function WafRulesPage() {
   })
 
   const [overrideForm] = Form.useForm()
+  const [descForm] = Form.useForm<WafRuleDescriptionPayload>()
+  const [editingDesc, setEditingDesc] = useState(false)
+
+  const openDetailDrawer = (ruleId: number) => {
+    setEditingDesc(false)
+    descForm.resetFields()
+    setDetailRuleId(ruleId)
+  }
+
+  const closeDetailDrawer = () => {
+    setEditingDesc(false)
+    descForm.resetFields()
+    setDetailRuleId(null)
+  }
+
+  const updateDescMut = useMutation({
+    mutationFn: ({ ruleId, body }: { ruleId: number; body: WafRuleDescriptionPayload }) =>
+      wafRulesApi.updateDescription(ruleId, body),
+    onSuccess: (updated) => {
+      message.success('规则中文说明已保存')
+      setEditingDesc(false)
+      queryClient.setQueryData(['waf-rule', updated.rule_id], updated)
+      void queryClient.invalidateQueries({ queryKey: ['waf-rules'] })
+    },
+    onError: (e: unknown) => {
+      message.error(e instanceof ApiError ? e.message : '保存规则说明失败')
+    },
+  })
+
+  const resetDescMut = useMutation({
+    mutationFn: (ruleId: number) => wafRulesApi.resetDescription(ruleId),
+    onSuccess: (updated) => {
+      message.success('已恢复系统默认说明')
+      setEditingDesc(false)
+      descForm.resetFields()
+      queryClient.setQueryData(['waf-rule', updated.rule_id], updated)
+      void queryClient.invalidateQueries({ queryKey: ['waf-rules'] })
+    },
+    onError: (e: unknown) => {
+      message.error(e instanceof ApiError ? e.message : '恢复默认说明失败')
+    },
+  })
 
   const createOverrideMut = useMutation({
     mutationFn: ruleOverridesApi.create,
@@ -212,7 +263,7 @@ export default function WafRulesPage() {
             size="small"
             style={{ padding: 0, height: 'auto' }}
             title={display}
-            onClick={() => setDetailRuleId(record.rule_id)}
+            onClick={() => openDetailDrawer(record.rule_id)}
           >
             {display}
           </Button>
@@ -251,7 +302,7 @@ export default function WafRulesPage() {
       width: 80,
       fixed: 'right',
       render: (_, record) => (
-        <Button type="link" size="small" onClick={() => setDetailRuleId(record.rule_id)}>
+        <Button type="link" size="small" onClick={() => openDetailDrawer(record.rule_id)}>
           详情
         </Button>
       ),
@@ -262,6 +313,7 @@ export default function WafRulesPage() {
   const totalRules = categories.reduce((sum, c) => sum + c.count, 0)
   const detail = detailQuery.data
   const detailTags = detail ? parseWafRuleTags(detail.tags) : []
+  const ruleDetailInfo = detail ? resolveWafRuleDetail(detail) : null
 
   return (
     <Card
@@ -387,7 +439,7 @@ export default function WafRulesPage() {
           columns={columns}
           dataSource={listQuery.data?.items}
           onRow={(record) => ({
-            onDoubleClick: () => setDetailRuleId(record.rule_id),
+            onDoubleClick: () => openDetailDrawer(record.rule_id),
             style: { cursor: 'pointer' },
           })}
           scroll={{ x: 1150 }}
@@ -408,8 +460,8 @@ export default function WafRulesPage() {
       <Drawer
         title={`规则详情：${detail?.rule_id ?? detailRuleId ?? ''}`}
         open={detailRuleId !== null}
-        onClose={() => setDetailRuleId(null)}
-        width={560}
+        onClose={closeDetailDrawer}
+        width={680}
       >
         {detailQuery.isLoading ? (
           <Typography.Text type="secondary">加载中...</Typography.Text>
@@ -420,7 +472,7 @@ export default function WafRulesPage() {
             message="加载规则详情失败"
             description={detailQuery.error instanceof ApiError ? detailQuery.error.message : undefined}
           />
-        ) : detail ? (
+        ) : detail && ruleDetailInfo ? (
           <>
             <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
               <Descriptions.Item label="规则ID">{detail.rule_id}</Descriptions.Item>
@@ -433,29 +485,278 @@ export default function WafRulesPage() {
               <Descriptions.Item label="规则消息" span={2}>
                 {ruleMessageZh(detail) || '-'}
               </Descriptions.Item>
+              <Descriptions.Item label="规则类别">
+                <StatusTag value={ruleDetailInfo.rule_type} map={WAF_RULE_TYPE_META} />
+              </Descriptions.Item>
+              <Descriptions.Item label="生效偏执级别">
+                {ruleDetailInfo.paranoia_level || '-'}
+              </Descriptions.Item>
               <Descriptions.Item label="攻击类型">
                 <StatusTag value={detail.attack_type} map={ATTACK_TYPE_META} />
               </Descriptions.Item>
               <Descriptions.Item label="风险等级">
                 <StatusTag value={detail.severity} map={RULE_SEVERITY_META} />
               </Descriptions.Item>
-              <Descriptions.Item label="执行阶段">{detail.phase}</Descriptions.Item>
+              <Descriptions.Item label="执行阶段">
+                {formatRulePhaseZh(detail.phase)}
+              </Descriptions.Item>
               <Descriptions.Item label="默认状态">
                 <StatusTag value={detail.default_state} map={RULE_DEFAULT_STATE_META} />
               </Descriptions.Item>
-              <Descriptions.Item label="规则文件" span={2}>
+              <Descriptions.Item label="处置方式" span={2}>
+                {ruleDetailInfo.action_behavior || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="规则文件">
                 <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
                   {detail.file_name || '-'}
                 </Typography.Text>
               </Descriptions.Item>
               <Descriptions.Item label="规则集版本">{detail.crs_version || '-'}</Descriptions.Item>
             </Descriptions>
+
+            <Card
+              size="small"
+              title={
+                <Space size={8}>
+                  <span>规则详细说明</span>
+                  {ruleDetailInfo.source && (
+                    <StatusTag value={ruleDetailInfo.source} map={WAF_RULE_DETAIL_SOURCE_META} />
+                  )}
+                </Space>
+              }
+              extra={
+                canManageOverride && !editingDesc ? (
+                  <Space size={4}>
+                    <Button
+                      type="link"
+                      size="small"
+                      icon={<EditOutlined />}
+                      onClick={() => {
+                        descForm.setFieldsValue({
+                          summary: ruleDetailInfo.custom_fields?.summary ?? '',
+                          detection_logic: ruleDetailInfo.custom_fields?.detection_logic ?? '',
+                          risk_impact: ruleDetailInfo.custom_fields?.risk_impact ?? '',
+                          tuning_advice: ruleDetailInfo.custom_fields?.tuning_advice ?? '',
+                        })
+                        setEditingDesc(true)
+                      }}
+                    >
+                      编辑说明
+                    </Button>
+                    {ruleDetailInfo.customized && (
+                      <Popconfirm
+                        title="确定清除人工维护说明，恢复系统默认说明？"
+                        okText="确认恢复"
+                        cancelText="取消"
+                        onConfirm={() => resetDescMut.mutate(detail.rule_id)}
+                      >
+                        <Button
+                          type="link"
+                          size="small"
+                          icon={<UndoOutlined />}
+                          loading={resetDescMut.isPending}
+                        >
+                          恢复默认
+                        </Button>
+                      </Popconfirm>
+                    )}
+                  </Space>
+                ) : null
+              }
+              style={{ marginBottom: 16 }}
+            >
+              {editingDesc ? (
+                <Form
+                  form={descForm}
+                  layout="vertical"
+                  size="small"
+                  onFinish={(values) => {
+                    const payload: WafRuleDescriptionPayload = {
+                      summary: (values.summary ?? '').trim(),
+                      detection_logic: (values.detection_logic ?? '').trim(),
+                      risk_impact: (values.risk_impact ?? '').trim(),
+                      tuning_advice: (values.tuning_advice ?? '').trim(),
+                    }
+                    if (
+                      !payload.summary &&
+                      !payload.detection_logic &&
+                      !payload.risk_impact &&
+                      !payload.tuning_advice
+                    ) {
+                      message.warning('请至少填写一项中文说明内容；如需恢复系统默认请使用「恢复默认」')
+                      return
+                    }
+                    updateDescMut.mutate({ ruleId: detail.rule_id, body: payload })
+                  }}
+                >
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 12 }}
+                    message="任意字段留空将自动沿用系统内置或规则文件自动解析说明；保存后独立持久化，不受后续 CRS 同步覆盖。"
+                  />
+                  <Form.Item name="summary" label="规则概述">
+                    <Input.TextArea
+                      rows={3}
+                      maxLength={2000}
+                      showCount
+                      placeholder="留空沿用系统默认说明；可输入针对本规则的完整中文概述"
+                    />
+                  </Form.Item>
+                  <Form.Item name="detection_logic" label="检测原理与检查目标">
+                    <Input.TextArea
+                      rows={2}
+                      maxLength={2000}
+                      showCount
+                      placeholder="留空沿用系统默认检测原理说明"
+                    />
+                  </Form.Item>
+                  <Form.Item name="risk_impact" label="安全风险与防护意义">
+                    <Input.TextArea
+                      rows={2}
+                      maxLength={2000}
+                      showCount
+                      placeholder="留空沿用系统默认安全风险说明"
+                    />
+                  </Form.Item>
+                  <Form.Item name="tuning_advice" label="误报排查与调优建议">
+                    <Input.TextArea
+                      rows={3}
+                      maxLength={2000}
+                      showCount
+                      placeholder="留空沿用系统默认建议；可补充结合本司业务的排障与例外经验"
+                    />
+                  </Form.Item>
+                  <Space>
+                    <Button type="primary" htmlType="submit" loading={updateDescMut.isPending}>
+                      保存说明
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        setEditingDesc(false)
+                        descForm.resetFields()
+                      }}
+                    >
+                      取消
+                    </Button>
+                  </Space>
+                </Form>
+              ) : (
+                <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                  <div>
+                    <Typography.Text strong>规则概述</Typography.Text>
+                    <Typography.Paragraph style={{ marginTop: 4, marginBottom: 0 }}>
+                      {ruleDetailInfo.summary}
+                    </Typography.Paragraph>
+                  </div>
+
+                  <Divider style={{ margin: '4px 0' }} />
+
+                  <div>
+                    <Typography.Text strong>检测原理与检查目标</Typography.Text>
+                    <Typography.Paragraph
+                      style={{ marginTop: 4, marginBottom: ruleDetailInfo.targets.length > 0 ? 8 : 0 }}
+                    >
+                      {ruleDetailInfo.detection_logic}
+                    </Typography.Paragraph>
+                    {ruleDetailInfo.targets.length > 0 && (
+                      <Space wrap size={[4, 4]}>
+                        {ruleDetailInfo.targets.map((target) => (
+                          <Tag key={target} color="geekblue">
+                            {target}
+                          </Tag>
+                        ))}
+                      </Space>
+                    )}
+                  </div>
+
+                  <Divider style={{ margin: '4px 0' }} />
+
+                  <div>
+                    <Typography.Text strong>安全风险与防护意义</Typography.Text>
+                    <Typography.Paragraph style={{ marginTop: 4, marginBottom: 0 }}>
+                      {ruleDetailInfo.risk_impact}
+                    </Typography.Paragraph>
+                  </div>
+
+                  <Divider style={{ margin: '4px 0' }} />
+
+                  <div>
+                    <Typography.Text strong>误报排查与调优建议</Typography.Text>
+                    <Typography.Paragraph style={{ marginTop: 4, marginBottom: 0 }}>
+                      {ruleDetailInfo.tuning_advice}
+                    </Typography.Paragraph>
+                  </div>
+
+                  <Divider style={{ margin: '4px 0' }} />
+
+                  <div>
+                    <Typography.Text strong>执行阶段说明</Typography.Text>
+                    <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0 }}>
+                      {ruleDetailInfo.phase_description}
+                    </Typography.Paragraph>
+                  </div>
+
+                  {ruleDetailInfo.references.length > 0 && (
+                    <>
+                      <Divider style={{ margin: '4px 0' }} />
+                      <div>
+                        <Typography.Text strong>关联漏洞与标准</Typography.Text>
+                        <div style={{ marginTop: 6 }}>
+                          <Space wrap size={[4, 4]}>
+                            {ruleDetailInfo.references.map((ref) => (
+                              <Tag
+                                key={ref}
+                                color={
+                                  ref.startsWith('漏洞编号') || ref.startsWith('CNNVD')
+                                    ? 'volcano'
+                                    : ref.startsWith('CAPEC-')
+                                      ? 'purple'
+                                      : 'blue'
+                                }
+                              >
+                                {ref}
+                              </Tag>
+                            ))}
+                          </Space>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {ruleDetailInfo.customized && ruleDetailInfo.custom_fields && (
+                    <>
+                      <Divider style={{ margin: '4px 0' }} />
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        当前包含人工维护说明
+                        {ruleDetailInfo.custom_fields.updated_by_name
+                          ? `（最近维护人：${ruleDetailInfo.custom_fields.updated_by_name}`
+                          : ''}
+                        {ruleDetailInfo.custom_fields.updated_at
+                          ? `${ruleDetailInfo.custom_fields.updated_by_name ? '，' : '（'}更新时间：${ruleDetailInfo.custom_fields.updated_at.slice(0, 19).replace('T', ' ')}`
+                          : ''}
+                        {ruleDetailInfo.custom_fields.updated_by_name ||
+                        ruleDetailInfo.custom_fields.updated_at
+                          ? '）'
+                          : ''}
+                        ，不受规则同步覆盖。
+                      </Typography.Text>
+                    </>
+                  )}
+                </Space>
+              )}
+            </Card>
+
             <Typography.Title level={5}>标签（{detailTags.length}）</Typography.Title>
             <Space wrap>
               {detailTags.length === 0 ? (
                 <Typography.Text type="secondary">无标签</Typography.Text>
               ) : (
-                detailTags.map((t) => <Tag key={t}>{t}</Tag>)
+                detailTags.map((t) => (
+                  <Tooltip key={t} title={ruleTagTooltipZh(t)}>
+                    <Tag>{t}</Tag>
+                  </Tooltip>
+                ))
               )}
             </Space>
 

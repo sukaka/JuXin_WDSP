@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -51,6 +52,7 @@ type Rule struct {
 	DefaultState string          `json:"default_state"`
 	CRSVersion   string          `json:"crs_version"`
 	ContentHash  string          `json:"content_hash"`
+	ParsedSpec   json.RawMessage `json:"parsed_spec,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
 }
@@ -214,8 +216,10 @@ func parseOneRule(text, fileName, source string, commentBlock []string) (*Rule, 
 	if m := severityPattern.FindStringSubmatch(text); m != nil {
 		rule.Severity = normalizeSeverity(m[1])
 	}
+	rawMsg := ""
 	if m := msgPattern.FindStringSubmatch(text); m != nil {
-		rule.Message = unescape(m[1])
+		rawMsg = unescape(m[1])
+		rule.Message = rawMsg
 		rule.Name = truncate(rule.Message, 200)
 	}
 	// 名称/消息兜底（msg 优先原则不变）：msg 缺失时取规则正上方注释块，
@@ -263,6 +267,9 @@ func parseOneRule(text, fileName, source string, commentBlock []string) (*Rule, 
 	if rule.AttackType == "OTHER" {
 		rule.AttackType = fallbackAttackTypeByFile(fileName)
 	}
+	// 提取结构化规则事实与中文注释（方案 A：热投递新规则自动具备中文详述）
+	spec := extractRuleSpec(text, fileName, source, rawMsg, rule, tags, commentBlock)
+	rule.ParsedSpec = marshalRuleSpecJSON(spec)
 	// 内容哈希（用于变更检测）
 	h := sha256.Sum256([]byte(text))
 	rule.ContentHash = hex.EncodeToString(h[:])
@@ -504,8 +511,9 @@ func (s *SyncService) syncSourceFiles(ctx context.Context, files []string, sourc
 				report.Added++
 			} else if existingRule.ContentHash != rule.ContentHash ||
 				existingRule.Name != rule.Name || existingRule.Message != rule.Message ||
-				existingRule.AttackType != rule.AttackType {
-				// 更新（规则原文变化，或解析器升级导致名称/消息/攻击类型等元数据修正）
+				existingRule.AttackType != rule.AttackType ||
+				!parsedSpecEqual(existingRule.ParsedSpec, rule.ParsedSpec) {
+				// 更新（规则原文变化，或解析器升级导致名称/消息/攻击类型/结构化详述修正）
 				if err := s.updateRule(ctx, rule); err != nil {
 					report.Conflicts++
 					report.FailedRules = append(report.FailedRules, fmt.Sprintf("rule %d update: %v", rule.RuleID, err))
@@ -531,9 +539,21 @@ func (s *SyncService) syncSourceFiles(ctx context.Context, files []string, sourc
 	return nil
 }
 
+func parsedSpecEqual(a, b json.RawMessage) bool {
+	sa, okA := parseStoredRuleSpec(a)
+	sb, okB := parseStoredRuleSpec(b)
+	if okA != okB {
+		return false
+	}
+	if !okA {
+		return true
+	}
+	return reflect.DeepEqual(sa, sb)
+}
+
 func (s *SyncService) existingRules(ctx context.Context, source, crsVersion string) (map[int]*Rule, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT rule_id, content_hash, name, message, attack_type FROM waf_rules WHERE rule_source = $1 AND crs_version = $2`, source, crsVersion)
+		`SELECT rule_id, content_hash, name, message, attack_type, parsed_spec FROM waf_rules WHERE rule_source = $1 AND crs_version = $2`, source, crsVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -542,34 +562,51 @@ func (s *SyncService) existingRules(ctx context.Context, source, crsVersion stri
 	for rows.Next() {
 		var id int
 		var hash, name, message, attackType string
-		if err := rows.Scan(&id, &hash, &name, &message, &attackType); err != nil {
+		var parsedSpec []byte
+		if err := rows.Scan(&id, &hash, &name, &message, &attackType, &parsedSpec); err != nil {
 			return nil, err
 		}
-		out[id] = &Rule{RuleID: id, ContentHash: hash, Name: name, Message: message, AttackType: attackType}
+		out[id] = &Rule{
+			RuleID:      id,
+			ContentHash: hash,
+			Name:        name,
+			Message:     message,
+			AttackType:  attackType,
+			ParsedSpec:  json.RawMessage(parsedSpec),
+		}
 	}
 	return out, rows.Err()
 }
 
 func (s *SyncService) insertRule(ctx context.Context, r *Rule) error {
+	spec := r.ParsedSpec
+	if len(spec) == 0 {
+		spec = json.RawMessage("{}")
+	}
 	_, err := s.db.Exec(ctx, `
 INSERT INTO waf_rules (rule_id, rule_source, file_name, name, message, severity, phase, tags,
-  attack_type, default_state, crs_version, content_hash)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+  attack_type, default_state, crs_version, content_hash, parsed_spec)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 ON CONFLICT (rule_id, rule_source, crs_version) DO UPDATE SET
   file_name=EXCLUDED.file_name, name=EXCLUDED.name, message=EXCLUDED.message,
   severity=EXCLUDED.severity, phase=EXCLUDED.phase, tags=EXCLUDED.tags,
-  attack_type=EXCLUDED.attack_type, content_hash=EXCLUDED.content_hash, updated_at=now()`,
+  attack_type=EXCLUDED.attack_type, content_hash=EXCLUDED.content_hash,
+  parsed_spec=EXCLUDED.parsed_spec, updated_at=now()`,
 		r.RuleID, r.RuleSource, r.FileName, r.Name, r.Message, r.Severity, r.Phase, r.Tags,
-		r.AttackType, r.DefaultState, r.CRSVersion, r.ContentHash)
+		r.AttackType, r.DefaultState, r.CRSVersion, r.ContentHash, spec)
 	return err
 }
 
 func (s *SyncService) updateRule(ctx context.Context, r *Rule) error {
+	spec := r.ParsedSpec
+	if len(spec) == 0 {
+		spec = json.RawMessage("{}")
+	}
 	_, err := s.db.Exec(ctx, `
 UPDATE waf_rules SET file_name=$1, name=$2, message=$3, severity=$4, phase=$5, tags=$6,
-  attack_type=$7, content_hash=$8, updated_at=now()
-WHERE rule_id=$9 AND rule_source=$10 AND crs_version=$11`,
-		r.FileName, r.Name, r.Message, r.Severity, r.Phase, r.Tags, r.AttackType, r.ContentHash,
+  attack_type=$7, content_hash=$8, parsed_spec=$9, updated_at=now()
+WHERE rule_id=$10 AND rule_source=$11 AND crs_version=$12`,
+		r.FileName, r.Name, r.Message, r.Severity, r.Phase, r.Tags, r.AttackType, r.ContentHash, spec,
 		r.RuleID, r.RuleSource, r.CRSVersion)
 	return err
 }

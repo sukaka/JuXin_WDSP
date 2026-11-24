@@ -320,4 +320,254 @@ describe('WafRulesPage 规则效果', () => {
       ).toBe(true)
     })
   })
+
+  it('规则详情抽屉完整展示后端返回的中文详细说明、检测原理、风险影响与调优建议', async () => {
+    const detailedRule = {
+      ...RULE,
+      rule_id: 911100,
+      rule_source: 'OWASP_CRS',
+      file_name: 'REQUEST-911-METHOD-ENFORCEMENT.conf',
+      name: '请求方法不被策略允许',
+      message: '请求方法不被策略允许',
+      description: '校验客户端使用的 HTTP 请求方法是否在当前策略允许的方法白名单之内。',
+      phase: 1,
+      attack_type: 'OTHER',
+      tags: ['paranoia-level/1', 'OWASP_CRS', 'capec/1000/210/272/220/274'],
+      crs_version: '4.28.0',
+      detail: {
+        rule_type: 'DETECTION',
+        rule_type_label: '安全检测规则',
+        summary: '校验客户端使用的 HTTP 请求方法是否在当前策略允许的方法白名单之内。',
+        detection_logic: '在阶段 1（请求头阶段）检查 HTTP 请求方法（REQUEST_METHOD）；校验取值是否超出白名单集合。',
+        risk_impact: '限制非必要或高危 HTTP 方法可有效防范跨站追踪与未授权写入风险。',
+        tuning_advice: 'RESTful API 若需 PUT/DELETE 方法，请在对应防护策略或应用例外中按需放行。',
+        phase_description: '阶段 1（请求头检查）：在接收完整 HTTP 请求头后执行',
+        paranoia_level: 'PL1（默认启用，低误报基线防护）',
+        action_behavior: '异常评分（入站，严重级别 +5 分；达到策略阈值后阻断）',
+        targets: ['HTTP 请求方法（REQUEST_METHOD）'],
+        references: ['CAPEC-274：HTTP 方法篡改', 'OWASP 核心规则集 4.28.0 · HTTP 方法强制规则族'],
+      },
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/waf-rules/effect-statistics')) {
+          return Promise.resolve(jsonResponse({ items: [], page: 1, page_size: 30, total: 0 }))
+        }
+        if (url.includes('/waf-rules/categories')) {
+          return Promise.resolve(jsonResponse({ items: [{ attack_type: 'OTHER', count: 1 }] }))
+        }
+        if (url.includes('/waf-rules/versions')) {
+          return Promise.resolve(jsonResponse({ versions: ['4.28.0'] }))
+        }
+        if (url.includes('/waf-rules/911100')) {
+          return Promise.resolve(jsonResponse(detailedRule))
+        }
+        if (url.includes('/waf-rules')) {
+          return Promise.resolve(jsonResponse({ items: [detailedRule], page: 1, page_size: 20, total: 1 }))
+        }
+        return Promise.reject(new Error(`unexpected url: ${url}`))
+      }),
+    )
+
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '详情' }))
+    expect(await screen.findByText('规则详情：911100')).toBeInTheDocument()
+    expect(await screen.findByText('规则详细说明')).toBeInTheDocument()
+    expect(screen.getByText('安全检测规则')).toBeInTheDocument()
+    expect(screen.getByText('PL1（默认启用，低误报基线防护）')).toBeInTheDocument()
+    expect(screen.getByText('阶段 1（请求头检查）')).toBeInTheDocument()
+    expect(
+      screen.getByText('校验客户端使用的 HTTP 请求方法是否在当前策略允许的方法白名单之内。'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText('限制非必要或高危 HTTP 方法可有效防范跨站追踪与未授权写入风险。'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText('RESTful API 若需 PUT/DELETE 方法，请在对应防护策略或应用例外中按需放行。'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('HTTP 请求方法（REQUEST_METHOD）')).toBeInTheDocument()
+    expect(screen.getByText('CAPEC-274：HTTP 方法篡改')).toBeInTheDocument()
+  })
+
+  it('内部规则（如 913011）在详情抽屉清晰展示引擎内部控制说明', async () => {
+    const internalRule = {
+      ...RULE,
+      id: 'rule-913011',
+      rule_id: 913011,
+      rule_source: 'OWASP_CRS',
+      file_name: 'REQUEST-913-SCANNER-DETECTION.conf',
+      name: '扫描器检测内部规则',
+      message: '扫描器检测内部规则',
+      severity: 'NOTICE',
+      phase: 1,
+      attack_type: 'OTHER',
+      tags: ['OWASP_CRS'],
+      crs_version: '4.28.0',
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/waf-rules/effect-statistics')) {
+          return Promise.resolve(jsonResponse({ items: [], page: 1, page_size: 30, total: 0 }))
+        }
+        if (url.includes('/waf-rules/categories')) {
+          return Promise.resolve(jsonResponse({ items: [{ attack_type: 'OTHER', count: 1 }] }))
+        }
+        if (url.includes('/waf-rules/versions')) {
+          return Promise.resolve(jsonResponse({ versions: ['4.28.0'] }))
+        }
+        if (url.includes('/waf-rules/913011')) {
+          return Promise.resolve(jsonResponse(internalRule))
+        }
+        if (url.includes('/waf-rules')) {
+          return Promise.resolve(jsonResponse({ items: [internalRule], page: 1, page_size: 20, total: 1 }))
+        }
+        return Promise.reject(new Error(`unexpected url: ${url}`))
+      }),
+    )
+
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '详情' }))
+    expect(await screen.findByText('规则详细说明')).toBeInTheDocument()
+    expect(screen.getByText('引擎内部控制规则')).toBeInTheDocument()
+    expect(screen.getByText('无条件执行（引擎内部流程控制）')).toBeInTheDocument()
+    expect(screen.getByText(/通常不应手动停用/)).toBeInTheDocument()
+    // 仅只读权限时不展示「编辑说明」按钮
+    expect(screen.queryByRole('button', { name: /编辑说明/ })).not.toBeInTheDocument()
+  })
+
+  it('方案 A+B：展示规则文件自动解析来源，并支持安全管理员在线编辑与恢复默认说明', async () => {
+    useAuthStore.setState({
+      user: {
+        id: 'u1',
+        username: 'sec_admin',
+        display_name: '安全管理员',
+        status: 'ACTIVE',
+        roles: [{ code: 'SECURITY_ADMIN', name: '安全管理员' }],
+        permissions: ['waf_rules.read', 'rule_overrides.manage'],
+        must_change_password: false,
+      },
+      csrfToken: 'csrf-token-1',
+      initialized: true,
+    })
+
+    const baseRule = {
+      ...RULE,
+      id: 'rule-1099001',
+      rule_id: 1099001,
+      rule_source: 'CUSTOM_PACK',
+      file_name: 'hot-cve-2026.conf',
+      name: '新型接口头命令注入（CVE-2026-99999）',
+      message: '新型接口头命令注入（CVE-2026-99999）',
+      description: '自动解析自规则文件中文注释。',
+      phase: 2,
+      attack_type: 'COMMAND_INJECTION',
+      tags: ['attack-rce', 'cve/CVE-2026-99999'],
+      crs_version: '4.28.0',
+      detail: {
+        rule_type: 'DETECTION',
+        rule_type_label: '安全检测规则',
+        source: 'PARSED',
+        source_label: '规则文件自动解析',
+        customized: false,
+        summary: '自动解析自规则文件中文注释。',
+        detection_logic: '在阶段 2 检查 X-Api-Version 请求头。',
+        risk_impact: '防止远程代码执行。',
+        tuning_advice: '默认调优建议。',
+        phase_description: '阶段 2（请求体与参数检查）',
+        paranoia_level: '全偏执级别生效',
+        action_behavior: '异常评分（入站，严重级别 +5 分）',
+        targets: ['X-Api-Version 请求头（REQUEST_HEADERS:X-Api-Version）'],
+        references: ['漏洞编号：CVE-2026-99999'],
+      },
+    }
+    const customizedRule = {
+      ...baseRule,
+      detail: {
+        ...baseRule.detail,
+        source: 'CUSTOM',
+        source_label: '人工维护说明',
+        customized: true,
+        tuning_advice: '本司网关灰度接口需放行特定版本头。',
+        custom_fields: {
+          summary: '',
+          detection_logic: '',
+          risk_impact: '',
+          tuning_advice: '本司网关灰度接口需放行特定版本头。',
+          updated_by_name: 'sec_admin',
+          updated_at: '2026-11-23T15:30:00Z',
+        },
+      },
+    }
+
+    let currentRule = baseRule
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        if (url.includes('/waf-rules/1099001/description') && method === 'PUT') {
+          currentRule = customizedRule
+          return Promise.resolve(jsonResponse(customizedRule))
+        }
+        if (url.includes('/waf-rules/1099001/description') && method === 'DELETE') {
+          currentRule = baseRule
+          return Promise.resolve(jsonResponse(baseRule))
+        }
+        if (url.includes('/waf-rules/effect-statistics')) {
+          return Promise.resolve(jsonResponse({ items: [], page: 1, page_size: 30, total: 0 }))
+        }
+        if (url.includes('/rule-overrides')) {
+          return Promise.resolve(jsonResponse({ items: [], page: 1, page_size: 50, total: 0 }))
+        }
+        if (url.includes('/applications') || url.includes('/protection-policies')) {
+          return Promise.resolve(jsonResponse({ items: [], page: 1, page_size: 100, total: 0 }))
+        }
+        if (url.includes('/waf-rules/categories')) {
+          return Promise.resolve(jsonResponse({ items: [{ attack_type: 'COMMAND_INJECTION', count: 1 }] }))
+        }
+        if (url.includes('/waf-rules/versions')) {
+          return Promise.resolve(jsonResponse({ versions: ['4.28.0'] }))
+        }
+        if (url.includes('/waf-rules/1099001')) {
+          return Promise.resolve(jsonResponse(currentRule))
+        }
+        if (url.includes('/waf-rules')) {
+          return Promise.resolve(jsonResponse({ items: [currentRule], page: 1, page_size: 20, total: 1 }))
+        }
+        return Promise.reject(new Error(`unexpected url: ${url}`))
+      }),
+    )
+
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '详情' }))
+    expect(await screen.findByText('规则文件自动解析')).toBeInTheDocument()
+    expect(screen.getByText('自动解析自规则文件中文注释。')).toBeInTheDocument()
+
+    // 进入编辑并保存局部覆盖
+    fireEvent.click(screen.getByRole('button', { name: /编辑说明/ }))
+    const tuningInput = await screen.findByPlaceholderText(/可补充结合本司业务的排障与例外经验/)
+    fireEvent.change(tuningInput, { target: { value: '本司网关灰度接口需放行特定版本头。' } })
+    fireEvent.click(screen.getByRole('button', { name: /保存说明/ }))
+
+    expect(await screen.findByText('人工维护说明')).toBeInTheDocument()
+    expect(screen.getByText('本司网关灰度接口需放行特定版本头。')).toBeInTheDocument()
+    expect(screen.getByText(/最近维护人：sec_admin/)).toBeInTheDocument()
+
+    // 确认发出 PUT 请求
+    const putCall = (fetch as Mock).mock.calls.find(
+      (c) => String(c[0]).includes('/waf-rules/1099001/description') && c[1]?.method === 'PUT',
+    )
+    expect(putCall).toBeTruthy()
+    expect(String(putCall?.[1]?.body)).toContain('本司网关灰度接口需放行特定版本头。')
+
+    // 点击「恢复默认」并确认
+    fireEvent.click(screen.getByRole('button', { name: /恢复默认/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '确认恢复' }))
+    expect(await screen.findByText('规则文件自动解析')).toBeInTheDocument()
+    expect(screen.getByText('默认调优建议。')).toBeInTheDocument()
+  })
 })

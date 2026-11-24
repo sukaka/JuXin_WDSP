@@ -20,7 +20,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { CheckCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
 import { customRulesApi } from '../../api/customRules'
-import type { CustomRuleBody } from '../../api/customRules'
+import type { CustomRuleBody, UpdateCustomRuleBody } from '../../api/customRules'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import VulnIdTags from '../../components/VulnIdTags'
@@ -38,6 +38,7 @@ import {
   RULE_SEVERITY_META,
 } from '../../utils/stage4'
 import type { CustomRuleItem, CustomRuleValidateResult } from '../../types'
+import { formatCustomRulePhase, getAutoPhaseNotice } from './phase'
 
 interface Filters {
   keyword?: string
@@ -109,11 +110,6 @@ const VARIABLE_OPTIONS = [
   'REQUEST_LINE',
 ].map((v) => ({ value: v, label: CORAZA_VARIABLE_LABELS[v] ?? v }))
 
-const PHASE_OPTIONS = [1, 2, 3, 4, 5].map((n) => ({
-  value: n,
-  label: `阶段 ${n}${n === 1 ? '（请求头）' : n === 2 ? '（请求体）' : n === 3 ? '（响应头）' : n === 4 ? '（响应体）' : '（日志）'}`,
-}))
-
 const SEVERITY_OPTIONS = ['CRITICAL', 'ERROR', 'WARNING', 'NOTICE'].map((v) => ({
   value: v,
   label: RULE_SEVERITY_META[v]?.label ?? v,
@@ -124,7 +120,25 @@ const ACTION_OPTIONS = Object.entries(CUSTOM_RULE_ACTION_META).map(([value, meta
   label: meta.label,
 }))
 
-type RuleFormValues = CustomRuleBody
+type RuleFormValues = Omit<CustomRuleBody, 'phase'>
+
+/** 构造提交到后端的请求体：显式省略 phase，由后端按 target_variables 自动推导执行阶段 */
+function buildRulePayload(values: RuleFormValues): CustomRuleBody {
+  return {
+    rule_id: values.rule_id,
+    name: values.name,
+    description: values.description ?? '',
+    attack_type: values.attack_type,
+    severity: values.severity,
+    operator: values.operator,
+    operator_value: values.operator_value ?? '',
+    target_variables: values.target_variables ?? [],
+    action: values.action,
+    tags: values.tags ?? [],
+    cnnvd_ids: values.cnnvd_ids ?? [],
+    cve_ids: values.cve_ids ?? [],
+  }
+}
 
 export default function CustomRulesPage() {
   const { message, modal } = AntdApp.useApp()
@@ -184,7 +198,7 @@ export default function CustomRulesPage() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: CustomRuleBody & { version: number } }) =>
+    mutationFn: ({ id, body }: { id: string; body: UpdateCustomRuleBody }) =>
       customRulesApi.update(id, body),
     onSuccess: () => {
       setEditing(null)
@@ -230,12 +244,7 @@ export default function CustomRulesPage() {
       .then((values) => {
         validateMutation.mutate({
           id,
-          body: {
-            ...values,
-            operator_value: values.operator_value ?? '',
-            cnnvd_ids: values.cnnvd_ids ?? [],
-            cve_ids: values.cve_ids ?? [],
-          },
+          body: buildRulePayload(values),
         })
       })
       .catch(() => {
@@ -261,7 +270,6 @@ export default function CustomRulesPage() {
       description: record.description,
       attack_type: record.attack_type,
       severity: record.severity,
-      phase: record.phase,
       operator: record.operator,
       operator_value: record.operator_value,
       target_variables: record.target_variables ?? [],
@@ -412,14 +420,6 @@ export default function CustomRulesPage() {
       <Form.Item name="severity" label="风险等级" rules={[{ required: true }]}>
         <Select options={SEVERITY_OPTIONS} />
       </Form.Item>
-      <Form.Item
-        name="phase"
-        label="执行阶段"
-        rules={[{ required: true }]}
-        extra="阶段 2 的阻断规则可能被 CRS 阻断评估抢先而无法触发；期望首命中即拦截的规则建议选阶段 1"
-      >
-        <Select options={PHASE_OPTIONS} />
-      </Form.Item>
       <Form.Item name="operator" label="操作符" rules={[{ required: true, message: '请选择操作符' }]}>
         <Select
           showSearch
@@ -448,19 +448,38 @@ export default function CustomRulesPage() {
         label="检测变量"
         rules={[{ required: true, message: '至少选择一个检测变量' }]}
       >
-        <Select mode="multiple" optionFilterProp="label" options={VARIABLE_OPTIONS} placeholder="选择要检测的请求变量" />
+        <Select
+          mode="multiple"
+          optionFilterProp="label"
+          options={VARIABLE_OPTIONS}
+          placeholder="选择要检测的请求变量"
+          onChange={() => setValidateResult(null)}
+        />
+      </Form.Item>
+      <Form.Item
+        noStyle
+        shouldUpdate={(prev, cur) => prev.target_variables !== cur.target_variables}
+      >
+        {({ getFieldValue }) => {
+          const targetVars = getFieldValue('target_variables') as string[] | undefined
+          const hasVars = Array.isArray(targetVars) && targetVars.length > 0
+          const notice = getAutoPhaseNotice(targetVars)
+          return (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 24 }}
+              title={
+                hasVars
+                  ? notice.text
+                  : '请选择检测变量，系统将根据检测变量自动确定生效时机（优先于内置防护规则生效）'
+              }
+            />
+          )
+        }}
       </Form.Item>
       <Form.Item name="action" label="动作" rules={[{ required: true }]}>
-        <Select
-          options={ACTION_OPTIONS}
-          onChange={(v) => {
-            // BLOCK 规则默认落到阶段 1：阶段 2 会被 CRS 阻断评估（949110）抢先而永不触发；
-            // 仅在用户尚未手动改过阶段（仍为默认 2）时联动，尊重显式选择
-            if (v === 'BLOCK' && form.getFieldValue('phase') === 2) {
-              form.setFieldValue('phase', 1)
-            }
-          }}
-        />
+        <Select options={ACTION_OPTIONS} onChange={() => setValidateResult(null)} />
       </Form.Item>
       <Form.Item name="tags" label="标签">
         <Select mode="tags" open={false} placeholder="输入后回车添加标签（可选）" />
@@ -625,7 +644,6 @@ export default function CustomRulesPage() {
           initialValues={{
             attack_type: 'OTHER',
             severity: 'WARNING',
-            phase: 2,
             operator: 'rx',
             action: 'LOG',
             target_variables: ['ARGS'],
@@ -634,12 +652,7 @@ export default function CustomRulesPage() {
             cve_ids: [],
           }}
           onFinish={(values) => {
-            createMutation.mutate({
-              ...values,
-              operator_value: values.operator_value ?? '',
-              cnnvd_ids: values.cnnvd_ids ?? [],
-              cve_ids: values.cve_ids ?? [],
-            })
+            createMutation.mutate(buildRulePayload(values))
           }}
         >
           {formFields(createForm, 'new', true)}
@@ -666,10 +679,7 @@ export default function CustomRulesPage() {
             updateMutation.mutate({
               id: editing.id,
               body: {
-                ...values,
-                operator_value: values.operator_value ?? '',
-                cnnvd_ids: values.cnnvd_ids ?? [],
-                cve_ids: values.cve_ids ?? [],
+                ...buildRulePayload(values),
                 version: editing.version,
               },
             })
@@ -708,7 +718,7 @@ export default function CustomRulesPage() {
               <Descriptions.Item label="风险等级">
                 <StatusTag value={detail.severity} map={RULE_SEVERITY_META} />
               </Descriptions.Item>
-              <Descriptions.Item label="执行阶段">{detail.phase}</Descriptions.Item>
+              <Descriptions.Item label="执行阶段">{formatCustomRulePhase(detail.phase)}</Descriptions.Item>
               <Descriptions.Item label="动作">
                 <StatusTag value={detail.action} map={CUSTOM_RULE_ACTION_META} />
               </Descriptions.Item>

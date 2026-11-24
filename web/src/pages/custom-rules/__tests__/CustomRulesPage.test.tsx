@@ -4,6 +4,7 @@ import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import CustomRulesPage from '../CustomRulesPage'
+import { formatCustomRulePhase, inferCustomRulePhase } from '../phase'
 import { useAuthStore } from '../../../stores/auth'
 import type { CurrentUser } from '../../../types'
 
@@ -48,15 +49,22 @@ function jsonResponse(status: number, body: unknown): Response {
   })
 }
 
-function mockFetch() {
+function mockFetch(rules = [RULE]) {
   return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const ok = (data: unknown) =>
       Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data }))
-    if (init?.method === 'POST' && url.endsWith('/custom-rules')) return ok(RULE)
-    if (/\/custom-rules\/[^/?]+$/.test(url)) return ok(RULE)
+    if (init?.method === 'POST' && /\/custom-rules\/[^/?]+\/validate$/.test(url)) {
+      return ok({ valid: true, generated_rule: rules[0]?.generated_rule ?? RULE.generated_rule })
+    }
+    if (init?.method === 'POST' && url.endsWith('/custom-rules')) return ok(rules[0] ?? RULE)
+    if (init?.method === 'PUT' && /\/custom-rules\/[^/?]+$/.test(url)) return ok(rules[0] ?? RULE)
+    if (/\/custom-rules\/[^/?]+$/.test(url)) {
+      const id = url.split('/').pop()
+      return ok(rules.find((r) => r.id === id) ?? rules[0] ?? RULE)
+    }
     if (url.includes('/custom-rules')) {
-      return ok({ items: [RULE], total: 1, page: 1, page_size: 20 })
+      return ok({ items: rules, total: rules.length, page: 1, page_size: 20 })
     }
     return Promise.reject(new Error(`unexpected url: ${url}`))
   })
@@ -216,7 +224,76 @@ describe('CustomRulesPage CNNVD/CVE 编号（CNNVD 兼容性 P1）', () => {
   })
 })
 
-describe('执行阶段与动作联动（phase=2 BLOCK 被 CRS 抢先问题修复）', () => {
+/** 多选 Select 中按中文标签勾选一个检测变量（输入关键词规避虚拟列表裁切） */
+async function selectTargetVariable(dialog: HTMLElement, optionLabel: string) {
+  const input = dialog.querySelector<HTMLInputElement>('#target_variables')!
+  const select = input.closest('.ant-select')!
+  fireEvent.mouseDown(select)
+  fireEvent.change(input, { target: { value: optionLabel } })
+  const option = await screen.findByText(optionLabel, {
+    selector: '.ant-select-item-option-content',
+  })
+  fireEvent.click(option)
+}
+
+/** 清除多选 Select 中所有已选检测变量标签 */
+function clearSelectedTargetVariables(dialog: HTMLElement) {
+  const select = dialog.querySelector('#target_variables')!.closest('.ant-select')!
+  const removeButtons = select.querySelectorAll<HTMLElement>('.ant-select-selection-item-remove')
+  removeButtons.forEach((btn) => fireEvent.click(btn))
+}
+
+describe('inferCustomRulePhase / formatCustomRulePhase（自动阶段推导与展示）', () => {
+  it('请求体相关变量（含 :selector 形态及混合变量）推导为阶段 2', () => {
+    expect(inferCustomRulePhase(['REQUEST_BODY'])).toBe(2)
+    expect(inferCustomRulePhase(['ARGS_POST'])).toBe(2)
+    expect(inferCustomRulePhase(['ARGS'])).toBe(2)
+    expect(inferCustomRulePhase(['ARGS_NAMES'])).toBe(2)
+    expect(inferCustomRulePhase(['ARGS:id'])).toBe(2)
+    expect(inferCustomRulePhase(['ARGS_POST:payload'])).toBe(2)
+    expect(inferCustomRulePhase(['ARGS_NAMES:foo'])).toBe(2)
+    expect(inferCustomRulePhase(['REQUEST_BODY:raw'])).toBe(2)
+    expect(inferCustomRulePhase(['REQUEST_URI', 'ARGS_POST'])).toBe(2)
+    expect(inferCustomRulePhase(['HTTP_USER_AGENT', 'ARGS:token'])).toBe(2)
+  })
+
+  it('仅含请求头/URI/Cookie 等变量或空列表推导为阶段 1', () => {
+    const headerVars = [
+      'ARGS_GET',
+      'QUERY_STRING',
+      'REQUEST_URI',
+      'REQUEST_METHOD',
+      'REQUEST_HEADERS',
+      'REQUEST_HEADERS_NAMES',
+      'REQUEST_COOKIES',
+      'REQUEST_FILENAME',
+      'REQUEST_BASENAME',
+      'REMOTE_ADDR',
+      'HTTP_USER_AGENT',
+      'CONTENT_TYPE',
+      'REQUEST_PROTOCOL',
+      'REQUEST_LINE',
+    ]
+    for (const v of headerVars) {
+      expect(inferCustomRulePhase([v])).toBe(1)
+    }
+    expect(inferCustomRulePhase(['REQUEST_HEADERS:Host', 'REQUEST_COOKIES:sid'])).toBe(1)
+    expect(inferCustomRulePhase([])).toBe(1)
+    expect(inferCustomRulePhase(undefined)).toBe(1)
+  })
+
+  it('执行阶段中文标签兼容 1..5 历史数据与未知值', () => {
+    expect(formatCustomRulePhase(1)).toBe('阶段 1（请求头）')
+    expect(formatCustomRulePhase(2)).toBe('阶段 2（请求体）')
+    expect(formatCustomRulePhase(3)).toBe('阶段 3（响应头）')
+    expect(formatCustomRulePhase(4)).toBe('阶段 4（响应体）')
+    expect(formatCustomRulePhase(5)).toBe('阶段 5（日志）')
+    expect(formatCustomRulePhase(9)).toBe('阶段 9')
+    expect(formatCustomRulePhase(undefined)).toBe('-')
+  })
+})
+
+describe('执行阶段自动推导与表单交互（方案一：自定义规则优先于 CRS）', () => {
   beforeEach(() => {
     useAuthStore.setState({
       user: makeUser(['custom_rules.manage']),
@@ -230,62 +307,108 @@ describe('执行阶段与动作联动（phase=2 BLOCK 被 CRS 抢先问题修复
     vi.unstubAllGlobals()
   })
 
-  it('动作切换为 BLOCK 且阶段为默认 2 时，阶段自动改为 1；阶段提示文案渲染', async () => {
+  it('新建与编辑弹窗不再渲染手动 1-5 执行阶段下拉和 CRS 抢先术语', async () => {
+    renderPage()
+    await screen.findByText('Struts2 RCE 虚拟补丁')
+
+    // 新建弹窗
+    fireEvent.click(screen.getByRole('button', { name: /新建规则/ }))
+    const createDialog = await screen.findByRole('dialog')
+    expect(createDialog.querySelector('#phase')).toBeNull()
+    expect(within(createDialog).queryByLabelText('执行阶段')).not.toBeInTheDocument()
+    expect(within(createDialog).queryByText(/CRS/)).not.toBeInTheDocument()
+    expect(within(createDialog).queryByText(/抢先/)).not.toBeInTheDocument()
+    expect(
+      within(createDialog).getByText(
+        '自动生效时机：请求体阶段（支持检测 POST/JSON 请求体，优先于内置防护规则生效）',
+      ),
+    ).toBeInTheDocument()
+    fireEvent.click(within(createDialog).getByRole('button', { name: /取\s*消|Cancel/ }))
+
+    // 编辑弹窗
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }))
+    const editTitle = await screen.findByText(/编辑规则：Struts2 RCE 虚拟补丁/)
+    const editDialog = editTitle.closest('.ant-modal') as HTMLElement
+    expect(editDialog).toBeTruthy()
+    expect(editDialog.querySelector('#phase')).toBeNull()
+    expect(within(editDialog).queryByLabelText('执行阶段')).not.toBeInTheDocument()
+    expect(within(editDialog).queryByText(/CRS/)).not.toBeInTheDocument()
+    expect(within(editDialog).queryByText(/抢先/)).not.toBeInTheDocument()
+    expect(
+      within(editDialog).getByText(
+        '自动生效时机：请求体阶段（支持检测 POST/JSON 请求体，优先于内置防护规则生效）',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('切换检测变量时实时展示请求头阶段 / 请求体阶段自动生效时机', async () => {
     renderPage()
     await screen.findByText('Struts2 RCE 虚拟补丁')
 
     fireEvent.click(screen.getByRole('button', { name: /新建规则/ }))
     const dialog = await screen.findByRole('dialog')
 
-    // 阶段提示文案
+    // 默认 target_variables=['ARGS'] → 请求体阶段
     expect(
-      within(dialog).getByText(/阶段 2 的阻断规则可能被 CRS 阻断评估抢先/),
+      within(dialog).getByText(
+        '自动生效时机：请求体阶段（支持检测 POST/JSON 请求体，优先于内置防护规则生效）',
+      ),
     ).toBeInTheDocument()
 
-    // antd 6 Select：选中值渲染在 .ant-select-content（title 属性同为选中项文本）
-    const phaseText = () =>
-      dialog.querySelector('#phase')?.closest('.ant-select')?.querySelector('.ant-select-content')
-        ?.textContent
+    // 移除 ARGS，仅选择 REQUEST_URI 与 HTTP_USER_AGENT → 请求头阶段
+    clearSelectedTargetVariables(dialog)
+    await selectTargetVariable(dialog, '请求 URI')
+    await selectTargetVariable(dialog, 'User-Agent')
+    await waitFor(() => {
+      expect(
+        within(dialog).getByText('自动生效时机：请求头阶段（优先于内置防护规则生效）'),
+      ).toBeInTheDocument()
+    })
 
-    // 初始：动作=仅记录（LOG），阶段=2
-    expect(phaseText()).toContain('阶段 2')
+    // 加入 REQUEST_BODY → 切回请求体阶段
+    await selectTargetVariable(dialog, '请求体')
+    await waitFor(() => {
+      expect(
+        within(dialog).getByText(
+          '自动生效时机：请求体阶段（支持检测 POST/JSON 请求体，优先于内置防护规则生效）',
+        ),
+      ).toBeInTheDocument()
+    })
+
+    // 清除并仅选择 ARGS_POST → 仍为请求体阶段
+    clearSelectedTargetVariables(dialog)
+    await selectTargetVariable(dialog, '表单请求体参数')
+    await waitFor(() => {
+      expect(
+        within(dialog).getByText(
+          '自动生效时机：请求体阶段（支持检测 POST/JSON 请求体，优先于内置防护规则生效）',
+        ),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('动作切换为 BLOCK 且变量为 ARGS/REQUEST_BODY 时保持请求体阶段，不再误降为请求头阶段', async () => {
+    renderPage()
+    await screen.findByText('Struts2 RCE 虚拟补丁')
+
+    fireEvent.click(screen.getByRole('button', { name: /新建规则/ }))
+    const dialog = await screen.findByRole('dialog')
+
+    // 默认 ARGS + LOG → 请求体阶段
+    expect(
+      within(dialog).getByText(
+        '自动生效时机：请求体阶段（支持检测 POST/JSON 请求体，优先于内置防护规则生效）',
+      ),
+    ).toBeInTheDocument()
 
     // 切换动作为 阻断（BLOCK）
     const actionSelect = dialog.querySelector('#action')!.closest('.ant-select')!
     fireEvent.mouseDown(actionSelect)
-    const blockOption = await screen.findByText('阻断', { selector: '.ant-select-item-option-content' })
+    const blockOption = await screen.findByText('阻断', {
+      selector: '.ant-select-item-option-content',
+    })
     fireEvent.click(blockOption)
 
-    // 阶段联动为 1
-    await waitFor(() => {
-      expect(phaseText()).toContain('阶段 1')
-    })
-  })
-
-  it('用户显式改过阶段后切 BLOCK 不被联动覆盖', async () => {
-    renderPage()
-    await screen.findByText('Struts2 RCE 虚拟补丁')
-
-    fireEvent.click(screen.getByRole('button', { name: /新建规则/ }))
-    const dialog = await screen.findByRole('dialog')
-
-    // antd 6 Select：选中值渲染在 .ant-select-content（title 属性同为选中项文本）
-    const phaseText = () =>
-      dialog.querySelector('#phase')?.closest('.ant-select')?.querySelector('.ant-select-content')
-        ?.textContent
-
-    // 用户先把阶段改为 3
-    const phaseSelect = dialog.querySelector('#phase')!.closest('.ant-select')!
-    fireEvent.mouseDown(phaseSelect)
-    fireEvent.click(await screen.findByText('阶段 3（响应头）', { selector: '.ant-select-item-option-content' }))
-    await waitFor(() => {
-      expect(phaseText()).toContain('阶段 3')
-    })
-
-    // 再切 BLOCK：保持 3 不变
-    const actionSelect = dialog.querySelector('#action')!.closest('.ant-select')!
-    fireEvent.mouseDown(actionSelect)
-    fireEvent.click(await screen.findByText('阻断', { selector: '.ant-select-item-option-content' }))
     await waitFor(() => {
       const actionText = dialog
         .querySelector('#action')
@@ -293,18 +416,123 @@ describe('执行阶段与动作联动（phase=2 BLOCK 被 CRS 抢先问题修复
         ?.querySelector('.ant-select-content')?.textContent
       expect(actionText).toBe('阻断')
     })
-    expect(phaseText()).toContain('阶段 3')
+
+    // 仍保持请求体阶段
+    expect(
+      within(dialog).getByText(
+        '自动生效时机：请求体阶段（支持检测 POST/JSON 请求体，优先于内置防护规则生效）',
+      ),
+    ).toBeInTheDocument()
+
+    // 改为 REQUEST_BODY 后同样保持请求体阶段
+    clearSelectedTargetVariables(dialog)
+    await selectTargetVariable(dialog, '请求体')
+    await waitFor(() => {
+      expect(
+        within(dialog).getByText(
+          '自动生效时机：请求体阶段（支持检测 POST/JSON 请求体，优先于内置防护规则生效）',
+        ),
+      ).toBeInTheDocument()
+    })
   })
 
-  it('检测变量、作用范围与操作符中文化展示（表单下拉与详情抽屉）', async () => {
+  it('新建、校验与编辑提交均省略 phase 字段，由后端权威自动推导', async () => {
+    const legacyRule = {
+      ...RULE,
+      id: 'cr-legacy',
+      rule_id: 7100009,
+      name: '历史阶段规则',
+      phase: 3,
+      target_variables: ['REQUEST_URI'],
+    }
+    vi.stubGlobal('fetch', mockFetch([legacyRule]))
+
+    renderPage()
+    await screen.findByText('历史阶段规则')
+
+    // 1. 新建 + 校验
+    fireEvent.click(screen.getByRole('button', { name: /新建规则/ }))
+    const createDialog = await screen.findByRole('dialog')
+    const ruleIdInput = createDialog.querySelector<HTMLInputElement>('#rule_id')!
+    fireEvent.change(ruleIdInput, { target: { value: '7100010' } })
+    fireEvent.change(within(createDialog).getByPlaceholderText('如：拦截特定路径的SQL注入尝试'), {
+      target: { value: '新建自动阶段规则' },
+    })
+    fireEvent.change(within(createDialog).getByPlaceholderText('如：(?i)(union.*select)'), {
+      target: { value: '(?i)union' },
+    })
+
+    fireEvent.click(within(createDialog).getByRole('button', { name: /校验规则并预览 SecLang/ }))
+    await waitFor(() => {
+      const validateCall = (fetch as Mock).mock.calls.find(
+        (c) =>
+          (c[1] as RequestInit | undefined)?.method === 'POST' &&
+          String(c[0]).endsWith('/custom-rules/new/validate'),
+      )
+      expect(validateCall).toBeTruthy()
+      const body = JSON.parse(String((validateCall![1] as RequestInit).body))
+      expect('phase' in body).toBe(false)
+      expect(body.target_variables).toEqual(['ARGS'])
+    })
+
+    fireEvent.click(within(createDialog).getByRole('button', { name: /确\s*定|^OK$/ }))
+    await waitFor(() => {
+      const createCall = (fetch as Mock).mock.calls.find(
+        (c) =>
+          (c[1] as RequestInit | undefined)?.method === 'POST' &&
+          String(c[0]).endsWith('/custom-rules'),
+      )
+      expect(createCall).toBeTruthy()
+      const body = JSON.parse(String((createCall![1] as RequestInit).body))
+      expect('phase' in body).toBe(false)
+      expect(body.rule_id).toBe(7100010)
+    })
+
+    // 2. 编辑历史规则（原 phase=3，变量为 REQUEST_URI）：显示请求头阶段，校验与 PUT 均不回传旧 phase
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }))
+    const editTitle = await screen.findByText('编辑规则：历史阶段规则')
+    const editDialog = editTitle.closest('.ant-modal') as HTMLElement
+    expect(editDialog).toBeTruthy()
+    expect(
+      within(editDialog).getByText('自动生效时机：请求头阶段（优先于内置防护规则生效）'),
+    ).toBeInTheDocument()
+
+    fireEvent.click(within(editDialog).getByRole('button', { name: /校验规则并预览 SecLang/ }))
+    await waitFor(() => {
+      const validateEditCall = (fetch as Mock).mock.calls.find(
+        (c) =>
+          (c[1] as RequestInit | undefined)?.method === 'POST' &&
+          String(c[0]).endsWith('/custom-rules/cr-legacy/validate'),
+      )
+      expect(validateEditCall).toBeTruthy()
+      const body = JSON.parse(String((validateEditCall![1] as RequestInit).body))
+      expect('phase' in body).toBe(false)
+    })
+
+    fireEvent.click(within(editDialog).getByRole('button', { name: /确\s*定|^OK$/ }))
+    await waitFor(() => {
+      const putCall = (fetch as Mock).mock.calls.find(
+        (c) =>
+          (c[1] as RequestInit | undefined)?.method === 'PUT' &&
+          String(c[0]).endsWith('/custom-rules/cr-legacy'),
+      )
+      expect(putCall).toBeTruthy()
+      const body = JSON.parse(String((putCall![1] as RequestInit).body))
+      expect('phase' in body).toBe(false)
+      expect(body.version).toBe(1)
+    })
+  })
+
+  it('检测变量、作用范围、操作符与执行阶段中文化展示（表单下拉与详情抽屉）', async () => {
     renderPage()
     await screen.findByText('Struts2 RCE 虚拟补丁')
 
-    // 详情抽屉：检测变量 ARGS → 全部参数，作用范围 GLOBAL → 全局，操作符 rx → 正则匹配
+    // 详情抽屉：检测变量 ARGS → 全部参数，作用范围 GLOBAL → 全局，操作符 rx → 正则匹配，执行阶段 2 → 阶段 2（请求体）
     fireEvent.click(screen.getByRole('button', { name: '详情' }))
     expect(await screen.findByText('全部参数')).toBeInTheDocument()
     expect(screen.getByText('全局')).toBeInTheDocument()
     expect(screen.getByText('正则匹配')).toBeInTheDocument()
+    expect(screen.getByText('阶段 2（请求体）')).toBeInTheDocument()
     expect(screen.queryByText('GLOBAL')).not.toBeInTheDocument()
 
     // 新建弹窗：默认选中的检测变量 ARGS 显示为中文「全部参数」

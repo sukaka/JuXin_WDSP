@@ -18,7 +18,8 @@ export interface CustomRuleBody {
   description: string
   attack_type: string
   severity: string
-  phase: number
+  /** 可选执行阶段；省略或 0 时由后端按 target_variables 自动推导（1=请求头，2=请求体） */
+  phase?: number
   operator: string
   operator_value: string
   target_variables: string[]

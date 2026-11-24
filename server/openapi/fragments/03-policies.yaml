@@ -495,6 +495,83 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /waf-rules/{rule_id}/description:
+    put:
+      operationId: wafRuleUpdateDescription
+      tags: [waf-rules]
+      summary: 编辑 WAF 规则中文详细说明
+      description: |
+        保存或更新管理员针对指定规则 ID 维护的中文详细说明覆盖记录（支持按字段局部覆盖，
+        留空字段自动沿用系统内置或规则文件自动解析说明；独立持久化，不受后续 CRS 同步覆盖）。
+        记录操作审计（风险：低）。权限：`rule_overrides.manage`
+      parameters:
+        - name: rule_id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+          description: SecRule 规则 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WafRuleDescriptionRequest'
+      responses:
+        '200':
+          description: 更新后的规则详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WafRule'
+        '400':
+          description: 参数非法或全部字段为空
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: wafRuleResetDescription
+      tags: [waf-rules]
+      summary: 重置 WAF 规则中文详细说明为默认
+      description: |
+        删除管理员针对指定规则 ID 的人工说明覆盖记录，恢复系统内置中文说明或规则文件自动解析说明。
+        记录操作审计（风险：低）。权限：`rule_overrides.manage`
+      parameters:
+        - name: rule_id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+          description: SecRule 规则 ID
+      responses:
+        '200':
+          description: 恢复默认后的规则详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WafRule'
+        '400':
+          description: 规则 ID 非法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /waf-rules/sync:
     post:
       operationId: wafRuleSync
@@ -779,6 +856,8 @@ paths:
       description: |
         创建自定义 WAF 规则：服务端按白名单校验操作符/检测变量/动作，禁止危险内容
         （命令执行、文件读取、命令替换等），rx 操作符额外校验正则语法，并生成对应 SecLang 文本。
+        phase 可选，缺省或传 0 时由服务端根据 target_variables 自动推导（含请求体相关变量推导为 2，否则为 1）；
+        显式传 1-5 保持向后兼容。
         规则 ID 必须在 7100000-7199999 区间且全库唯一；新规则默认 ENABLED、GLOBAL 作用域。
         创建后需发布配置方可生效。记录操作审计（风险：中）。权限：`custom_rules.manage`
       requestBody:
@@ -843,7 +922,8 @@ paths:
       summary: 更新自定义规则
       description: |
         更新自定义规则，采用乐观锁：请求体 version 必须与当前版本一致，否则返回 409。
-        rule_id 不可修改（请求体中的 rule_id 被忽略）；其余字段重新校验并重新生成 SecLang。
+        rule_id 不可修改（请求体中的 rule_id 被忽略）；phase 缺省或传 0 时按新 target_variables 自动重新推导；
+        其余字段重新校验并重新生成 SecLang。
         更新后需发布配置方可生效。记录操作审计（风险：中）。权限：`custom_rules.manage`
       parameters:
         - name: id
@@ -1613,8 +1693,12 @@ components:
           enum: [OWASP_CRS, CRS_PLUGIN, THIRD_PARTY, CUSTOM_PACK, JIUZHANG_BUILTIN, USER_CUSTOM]
           description: 规则来源
         file_name: { type: string, description: 来源规则文件名 }
-        name: { type: string, description: 规则名称（取规则消息前 200 字符） }
-        message: { type: string, description: 规则消息（SecRule msg） }
+        name: { type: string, description: 规则名称（中文展示名） }
+        message: { type: string, description: 规则消息（中文展示消息） }
+        description: { type: string, description: 规则中文详细说明摘要 }
+        detail:
+          $ref: '#/components/schemas/WafRuleDetailInfo'
+          description: 结构化中文规则详细说明（详情接口返回）
         severity:
           type: string
           enum: [CRITICAL, ERROR, WARNING, NOTICE]
@@ -1629,6 +1713,60 @@ components:
           description: 攻击类型（由规则标签推断，无法识别时为 OTHER）
         default_state: { type: string, description: 默认状态，同步入库时固定为 ENABLED }
         crs_version: { type: string, description: 所属 CRS 版本 }
+
+    WafRuleDetailInfo:
+      type: object
+      description: WAF 规则结构化中文详细说明（由详情接口返回）
+      properties:
+        rule_type:
+          type: string
+          enum: [DETECTION, OBSERVE, BLOCKING_EVALUATION, EXCLUSION, PREPROCESSING, INTERNAL]
+          description: 规则功能类别代码
+        rule_type_label: { type: string, description: 规则功能类别中文名 }
+        source:
+          type: string
+          enum: [CUSTOM, BUILTIN, PARSED, AUTO]
+          description: 规则说明来源（人工维护 / 内置规则库 / 规则文件自动解析 / 元数据自动生成）
+        source_label: { type: string, description: 规则说明来源中文名 }
+        customized: { type: boolean, description: 是否包含管理员手工维护的说明覆盖 }
+        summary: { type: string, description: 规则中文详细说明 }
+        detection_logic: { type: string, description: 检测原理与匹配机制中文说明 }
+        risk_impact: { type: string, description: 安全风险与防护意义中文说明 }
+        tuning_advice: { type: string, description: 误报排查与调优建议中文说明 }
+        phase_description: { type: string, description: 执行阶段中文说明 }
+        paranoia_level: { type: string, description: 生效偏执级别中文说明 }
+        action_behavior: { type: string, description: 处置与异常评分行为中文说明 }
+        targets:
+          type: array
+          items: { type: string }
+          description: 检查目标变量中文说明列表
+        references:
+          type: array
+          items: { type: string }
+          description: 关联漏洞编号（CVE/CNNVD）、CAPEC 攻击模式与规则族引用列表
+        custom_fields:
+          $ref: '#/components/schemas/WafRuleDescriptionOverride'
+          description: 管理员人工覆盖的原始字段（仅 customized=true 时返回）
+
+    WafRuleDescriptionRequest:
+      type: object
+      description: 管理员编辑规则中文说明请求体（至少填写一项非空内容，留空字段继承系统默认说明）
+      properties:
+        summary: { type: string, maxLength: 2000, description: 自定义规则概述 }
+        detection_logic: { type: string, maxLength: 2000, description: 自定义检测原理与检查目标说明 }
+        risk_impact: { type: string, maxLength: 2000, description: 自定义安全风险与防护意义说明 }
+        tuning_advice: { type: string, maxLength: 2000, description: 自定义误报排查与调优建议 }
+
+    WafRuleDescriptionOverride:
+      type: object
+      description: 管理员维护的规则中文说明覆盖记录
+      properties:
+        summary: { type: string, description: 自定义规则概述 }
+        detection_logic: { type: string, description: 自定义检测原理说明 }
+        risk_impact: { type: string, description: 自定义安全风险说明 }
+        tuning_advice: { type: string, description: 自定义误报与调优建议 }
+        updated_by_name: { type: string, description: 最近维护人用户名 }
+        updated_at: { type: string, format: date-time, nullable: true, description: 最近维护时间 }
 
     WafRuleListResponse:
       type: object
@@ -1820,7 +1958,7 @@ components:
 
     CustomRuleUpsertRequest:
       type: object
-      required: [rule_id, name, phase, operator, target_variables, action]
+      required: [rule_id, name, operator, target_variables, action]
       properties:
         rule_id: { type: integer, minimum: 7100000, maximum: 7199999, description: 规则 ID；创建必填，更新时被忽略（不可修改） }
         name: { type: string, maxLength: 128, description: 规则名称 }
@@ -1830,7 +1968,11 @@ components:
           type: string
           enum: [CRITICAL, ERROR, WARNING, NOTICE]
           description: 严重级别；非法或缺省值落 WARNING
-        phase: { type: integer, minimum: 1, maximum: 5, description: 执行阶段 1-5 }
+        phase:
+          type: integer
+          minimum: 0
+          maximum: 5
+          description: 执行阶段（可选；缺省或传 0 时由服务端按 target_variables 自动推导：含 REQUEST_BODY/ARGS_POST/ARGS/ARGS_NAMES 为 2，否则为 1；显式传 1-5 保持向后兼容）
         operator:
           type: string
           enum: [rx, pm, streq, contains, beginsWith, endsWith, eq, ne, gt, lt, ge, le, ipMatch, validateUrlEncoding, validateUtf8Encoding, detectSQLi, detectXSS]

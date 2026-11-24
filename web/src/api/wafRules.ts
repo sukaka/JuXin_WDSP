@@ -1,5 +1,11 @@
 import { request } from './client'
-import type { PageResult, WafRuleCategory, WafRuleItem, WafRuleSyncReport } from '../types'
+import type {
+  PageResult,
+  WafRuleCategory,
+  WafRuleDescriptionPayload,
+  WafRuleItem,
+  WafRuleSyncReport,
+} from '../types'
 
 export interface WafRuleListParams {
   rule_id?: number | string
@@ -18,6 +24,10 @@ export const wafRulesApi = {
     return { ...data, items: data.items ?? [] }
   },
   get: (ruleId: number | string) => request<WafRuleItem>(`/waf-rules/${ruleId}`),
+  updateDescription: (ruleId: number | string, body: WafRuleDescriptionPayload) =>
+    request<WafRuleItem>(`/waf-rules/${ruleId}/description`, { method: 'PUT', body }),
+  resetDescription: (ruleId: number | string) =>
+    request<WafRuleItem>(`/waf-rules/${ruleId}/description`, { method: 'DELETE' }),
   categories: async () => {
     const data = await request<{ items: WafRuleCategory[] }>('/waf-rules/categories')
     return { items: data.items ?? [] }

@@ -77,7 +77,7 @@ type ruleRequest struct {
 	Description     string   `json:"description"`
 	AttackType      string   `json:"attack_type"`
 	Severity        string   `json:"severity"`
-	Phase           int      `json:"phase"`
+	Phase           int      `json:"phase"` // 可选；缺省或 0 时在 ValidateInput 中按 target_variables 自动推导
 	Operator        string   `json:"operator"`
 	OperatorValue   string   `json:"operator_value"`
 	TargetVariables []string `json:"target_variables"`
