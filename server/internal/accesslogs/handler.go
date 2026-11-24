@@ -227,25 +227,50 @@ func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="access-logs.csv"`)
-	var b strings.Builder
-	b.WriteString("occurred_at,client_ip,domain,method,uri,status,waf_action,bytes_in,bytes_out,duration_ms,gateway_node_id,request_id\n")
-	for _, e := range list {
-		fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%d,%s,%d,%d,%d,%s,%s\n",
-			e.OccurredAt.UTC().Format(time.RFC3339), e.ClientIP, csvEscape(e.Domain), e.RequestMethod,
-			csvEscape(e.RequestURI), e.ResponseStatus, e.WAFAction, e.BytesIn, e.BytesOut, e.DurationMS,
-			e.GatewayNodeID, e.RequestID)
-	}
-	_, _ = w.Write([]byte(b.String()))
+	_, _ = w.Write([]byte(renderExportCSV(list)))
 }
 
-// csvEscape CSV 字段转义：=、+、-、@ 开头前加 ' 防公式注入（domain/URI 等攻击者可控）；
-// 含逗号/引号/换行的字段加双引号并双写内部引号。（与 accessrules/csv.go 同一实现）
+const exportCSVUTF8BOM = "\xef\xbb\xbf"
+
+const exportCSVHeader = "发生时间,客户端 IP,域名,请求方法,请求路径,响应状态码,WAF 动作,请求大小（字节）,响应大小（字节）,耗时（ms）,网关节点,请求 ID\n"
+
+// renderExportCSV 渲染访问日志 CSV（含 UTF-8 BOM、中文表头与枚举中文化、防公式注入）。
+func renderExportCSV(list []AccessLog) string {
+	var b strings.Builder
+	b.WriteString(exportCSVUTF8BOM)
+	b.WriteString(exportCSVHeader)
+	for _, e := range list {
+		fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%d,%s,%d,%d,%d,%s,%s\n",
+			e.OccurredAt.UTC().Format(time.RFC3339),
+			csvEscape(e.ClientIP), csvEscape(e.Domain), csvEscape(e.RequestMethod),
+			csvEscape(e.RequestURI), e.ResponseStatus, csvEscape(exportWAFActionLabel(e.WAFAction)),
+			e.BytesIn, e.BytesOut, e.DurationMS,
+			csvEscape(e.GatewayNodeID), csvEscape(e.RequestID))
+	}
+	return b.String()
+}
+
+func exportWAFActionLabel(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "", "ALLOW":
+		return "放行"
+	case "BLOCK":
+		return "阻断"
+	case "OBSERVE":
+		return "观察"
+	default:
+		return v
+	}
+}
+
+// csvEscape CSV 字段转义：=、+、-、@、\t、\r 开头前加 ' 防公式注入（domain/URI 等攻击者可控）；
+// 含逗号/引号/换行的字段加双引号并双写内部引号。
 func csvEscape(s string) string {
 	if s == "" {
 		return s
 	}
 	switch s[0] {
-	case '=', '+', '-', '@':
+	case '=', '+', '-', '@', '\t', '\r':
 		s = "'" + s
 	}
 	if strings.ContainsAny(s, ",\"\n\r") {

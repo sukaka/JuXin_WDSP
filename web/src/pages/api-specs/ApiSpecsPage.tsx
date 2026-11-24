@@ -43,6 +43,11 @@ import { SPEC_FORMAT_LABELS, formatLocation } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import { API_SPEC_DIFF_TYPE_META } from '../../utils/stage8'
 import { specAuditCSV } from './specAuditExport'
+import {
+  SPEC_AUDIT_RULE_META,
+  SPEC_AUDIT_SEVERITY_META,
+  formatSpecAuditParamIn,
+} from './specAuditMeta'
 
 const SPEC_MAX_FILE_BYTES = 16 * 1024 * 1024
 
@@ -104,25 +109,6 @@ const SPEC_CHANGE_TYPE_META: Record<string, { color: string; label: string }> =
     TYPE_CHANGED: { color: 'gold', label: '类型变更' },
     REQUIRED_CHANGED: { color: 'orange', label: '必填变更' },
   }
-
-const SPEC_AUDIT_RULE_META: Record<string, { color: string; label: string }> = {
-  PATH_PARAMETER_MISSING: { color: 'red', label: '路径参数缺失' },
-  PATH_PARAMETER_NOT_REQUIRED: { color: 'orange', label: '路径参数未标记必填' },
-  PATH_PARAMETER_UNDECLARED: { color: 'red', label: '路径参数未声明' },
-  SENSITIVE_QUERY_PARAMETER: { color: 'orange', label: '敏感查询参数' },
-  SUCCESS_RESPONSE_MISSING: { color: 'red', label: '成功响应未声明' },
-  ERROR_RESPONSE_MISSING: { color: 'orange', label: '错误响应未声明' },
-  SECURITY_SCHEME_UNDEFINED: { color: 'red', label: '认证方案未定义' },
-  API_KEY_IN_QUERY: { color: 'red', label: '查询参数传递 API Key' },
-}
-
-const SPEC_AUDIT_SEVERITY_META: Record<
-  string,
-  { color: string; label: string }
-> = {
-  HIGH: { color: 'red', label: '高' },
-  MEDIUM: { color: 'orange', label: '中' },
-}
 
 /** 导入成功提示（粘贴/URL 导入同构） */
 function importSummary(r: ApiSpecImportResult): string {
@@ -530,11 +516,7 @@ export default function ApiSpecsPage() {
       title: '参数位置',
       dataIndex: 'param_in',
       width: 110,
-      render: (v: string) => {
-        if (!v) return '-'
-        if (v.toUpperCase() === 'SECURITY') return '认证方案'
-        return formatLocation(v)
-      },
+      render: (v: string) => formatSpecAuditParamIn(v) || '-',
     },
     {
       title: '参数名称',

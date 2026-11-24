@@ -433,25 +433,133 @@ func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="security-events.csv"`)
-	var b strings.Builder
-	b.WriteString("occurred_at,client_ip,domain,method,uri,attack_type,severity,anomaly_score,action,response_status,disposition_status,request_id\n")
-	for _, e := range list {
-		fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%s,%s,%d,%s,%d,%s,%s\n",
-			e.OccurredAt.UTC().Format(time.RFC3339), e.ClientIP, csvEscape(e.Domain), e.Method,
-			csvEscape(e.URI), e.AttackType, e.Severity, e.AnomalyScore, e.Action, e.ResponseStatus,
-			e.DispositionStatus, e.RequestID)
-	}
-	_, _ = w.Write([]byte(b.String()))
+	_, _ = w.Write([]byte(renderExportCSV(list)))
 }
 
-// csvEscape CSV 字段转义：=、+、-、@ 开头前加 ' 防公式注入（domain/URI 等攻击者可控）；
-// 含逗号/引号/换行的字段加双引号并双写内部引号。（与 accessrules/csv.go 同一实现）
+const exportCSVUTF8BOM = "\xef\xbb\xbf"
+
+const exportCSVHeader = "发生时间,客户端 IP,域名,请求方法,请求路径,攻击类型,严重级别,异常评分,动作,响应状态码,处置状态,请求 ID\n"
+
+// renderExportCSV 渲染安全事件 CSV（含 UTF-8 BOM、中文表头与枚举中文化、防公式注入）。
+func renderExportCSV(list []Event) string {
+	var b strings.Builder
+	b.WriteString(exportCSVUTF8BOM)
+	b.WriteString(exportCSVHeader)
+	for _, e := range list {
+		fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%s,%s,%d,%s,%d,%s,%s\n",
+			e.OccurredAt.UTC().Format(time.RFC3339),
+			csvEscape(e.ClientIP), csvEscape(e.Domain), csvEscape(e.Method),
+			csvEscape(e.URI), csvEscape(exportAttackTypeLabel(e.AttackType)),
+			csvEscape(exportSeverityLabel(e.Severity)), e.AnomalyScore,
+			csvEscape(exportActionLabel(e.Action)), e.ResponseStatus,
+			csvEscape(exportDispositionLabel(e.DispositionStatus)), csvEscape(e.RequestID))
+	}
+	return b.String()
+}
+
+var exportAttackTypeLabels = map[string]string{
+	"SQL_INJECTION":          "SQL注入",
+	"SQLI":                   "SQL注入",
+	"XSS":                    "XSS跨站脚本",
+	"COMMAND_INJECTION":      "命令注入",
+	"LOCAL_FILE_INCLUSION":   "本地文件包含",
+	"REMOTE_FILE_INCLUSION":  "远程文件包含",
+	"PATH_TRAVERSAL":         "路径穿越",
+	"PHP_INJECTION":          "PHP注入",
+	"JAVA_INJECTION":         "Java注入",
+	"PROTOCOL_VIOLATION":     "协议违规",
+	"SESSION_FIXATION":       "会话固定",
+	"SCANNER_DETECTION":      "扫描器探测",
+	"SCANNER":                "扫描器探测",
+	"INFORMATION_DISCLOSURE": "信息泄露",
+	"REMOTE_CODE_EXECUTION":  "远程代码执行",
+	"RCE":                    "远程代码执行",
+	"SSRF":                   "SSRF",
+	"XXE_INJECTION":          "XXE注入",
+	"WEBSHELL":               "WebShell",
+	"FILE_UPLOAD":            "文件上传攻击",
+	"DESERIALIZATION":        "反序列化",
+	"SSTI":                   "模板注入",
+	"DOS":                    "拒绝服务",
+	"MASS_ASSIGNMENT":        "批量赋值",
+	"EXCLUSION":              "应用白名单排除",
+	"OTHER":                  "其他",
+}
+
+func exportAttackTypeLabel(v string) string {
+	key := strings.ToUpper(strings.TrimSpace(v))
+	if key == "" {
+		return ""
+	}
+	if label, ok := exportAttackTypeLabels[key]; ok {
+		return label
+	}
+	return v
+}
+
+func exportSeverityLabel(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "":
+		return ""
+	case "CRITICAL":
+		return "严重"
+	case "HIGH":
+		return "高"
+	case "MEDIUM":
+		return "中"
+	case "LOW":
+		return "低"
+	case "INFO":
+		return "信息"
+	default:
+		return v
+	}
+}
+
+func exportActionLabel(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "":
+		return ""
+	case "BLOCK":
+		return "阻断"
+	case "OBSERVE":
+		return "观察"
+	case "ALLOW":
+		return "放行"
+	default:
+		return v
+	}
+}
+
+func exportDispositionLabel(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "":
+		return ""
+	case "UNPROCESSED":
+		return "未处置"
+	case "ANALYZING":
+		return "分析中"
+	case "CONFIRMED_ATTACK":
+		return "确认攻击"
+	case "CONFIRMED_FALSE_POSITIVE":
+		return "确认误报"
+	case "IGNORED":
+		return "已忽略"
+	case "RESOLVED":
+		return "已处置"
+	default:
+		return v
+	}
+}
+
+// csvEscape CSV 字段转义：=、+、-、@、\t、\r 开头前加 ' 防公式注入（domain/URI 等攻击者可控）；
+// 含逗号/引号/换行的字段加双引号并双写内部引号。
 func csvEscape(s string) string {
 	if s == "" {
 		return s
 	}
 	switch s[0] {
-	case '=', '+', '-', '@':
+	case '=', '+', '-', '@', '\t', '\r':
 		s = "'" + s
 	}
 	if strings.ContainsAny(s, ",\"\n\r") {

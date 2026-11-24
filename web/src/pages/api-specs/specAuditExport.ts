@@ -1,21 +1,27 @@
 import type { ApiSpecAudit } from '../../api/apiSecurity'
+import {
+  formatSpecAuditFormat,
+  formatSpecAuditParamIn,
+  formatSpecAuditRule,
+  formatSpecAuditSeverity,
+} from './specAuditMeta'
 
 type CsvCell = string | number | boolean
 
 const CSV_HEADER: readonly CsvCell[] = [
-  'spec_id',
-  'format',
-  'operation_count',
-  'issue_count',
-  'high_count',
-  'medium_count',
-  'truncated',
-  'rule_id',
-  'severity',
-  'endpoint_key',
-  'param_in',
-  'param_name',
-  'message',
+  '规范 ID',
+  '规范格式',
+  '操作数',
+  '问题数',
+  '高危问题',
+  '中危问题',
+  '是否截断',
+  '规则',
+  '严重级别',
+  '接口键',
+  '参数位置',
+  '参数名称',
+  '说明',
 ]
 
 function encodeCsvCell(value: CsvCell): string {
@@ -33,19 +39,19 @@ function encodeCsvRow(row: readonly CsvCell[]): string {
 export function specAuditCSV(audit: ApiSpecAudit): string {
   const summary: CsvCell[] = [
     audit.spec_id,
-    audit.format,
+    formatSpecAuditFormat(audit.format),
     audit.operation_count,
     audit.issue_count,
     audit.high_count,
     audit.medium_count,
-    audit.truncated,
+    audit.truncated ? '是' : '否',
   ]
   const rows: CsvCell[][] = audit.items.map((item) => [
     ...summary,
-    item.rule_id,
-    item.severity,
+    formatSpecAuditRule(item.rule_id),
+    formatSpecAuditSeverity(item.severity),
     item.endpoint_key,
-    item.param_in,
+    formatSpecAuditParamIn(item.param_in),
     item.param_name,
     item.message,
   ])

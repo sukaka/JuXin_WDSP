@@ -93,7 +93,7 @@ let listedSpecs = specs
 const clickedLinks: HTMLAnchorElement[] = []
 const createObjectURLMock = vi.fn<(blob: Blob) => string>()
 const revokeObjectURLMock = vi.fn<(url: string) => void>()
-const auditCSV = 'rule_id,severity\nPATH_PARAMETER_MISSING,HIGH\n'
+const auditCSV = '规则,严重级别\n路径参数缺失,高\n'
 
 function success(data: unknown) {
   return { status: 200, body: { code: 'SUCCESS', message: 'ok', data } }

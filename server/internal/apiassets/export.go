@@ -29,6 +29,7 @@ const (
 	endpointExportFilenameMax   = 80
 	endpointExportTimeLayout    = time.RFC3339
 	endpointExportCSVDateLayout = "20060102"
+	endpointExportCSVUTF8BOM    = "\xef\xbb\xbf"
 )
 
 // ExportModelReader 单接口导出所需的模型只读入口（*apimodels.Store 实现）。
@@ -394,18 +395,153 @@ func (h *Handler) ExportList(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="api-endpoints-%s.csv"`, time.Now().Format(endpointExportCSVDateLayout)))
-	var b strings.Builder
-	b.WriteString("application_name,host,directory_path,http_method,normalized_path,raw_path_example,endpoint_key,protocol_type,is_api,api_confidence,asset_status,learning_status,business_type,asset_value,hit_count,first_seen_at,last_seen_at,confirmed_at,zombie_since\n")
-	for _, e := range rows {
-		fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%s,%s,%s,%t,%.4f,%s,%s,%s,%s,%d,%s,%s,%s,%s\n",
-			exportCSV(e.ApplicationName), exportCSV(e.Host), exportCSV(e.DirectoryPath), e.HTTPMethod,
-			exportCSV(e.NormalizedPath), exportCSV(e.RawPathExample), exportCSV(e.EndpointKey), e.ProtocolType,
-			e.IsAPI, e.APIConfidence, e.AssetStatus, e.LearningStatus, e.BusinessType, e.AssetValue, e.HitCount,
-			e.FirstSeenAt.UTC().Format(endpointExportTimeLayout), e.LastSeenAt.UTC().Format(endpointExportTimeLayout),
-			exportCSVTimePtr(e.ConfirmedAt), exportCSVTimePtr(e.ZombieSince))
-	}
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(b.String()))
+	_, _ = w.Write([]byte(renderEndpointsCSV(rows)))
+}
+
+const endpointExportCSVHeader = "所属站点,站点域名,目录路径,请求方法,路径模板,原始路径示例,接口键,协议类型,是否 API,置信度,资产状态,学习状态,业务标签,资产价值,命中次数,首次发现时间,最近访问时间,确认时间,僵尸态起点\n"
+
+// renderEndpointsCSV 渲染 API 资产清单 CSV（含 UTF-8 BOM、中文表头与枚举/布尔中文化、全字符串列防公式注入）。
+func renderEndpointsCSV(rows []Endpoint) string {
+	var b strings.Builder
+	b.WriteString(endpointExportCSVUTF8BOM)
+	b.WriteString(endpointExportCSVHeader)
+	for _, e := range rows {
+		fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%s,%s,%s,%s,%.4f,%s,%s,%s,%s,%d,%s,%s,%s,%s\n",
+			exportCSV(e.ApplicationName), exportCSV(e.Host), exportCSV(e.DirectoryPath), exportCSV(e.HTTPMethod),
+			exportCSV(e.NormalizedPath), exportCSV(e.RawPathExample), exportCSV(e.EndpointKey),
+			exportCSV(exportProtocolLabel(e.ProtocolType)),
+			exportCSV(exportBoolLabel(e.IsAPI)),
+			e.APIConfidence,
+			exportCSV(exportAssetStatusLabel(e.AssetStatus)),
+			exportCSV(exportLearningStatusLabel(e.LearningStatus)),
+			exportCSV(exportBusinessTypeLabel(e.BusinessType)),
+			exportCSV(exportAssetValueLabel(e.AssetValue)),
+			e.HitCount,
+			e.FirstSeenAt.UTC().Format(endpointExportTimeLayout),
+			e.LastSeenAt.UTC().Format(endpointExportTimeLayout),
+			exportCSVTimePtr(e.ConfirmedAt),
+			exportCSVTimePtr(e.ZombieSince))
+	}
+	return b.String()
+}
+
+var exportProtocolLabels = map[string]string{
+	"REST_JSON":           "REST/JSON",
+	"REST_XML":            "REST/XML",
+	"REST":                "REST",
+	"FORM_API":            "Form 表单",
+	"SOAP":                "SOAP",
+	"GRAPHQL":             "GraphQL",
+	"JSON_RPC":            "JSON-RPC",
+	"XML_RPC":             "XML-RPC",
+	"WEBHOOK":             "Webhook",
+	"FILE_UPLOAD":         "文件上传",
+	"FILE_DOWNLOAD":       "文件下载",
+	"WEBSOCKET_HANDSHAKE": "WebSocket 握手",
+	"WEBSOCKET":           "WebSocket",
+	"SERVER_SENT_EVENTS":  "SSE",
+	"GRPC":                "gRPC",
+	"UNKNOWN_HTTP_API":    "未知 HTTP API",
+	"UNKNOWN_HTTP":        "未知 HTTP API",
+}
+
+func exportProtocolLabel(v string) string {
+	key := strings.ToUpper(strings.TrimSpace(v))
+	if key == "" {
+		return ""
+	}
+	if label, ok := exportProtocolLabels[key]; ok {
+		return label
+	}
+	return v
+}
+
+func exportBoolLabel(v bool) string {
+	if v {
+		return "是"
+	}
+	return "否"
+}
+
+func exportAssetStatusLabel(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "":
+		return ""
+	case "DISCOVERED":
+		return "已发现"
+	case "CONFIRMED":
+		return "已确认"
+	case "IGNORED":
+		return "已忽略"
+	case "DEPRECATED":
+		return "已废弃"
+	case "ZOMBIE":
+		return "僵尸接口"
+	default:
+		return v
+	}
+}
+
+func exportLearningStatusLabel(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "":
+		return ""
+	case "NOT_STARTED":
+		return "未开始"
+	case "LEARNING":
+		return "学习中"
+	case "PAUSED":
+		return "已暂停"
+	case "LEARNED":
+		return "已完成"
+	default:
+		return v
+	}
+}
+
+var exportBusinessTypeLabels = map[string]string{
+	"LOGIN":               "登录",
+	"REGISTER":            "注册",
+	"PASSWORD_RESET":      "找回密码",
+	"SMS":                 "短信发送",
+	"EMAIL":               "邮件发送",
+	"ORDER":               "下单",
+	"PAYMENT":             "支付",
+	"EXPORT":              "导出",
+	"DOWNLOAD":            "下载",
+	"SEARCH":              "搜索",
+	"QUERY_PERSONAL_DATA": "查询个人数据",
+	"AI_INFERENCE":        "AI推理",
+	"OTHER":               "其他",
+}
+
+func exportBusinessTypeLabel(v string) string {
+	key := strings.ToUpper(strings.TrimSpace(v))
+	if key == "" {
+		return ""
+	}
+	if label, ok := exportBusinessTypeLabels[key]; ok {
+		return label
+	}
+	return v
+}
+
+func exportAssetValueLabel(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "":
+		return ""
+	case "CRITICAL":
+		return "极高"
+	case "HIGH":
+		return "高"
+	case "MEDIUM":
+		return "中"
+	case "LOW":
+		return "低"
+	default:
+		return v
+	}
 }
 
 func selectExportCurrentVersion(ep *Endpoint, versions []apimodels.Version) *apimodels.Version {
@@ -481,7 +617,7 @@ func exportCSV(s string) string {
 		return s
 	}
 	switch s[0] {
-	case '=', '+', '-', '@':
+	case '=', '+', '-', '@', '\t', '\r':
 		s = "'" + s
 	}
 	if strings.ContainsAny(s, ",\"\n\r") {

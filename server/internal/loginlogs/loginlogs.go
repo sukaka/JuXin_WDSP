@@ -289,7 +289,57 @@ FROM login_logs WHERE ` + where +
 	return out, total, rows.Err()
 }
 
-// Export 导出登录日志（CSV 格式，最多 10000 条）。
+const csvUTF8BOM = "\xef\xbb\xbf"
+
+const loginLogsExportHeader = "发生时间,用户名,来源 IP,事件类型,结果,失败原因,请求 ID"
+
+var loginEventTypeLabels = map[string]string{
+	EventLoginSuccess:       "登录成功",
+	EventLoginFailure:       "登录失败",
+	EventLoginTOTPChallenge: "双因子挑战（TOTP）",
+	EventCaptchaFailure:     "验证码错误",
+	EventAccountLocked:      "账号锁定",
+	EventLogout:             "登出",
+	EventForceLogout:        "强制下线",
+	EventSessionExpired:     "会话过期",
+	EventPasswordChange:     "修改密码",
+	EventPasswordReset:      "重置密码",
+	EventFirstChangePwd:     "首次改密",
+}
+
+var loginResultLabels = map[string]string{
+	ResultSuccess: "成功",
+	ResultFailure: "失败",
+}
+
+var loginFailureCodeLabels = map[string]string{
+	"CAPTCHA_REQUIRED":               "需要验证码",
+	"CAPTCHA_INVALID":                "验证码错误",
+	"BAD_CREDENTIALS":                "用户名或密码错误",
+	"ACCOUNT_DISABLED":               "账号已停用",
+	"ACCOUNT_LOCKED":                 "账号已锁定",
+	"MAX_FAILED_ATTEMPTS":            "失败次数超限",
+	"PASSWORD_EXPIRED":               "密码已过期",
+	"TOTP_CHALLENGE_INVALID":         "双因子挑战无效或过期",
+	"TOTP_CHALLENGE_EXPIRED":         "双因子挑战已过期",
+	"TOTP_CHALLENGE_ORIGIN_MISMATCH": "双因子挑战来源不匹配",
+	"TOTP_INVALID":                   "动态令牌或恢复码错误",
+}
+
+func formatLabelUpper(v string, table map[string]string) string {
+	if v == "" {
+		return ""
+	}
+	if label, ok := table[v]; ok {
+		return label
+	}
+	if label, ok := table[strings.ToUpper(strings.TrimSpace(v))]; ok {
+		return label
+	}
+	return v
+}
+
+// Export 导出登录日志（CSV 格式，含 UTF-8 BOM 与中文表头/枚举，最多 10000 条）。
 func (s *Service) Export(ctx context.Context, f ListFilter) (string, error) {
 	f.Page = 1
 	f.PageSize = 10000
@@ -297,24 +347,32 @@ func (s *Service) Export(ctx context.Context, f ListFilter) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return renderExportCSV(entries), nil
+}
+
+func renderExportCSV(entries []Entry) string {
 	var b strings.Builder
-	b.WriteString("occurred_at,username,source_ip,event_type,result,failure_code,request_id\n")
+	b.WriteString(csvUTF8BOM)
+	b.WriteString(loginLogsExportHeader + "\n")
 	for _, e := range entries {
 		fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%s,%s\n",
 			e.OccurredAt.UTC().Format(time.RFC3339),
 			csvEscape(e.Username), csvEscape(e.SourceIP),
-			e.EventType, e.Result, csvEscape(e.FailureCode), e.RequestID)
+			csvEscape(formatLabelUpper(e.EventType, loginEventTypeLabels)),
+			csvEscape(formatLabelUpper(e.Result, loginResultLabels)),
+			csvEscape(formatLabelUpper(e.FailureCode, loginFailureCodeLabels)),
+			csvEscape(e.RequestID))
 	}
-	return b.String(), nil
+	return b.String()
 }
 
-// csvEscape CSV 字段转义：=、+、-、@、\t 开头前加 ' 防公式注入；含逗号/引号/换行加双引号。
+// csvEscape CSV 字段转义：=、+、-、@、\t、\r 开头前加 ' 防公式注入；含逗号/引号/换行加双引号。
 func csvEscape(s string) string {
 	if s == "" {
 		return s
 	}
 	switch s[0] {
-	case '=', '+', '-', '@', '\t':
+	case '=', '+', '-', '@', '\t', '\r':
 		s = "'" + s
 	}
 	if strings.ContainsAny(s, ",\"\n\r") {

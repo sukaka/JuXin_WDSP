@@ -3,7 +3,7 @@ import type { ApiSpecAudit, ApiSpecAuditItem } from '../../../api/apiSecurity'
 import { specAuditCSV } from '../specAuditExport'
 
 const header =
-  '"spec_id","format","operation_count","issue_count","high_count","medium_count","truncated","rule_id","severity","endpoint_key","param_in","param_name","message"\r\n'
+  '"规范 ID","规范格式","操作数","问题数","高危问题","中危问题","是否截断","规则","严重级别","接口键","参数位置","参数名称","说明"\r\n'
 
 function makeItem(overrides: Partial<ApiSpecAuditItem> = {}): ApiSpecAuditItem {
   return {
@@ -32,14 +32,88 @@ function makeAudit(overrides: Partial<ApiSpecAudit> = {}): ApiSpecAudit {
 }
 
 describe('specAuditCSV', () => {
-  it('输出 UTF-8 BOM、完整汇总和中文真实明细', () => {
+  it('输出 UTF-8 BOM、中文表头与中文化枚举/布尔明细', () => {
     const csv = specAuditCSV(makeAudit())
 
     expect(csv).toBe(
       `\uFEFF${header}` +
-        '"spec-001","openapi3","8","1","1","0","false","PATH_PARAMETER_MISSING","HIGH","GET /v1/users/{user_id}","path","user_id","路径参数 user_id 缺少定义"\r\n',
+        '"spec-001","OpenAPI 3.x","8","1","1","0","否","路径参数缺失","高","GET /v1/users/{user_id}","路径参数","user_id","路径参数 user_id 缺少定义"\r\n',
     )
     expect(csv.charCodeAt(0)).toBe(0xfeff)
+  })
+
+  it('将所有已收录规则、严重级别、参数位置与规范格式映射为官方中文，未知值原样兜底', () => {
+    const csv = specAuditCSV(
+      makeAudit({
+        format: 'graphql',
+        operation_count: 10,
+        issue_count: 9,
+        high_count: 5,
+        medium_count: 4,
+        items: [
+          makeItem({
+            rule_id: 'PATH_PARAMETER_MISSING',
+            severity: 'HIGH',
+            param_in: 'path',
+          }),
+          makeItem({
+            rule_id: 'PATH_PARAMETER_NOT_REQUIRED',
+            severity: 'MEDIUM',
+            param_in: 'query',
+          }),
+          makeItem({
+            rule_id: 'PATH_PARAMETER_UNDECLARED',
+            severity: 'HIGH',
+            param_in: 'header',
+          }),
+          makeItem({
+            rule_id: 'SENSITIVE_QUERY_PARAMETER',
+            severity: 'MEDIUM',
+            param_in: 'cookie',
+          }),
+          makeItem({
+            rule_id: 'SUCCESS_RESPONSE_MISSING',
+            severity: 'HIGH',
+            param_in: '',
+            param_name: '',
+          }),
+          makeItem({
+            rule_id: 'ERROR_RESPONSE_MISSING',
+            severity: 'MEDIUM',
+            param_in: 'body',
+          }),
+          makeItem({
+            rule_id: 'SECURITY_SCHEME_UNDEFINED',
+            severity: 'HIGH',
+            param_in: 'SECURITY',
+            param_name: 'bearerAuth',
+          }),
+          makeItem({
+            rule_id: 'API_KEY_IN_QUERY',
+            severity: 'HIGH',
+            param_in: 'security',
+            param_name: 'api_key',
+          }),
+          makeItem({
+            rule_id: 'CUSTOM_FUTURE_RULE' as ApiSpecAuditItem['rule_id'],
+            severity: 'LOW' as ApiSpecAuditItem['severity'],
+            param_in: 'custom_loc',
+            param_name: 'extra',
+          }),
+        ],
+      }),
+    )
+
+    expect(csv).toContain('"GraphQL SDL","10","9","5","4","否","路径参数缺失","高","GET /v1/users/{user_id}","路径参数"')
+    expect(csv).toContain('"路径参数未标记必填","中","GET /v1/users/{user_id}","查询参数"')
+    expect(csv).toContain('"路径参数未声明","高","GET /v1/users/{user_id}","请求头"')
+    expect(csv).toContain('"敏感查询参数","中","GET /v1/users/{user_id}","Cookie"')
+    expect(csv).toContain('"成功响应未声明","高","GET /v1/users/{user_id}","",""')
+    expect(csv).toContain('"错误响应未声明","中","GET /v1/users/{user_id}","请求体"')
+    expect(csv).toContain('"认证方案未定义","高","GET /v1/users/{user_id}","认证方案","bearerAuth"')
+    expect(csv).toContain('"查询参数传递 API Key","高","GET /v1/users/{user_id}","认证方案","api_key"')
+    // 未收录枚举值原样兜底，不丢失数据
+    expect(csv).toContain('"CUSTOM_FUTURE_RULE","LOW","GET /v1/users/{user_id}","custom_loc","extra"')
   })
 
   it('按标准 CSV 规则保留并转义逗号、双引号和 CRLF', () => {
@@ -60,7 +134,7 @@ describe('specAuditCSV', () => {
 
     expect(csv).toBe(
       `\uFEFF${header}` +
-        '"spec,""一""\r\n源","openapi,3.0","8","1","1","0","false","PATH_PARAMETER_MISSING","HIGH","GET /v1/orders,{id}","query","order""id","中文第一行,""原始说明""\r\n第二行"\r\n',
+        '"spec,""一""\r\n源","openapi,3.0","8","1","1","0","否","路径参数缺失","高","GET /v1/orders,{id}","查询参数","order""id","中文第一行,""原始说明""\r\n第二行"\r\n',
     )
   })
 
@@ -87,6 +161,8 @@ describe('specAuditCSV', () => {
         format: '+openapi3',
         items: [
           makeItem({
+            rule_id: '=UNKNOWN_RULE' as ApiSpecAuditItem['rule_id'],
+            severity: '+UNKNOWN_SEV' as ApiSpecAuditItem['severity'],
             endpoint_key: '-GET /v1/users',
             param_in: '@path',
             param_name: '\tuser_id',
@@ -97,11 +173,11 @@ describe('specAuditCSV', () => {
     )
 
     expect(csv).toContain(
-      '"\'=spec-001","\'+openapi3","8","1","1","0","false","PATH_PARAMETER_MISSING","HIGH","\'-GET /v1/users","\'@path","\'\tuser_id","\'\r原始说明"',
+      '"\'=spec-001","\'+openapi3","8","1","1","0","否","\'=UNKNOWN_RULE","\'+UNKNOWN_SEV","\'-GET /v1/users","\'@path","\'\tuser_id","\'\r原始说明"',
     )
   })
 
-  it('空明细仍保留表头和汇总，不生成伪造问题项', () => {
+  it('空明细仍保留中文表头和汇总，不生成伪造问题项', () => {
     const csv = specAuditCSV(
       makeAudit({
         spec_id: 'empty-spec',
@@ -115,14 +191,14 @@ describe('specAuditCSV', () => {
 
     expect(csv).toBe(
       `\uFEFF${header}` +
-        '"empty-spec","openapi3","3","0","0","0","false"' +
+        '"empty-spec","OpenAPI 3.x","3","0","0","0","否"' +
         ',""'.repeat(6) +
         '\r\n',
     )
-    expect(csv).not.toContain('PATH_PARAMETER_MISSING')
+    expect(csv).not.toContain('路径参数缺失')
   })
 
-  it('保留截断标记和汇总总数，只导出实际返回的明细', () => {
+  it('保留截断标记（是）和汇总总数，只导出实际返回的明细', () => {
     const csv = specAuditCSV(
       makeAudit({
         operation_count: 700,
@@ -135,8 +211,8 @@ describe('specAuditCSV', () => {
 
     expect(csv).toBe(
       `\uFEFF${header}` +
-        '"spec-001","openapi3","700","650","400","250","true","PATH_PARAMETER_MISSING","HIGH","GET /v1/users/{user_id}","path","user_id","路径参数 user_id 缺少定义"\r\n',
+        '"spec-001","OpenAPI 3.x","700","650","400","250","是","路径参数缺失","高","GET /v1/users/{user_id}","路径参数","user_id","路径参数 user_id 缺少定义"\r\n',
     )
-    expect(csv.match(/PATH_PARAMETER_MISSING/g)).toHaveLength(1)
+    expect(csv.match(/路径参数缺失/g)).toHaveLength(1)
   })
 })

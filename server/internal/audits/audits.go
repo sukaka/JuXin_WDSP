@@ -520,7 +520,7 @@ FROM operation_audits WHERE id = $1`, id)
 	return &e, nil
 }
 
-// Export 导出审计（CSV，最多 10000 条）。
+// Export 导出审计（CSV，含 UTF-8 BOM 与中文表头/枚举，最多 10000 条）。
 func (s *Service) Export(ctx context.Context, f ListFilter) (string, error) {
 	f.Page = 1
 	f.PageSize = 10000
@@ -528,15 +528,7 @@ func (s *Service) Export(ctx context.Context, f ListFilter) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var b strings.Builder
-	b.WriteString("occurred_at,username,source_ip,module,action,object_type,object_id,result,risk_level,request_id\n")
-	for _, e := range entries {
-		fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
-			e.OccurredAt.UTC().Format(time.RFC3339),
-			csvEscape(e.Username), csvEscape(e.SourceIP), e.Module, e.Action,
-			e.ObjectType, e.ObjectID, e.Result, e.RiskLevel, e.RequestID)
-	}
-	return b.String(), nil
+	return renderExportCSV(entries), nil
 }
 
 // DistinctModules 返回审计中出现过的模块清单（供筛选器）。
@@ -557,14 +549,14 @@ func (s *Service) DistinctModules(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
-// csvEscape CSV 字段转义：=、+、-、@ 开头前加 ' 防公式注入（username 等用户输入可落审计）；
+// csvEscape CSV 字段转义：=、+、-、@、\t、\r 开头前加 ' 防公式注入（username 等用户输入可落审计）；
 // 含逗号/引号/换行的字段加双引号并双写内部引号。（与 accessrules/csv.go 同一实现）
 func csvEscape(s string) string {
 	if s == "" {
 		return s
 	}
 	switch s[0] {
-	case '=', '+', '-', '@':
+	case '=', '+', '-', '@', '\t', '\r':
 		s = "'" + s
 	}
 	if strings.ContainsAny(s, ",\"\n\r") {

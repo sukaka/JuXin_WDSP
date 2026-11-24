@@ -197,11 +197,12 @@ func TestEndpointExportCSV(t *testing.T) {
 		t.Fatalf("Content-Disposition=%q", cd)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "application_name,host,directory_path,http_method,normalized_path") {
-		t.Fatalf("csv header missing: %s", body)
+	wantHeader := "\xef\xbb\xbf所属站点,站点域名,目录路径,请求方法,路径模板,原始路径示例,接口键,协议类型,是否 API,置信度,资产状态,学习状态,业务标签,资产价值,命中次数,首次发现时间,最近访问时间,确认时间,僵尸态起点\n"
+	if !strings.HasPrefix(body, wantHeader) {
+		t.Fatalf("csv header/BOM mismatch: got prefix %q, want %q", body[:min(len(body), len(wantHeader)+20)], wantHeader)
 	}
-	if !strings.Contains(body, "/api/export/{id}") || !strings.Contains(body, "EXPORT") {
-		t.Fatalf("csv row missing endpoint/business fields: %s", body)
+	if !strings.Contains(body, "/api/export/{id}") || !strings.Contains(body, ",是,") || !strings.Contains(body, ",已发现,") || !strings.Contains(body, ",导出,") {
+		t.Fatalf("csv row missing localized endpoint/business fields: %s", body)
 	}
 	if strings.Contains(body, "/docs/{id}") {
 		t.Fatalf("csv did not apply filters: %s", body)
@@ -216,6 +217,139 @@ func TestEndpointExportCSV(t *testing.T) {
 	rr = doJSON(t, mux, http.MethodGet, "/api/v1/api-security/endpoints/export?keyword=cmd", nil)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "'=cmd.example.com") {
 		t.Fatalf("formula host not escaped: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRenderEndpointsCSVLocalizationAndSecurity(t *testing.T) {
+	now := time.Date(2026, 11, 24, 8, 30, 0, 0, time.UTC)
+	confirmed := now.Add(time.Minute)
+	zombie := now.Add(2 * time.Minute)
+
+	rows := []Endpoint{
+		{
+			ApplicationName: "电商门户",
+			Host:            "api.shop.local",
+			DirectoryPath:   "/v1/orders",
+			HTTPMethod:      "POST",
+			NormalizedPath:  "/v1/orders/{id}",
+			RawPathExample:  "/v1/orders/42",
+			EndpointKey:     "POST /v1/orders/{id}",
+			ProtocolType:    "REST_JSON",
+			IsAPI:           true,
+			APIConfidence:   0.9525,
+			AssetStatus:     "CONFIRMED",
+			LearningStatus:  "LEARNED",
+			BusinessType:    "ORDER",
+			AssetValue:      "CRITICAL",
+			HitCount:        128,
+			FirstSeenAt:     now,
+			LastSeenAt:      now,
+			ConfirmedAt:     &confirmed,
+			ZombieSince:     &zombie,
+		},
+		{
+			ApplicationName: "\t=SUM(A1)",
+			Host:            "legacy.local",
+			DirectoryPath:   "/old",
+			HTTPMethod:      "GET",
+			NormalizedPath:  "/old/item",
+			RawPathExample:  "/old/item",
+			EndpointKey:     "GET /old/item",
+			ProtocolType:    "UNKNOWN_HTTP",
+			IsAPI:           false,
+			APIConfidence:   0.2,
+			AssetStatus:     "ZOMBIE",
+			LearningStatus:  "NOT_STARTED",
+			BusinessType:    "OTHER",
+			AssetValue:      "",
+			HitCount:        3,
+			FirstSeenAt:     now,
+			LastSeenAt:      now,
+		},
+		{
+			ApplicationName: "未知回退站",
+			Host:            "\r+1+1",
+			DirectoryPath:   "/custom",
+			HTTPMethod:      "PATCH",
+			NormalizedPath:  "/custom/x",
+			RawPathExample:  "/custom/x",
+			EndpointKey:     "PATCH /custom/x",
+			ProtocolType:    "FUTURE_PROTO",
+			IsAPI:           true,
+			APIConfidence:   0.5,
+			AssetStatus:     "CUSTOM_STATUS",
+			LearningStatus:  "CUSTOM_LEARN",
+			BusinessType:    "CUSTOM_BIZ",
+			AssetValue:      "CUSTOM_VAL",
+			HitCount:        1,
+			FirstSeenAt:     now,
+			LastSeenAt:      now,
+		},
+	}
+
+	out := renderEndpointsCSV(rows)
+	if !strings.HasPrefix(out, "\xef\xbb\xbf"+endpointExportCSVHeader) {
+		t.Fatalf("missing UTF-8 BOM or Chinese header: %q", out[:min(len(out), 120)])
+	}
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("line count=%d want 4, out=%q", len(lines), out)
+	}
+	wantRow1 := "电商门户,api.shop.local,/v1/orders,POST,/v1/orders/{id},/v1/orders/42,POST /v1/orders/{id},REST/JSON,是,0.9525,已确认,已完成,下单,极高,128,2026-11-24T08:30:00Z,2026-11-24T08:30:00Z,2026-11-24T08:31:00Z,2026-11-24T08:32:00Z"
+	if lines[1] != wantRow1 {
+		t.Fatalf("row1 mismatch:\n got: %s\nwant: %s", lines[1], wantRow1)
+	}
+	if !strings.HasPrefix(lines[2], "'\t=SUM(A1),legacy.local,") ||
+		!strings.Contains(lines[2], ",未知 HTTP API,否,0.2000,僵尸接口,未开始,其他,,3,") {
+		t.Fatalf("row2 mismatch: %s", lines[2])
+	}
+	if !strings.Contains(lines[3], "\"'\r+1+1\"") ||
+		!strings.Contains(lines[3], ",FUTURE_PROTO,是,0.5000,CUSTOM_STATUS,CUSTOM_LEARN,CUSTOM_BIZ,CUSTOM_VAL,") {
+		t.Fatalf("row3 fallback/escape mismatch: %s", lines[3])
+	}
+
+	// 覆盖全量枚举映射字典
+	for raw, want := range map[string]string{
+		"REST_JSON": "REST/JSON", "REST_XML": "REST/XML", "REST": "REST",
+		"FORM_API": "Form 表单", "SOAP": "SOAP", "GRAPHQL": "GraphQL",
+		"JSON_RPC": "JSON-RPC", "XML_RPC": "XML-RPC", "WEBHOOK": "Webhook",
+		"FILE_UPLOAD": "文件上传", "FILE_DOWNLOAD": "文件下载",
+		"WEBSOCKET_HANDSHAKE": "WebSocket 握手", "WEBSOCKET": "WebSocket",
+		"SERVER_SENT_EVENTS": "SSE", "GRPC": "gRPC",
+		"UNKNOWN_HTTP_API": "未知 HTTP API", "UNKNOWN_HTTP": "未知 HTTP API",
+		"": "",
+	} {
+		if got := exportProtocolLabel(raw); got != want {
+			t.Errorf("exportProtocolLabel(%q) = %q, want %q", raw, got, want)
+		}
+	}
+	for raw, want := range map[string]string{
+		"DISCOVERED": "已发现", "CONFIRMED": "已确认", "IGNORED": "已忽略",
+		"DEPRECATED": "已废弃", "ZOMBIE": "僵尸接口", "": "",
+	} {
+		if got := exportAssetStatusLabel(raw); got != want {
+			t.Errorf("exportAssetStatusLabel(%q) = %q, want %q", raw, got, want)
+		}
+	}
+	for raw, want := range map[string]string{
+		"NOT_STARTED": "未开始", "LEARNING": "学习中", "PAUSED": "已暂停", "LEARNED": "已完成", "": "",
+	} {
+		if got := exportLearningStatusLabel(raw); got != want {
+			t.Errorf("exportLearningStatusLabel(%q) = %q, want %q", raw, got, want)
+		}
+	}
+	for bt := range validBusinessTypes {
+		got := exportBusinessTypeLabel(bt)
+		if got == bt {
+			t.Errorf("business_type %q missing Chinese label", bt)
+		}
+	}
+	for raw, want := range map[string]string{
+		"CRITICAL": "极高", "HIGH": "高", "MEDIUM": "中", "LOW": "低", "": "",
+	} {
+		if got := exportAssetValueLabel(raw); got != want {
+			t.Errorf("exportAssetValueLabel(%q) = %q, want %q", raw, got, want)
+		}
 	}
 }
 

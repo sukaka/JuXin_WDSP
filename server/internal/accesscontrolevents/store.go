@@ -255,33 +255,22 @@ VALUES ($1,$2,$3,$4,$5)`,
 	return err
 }
 
-// Export 导出事件 CSV（最多 10000 条，防公式注入）。
+// Export 导出事件 CSV（含 UTF-8 BOM、中文表头与枚举，最多 10000 条，防公式注入）。
 func (s *Store) Export(ctx context.Context, f ListFilter) (string, error) {
 	list, err := s.queryEvents(ctx, f, 10000, 0)
 	if err != nil {
 		return "", err
 	}
-	var b strings.Builder
-	b.WriteString("occurred_at,request_id,application_code,client_ip,connection_ip,domain,method,path,event_type,action,policy_id,access_rule_id,current_count,limit_value,window_seconds,response_status,gateway_node_id,message\n")
-	for _, e := range list {
-		fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
-			e.OccurredAt.UTC().Format(time.RFC3339),
-			csvCell(e.RequestID), csvCell(e.ApplicationCode), e.ClientIP, e.ConnectionIP,
-			csvCell(e.Domain), e.RequestMethod, csvCell(e.RequestPath), e.EventType, e.Action,
-			csvCell(e.PolicyID), csvCell(e.AccessRuleID),
-			int64PtrStr(e.CurrentCount), int64PtrStr(e.LimitValue), intPtrStr(e.WindowSeconds),
-			intPtrStr(e.ResponseStatus), csvCell(e.GatewayNodeID), csvCell(e.Message))
-	}
-	return b.String(), nil
+	return renderExportCSV(list), nil
 }
 
-// csvCell CSV 单元格转义 + 防公式注入（= + - @ 开头加 '）。
+// csvCell CSV 单元格转义 + 防公式注入（= + - @ \t \r 开头加 '）。
 func csvCell(s string) string {
 	if s == "" {
 		return s
 	}
 	switch s[0] {
-	case '=', '+', '-', '@':
+	case '=', '+', '-', '@', '\t', '\r':
 		s = "'" + s
 	}
 	if strings.ContainsAny(s, ",\"\n\r") {

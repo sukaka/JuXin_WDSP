@@ -951,11 +951,15 @@ export function IPAccessRulePanel({ fixedRuleType, embedded = false }: IPAccessR
             name="content"
             label="导入内容（≤ 1MB，≤ 10000 行）"
             rules={[{ required: true, message: '请粘贴导入内容' }]}
-            extra="CSV 表头须含 address 列，支持列：address,rule_type,scope_type,application_code,effective_until,reason"
+            extra="CSV 表头须含「地址」或 address 列，支持中文/英文表头（地址/address、规则类型/rule_type、生效范围/scope_type、应用编码/application_code、失效时间/effective_until、原因/reason）及中文/英文取值（黑名单/白名单 或 DENY/ALLOW，全局/指定应用 或 GLOBAL/APPLICATION），可直接导入本页导出的 CSV 文件"
           >
             <Input.TextArea
               rows={8}
-              placeholder={'address,rule_type,scope_type\n203.0.113.66,DENY,GLOBAL\n198.51.100.0/24,DENY,GLOBAL'}
+              placeholder={
+                isAllow
+                  ? '地址,规则类型,生效范围\n203.0.113.66,白名单,全局\n198.51.100.0/24,白名单,全局'
+                  : '地址,规则类型,生效范围\n203.0.113.66,黑名单,全局\n198.51.100.0/24,黑名单,全局'
+              }
               style={{ fontFamily: 'monospace' }}
             />
           </Form.Item>

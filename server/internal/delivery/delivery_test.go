@@ -143,20 +143,33 @@ func TestCheckBindAddress(t *testing.T) {
 func TestExportCSV(t *testing.T) {
 	items := []ItemResult{
 		{Key: "a", Name: "名称,含逗号", Category: CategorySecurity, Critical: true, Result: ResultPass, Message: "ok"},
-		{Key: "b", Name: "n", Category: CategoryQuality, Critical: false, Result: ResultWarning, Message: "含\"引号\""},
+		{Key: "b", Name: "n", Category: CategoryQuality, Critical: false, Result: ResultWarning, Message: `含"引号"`},
+		{Key: "c", Name: "=cmd", Category: CategoryRuntime, Critical: true, Result: ResultFail, Message: "\t+1"},
+		{Key: "d", Name: "na", Category: CategoryCompliance, Critical: false, Result: ResultNA, Message: "@SUM(A1)"},
+		{Key: "e", Name: "fb", Category: CategoryAccount, Critical: false, Result: "CUSTOM_RES", Message: "\r-2"},
 	}
 	csv := exportCSV(items)
-	if !strings.HasPrefix(csv, "item_key,item_name,category,critical,result,message\n") {
-		t.Error("CSV 缺少表头")
+	wantHeader := "\xef\xbb\xbf检查项标识,检查项名称,分类,是否关键项,检查结果,说明\n"
+	if !strings.HasPrefix(csv, wantHeader) {
+		t.Fatalf("CSV 缺少 UTF-8 BOM 或中文表头: %q", csv[:min(len(csv), 100)])
 	}
-	if !strings.Contains(csv, `"名称,含逗号"`) {
-		t.Error("逗号字段应加引号")
+	if !strings.Contains(csv, `a,"名称,含逗号",安全配置,是,通过,ok`) {
+		t.Errorf("第 1 行格式或映射不符: %s", csv)
 	}
-	if !strings.Contains(csv, `"含""引号"""`) {
-		t.Error("引号应转义")
+	if !strings.Contains(csv, `b,n,质量保障,否,警告,"含""引号"""`) {
+		t.Errorf("第 2 行引号转义或映射不符: %s", csv)
 	}
-	if lines := strings.Split(strings.TrimRight(csv, "\n"), "\n"); len(lines) != 3 {
-		t.Errorf("CSV 行数 = %d, want 3", len(lines))
+	if !strings.Contains(csv, "c,'=cmd,运行状态,是,失败,'\t+1") {
+		t.Errorf("第 3 行公式注入转义或映射不符: %s", csv)
+	}
+	if !strings.Contains(csv, "d,na,合规交付,否,不适用,'@SUM(A1)") {
+		t.Errorf("第 4 行不适用映射或 @ 转义不符: %s", csv)
+	}
+	if !strings.Contains(csv, "e,fb,账号权限,否,CUSTOM_RES,\"'\r-2\"") {
+		t.Errorf("第 5 行未知值兜底或 \\r 转义不符: %s", csv)
+	}
+	if lines := strings.Split(strings.TrimRight(csv, "\n"), "\n"); len(lines) != 6 {
+		t.Errorf("CSV 行数 = %d, want 6", len(lines))
 	}
 }
 

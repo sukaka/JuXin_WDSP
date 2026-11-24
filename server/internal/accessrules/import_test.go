@@ -135,6 +135,76 @@ func TestBuildImportInputs_DefaultUntilFromBody(t *testing.T) {
 	}
 }
 
+func TestBuildImportInputs_ChineseExportRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	future := now.Add(48 * time.Hour)
+	appID := uuid.New()
+
+	exported := RenderExportCSV([]Rule{
+		{
+			ID: uuid.New(), Name: "应用临时黑名单", RuleType: RuleTypeDeny,
+			ScopeType: ScopeApplication, ApplicationID: &appID, Address: "198.51.100.0/24",
+			IPVersion: IPVersion4, Priority: 100, Status: StatusActive,
+			ValidityType: ValidityTemporary, EffectiveUntil: &future,
+			Reason: "导出回灌测试,含逗号", SourceType: SourceManual, CreatedAt: now,
+		},
+		{
+			ID: uuid.New(), Name: "全局永久白名单", RuleType: RuleTypeAllow,
+			ScopeType: ScopeGlobal, Address: "2001:db8::1",
+			IPVersion: IPVersion6, Priority: 50, Status: StatusActive,
+			ValidityType: ValidityPermanent, Reason: "运维白名单",
+			SourceType: SourceImport, CreatedAt: now,
+		},
+	}, map[uuid.UUID]string{appID: "shop"})
+
+	recs, err := parseCSVContent(exported)
+	if err != nil {
+		t.Fatalf("导出的中文 CSV 应可直接回灌解析: %v", err)
+	}
+	valid, rowErrs := buildImportInputs(ctx, recs, ImportDefaults{}, fakeResolver(map[string]uuid.UUID{"shop": appID}), nil, now)
+	if len(rowErrs) != 0 {
+		t.Fatalf("回灌不应出现行错误: %+v", rowErrs)
+	}
+	if len(valid) != 2 {
+		t.Fatalf("应回灌 2 条有效规则, 得到 %d", len(valid))
+	}
+
+	r0 := valid[0].Input
+	if r0.RuleType != RuleTypeDeny || r0.ScopeType != ScopeApplication || r0.ApplicationID == nil || *r0.ApplicationID != appID ||
+		r0.Address != "198.51.100.0/24" || r0.ValidityType != ValidityTemporary ||
+		r0.EffectiveUntil == nil || !r0.EffectiveUntil.Equal(future) || r0.Reason != "导出回灌测试,含逗号" {
+		t.Fatalf("第1条回灌结果失真: %+v", r0)
+	}
+
+	r1 := valid[1].Input
+	if r1.RuleType != RuleTypeAllow || r1.ScopeType != ScopeGlobal || r1.ApplicationID != nil ||
+		r1.Address != "2001:db8::1" || r1.ValidityType != ValidityPermanent || r1.EffectiveUntil != nil || r1.Reason != "运维白名单" {
+		t.Fatalf("第2条回灌结果失真: %+v", r1)
+	}
+}
+
+func TestBuildImportInputs_ChineseAndInvalidValues(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	appID := uuid.New()
+	content := "\ufeff地址,规则类型,生效范围,应用编码,原因\n" +
+		"1.2.3.4,白名单,指定应用,myapp,中文行\n" +
+		"5.6.7.8,未知类型,全局,,非法规则类型\n" +
+		"9.9.9.9,黑名单,非法范围,,非法范围\n"
+	recs, err := parseCSVContent(content)
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	valid, errs := buildImportInputs(ctx, recs, ImportDefaults{}, fakeResolver(map[string]uuid.UUID{"myapp": appID}), nil, now)
+	if len(valid) != 1 || valid[0].Input.RuleType != RuleTypeAllow || valid[0].Input.ScopeType != ScopeApplication {
+		t.Fatalf("中文枚举导入解析错误: valid=%+v", valid)
+	}
+	if len(errs) != 2 || errs[0].Code != ImportErrInvalid || errs[1].Code != ImportErrInvalid {
+		t.Fatalf("非法中文枚举应产生 2 条 INVALID 错误: errs=%+v", errs)
+	}
+}
+
 func TestBuildImportInputs_Protected(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()

@@ -147,6 +147,117 @@ func TestExportSupportsMoreThan100RowsUpTo10000WhileListClamps(t *testing.T) {
 	if len(lines) != 151 { // 1 header + 150 rows
 		t.Fatalf("Export CSV lines = %d, want 151", len(lines))
 	}
+	wantHeader := csvUTF8BOM + "发生时间,用户名,来源 IP,事件类型,结果,失败原因,请求 ID"
+	if lines[0] != wantHeader {
+		t.Fatalf("Export CSV header = %q, want %q", lines[0], wantHeader)
+	}
+	if !strings.Contains(lines[1], ",登录成功,成功,") {
+		t.Fatalf("Export CSV row should localize enums, got: %q", lines[1])
+	}
+}
+
+func TestRenderExportCSVChineseHeadersAndValues(t *testing.T) {
+	ts := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+
+	// 覆盖全部 11 项事件类型
+	eventCases := []struct {
+		code string
+		want string
+	}{
+		{EventLoginSuccess, "登录成功"},
+		{EventLoginFailure, "登录失败"},
+		{EventLoginTOTPChallenge, "双因子挑战（TOTP）"},
+		{EventCaptchaFailure, "验证码错误"},
+		{EventAccountLocked, "账号锁定"},
+		{EventLogout, "登出"},
+		{EventForceLogout, "强制下线"},
+		{EventSessionExpired, "会话过期"},
+		{EventPasswordChange, "修改密码"},
+		{EventPasswordReset, "重置密码"},
+		{EventFirstChangePwd, "首次改密"},
+		{"CUSTOM_UNKNOWN_EVENT", "CUSTOM_UNKNOWN_EVENT"},
+		{"", ""},
+	}
+	for _, tc := range eventCases {
+		if got := formatLabelUpper(tc.code, loginEventTypeLabels); got != tc.want {
+			t.Errorf("event_type %q = %q, want %q", tc.code, got, tc.want)
+		}
+	}
+
+	// 覆盖全部 11 项失败码
+	failureCases := []struct {
+		code string
+		want string
+	}{
+		{"CAPTCHA_REQUIRED", "需要验证码"},
+		{"CAPTCHA_INVALID", "验证码错误"},
+		{"BAD_CREDENTIALS", "用户名或密码错误"},
+		{"ACCOUNT_DISABLED", "账号已停用"},
+		{"ACCOUNT_LOCKED", "账号已锁定"},
+		{"MAX_FAILED_ATTEMPTS", "失败次数超限"},
+		{"PASSWORD_EXPIRED", "密码已过期"},
+		{"TOTP_CHALLENGE_INVALID", "双因子挑战无效或过期"},
+		{"TOTP_CHALLENGE_EXPIRED", "双因子挑战已过期"},
+		{"TOTP_CHALLENGE_ORIGIN_MISMATCH", "双因子挑战来源不匹配"},
+		{"TOTP_INVALID", "动态令牌或恢复码错误"},
+		{"UNKNOWN_CODE", "UNKNOWN_CODE"},
+		{"", ""},
+	}
+	for _, tc := range failureCases {
+		if got := formatLabelUpper(tc.code, loginFailureCodeLabels); got != tc.want {
+			t.Errorf("failure_code %q = %q, want %q", tc.code, got, tc.want)
+		}
+	}
+
+	out := renderExportCSV([]Entry{
+		{
+			OccurredAt:  ts,
+			Username:    "admin",
+			SourceIP:    "192.0.2.10",
+			EventType:   EventLoginFailure,
+			Result:      ResultFailure,
+			FailureCode: "BAD_CREDENTIALS",
+			RequestID:   "req-1",
+		},
+		{
+			OccurredAt:  ts,
+			Username:    "=CMD()",
+			SourceIP:    "192.0.2.11",
+			EventType:   EventLoginTOTPChallenge,
+			Result:      ResultSuccess,
+			FailureCode: "",
+			RequestID:   "req-2",
+		},
+		{
+			OccurredAt:  ts,
+			Username:    "\t+evil",
+			SourceIP:    "\r-bad",
+			EventType:   "FUTURE_EVT",
+			Result:      "OTHER_RES",
+			FailureCode: "=INJECT",
+			RequestID:   "req-3",
+		},
+	})
+	if !strings.HasPrefix(out, csvUTF8BOM) {
+		t.Fatalf("missing UTF-8 BOM: %q", out[:min(len(out), 16)])
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("lines = %d, want 4", len(lines))
+	}
+	if lines[0] != csvUTF8BOM+"发生时间,用户名,来源 IP,事件类型,结果,失败原因,请求 ID" {
+		t.Fatalf("unexpected header: %q", lines[0])
+	}
+	if lines[1] != "2026-11-24T12:00:00Z,admin,192.0.2.10,登录失败,失败,用户名或密码错误,req-1" {
+		t.Fatalf("row 1 mismatch: %q", lines[1])
+	}
+	if lines[2] != "2026-11-24T12:00:00Z,'=CMD(),192.0.2.11,双因子挑战（TOTP）,成功,,req-2" {
+		t.Fatalf("row 2 mismatch: %q", lines[2])
+	}
+	if !strings.Contains(lines[3], "'\t+evil") || !strings.Contains(lines[3], "\"'\r-bad\"") ||
+		!strings.Contains(lines[3], ",FUTURE_EVT,OTHER_RES,'=INJECT,req-3") {
+		t.Fatalf("row 3 fallback/escape mismatch: %q", lines[3])
+	}
 }
 
 func TestListEmptyReturnsNonNilSliceAndJSONArray(t *testing.T) {

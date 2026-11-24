@@ -130,19 +130,59 @@ func (h *Handler) loadRun(w http.ResponseWriter, r *http.Request) (*CheckRun, []
 	return run, items, true
 }
 
-// exportCSV 结果明细转 CSV。
+const exportCSVUTF8BOM = "\xef\xbb\xbf"
+
+const exportCSVHeader = "检查项标识,检查项名称,分类,是否关键项,检查结果,说明\n"
+
+// exportCSV 结果明细转 CSV（含 UTF-8 BOM、中文表头与枚举/布尔中文化、防公式注入）。
 func exportCSV(items []ItemResult) string {
 	var b strings.Builder
-	b.WriteString("item_key,item_name,category,critical,result,message\n")
+	b.WriteString(exportCSVUTF8BOM)
+	b.WriteString(exportCSVHeader)
 	for _, it := range items {
-		fmt.Fprintf(&b, "%s,%s,%s,%t,%s,%s\n",
+		fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%s\n",
 			csvEscape(it.Key), csvEscape(it.Name), csvEscape(it.Category),
-			it.Critical, it.Result, csvEscape(it.Message))
+			csvEscape(exportCriticalLabel(it.Critical)),
+			csvEscape(exportResultLabel(it.Result)),
+			csvEscape(it.Message))
 	}
 	return b.String()
 }
 
+func exportCriticalLabel(critical bool) string {
+	if critical {
+		return "是"
+	}
+	return "否"
+}
+
+func exportResultLabel(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "":
+		return ""
+	case ResultPass:
+		return "通过"
+	case ResultWarning:
+		return "警告"
+	case ResultFail:
+		return "失败"
+	case ResultNA:
+		return "不适用"
+	default:
+		return v
+	}
+}
+
+// csvEscape CSV 字段转义：=、+、-、@、\t、\r 开头前加 ' 防公式注入；
+// 含逗号/引号/换行的字段加双引号并双写内部引号。
 func csvEscape(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		s = "'" + s
+	}
 	if strings.ContainsAny(s, ",\"\n\r") {
 		return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\""
 	}
