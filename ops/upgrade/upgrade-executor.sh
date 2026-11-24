@@ -160,7 +160,7 @@ root = pathlib.Path(destination).resolve()
 MAX_EXPANDED_BYTES = 8 << 30
 with tarfile.open(archive, "r:gz") as tf:
     members = tf.getmembers()
-    if not members or len(members) > 20:
+    if not members or len(members) > 64:
         raise SystemExit("升级包文件数量异常")
     expanded = 0
     for m in members:
@@ -188,7 +188,13 @@ wait_api() {
 # 返回本轮单容器快照；inspect 失败绝不能等同于“未声明 HEALTHCHECK”。
 wait_service() {
   local service="$1" container_id snapshot state health image restarts started extra
-  container_id="$(compose ps -q "$service" 2>/dev/null)" || return 1
+  if [[ "$service" == pcapd ]]; then
+    container_id="$(compose --profile request-pcap ps -q "$service" 2>/dev/null)" || return 1
+  elif [[ "$service" == hasyncd ]]; then
+    container_id="$(compose --profile ha-sync ps -q "$service" 2>/dev/null)" || return 1
+  else
+    container_id="$(compose ps -q "$service" 2>/dev/null)" || return 1
+  fi
   [[ "$container_id" =~ ^[a-zA-Z0-9_-]+$ ]] || return 1
   snapshot="$(timeout 8 docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}' "$container_id" 2>/dev/null)" || return 1
   IFS='|' read -r state health image restarts started extra <<<"$snapshot"
@@ -214,6 +220,27 @@ probe_service() {
     netmgrd)
       timeout 8 docker exec "$container_id" /usr/local/bin/netmgrd --healthcheck
       ;;
+    mirrorcap)
+      timeout 8 docker exec "$container_id" /usr/local/bin/mirrorcap --healthcheck
+      ;;
+    tproxyd)
+      timeout 8 docker exec "$container_id" /usr/local/bin/tproxyd --healthcheck
+      ;;
+    havipd)
+      timeout 8 docker exec "$container_id" /usr/local/bin/havipd --healthcheck
+      ;;
+    hasyncd)
+      timeout 8 docker exec "$container_id" /usr/local/bin/hasyncd --healthcheck
+      ;;
+    logrotator)
+      timeout 8 docker exec "$container_id" kill -0 1
+      ;;
+    containerops)
+      timeout 8 docker exec "$container_id" sh -ec 'test -S "${CONTAINEROPS_SOCKET:-/run/containerops/containerops.sock}"'
+      ;;
+    pcapd)
+      timeout 8 docker exec "$container_id" kill -0 1
+      ;;
     *) return 1 ;;
   esac
 }
@@ -227,6 +254,11 @@ wait_selected_services() {
     return 1
   fi
   for i in "${!SERVICES[@]}"; do
+    if [[ "${SERVICES[$i]}" == pcapd && "${PCAPD_SKIP_START:-false}" == true ]] \
+      || [[ "${SERVICES[$i]}" == hasyncd && "${HASYNCD_SKIP_START:-false}" == true ]]; then
+      expected_images+=("")
+      continue
+    fi
     if ! expected="$(timeout 8 docker image inspect --format '{{.Id}}' "${STABLE_IMAGES[$i]}" 2>/dev/null)" || [[ "$expected" != sha256:* ]]; then
       CURRENT_MESSAGE="无法读取升级目标镜像: ${SERVICES[$i]}"
       return 1
@@ -237,6 +269,11 @@ wait_selected_services() {
     ready=1 signature="" snapshots=()
     for i in "${!SERVICES[@]}"; do
       service="${SERVICES[$i]}"
+      if [[ "$service" == pcapd && "${PCAPD_SKIP_START:-false}" == true ]] \
+        || [[ "$service" == hasyncd && "${HASYNCD_SKIP_START:-false}" == true ]]; then
+        snapshots+=("")
+        continue
+      fi
       if ! snapshot="$(wait_service "$service")"; then
         CURRENT_MESSAGE="升级后组件 $service 未就绪（容器状态或 inspect 不可用）"
         ready=0; break
@@ -260,6 +297,10 @@ wait_selected_services() {
     # 检查 API 期间其他组件也可能退出/重启；回读整个组件集合而非单次顺序放行。
     if (( ready )); then
       for i in "${!SERVICES[@]}"; do
+        if [[ "${SERVICES[$i]}" == pcapd && "${PCAPD_SKIP_START:-false}" == true ]] \
+          || [[ "${SERVICES[$i]}" == hasyncd && "${HASYNCD_SKIP_START:-false}" == true ]]; then
+          continue
+        fi
         if ! snapshot="$(wait_service "${SERVICES[$i]}")" || [[ "$snapshot" != "${snapshots[$i]}" ]]; then
           CURRENT_MESSAGE="升级后组件 ${SERVICES[$i]} 在健康检查期间发生变化"
           ready=0; break
@@ -287,15 +328,24 @@ wait_selected_services() {
 declare -a SERVICES=() STABLE_IMAGES=() OLD_IDS=() NEW_SERVICES=() API_EXTRA_NETWORKS=()
 CURRENT_JOB="" CURRENT_STAGE="APPLYING" CURRENT_MESSAGE="" INSTALLED_OVERRIDE=""
 IMAGE_SWITCH_STARTED=false
+PCAPD_SKIP_START=false
+HASYNCD_SKIP_START=false
 
 rollback_images() {
   local i
   declare -a existed=()
+  local rollback_pcapd=false rollback_hasyncd=false
   if [[ "$IMAGE_SWITCH_STARTED" == true ]]; then
     for i in "${!SERVICES[@]}"; do
       if [[ -n "${OLD_IDS[$i]:-}" ]]; then
         docker tag "${OLD_IDS[$i]}" "${STABLE_IMAGES[$i]}" >/dev/null 2>&1 || true
-        existed+=("${SERVICES[$i]}")
+        if [[ "${SERVICES[$i]}" == pcapd ]]; then
+          [[ "${PCAPD_SKIP_START:-false}" == true ]] || rollback_pcapd=true
+        elif [[ "${SERVICES[$i]}" == hasyncd ]]; then
+          [[ "${HASYNCD_SKIP_START:-false}" == true ]] || rollback_hasyncd=true
+        else
+          existed+=("${SERVICES[$i]}")
+        fi
       fi
     done
   fi
@@ -314,6 +364,12 @@ rollback_images() {
       if printf '%s\n' "${existed[@]}" | grep -Fxq api; then
         reattach_api_extra_networks rollback >/dev/null 2>&1 || true
       fi
+    fi
+    if [[ "$rollback_pcapd" == true ]]; then
+      compose --profile request-pcap up -d --no-deps --force-recreate pcapd >/dev/null 2>&1 || true
+    fi
+    if [[ "$rollback_hasyncd" == true ]]; then
+      compose --profile ha-sync up -d --no-deps --force-recreate hasyncd >/dev/null 2>&1 || true
     fi
     wait_api || true
   fi
@@ -443,7 +499,7 @@ process_job() {
   local job_file="$1" package_name expected_sha package version_from version_to job_id
   local work package_root manifest package_type
   CURRENT_STAGE="APPLYING"
-  SERVICES=(); STABLE_IMAGES=(); OLD_IDS=(); NEW_SERVICES=(); API_EXTRA_NETWORKS=(); INSTALLED_OVERRIDE=""; IMAGE_SWITCH_STARTED=false
+  SERVICES=(); STABLE_IMAGES=(); OLD_IDS=(); NEW_SERVICES=(); API_EXTRA_NETWORKS=(); INSTALLED_OVERRIDE=""; IMAGE_SWITCH_STARTED=false; PCAPD_SKIP_START=false; HASYNCD_SKIP_START=false
   [[ -f "$job_file" && ! -L "$job_file" ]] || { CURRENT_MESSAGE="任务文件无效或为符号链接"; return 1; }
   job_id="$(jq -er '.job_id | strings' "$job_file")" || return 1
   [[ "$job_id" =~ ^[0-9a-fA-F-]{36}$ ]] || return 1
@@ -521,18 +577,22 @@ process_runtime_patch() {
     [[ "${SERVICES[$i]}" == gateway ]] || continue
     validate_gateway_start_contract "${targets[$i]}" || return 1
   done
-  # runtime-patch 涉及 gateway 重建时，共享 gateway 网络命名空间的 netmgrd 必须同步强制重建。
-  if printf '%s\n' "${SERVICES[@]}" | grep -Fxq gateway \
-    && ! printf '%s\n' "${SERVICES[@]}" | grep -Fxq netmgrd \
-    && printf '%s\n' "${compose_services[@]}" | grep -Fxq netmgrd; then
-    stable="$(compose config --format json | jq -er '.services.netmgrd.image | select(type == "string" and length > 0)')" \
-      || { CURRENT_MESSAGE="无法读取 netmgrd 的 compose 镜像"; return 1; }
-    old="$(docker image inspect "$stable" --format '{{.Id}}' 2>/dev/null)" \
-      || { CURRENT_MESSAGE="无法读取当前 netmgrd 镜像"; return 1; }
-    SERVICES+=(netmgrd)
-    STABLE_IMAGES+=("$stable")
-    OLD_IDS+=("$old")
-    recreate_netmgrd=true
+  # runtime-patch 涉及 gateway 重建时，共享 gateway 网络命名空间的 netmgrd/havipd 必须同步强制重建。
+  if printf '%s\n' "${SERVICES[@]}" | grep -Fxq gateway; then
+    local _gw_dep
+    for _gw_dep in netmgrd havipd; do
+      if ! printf '%s\n' "${SERVICES[@]}" | grep -Fxq "$_gw_dep" \
+        && printf '%s\n' "${compose_services[@]}" | grep -Fxq "$_gw_dep"; then
+        stable="$(compose config --format json | jq -er --arg s "$_gw_dep" '.services[$s].image | select(type == "string" and length > 0)')" \
+          || { CURRENT_MESSAGE="无法读取 $_gw_dep 的 compose 镜像"; return 1; }
+        old="$(docker image inspect "$stable" --format '{{.Id}}' 2>/dev/null)" \
+          || { CURRENT_MESSAGE="无法读取当前 $_gw_dep 镜像"; return 1; }
+        SERVICES+=("$_gw_dep")
+        STABLE_IMAGES+=("$stable")
+        OLD_IDS+=("$old")
+        recreate_netmgrd=true
+      fi
+    done
   fi
   capture_api_extra_networks
   IMAGE_SWITCH_STARTED=true
@@ -679,15 +739,49 @@ PY
   return 0
 }
 
+resolve_image_delta_helper() {
+  local self_dir cand owner mode
+  if [[ -n "${IMAGE_DELTA_HELPER:-}" ]]; then
+    cand="$IMAGE_DELTA_HELPER"
+  else
+    self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || return 1
+    if [[ -f "$self_dir/jiuzhang-image-delta.py" ]]; then
+      cand="$self_dir/jiuzhang-image-delta.py"
+    elif [[ -f "$self_dir/image-delta.py" ]]; then
+      cand="$self_dir/image-delta.py"
+    elif [[ -f /usr/local/libexec/jiuzhang-image-delta.py ]]; then
+      cand=/usr/local/libexec/jiuzhang-image-delta.py
+    else
+      CURRENT_MESSAGE="宿主机缺少镜像层差量重建工具（jiuzhang-image-delta.py），请重新运行 install-executor.sh"
+      return 1
+    fi
+  fi
+  [[ -f "$cand" && ! -L "$cand" ]] || { CURRENT_MESSAGE="差量重建工具不存在或为符号链接: $cand"; return 1; }
+  if [[ "${CONFIG_FILE:-}" == "/etc/jiuzhang/upgrade-executor.conf" ]]; then
+    owner="$(stat -c '%u' "$cand" 2>/dev/null || echo "")"
+    mode="$(stat -c '%a' "$cand" 2>/dev/null || echo "")"
+    if [[ "$owner" != "0" || ! "$mode" =~ ^[0-7]{3,4}$ ]] || (( (0$mode & 022) != 0 )); then
+      CURRENT_MESSAGE="差量重建工具属主或权限不安全: $cand"
+      return 1
+    fi
+  fi
+  printf '%s\n' "$cand"
+}
+
 # 功能升级包（package_type=upgrade，build-upgrade-pack.sh 产物）：
-#   逐组件 images[].tar（gzip）docker load 并 inspect → 启动契约检查 → 统一 retag → compose up -d；
-#   manifest.files 逐一校验（存在性/大小/SHA-256）并反查无未声明文件（口径同服务端
-#   artifact.go）；组件白名单 api/web/gateway/netmgrd；新组件（netmgrd）经包内
-#   compose/upgrade-services.yml 片段并入 compose-overrides.d 后首次创建。
+#   支持全 11 个自研容器组件（api/web/gateway/netmgrd/mirrorcap/tproxyd/havipd/hasyncd/logrotator/containerops/pcapd）
+#   以及完整组件镜像（full）与镜像层差量（layer-delta）两种交付形态：
+#   逐组件验签、校验文件清单、差量基础层预检/重建并 docker load → 启动契约检查 → 统一 retag → compose up -d；
+#   pcapd（request-pcap）与 hasyncd（ha-sync）均按各自 profile 守卫：原主机未运行时仅更新镜像标签，绝不擅自启动。
 # 失败回滚语义沿用 runtime-patch（retag 回退）；新组件额外摘除片段并删除新镜像标签。
 process_upgrade_pack() {
   local package_root="$1" manifest="$2" version_from="$3" version_to="$4"
   local host_arch service target stable old i f rel expected_size expected_sha actual_size actual_sha
+  local delta_helper="" delta_work actual_layers check_err apply_err base_tar recon_tar pcapd_cid pcapd_state hasyncd_cid hasyncd_state
+  local -a delivery_modes=() base_layers_list=() regular_up=()
+  local pcapd_up=false hasyncd_up=false
+  PCAPD_SKIP_START=false
+  HASYNCD_SKIP_START=false
 
   validate_version_string "$version_from" || { CURRENT_MESSAGE="起始版本号格式非法"; return 1; }
   validate_version_string "$version_to" || { CURRENT_MESSAGE="目标版本号格式非法"; return 1; }
@@ -698,6 +792,10 @@ process_upgrade_pack() {
     (cd "$package_root" && sha256sum -c SHA256SUMS >/dev/null) || { CURRENT_MESSAGE="包内校验和失败"; return 1; }
   fi
   jq -e --arg from "$version_from" --arg to "$version_to" '
+    def allowed_comp:
+      . == "api" or . == "web" or . == "gateway" or . == "netmgrd" or
+      . == "mirrorcap" or . == "tproxyd" or . == "havipd" or . == "hasyncd" or
+      . == "logrotator" or . == "containerops" or . == "pcapd";
     .components as $comps | .images as $imgs | .files as $files |
     (.format_version == 1 or .format_version == "1") and
     .product == "wdsp" and .package_type == "upgrade" and
@@ -705,12 +803,20 @@ process_upgrade_pack() {
     .version_from == $from and .version_to == $to and .version == $to and
     (.arch | type == "string") and
     ($comps | type == "array" and length >= 1 and (unique | length) == length and
-      (all(.[]; . == "api" or . == "web" or . == "gateway" or . == "netmgrd"))) and
+      (all(.[]; allowed_comp))) and
     ($imgs | type == "array" and length == ($comps | length)) and
     (all($imgs[]; (.component == .service) and
-      (.service == "api" or .service == "web" or .service == "gateway" or .service == "netmgrd") and
+      (.service | allowed_comp) and
       (.image | type == "string" and test("^[A-Za-z0-9._:/-]+$")) and
-      (.tar | type == "string" and test("^images/[A-Za-z0-9._-]+\\.tar\\.gz$")))) and
+      (.tar | type == "string" and test("^images/[A-Za-z0-9._-]+\\.tar\\.gz$")) and
+      ((.delivery_mode // "full") as $dm |
+        ($dm == "full") or
+        ($dm == "layer-delta" and
+          (.base_layers | type == "array" and length >= 1 and
+            all(.[]; type == "string" and test("^sha256:[0-9a-f]{64}$"))))) and
+      ((.diff_ids == null) or
+        (.diff_ids | type == "array" and
+          all(.[]; type == "string" and test("^sha256:[0-9a-f]{64}$")))))) and
     (([$imgs[].component] | sort) == ($comps | sort)) and
     ($files | type == "array" and length >= 1) and
     (all($files[];
@@ -753,21 +859,37 @@ process_upgrade_pack() {
   mapfile -t SERVICES < <(jq -r '.images[].service' "$manifest")
   mapfile -t targets < <(jq -r '.images[].image' "$manifest")
   mapfile -t tars < <(jq -r '.images[].tar' "$manifest")
+  mapfile -t delivery_modes < <(jq -r '.images[] | (.delivery_mode // "full")' "$manifest")
+  mapfile -t base_layers_list < <(jq -c '.images[] | (.base_layers // [])' "$manifest")
   # 组件白名单（双重防御；jq 协议校验已约束）
   for service in "${SERVICES[@]}"; do
     case "$service" in
-      api|web|gateway|netmgrd) ;;
+      api|web|gateway|netmgrd|mirrorcap|tproxyd|havipd|hasyncd|logrotator|containerops|pcapd) ;;
       *) CURRENT_MESSAGE="拒绝未知组件: $service"; return 1 ;;
     esac
   done
 
   # 新组件首次部署：宿主 compose（含已并入片段）缺失的服务须由包内片段恰好补齐
   mapfile -t compose_services < <(compose config --services)
+  declare -a pcapd_profile_services=()
+  if printf '%s\n' "${SERVICES[@]}" | grep -Fxq pcapd; then
+    mapfile -t pcapd_profile_services < <(compose --profile request-pcap config --services 2>/dev/null || true)
+  fi
+  declare -a hasyncd_profile_services=()
+  if printf '%s\n' "${SERVICES[@]}" | grep -Fxq hasyncd; then
+    mapfile -t hasyncd_profile_services < <(compose --profile ha-sync config --services 2>/dev/null || true)
+  fi
   declare -a missing=()
   local found c
   for service in "${SERVICES[@]}"; do
     found=0
     for c in "${compose_services[@]}"; do [[ "$c" == "$service" ]] && { found=1; break; }; done
+    if ((found == 0)) && [[ "$service" == pcapd ]]; then
+      for c in ${pcapd_profile_services[@]+"${pcapd_profile_services[@]}"}; do [[ "$c" == "pcapd" ]] && { found=1; break; }; done
+    fi
+    if ((found == 0)) && [[ "$service" == hasyncd ]]; then
+      for c in ${hasyncd_profile_services[@]+"${hasyncd_profile_services[@]}"}; do [[ "$c" == "hasyncd" ]] && { found=1; break; }; done
+    fi
     ((found == 1)) || missing+=("$service")
   done
   if ((${#missing[@]} > 0)); then
@@ -775,13 +897,20 @@ process_upgrade_pack() {
     [[ -f "$fragment" ]] || { CURRENT_MESSAGE="升级包缺少新组件 compose 片段（缺失服务: ${missing[*]}）"; return 1; }
     local of merged_before merged_after before_services after_services added
     local args=(-f "$COMPOSE_FILE")
+    local profile_args=()
+    if printf '%s\n' "${missing[@]}" | grep -Fxq hasyncd; then
+      profile_args+=(--profile ha-sync)
+    fi
+    if printf '%s\n' "${missing[@]}" | grep -Fxq pcapd; then
+      profile_args+=(--profile request-pcap)
+    fi
     for of in "$OVERRIDES_DIR"/*.yml; do
       [[ -e "$of" ]] || continue
       args+=(-f "$of")
     done
-    merged_before="$(docker compose "${args[@]}" --env-file "$ENV_FILE" config --format json 2>/dev/null)" \
+    merged_before="$(docker compose "${args[@]}" ${profile_args[@]+"${profile_args[@]}"} --env-file "$ENV_FILE" config --format json 2>/dev/null)" \
       || { CURRENT_MESSAGE="现有 compose 配置解析失败"; return 1; }
-    merged_after="$(docker compose "${args[@]}" -f "$fragment" --env-file "$ENV_FILE" config --format json 2>/dev/null)" \
+    merged_after="$(docker compose "${args[@]}" -f "$fragment" ${profile_args[@]+"${profile_args[@]}"} --env-file "$ENV_FILE" config --format json 2>/dev/null)" \
       || { CURRENT_MESSAGE="新组件 compose 片段无法并入解析"; return 1; }
     before_services="$(printf '%s' "$merged_before" | jq -r '.services | keys[]' | LC_ALL=C sort)"
     after_services="$(printf '%s' "$merged_after" | jq -r '.services | keys[]' | LC_ALL=C sort)"
@@ -797,17 +926,25 @@ process_upgrade_pack() {
       return 1
     fi
     # 新服务镜像必须与 manifest 声明一致，且禁止提权/宿主机命名空间/危险挂载/越权能力
-    local sec_err=""
-    if ! sec_err="$(python3 - "$manifest" "$added" <<'PY' 2>&1 <<<"$merged_after"
+    local sec_err="" merged_after_tmp=""
+    merged_after_tmp="$(mktemp "$STATE_DIR/.merged-after.XXXXXX")"
+    printf '%s' "$merged_after" > "$merged_after_tmp"
+    if ! sec_err="$(python3 - "$manifest" "$added" "$merged_after_tmp" <<'PY' 2>&1
 import json, pathlib, sys
 
 manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 added = [line.strip() for line in sys.argv[2].splitlines() if line.strip()]
-merged_after = json.loads(sys.stdin.read())
+merged_after = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
 services = merged_after.get("services") or {}
 
 allowed_caps = {
     "netmgrd": {"NET_RAW", "NET_ADMIN"},
+    "havipd": {"NET_ADMIN", "NET_RAW", "NET_BROADCAST"},
+    "hasyncd": set(),
+    "mirrorcap": {"NET_RAW", "NET_ADMIN", "SETUID", "SETGID", "SETPCAP"},
+    "tproxyd": set(),
+    "logrotator": set(),
+    "pcapd": {"NET_RAW", "SETUID", "SETGID"},
     "gateway": {"NET_BIND_SERVICE", "SETUID", "SETGID", "SETPCAP"},
     "api": set(),
     "web": set(),
@@ -860,9 +997,11 @@ for name in added:
                 raise SystemExit(f"拒绝新增服务 {name} 绑定宿主机系统路径: {src}")
 PY
     )"; then
+      rm -f "$merged_after_tmp"
       CURRENT_MESSAGE="${sec_err:-compose 片段安全校验失败}"
       return 1
     fi
+    rm -f "$merged_after_tmp"
     # 幂等安装片段：同名文件内容必须一致
     local target_override="$OVERRIDES_DIR/upgrade-${version_to}.yml"
     [[ ! -L "$target_override" ]] || { CURRENT_MESSAGE="compose 片段目标路径为符号链接"; return 1; }
@@ -879,7 +1018,25 @@ PY
   STABLE_IMAGES=(); OLD_IDS=()
   for i in "${!SERVICES[@]}"; do
     service="${SERVICES[$i]}"; target="${targets[$i]}"
-    stable="$(compose config --format json | jq -er --arg s "$service" '.services[$s].image')" || return 1
+    if [[ "$service" == pcapd ]]; then
+      stable="$(compose --profile request-pcap config --format json | jq -er '.services.pcapd.image')" || return 1
+      pcapd_cid="$(compose --profile request-pcap ps -q pcapd 2>/dev/null || true)"
+      pcapd_state=""
+      if [[ "$pcapd_cid" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        pcapd_state="$(docker inspect --format '{{.State.Status}}' "$pcapd_cid" 2>/dev/null || true)"
+      fi
+      [[ "$pcapd_state" == running ]] || PCAPD_SKIP_START=true
+    elif [[ "$service" == hasyncd ]]; then
+      stable="$(compose --profile ha-sync config --format json | jq -er '.services.hasyncd.image')" || return 1
+      hasyncd_cid="$(compose --profile ha-sync ps -q hasyncd 2>/dev/null || true)"
+      hasyncd_state=""
+      if [[ "$hasyncd_cid" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        hasyncd_state="$(docker inspect --format '{{.State.Status}}' "$hasyncd_cid" 2>/dev/null || true)"
+      fi
+      [[ "$hasyncd_state" == running ]] || HASYNCD_SKIP_START=true
+    else
+      stable="$(compose config --format json | jq -er --arg s "$service" '.services[$s].image')" || return 1
+    fi
     old=""
     if [[ " ${NEW_SERVICES[*]-} " == *" $service "* ]]; then
       # 新组件：compose 片段镜像即目标标签（已校验一致），无旧镜像可回退
@@ -890,9 +1047,60 @@ PY
     STABLE_IMAGES+=("$stable"); OLD_IDS+=("$old")
   done
 
+  # 层差量预检（fail-closed：在加载或切换任何镜像之前校验宿主机基础层全部存在）
   for i in "${!targets[@]}"; do
-    gzip -dc "$package_root/${tars[$i]}" | docker load >/dev/null \
-      || { CURRENT_MESSAGE="加载镜像失败: ${tars[$i]}"; return 1; }
+    [[ "${delivery_modes[$i]}" == "layer-delta" ]] || continue
+    service="${SERVICES[$i]}"
+    if [[ " ${NEW_SERVICES[*]-} " == *" $service "* ]]; then
+      CURRENT_MESSAGE="新组件 $service 不存在旧镜像，拒绝使用 layer-delta 差量升级包"
+      return 1
+    fi
+    if [[ -z "$delta_helper" ]]; then
+      delta_helper="$(resolve_image_delta_helper)" || return 1
+    fi
+    actual_layers="$(docker image inspect "${STABLE_IMAGES[$i]}" --format '{{json .RootFS.Layers}}' 2>/dev/null)" \
+      || { CURRENT_MESSAGE="无法读取宿主机当前 $service 镜像层清单"; return 1; }
+    if ! check_err="$(python3 "$delta_helper" check-base \
+      --required-base-layers-json "${base_layers_list[$i]}" \
+      --actual-layers-json "$actual_layers" 2>&1)"; then
+      CURRENT_MESSAGE="宿主机当前 $service 镜像不满足差量升级基础层要求（期望起始版本 ${version_from}）：${check_err}"
+      return 1
+    fi
+  done
+
+  delta_work="${work:-$(dirname "$package_root")}"
+  for i in "${!targets[@]}"; do
+    service="${SERVICES[$i]}"
+    if [[ "${delivery_modes[$i]}" == "layer-delta" ]]; then
+      base_tar="$delta_work/base-${service}.tar"
+      recon_tar="$delta_work/reconstructed-${service}.tar"
+      rm -f "$base_tar" "$recon_tar"
+      if ! docker save "${STABLE_IMAGES[$i]}" -o "$base_tar" >/dev/null 2>&1; then
+        rm -f "$base_tar" "$recon_tar"
+        CURRENT_MESSAGE="导出宿主机基准镜像失败（供层差量重建）: ${service}"
+        return 1
+      fi
+      if ! apply_err="$(python3 "$delta_helper" apply \
+        --delta-tar "$package_root/${tars[$i]}" \
+        --base-tar "$base_tar" \
+        --expected-base-layers-json "${base_layers_list[$i]}" \
+        --expected-image "${targets[$i]}" \
+        --output "$recon_tar" 2>&1)"; then
+        rm -f "$base_tar" "$recon_tar"
+        CURRENT_MESSAGE="差量镜像重建失败（${service}）：${apply_err}"
+        return 1
+      fi
+      rm -f "$base_tar"
+      if ! docker load -i "$recon_tar" >/dev/null; then
+        rm -f "$recon_tar"
+        CURRENT_MESSAGE="加载重建镜像失败: ${tars[$i]}"
+        return 1
+      fi
+      rm -f "$recon_tar"
+    else
+      gzip -dc "$package_root/${tars[$i]}" | docker load >/dev/null \
+        || { CURRENT_MESSAGE="加载镜像失败: ${tars[$i]}"; return 1; }
+    fi
   done
   for i in "${!targets[@]}"; do
     docker image inspect "${targets[$i]}" >/dev/null 2>&1 || { CURRENT_MESSAGE="包内缺少镜像 ${targets[$i]}"; return 1; }
@@ -903,18 +1111,22 @@ PY
   done
   capture_api_extra_networks
 
-  # gateway 重建会使 network_mode: service:gateway 的 netmgrd 失去原网络命名空间。
-  # 即使升级包不更新 netmgrd 镜像，也要把现有服务纳入同次重建、健康检查与回滚。
-  if printf '%s\n' "${SERVICES[@]}" | grep -Fxq gateway \
-    && ! printf '%s\n' "${SERVICES[@]}" | grep -Fxq netmgrd \
-    && printf '%s\n' "${compose_services[@]}" | grep -Fxq netmgrd; then
-    stable="$(compose config --format json | jq -er '.services.netmgrd.image | select(type == "string" and length > 0)')" \
-      || { CURRENT_MESSAGE="无法读取 netmgrd 的 compose 镜像"; return 1; }
-    old="$(docker image inspect "$stable" --format '{{.Id}}' 2>/dev/null)" \
-      || { CURRENT_MESSAGE="无法读取当前 netmgrd 镜像"; return 1; }
-    SERVICES+=(netmgrd)
-    STABLE_IMAGES+=("$stable")
-    OLD_IDS+=("$old")
+  # gateway 重建会使 network_mode: service:gateway 的 sidecar（netmgrd/havipd）失去原网络命名空间。
+  # 即使升级包不更新其镜像，也要把现有服务纳入同次重建、健康检查与回滚。
+  if printf '%s\n' "${SERVICES[@]}" | grep -Fxq gateway; then
+    local _gw_dep
+    for _gw_dep in netmgrd havipd; do
+      if ! printf '%s\n' "${SERVICES[@]}" | grep -Fxq "$_gw_dep" \
+        && printf '%s\n' "${compose_services[@]}" | grep -Fxq "$_gw_dep"; then
+        stable="$(compose config --format json | jq -er --arg s "$_gw_dep" '.services[$s].image | select(type == "string" and length > 0)')" \
+          || { CURRENT_MESSAGE="无法读取 $_gw_dep 的 compose 镜像"; return 1; }
+        old="$(docker image inspect "$stable" --format '{{.Id}}' 2>/dev/null)" \
+          || { CURRENT_MESSAGE="无法读取当前 $_gw_dep 镜像"; return 1; }
+        SERVICES+=("$_gw_dep")
+        STABLE_IMAGES+=("$stable")
+        OLD_IDS+=("$old")
+      fi
+    done
   fi
 
   IMAGE_SWITCH_STARTED=true
@@ -923,9 +1135,26 @@ PY
   done
 
   # API 镜像入口会在启动服务前执行 migrate up；这里保持 MIGRATING 状态，
-  # 直到新容器成功启动，再进入健康检查阶段。强制重建覆盖镜像未变化的 netmgrd。
+  # 直到新容器成功启动，再进入健康检查阶段。强制重建覆盖镜像未变化的 netmgrd/havipd。
   CURRENT_STAGE="MIGRATING"
-  compose up -d --no-deps --force-recreate "${SERVICES[@]}" || { CURRENT_MESSAGE="启动新版本容器失败"; return 1; }
+  for service in "${SERVICES[@]}"; do
+    if [[ "$service" == pcapd ]]; then
+      [[ "$PCAPD_SKIP_START" == true ]] || pcapd_up=true
+    elif [[ "$service" == hasyncd ]]; then
+      [[ "$HASYNCD_SKIP_START" == true ]] || hasyncd_up=true
+    else
+      regular_up+=("$service")
+    fi
+  done
+  if ((${#regular_up[@]} > 0)); then
+    compose up -d --no-deps --force-recreate "${regular_up[@]}" || { CURRENT_MESSAGE="启动新版本容器失败"; return 1; }
+  fi
+  if [[ "$pcapd_up" == true ]]; then
+    compose --profile request-pcap up -d --no-deps --force-recreate pcapd || { CURRENT_MESSAGE="启动新版本 pcapd 容器失败"; return 1; }
+  fi
+  if [[ "$hasyncd_up" == true ]]; then
+    compose --profile ha-sync up -d --no-deps --force-recreate hasyncd || { CURRENT_MESSAGE="启动新版本 hasyncd 容器失败"; return 1; }
+  fi
   reattach_api_extra_networks strict || return 1
   CURRENT_STAGE="VERIFYING"
   wait_selected_services || return 1

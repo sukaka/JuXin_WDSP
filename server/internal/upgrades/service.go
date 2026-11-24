@@ -4,6 +4,7 @@ package upgrades
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -77,12 +78,22 @@ type Service struct {
 	schedStore   scheduleStore
 	stranded     strandedStore
 	resStore     resultStore
+	clusterStore clusterRepo
 	verifyFn     func(ctx context.Context) error
 	rollbackFn   func(ctx context.Context, id uuid.UUID, requestedBy *uuid.UUID) error
 	nowFn        func() time.Time
 	startRun     func(id uuid.UUID)
 	auditFn      func(ctx context.Context, in audits.RecordInput) error
 	scheduleTick time.Duration
+
+	// HA 集群滚动升级（Phase 4：先备后主）
+	clusterClient     ClusterSyncClient
+	localNodeName     string
+	standbyVerifyWait time.Duration
+	precheckLocalFn   func(ctx context.Context, pkg *Package) []CheckItem
+	runBackupFn       func(ctx context.Context, job *Job) error
+	runPrimaryFn      func(ctx context.Context, job *Job) error
+	startRetryNode    func(fn func())
 }
 
 // NewService 创建升级服务。
@@ -92,8 +103,9 @@ func NewService(db *pgxpool.Pool, store *Store, backupStore *backups.Store, rest
 		db: db, store: store, backupStore: backupStore, restores: restoreSvc,
 		prechecker: prechecker, migrationsDir: migrationsDir, alertFn: alertFn,
 		backupWait: defaultBackupWait, restoreWait: defaultRestoreWait, poll: defaultPoll,
-		executorWait: defaultExecutorWait,
-		schedStore: store, stranded: store, resStore: store, nowFn: time.Now, scheduleTick: defaultScheduleTick,
+		executorWait: defaultExecutorWait, standbyVerifyWait: defaultStandbyVerifyWait,
+		schedStore: store, stranded: store, resStore: store, clusterStore: store,
+		nowFn: time.Now, scheduleTick: defaultScheduleTick,
 	}
 	s.startRun = func(id uuid.UUID) { go s.run(id) }
 	return s
@@ -174,31 +186,14 @@ func (s *Service) SetScheduleTick(d time.Duration) *Service {
 	return s
 }
 
-// RunPrecheck 对升级包执行预检（不落任务，供单独预检接口）。
+// RunPrecheck 对升级包执行升级前检查（默认 LOCAL 模式；HA 滚动升级请调用 RunPrecheckWithMode）。
 func (s *Service) RunPrecheck(ctx context.Context, packageID uuid.UUID) ([]CheckItem, error) {
-	pkg, err := s.store.GetPackage(ctx, packageID)
-	if err != nil {
-		return nil, err
-	}
-	facts := s.prechecker.Gather(ctx, pkg)
-	return Evaluate(facts), nil
+	return s.RunPrecheckWithMode(ctx, packageID, ClusterModeLocal)
 }
 
-// Execute 创建升级任务并异步执行。
+// Execute 创建升级任务并异步执行（默认 LOCAL 模式；HA 滚动升级请调用 ExecuteWithMode）。
 func (s *Service) Execute(ctx context.Context, packageID, requestedBy uuid.UUID, requestID string) (*Job, error) {
-	pkg, err := s.store.GetPackage(ctx, packageID)
-	if err != nil {
-		return nil, err
-	}
-	if pkg.Status != PackageVerified {
-		return nil, ErrPackageNotVerified
-	}
-	job, err := s.store.CreateJobIfNoActive(ctx, packageID, &requestedBy, requestID)
-	if err != nil {
-		return nil, err
-	}
-	go s.run(job.ID)
-	return job, nil
+	return s.ExecuteWithMode(ctx, packageID, requestedBy, requestID, ClusterModeLocal)
 }
 
 // Schedule 创建定时升级任务（SCHEDULED），不立即启动；
@@ -301,90 +296,144 @@ func scheduledAtText(t *time.Time) string {
 func (s *Service) run(id uuid.UUID) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.backupWait+s.restoreWait+30*time.Minute)
 	defer cancel()
+	repo := s.clusterStoreRepo()
+	if repo == nil {
+		slog.Error("upgrade job store not configured", "id", id)
+		return
+	}
 	fail := func(code string, err error) {
 		slog.Error("upgrade job failed", "id", id, "code", code, "error", err)
-		if dbErr := s.store.MarkFailed(context.Background(), id, code, err); dbErr != nil {
+		if dbErr := repo.MarkFailed(context.Background(), id, code, err); dbErr != nil {
 			slog.Error("mark upgrade failed status error", "id", id, "error", dbErr)
 		}
 		backups.NotifyAlert(s.alertFn, "UPGRADE_FAILED", "UPGRADE", "升级任务失败",
 			"升级任务 "+id.String()+" 失败（"+code+"）："+failMsg(err))
 	}
 
-	job, err := s.store.GetJob(ctx, id)
+	job, err := repo.GetJob(ctx, id)
 	if err != nil {
 		slog.Error("load upgrade job failed", "id", id, "error", err)
 		return
 	}
+	mode := job.ClusterMode
+	if mode == "" {
+		mode = ClusterModeLocal
+	}
 
 	// ---- PRECHECK ----
-	if err := s.store.Transition(ctx, id, StatusPending, StatusPrecheck); err != nil {
+	if err := repo.Transition(ctx, id, StatusPending, StatusPrecheck); err != nil {
 		fail(FailPrecheck, err)
 		return
 	}
-	items, err := s.RunPrecheck(ctx, *job.PackageID)
+	items, err := s.RunPrecheckWithMode(ctx, *job.PackageID, mode)
 	if err != nil {
 		fail(FailPrecheck, err)
 		return
 	}
-	if err := s.store.SetPrecheck(ctx, id, items); err != nil {
+	if err := repo.SetPrecheck(ctx, id, items); err != nil {
 		fail(FailPrecheck, err)
 		return
 	}
 	if HasFail(items) {
-		fail(FailPrecheck, fmt.Errorf("升级前检查未通过：%s", firstFailMessage(items)))
+		code := FailPrecheck
+		if mode == ClusterModeHARolling && hasSplitBrainFailure(items) {
+			code = FailClusterSplitBrain
+		}
+		fail(code, fmt.Errorf("升级前检查未通过：%s", firstFailMessage(items)))
 		return
 	}
 
-	// ---- BACKUP（升级前必须备份） ----
-	if err := s.store.Transition(ctx, id, StatusPrecheck, StatusBackup); err != nil {
+	// ---- BACKUP（升级前必须备份，集群模式仅需在主库执行一次） ----
+	if err := repo.Transition(ctx, id, StatusPrecheck, StatusBackup); err != nil {
 		fail(FailBackup, err)
 		return
 	}
-	backupJob, err := s.backupStore.Create(ctx, backups.TypeFull, job.RequestedBy, "upgrade-"+id.String())
-	if err != nil {
-		fail(FailBackup, err)
-		return
-	}
-	if err := s.store.SetBackupJob(ctx, id, backupJob.ID); err != nil {
-		fail(FailBackup, err)
-		return
-	}
-	if err := s.waitBackup(ctx, backupJob.ID); err != nil {
-		fail(FailBackup, err)
-		return
+	if s.runBackupFn != nil {
+		if err := s.runBackupFn(ctx, job); err != nil {
+			fail(FailBackup, err)
+			return
+		}
+	} else {
+		backupJob, err := s.backupStore.Create(ctx, backups.TypeFull, job.RequestedBy, "upgrade-"+id.String())
+		if err != nil {
+			fail(FailBackup, err)
+			return
+		}
+		if err := repo.SetBackupJob(ctx, id, backupJob.ID); err != nil {
+			fail(FailBackup, err)
+			return
+		}
+		if err := s.waitBackup(ctx, backupJob.ID); err != nil {
+			fail(FailBackup, err)
+			return
+		}
 	}
 
-	// 备份成功之后的失败均需自动回滚
+	// 备份成功之后、触碰主节点期间的失败均需自动回滚
 	rollbackOnFail := func(stage, code string, stepErr error) {
 		slog.Error("upgrade stage failed, rolling back", "id", id, "stage", stage, "error", stepErr)
-		if rbErr := s.rollback(context.Background(), id, job.RequestedBy); rbErr != nil {
+		if mode == ClusterModeHARolling {
+			s.markPrimaryNodeTerminal(context.Background(), id, NodeStatusFailed, code, stepErr.Error())
+		}
+		if rbErr := s.runRollback(context.Background(), id, job.RequestedBy); rbErr != nil {
 			combined := fmt.Errorf("%v；自动回滚失败：%w", stepErr, rbErr)
 			slog.Error("upgrade auto rollback failed", "id", id, "error", rbErr)
-			if dbErr := s.store.MarkFailed(context.Background(), id, FailRollback, combined); dbErr != nil {
+			if dbErr := repo.MarkFailed(context.Background(), id, FailRollback, combined); dbErr != nil {
 				slog.Error("mark upgrade rollback-failed status error", "id", id, "error", dbErr)
 			}
 			backups.NotifyAlert(s.alertFn, "UPGRADE_ROLLBACK_FAILED", "UPGRADE", "升级失败且自动回滚失败",
 				"升级任务 "+id.String()+" 阶段 "+stage+" 失败，自动回滚失败："+failMsg(rbErr))
 			return
 		}
-		if dbErr := s.store.MarkFinished(context.Background(), id, StatusRolledBack); dbErr != nil {
+		if dbErr := repo.MarkFinished(context.Background(), id, StatusRolledBack); dbErr != nil {
 			slog.Error("mark upgrade rolled-back status error", "id", id, "error", dbErr)
 		}
 		backups.NotifyAlert(s.alertFn, "UPGRADE_ROLLED_BACK", "UPGRADE", "升级失败已自动回滚",
 			"升级任务 "+id.String()+" 阶段 "+stage+" 失败（"+code+"），已恢复升级前备份："+failMsg(stepErr))
 	}
 
-	// ---- APPLYING（提交宿主机执行器；执行器负责镜像、迁移、健康检查与容器回滚） ----
-	if err := s.store.Transition(ctx, id, StatusBackup, StatusApplying); err != nil {
+	// ---- APPLYING ----
+	if err := repo.Transition(ctx, id, StatusBackup, StatusApplying); err != nil {
 		rollbackOnFail(StatusApplying, FailApply, err)
 		return
 	}
 	// 持久化执行器等待截止：进程内等待定时器随 API 重启丢失，
 	// 重启后的兜底清扫以此 deadline 终结滞留任务（F7）。
-	if err := s.store.SetExecutorDeadline(ctx, id, time.Now().UTC().Add(s.executorWait)); err != nil {
+	if err := repo.SetExecutorDeadline(ctx, id, s.nowFn().UTC().Add(s.executorWait)); err != nil {
 		rollbackOnFail(StatusApplying, FailApply, err)
 		return
 	}
+
+	// ---- HA_ROLLING 备节点阶段（先备后主；任一备节点失败立即止损，绝不触碰主节点） ----
+	if mode == ClusterModeHARolling {
+		if _, err := s.runClusterStandbys(ctx, job); err != nil {
+			code := FailStandbyUpgrade
+			var sfe *standbyFailureError
+			if errors.As(err, &sfe) && sfe.code != "" {
+				code = sfe.code
+			}
+			fail(code, err)
+			return
+		}
+		// 备节点全部成功后刷新主节点执行器截止时间，避免备机耗时挤压主机超时窗。
+		_ = repo.SetExecutorDeadline(ctx, id, s.nowFn().UTC().Add(s.executorWait))
+	}
+
+	// ---- 主节点阶段（LOCAL 单机直接进入；HA_ROLLING 仅在全部备节点 SUCCESS 后进入） ----
+	if s.runPrimaryFn != nil {
+		if err := s.runPrimaryFn(ctx, job); err != nil {
+			rollbackOnFail(StatusApplying, FailApply, err)
+			return
+		}
+		if mode == ClusterModeHARolling {
+			s.markPrimaryNodeTerminal(context.Background(), id, NodeStatusSuccess, "", "")
+		}
+		if err := repo.MarkFinished(context.Background(), id, StatusSuccess); err != nil {
+			slog.Error("mark upgrade success status error", "id", id, "error", err)
+		}
+		return
+	}
+
 	if err := s.applyDryRun(*job.PackageID); err != nil {
 		rollbackOnFail(StatusApplying, FailApply, err)
 		return

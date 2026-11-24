@@ -50,6 +50,30 @@ const (
 	// FailExecutorTimeout 宿主机执行器超期未返回终态结果（含 API 重启前等待时长），
 	// 滞留 APPLYING 任务由兜底清扫按中断终结（不自动重跑、不假装成功）。
 	FailExecutorTimeout = "EXECUTOR_TIMEOUT"
+	// FailStandbyUpgrade HA 集群滚动升级中备节点升级失败，已立即中止且未触碰主节点。
+	FailStandbyUpgrade = "STANDBY_UPGRADE_FAILED"
+	// FailClusterSplitBrain 检测到未处置的主备脑裂告警（HA_SPLIT_BRAIN），拒绝启动滚动升级。
+	FailClusterSplitBrain = "CLUSTER_SPLIT_BRAIN"
+)
+
+// 集群升级模式（与迁移 000237 upgrade_jobs.cluster_mode 列一致）。
+const (
+	ClusterModeLocal     = "LOCAL"
+	ClusterModeHARolling = "HA_ROLLING"
+)
+
+// 逐节点执行角色与状态（与迁移 000237 upgrade_node_executions 列一致）。
+const (
+	NodeRoleStandby = "STANDBY"
+	NodeRolePrimary = "PRIMARY"
+
+	NodeStatusPending      = "PENDING"
+	NodeStatusTransferring = "TRANSFERRING"
+	NodeStatusApplying     = "APPLYING"
+	NodeStatusVerifying    = "VERIFYING"
+	NodeStatusSuccess      = "SUCCESS"
+	NodeStatusFailed       = "FAILED"
+	NodeStatusSkipped      = "SKIPPED"
 )
 
 // CurrentVersion 当前系统版本（未在 system_settings 配置 system:current_version 时的兜底值）。
@@ -57,13 +81,27 @@ const CurrentVersion = "1.12.0"
 
 // 错误
 var (
-	ErrNotFound           = errors.New("upgrade resource not found")
-	ErrInvalidInput       = errors.New("invalid upgrade input")
-	ErrInvalidStatus      = errors.New("invalid upgrade status for this operation")
-	ErrActiveUpgrade      = errors.New("another upgrade job is active")
-	ErrPackageNotVerified = errors.New("upgrade package is not verified")
-	ErrNoBackup           = errors.New("upgrade job has no backup to roll back to")
+	ErrNotFound                 = errors.New("upgrade resource not found")
+	ErrInvalidInput             = errors.New("invalid upgrade input")
+	ErrInvalidStatus            = errors.New("invalid upgrade status for this operation")
+	ErrActiveUpgrade            = errors.New("another upgrade job is active")
+	ErrPackageNotVerified       = errors.New("upgrade package is not verified")
+	ErrNoBackup                 = errors.New("upgrade job has no backup to roll back to")
+	ErrClusterSplitBrain        = errors.New("cluster split-brain detected")
+	ErrClusterSyncNotConfigured = errors.New("cluster sync client is not configured")
 )
+
+// NormalizeClusterMode 规范化集群升级模式；空串默认 LOCAL，非法值返回 ErrInvalidInput。
+func NormalizeClusterMode(mode string) (string, error) {
+	m := strings.ToUpper(strings.TrimSpace(mode))
+	if m == "" {
+		return ClusterModeLocal, nil
+	}
+	if m == ClusterModeLocal || m == ClusterModeHARolling {
+		return m, nil
+	}
+	return "", fmt.Errorf("%w: 无效的集群升级模式 %q（仅支持 LOCAL 或 HA_ROLLING）", ErrInvalidInput, mode)
+}
 
 // transitions 合法状态迁移（状态机白名单）。
 var transitions = map[string][]string{

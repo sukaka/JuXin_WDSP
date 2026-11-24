@@ -702,6 +702,87 @@ func TestGenerateHTTPSCertLoadFilesAndPolicies(t *testing.T) {
 	}
 }
 
+// TestGenerateHTTPSCertLoadPEMAndChainMerge 验证 Caddy 原生 load_pem 内联证书模式：
+//   - 有 CertPEM/KeyPEM 时优先产出 apps.tls.certificates.load_pem（不再产出 load_files）；
+//   - ChainPEM 非空且未在 CertPEM 中时自动拼接；已包含时不重复拼接；
+//   - 即使 CertFileName 为空，tls_connection_policies 仍按 certID 产出对应 any_tag；
+//   - 同证书多应用绑定自动按 tag 去重并保持确定性顺序。
+func TestGenerateHTTPSCertLoadPEMAndChainMerge(t *testing.T) {
+	const (
+		leafA  = "-----BEGIN CERTIFICATE-----\nLEAF-A\n-----END CERTIFICATE-----\n"
+		chainA = "-----BEGIN CERTIFICATE-----\nINTERMEDIATE-A\n-----END CERTIFICATE-----\n"
+		keyA   = "-----BEGIN PRIVATE KEY-----\nKEY-A\n-----END PRIVATE KEY-----\n"
+		leafB  = "-----BEGIN CERTIFICATE-----\nLEAF-B\n-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----\nCHAIN-B\n-----END CERTIFICATE-----\n"
+		chainB = "-----BEGIN CERTIFICATE-----\nCHAIN-B\n-----END CERTIFICATE-----\n"
+		keyB   = "-----BEGIN PRIVATE KEY-----\nKEY-B\n-----END PRIVATE KEY-----\n"
+	)
+	appA := httpsOnlyApp("app-a", "cert-uuid-a", "a.pem", "a.example.com")
+	appA.CertPEM, appA.ChainPEM, appA.KeyPEM = leafA, chainA, keyA
+
+	appB := httpsOnlyApp("app-b", "cert-uuid-b", "", "b.example.com") // 无 CertFileName，纯 load_pem
+	appB.CertPEM, appB.ChainPEM, appB.KeyPEM = leafB, chainB, keyB
+
+	// 与 appA 共用同一证书
+	appC := httpsOnlyApp("app-c", "cert-uuid-a", "a.pem", "c.example.com")
+	appC.CertPEM, appC.ChainPEM, appC.KeyPEM = leafA, chainA, keyA
+
+	g, err := Generate(GenerateInput{
+		Apps:        []AppData{appB, appA, appC},
+		AdminSocket: "unix//var/run/caddy/admin.sock",
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	var cfg map[string]interface{}
+	if err := json.Unmarshal([]byte(g.JSON), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	certs := cfg["apps"].(map[string]interface{})["tls"].(map[string]interface{})["certificates"].(map[string]interface{})
+	if _, hasFiles := certs["load_files"]; hasFiles {
+		t.Fatalf("all PEM apps must not emit load_files: %v", certs)
+	}
+	loadPEM, ok := certs["load_pem"].([]interface{})
+	if !ok || len(loadPEM) != 2 {
+		t.Fatalf("load_pem len = %d, want 2: %v", len(loadPEM), certs)
+	}
+
+	first := loadPEM[0].(map[string]interface{})
+	if tags := first["tags"].([]interface{}); len(tags) != 1 || tags[0] != "cert-uuid-a" {
+		t.Fatalf("load_pem[0].tags = %v, want [cert-uuid-a]", first["tags"])
+	}
+	certA := first["certificate"].(string)
+	if !strings.Contains(certA, "LEAF-A") || !strings.Contains(certA, "INTERMEDIATE-A") {
+		t.Fatalf("load_pem[0].certificate missing merged chain: %q", certA)
+	}
+	if first["key"] != keyA {
+		t.Fatalf("load_pem[0].key mismatch")
+	}
+
+	second := loadPEM[1].(map[string]interface{})
+	if tags := second["tags"].([]interface{}); len(tags) != 1 || tags[0] != "cert-uuid-b" {
+		t.Fatalf("load_pem[1].tags = %v, want [cert-uuid-b]", second["tags"])
+	}
+	certB := second["certificate"].(string)
+	if strings.Count(certB, "CHAIN-B") != 1 {
+		t.Fatalf("load_pem[1].certificate duplicated existing chain: %q", certB)
+	}
+	if second["key"] != keyB {
+		t.Fatalf("load_pem[1].key mismatch")
+	}
+
+	// 验证 tls_connection_policies 包含无 CertFileName 的 appB 域名
+	servers := cfg["apps"].(map[string]interface{})["http"].(map[string]interface{})["servers"].(map[string]interface{})
+	policies := servers["srv0"].(map[string]interface{})["tls_connection_policies"].([]interface{})
+	if len(policies) != 2 {
+		t.Fatalf("tls_connection_policies len = %d, want 2", len(policies))
+	}
+	p1 := policies[1].(map[string]interface{})
+	sni1 := p1["match"].(map[string]interface{})["sni"].([]interface{})
+	if len(sni1) != 1 || sni1[0] != "b.example.com" {
+		t.Fatalf("policies[1].sni = %v, want [b.example.com]", sni1)
+	}
+}
+
 // 纯 HTTP 应用不产出 apps.tls 段（保持无证书时的既有语义）。
 func TestGenerateHTTPCertLoadFilesAbsent(t *testing.T) {
 	g, err := Generate(GenerateInput{Apps: sampleApps(), AdminSocket: "unix//var/run/caddy/admin.sock"})

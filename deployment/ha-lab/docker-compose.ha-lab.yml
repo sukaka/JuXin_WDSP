@@ -32,10 +32,10 @@
 #   18883 管理 api | 15932 postgres | 15979 valkey —— 全部仅绑定 127.0.0.1
 #
 # 与 stage5 编排的差异（HA 必需 + 如实记录的 lab 形态取舍）：
-#   1. 双网关各自唯一 gateway_node 经 nodepatch 工具在每次发布后打身份补丁
-#      （发布扇出推送同一份配置，gateway_node 单一值；按节点注入是发布通道后续工程）；
+#   1. 双网关通过各自容器环境变量 GATEWAY_NODE_NAME（gw-a / gw-b）原生确立唯一节点身份
+#      （jiuzhang_guard Provision 优先读取 GATEWAY_NODE_NAME，无需发布后 nodepatch 改写）；
 #   2. 网关启动命令加 --resume + /var/lib/caddy 独立数据卷：节点重启恢复
-#      最近一次生效配置（含身份补丁），无需等待重发即恢复防护与心跳；
+#      最近一次生效配置，无需等待重发即恢复防护与心跳；
 #   3. api-runtime-events 为双节点共写的追加式事件总线卷（O_APPEND 单行原子 +
 #      采集端 request_id 幂等去重兜底）：管理面当前仅支持单路径单采集器，
 #      生产「每节点独立日志 + 独立采集器」为多采集器支持的后续工程（见设计文档 §8）；
@@ -122,11 +122,12 @@ services:
       dockerfile: Dockerfile
     container_name: jiuzhang-ha-gw-a
     restart: unless-stopped
-    # --resume：重启恢复 /var/lib/caddy 内 autosave 的最近生效配置（含 nodepatch 身份补丁）；
+    # --resume：重启恢复 /var/lib/caddy 内 autosave 的最近生效配置；
     # 首次启动无 autosave 时回退 --config 引导配置（Caddy 原生语义，非错误）
     command: ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--resume"]
     environment:
       SEC_RULE_ENGINE: On
+      GATEWAY_NODE_NAME: gw-a
     ports:
       # 直连口：验证脚本定向打流/断言按节点归因用（生产形态网关不对客户端单独暴露）
       - "127.0.0.1:18881:8080"
@@ -135,7 +136,7 @@ services:
       - ../../gateway/configs/blockpage.html:/srv/jiuzhang/blockpage.html:ro
       - ../../gateway/rules:/etc/caddy/rules:ro
       - ha-gw-a-logs:/var/log/caddy                 # 本节点独立日志卷
-      - ha-admin-a:/var/run/caddy                   # 本节点 Admin Socket 卷（api 主发布通道 + nodepatch）
+      - ha-admin-a:/var/run/caddy                   # 本节点 Admin Socket 卷（api 主发布通道）
       - ha-gw-a-data:/var/lib/caddy                 # autosave 持久化（--resume 恢复点）
       - ha-api-events:/var/log/jiuzhang-shared      # 双节点共享 API 运行时事件总线（追加写，见文件头说明 3）
     tmpfs:
@@ -161,6 +162,9 @@ services:
   gw-b:
     <<: *gateway_defaults
     container_name: jiuzhang-ha-gw-b
+    environment:
+      SEC_RULE_ENGINE: On
+      GATEWAY_NODE_NAME: gw-b
     ports:
       - "127.0.0.1:18882:8080"
     volumes:
@@ -256,7 +260,7 @@ services:
       PRODUCT_EDITION: wdsp
       API_DYNAMIC_PROTECTION_ENABLED: "true"
       API_PROTECTION_MODE: ${API_PROTECTION_MODE:-OBSERVE}
-      # 发布配置中 gateway_node 的基准值（=主节点名 gw-a；次节点由 nodepatch 改写）
+      # 主节点名（gw-a）；各网关进程优先消费自身 GATEWAY_NODE_NAME 环境变量确立节点身份
       GATEWAY_NODE_NAME: gw-a
       # 双节点共享 API 事件总线：发布侧下发网关侧路径（两节点同路径共写），
       # 采集侧同路径只读挂载（采集器断点 /app/runtime/api-runtime-events.checkpoint）
@@ -274,8 +278,8 @@ services:
     volumes:
       # 主发布通道：gw-a Admin Socket（同 stage5 形态，同路径挂载）
       - ha-admin-a:/var/run/caddy
-      # 次节点扇出通道：gw-b Admin Socket（登记 admin_addr=/var/run/caddy-node-b/admin.sock）
-      - ha-admin-b:/var/run/caddy-node-b
+      # 次节点扇出通道：gw-b Admin Socket（挂载于 /var/run/caddy/ 白名单目录内，登记 admin_addr=/var/run/caddy/node-b/admin.sock）
+      - ha-admin-b:/var/run/caddy/node-b
       # 主节点日志采集（只读；同 stage5 形态）
       - ha-gw-a-logs:/var/log/caddy-audit:ro
       - ../../gateway/rules:/etc/caddy/rules:ro

@@ -45,8 +45,9 @@ paths:
       tags: [security-events]
       summary: 导出安全事件（CSV）
       description: >-
-        导出筛选后的安全事件为 CSV 文件（security-events.csv），列：occurred_at, client_ip, domain, method, uri,
-        attack_type, severity, anomaly_score, action, response_status, disposition_status, request_id。
+        导出筛选后的安全事件为 CSV 文件（security-events.csv，UTF-8 含 BOM，防公式注入），
+        中文表头：发生时间,客户端 IP,域名,请求方法,请求路径,攻击类型,严重级别,异常评分,动作,响应状态码,处置状态,请求 ID
+        （攻击类型、严重级别、动作与处置状态已映射为中文）。
         导出总量上限 10000 行。权限：security_events.export。导出行为记录操作审计（中风险）。
       parameters:
         - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
@@ -388,8 +389,9 @@ paths:
       tags: [access-logs]
       summary: 导出访问日志（CSV）
       description: >-
-        导出筛选后的访问日志为 CSV 文件（access-logs.csv），列：occurred_at, client_ip, domain, method, uri, status,
-        waf_action, bytes_in, bytes_out, duration_ms, gateway_node_id, request_id。上限 10000 行。
+        导出筛选后的访问日志为 CSV 文件（access-logs.csv，UTF-8 含 BOM，防公式注入），
+        中文表头：发生时间,客户端 IP,域名,请求方法,请求路径,响应状态码,WAF 动作,请求大小（字节）,响应大小（字节）,耗时（ms）,网关节点,请求 ID
+        （WAF 动作已映射为中文）。上限 10000 行。
         权限：access_logs.export。限流：每 IP 5 次/分钟（超限返回 429）。导出行为记录操作审计（中风险）。
       parameters:
         - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339，含边界） }
@@ -960,9 +962,9 @@ paths:
       tags: [system-alerts]
       summary: 导出系统告警 CSV
       description: >-
-        按筛选条件导出告警 CSV（含表头，防公式注入：= + - @ 制表符前导字符加单引号，最多 10000 条），
-        列为 id,alert_type,severity,component,title,message,status,occurrence_count,first_seen_at,
-        last_seen_at,resolved_at,resolve_type。响应头 Content-Disposition 附件文件名为 system-alerts.csv。
+        按筛选条件导出告警 CSV（UTF-8 含 BOM，含中文表头，防公式注入：= + - @ 制表符/回车前导字符加单引号，最多 10000 条），
+        中文表头：告警 ID,告警类型,严重级别,组件,标题,详情,状态,发生次数,首次发生时间,最近发生时间,解决时间,解决方式
+        （告警类型、严重级别、组件、状态与解决方式已映射为中文）。响应头 Content-Disposition 附件文件名为 system-alerts.csv。
         限流：每 IP 5 次/分钟（导出类接口共享）。记录低风险审计。
         权限：system_alerts.read / system_alerts.read_security / system_alerts.read_audit 任一。
       parameters:

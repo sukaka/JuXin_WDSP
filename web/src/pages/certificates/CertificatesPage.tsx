@@ -5,6 +5,7 @@ import {
   App as AntdApp,
   Button,
   Card,
+  Checkbox,
   Descriptions,
   Drawer,
   Form,
@@ -12,29 +13,39 @@ import {
   Modal,
   Select,
   Space,
+  Tabs,
   Tag,
   Tooltip,
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { PlusOutlined } from '@ant-design/icons'
+import { PlusOutlined, SafetyCertificateOutlined, SettingOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
+import { acmeApi } from '../../api/acme'
 import { applicationsApi } from '../../api/applications'
 import { certificatesApi } from '../../api/certificates'
 import type { UploadCertificateBody } from '../../api/certificates'
 import SmartTable from '../../components/SmartTable'
+import AcmeOrdersTable from './AcmeOrdersTable'
+import AcmeSettingsModal from './AcmeSettingsModal'
 import CertificateBindingModal from './CertificateBindingModal'
 import StatusTag from '../../components/StatusTag'
 import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
-import { CERT_STATUS_META, certRemainingColor, certRemainingDays } from '../../utils/stage3'
+import {
+  ACME_PROVIDER_META,
+  CERT_STATUS_META,
+  certRemainingColor,
+  certRemainingDays,
+} from '../../utils/stage3'
 import type { CertificateItem } from '../../types'
 
 interface Filters {
   name?: string
   status?: string
+  include_replaced?: boolean
 }
 
 /** PEM 文本基本格式前端校验（仅做头尾标记检查，真实解析由后端完成） */
@@ -91,6 +102,8 @@ export default function CertificatesPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [uploadOpen, setUploadOpen] = useState(false)
+  const [acmeSettingsOpen, setAcmeSettingsOpen] = useState(false)
+  const [activeTab, setActiveTab] = useState<'list' | 'orders'>('list')
   const [detailId, setDetailId] = useState<string | null>(null)
   const [binding, setBinding] = useState<{ operation: 'bind' | 'unbind'; certificate: CertificateItem } | null>(null)
   const [uploadForm] = Form.useForm<UploadCertificateBody>()
@@ -132,6 +145,17 @@ export default function CertificatesPage() {
     mutationFn: (id: string) => certificatesApi.remove(id),
     onSuccess: () => {
       message.success('删除成功')
+      void invalidate()
+    },
+    onError,
+  })
+
+  const renewMutation = useMutation({
+    mutationFn: (id: string) => acmeApi.renewCertificate(id),
+    onSuccess: () => {
+      message.success('已触发证书续约任务，可在「申请与续约记录」查看实时进度')
+      setActiveTab('orders')
+      void queryClient.invalidateQueries({ queryKey: ['acme-orders'] })
       void invalidate()
     },
     onError,
@@ -212,6 +236,23 @@ export default function CertificatesPage() {
       render: (v: string) => <StatusTag value={v} map={CERT_STATUS_META} />,
     },
     {
+      title: '托管方式',
+      key: 'managed_by',
+      width: 130,
+      render: (_, record) =>
+        record.managed_by === 'ACME' ? (
+          <Tooltip
+            title={`自动续约：${record.auto_renew ? `到期前 ${record.renew_before_days ?? 30} 天` : '已关闭'}`}
+          >
+            <Tag color="cyan" icon={<SafetyCertificateOutlined />}>
+              ACME 自动
+            </Tag>
+          </Tooltip>
+        ) : (
+          <Tag>手动上传</Tag>
+        ),
+    },
+    {
       title: '使用应用数',
       dataIndex: 'usage_count',
       width: 100,
@@ -219,14 +260,33 @@ export default function CertificatesPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 250,
+      width: 300,
       fixed: 'right',
       render: (_, record) => (
         <Space>
           <Button type="link" size="small" onClick={() => setDetailId(record.id)}>
             详情
           </Button>
-          {hasPermission(permissions, 'certificates.bind') && (
+          {record.managed_by === 'ACME' &&
+            record.status !== 'REPLACED' &&
+            record.usage_count > 0 &&
+            hasPermission(permissions, 'certificates.create') && (
+              <Button
+                type="link"
+                size="small"
+                loading={renewMutation.isPending}
+                onClick={() =>
+                  modal.confirm({
+                    title: '立即续约确认',
+                    content: `确定立即通过 ACME 为证书「${record.name}」发起续约吗？续约成功后将自动替换应用绑定。`,
+                    onOk: () => renewMutation.mutate(record.id),
+                  })
+                }
+              >
+                立即续约
+              </Button>
+            )}
+          {hasPermission(permissions, 'certificates.bind') && record.status !== 'REPLACED' && (
             <>
               <Button
                 type="link"
@@ -276,72 +336,107 @@ export default function CertificatesPage() {
     <Card
       title="HTTPS 证书"
       extra={
-        hasPermission(permissions, 'certificates.create') && (
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>
-            上传证书
-          </Button>
-        )
+        <Space>
+          {hasPermission(permissions, 'certificates.read') && (
+            <Button icon={<SettingOutlined />} onClick={() => setAcmeSettingsOpen(true)}>
+              自动证书（ACME）设置
+            </Button>
+          )}
+          {hasPermission(permissions, 'certificates.create') && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>
+              上传证书
+            </Button>
+          )}
+        </Space>
       }
     >
-      <Space style={{ marginBottom: 16 }} wrap>
-        <Input.Search
-          placeholder="搜索名称或 CN"
-          allowClear
-          style={{ width: 240 }}
-          onSearch={(v) => {
-            setFilters((f) => ({ ...f, name: v || undefined }))
-            setPage(1)
-          }}
-        />
-        <Select
-          placeholder="状态"
-          allowClear
-          style={{ width: 150 }}
-          options={Object.entries(CERT_STATUS_META).map(([value, meta]) => ({
-            value,
-            label: meta.label,
-          }))}
-          onChange={(v) => {
-            setFilters((f) => ({ ...f, status: v }))
-            setPage(1)
-          }}
-        />
-        {batchDeleteButton}
-      </Space>
+      <Tabs
+        activeKey={activeTab}
+        onChange={(k) => setActiveTab(k as 'list' | 'orders')}
+        items={[
+          {
+            key: 'list',
+            label: '证书台账',
+            children: (
+              <>
+                <Space style={{ marginBottom: 16 }} wrap>
+                  <Input.Search
+                    placeholder="搜索名称或 CN"
+                    allowClear
+                    style={{ width: 240 }}
+                    onSearch={(v) => {
+                      setFilters((f) => ({ ...f, name: v || undefined }))
+                      setPage(1)
+                    }}
+                  />
+                  <Select
+                    placeholder="状态"
+                    allowClear
+                    style={{ width: 150 }}
+                    options={Object.entries(CERT_STATUS_META).map(([value, meta]) => ({
+                      value,
+                      label: meta.label,
+                    }))}
+                    onChange={(v) => {
+                      setFilters((f) => ({ ...f, status: v }))
+                      setPage(1)
+                    }}
+                  />
+                  <Checkbox
+                    checked={Boolean(filters.include_replaced)}
+                    onChange={(e) => {
+                      setFilters((f) => ({ ...f, include_replaced: e.target.checked || undefined }))
+                      setPage(1)
+                    }}
+                  >
+                    显示已续签替换证书
+                  </Checkbox>
+                  {batchDeleteButton}
+                </Space>
 
-      {listQuery.isError ? (
-        <Alert
-          type="error"
-          showIcon
-          message="加载证书列表失败"
-          description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
-        />
-      ) : (
-        <SmartTable<CertificateItem>
-          storageKey="certificates"
-          rowKey="id"
-          rowSelection={rowSelection}
-          loading={listQuery.isLoading}
-          columns={columns}
-          dataSource={listQuery.data?.items}
-          onRow={(record) => ({
-            onDoubleClick: () => setDetailId(record.id),
-            style: { cursor: 'pointer' },
-          })}
-          scroll={{ x: 1250 }}
-          pagination={{
-            current: page,
-            pageSize,
-            total: listQuery.data?.total ?? 0,
-            showSizeChanger: true,
-            showTotal: (t) => `共 ${t} 条`,
-            onChange: (p, ps) => {
-              setPage(p)
-              setPageSize(ps)
-            },
-          }}
-        />
-      )}
+                {listQuery.isError ? (
+                  <Alert
+                    type="error"
+                    showIcon
+                    message="加载证书列表失败"
+                    description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
+                  />
+                ) : (
+                  <SmartTable<CertificateItem>
+                    storageKey="certificates"
+                    rowKey="id"
+                    rowSelection={rowSelection}
+                    loading={listQuery.isLoading}
+                    columns={columns}
+                    dataSource={listQuery.data?.items}
+                    onRow={(record) => ({
+                      onDoubleClick: () => setDetailId(record.id),
+                      style: { cursor: 'pointer' },
+                    })}
+                    scroll={{ x: 1400 }}
+                    pagination={{
+                      current: page,
+                      pageSize,
+                      total: listQuery.data?.total ?? 0,
+                      showSizeChanger: true,
+                      showTotal: (t) => `共 ${t} 条`,
+                      onChange: (p, ps) => {
+                        setPage(p)
+                        setPageSize(ps)
+                      },
+                    }}
+                  />
+                )}
+              </>
+            ),
+          },
+          {
+            key: 'orders',
+            label: '自动申请与续约记录',
+            children: <AcmeOrdersTable />,
+          },
+        ]}
+      />
 
       <Modal
         title="上传证书"
@@ -463,6 +558,26 @@ export default function CertificatesPage() {
             <Descriptions.Item label="状态">
               <StatusTag value={detail.status} map={CERT_STATUS_META} />
             </Descriptions.Item>
+            <Descriptions.Item label="托管方式">
+              {detail.managed_by === 'ACME' ? (
+                <Space>
+                  <Tag color="cyan">ACME 自动续约</Tag>
+                  {detail.acme_provider && <StatusTag value={detail.acme_provider} map={ACME_PROVIDER_META} />}
+                </Space>
+              ) : (
+                <Tag>手动上传</Tag>
+              )}
+            </Descriptions.Item>
+            {detail.managed_by === 'ACME' && (
+              <>
+                <Descriptions.Item label="提前续约天数">
+                  到期前 {detail.renew_before_days ?? 30} 天
+                </Descriptions.Item>
+                <Descriptions.Item label="最近续约时间">
+                  {formatDateTime(detail.last_renewed_at)}
+                </Descriptions.Item>
+              </>
+            )}
             <Descriptions.Item label="通用名称(CN)">{detail.common_name}</Descriptions.Item>
             <Descriptions.Item label="主题">{detail.subject}</Descriptions.Item>
             <Descriptions.Item label="颁发者">{detail.issuer}</Descriptions.Item>
@@ -506,6 +621,7 @@ export default function CertificatesPage() {
           </Descriptions>
         )}
       </Drawer>
+      <AcmeSettingsModal open={acmeSettingsOpen} onClose={() => setAcmeSettingsOpen(false)} />
       {binding && (
         <CertificateBindingModal
           open

@@ -47,17 +47,29 @@ Bug 修复与功能更新都使用 `ops/upgrade/build-upgrade-pack.sh`，默认�
 # 只预览变化，不需要 Docker 或私钥，不生成文件：
 bash ops/upgrade/build-upgrade-pack.sh --to 1.3.0 --arch amd64 --plan
 
-# 自动识别 → 构建变化组件 → 导出 → 签名 → 打包 → 自检：
+# 自动识别 → 构建变化组件 → 结合基准归档生成层差量 → 签名 → 打包 → 自检：
 WDSP_SIGNING_KEY=/path/to/ed25519-private.pem \
-  bash ops/upgrade/build-upgrade-pack.sh --to 1.3.0 --arch amd64
+  bash ops/upgrade/build-upgrade-pack.sh --from 1.11.1 --to 1.11.2 --arch amd64 \
+  --base-archive dist/update-full-1.11.1-amd64/jiuzhang-wdsp-update-full-1.11.1-amd64.tar.gz
 
-# 本机已有 jiuzhang-<名>:<to> 镜像时跳过 docker build：
+# 连续链式 Web 差量升级（如 1.11.1 完整包 → 1.11.2 差量包 → 1.11.3 差量包），按从旧到新顺序传入多个 --base-archive：
 WDSP_SIGNING_KEY=/path/to/ed25519-private.pem \
-  bash ops/upgrade/build-upgrade-pack.sh --to 1.3.0 --arch amd64 --skip-build
+  bash ops/upgrade/build-upgrade-pack.sh --from 1.11.2 --to 1.11.3 --arch amd64 \
+  --base-archive dist/update-full-1.11.1-amd64/jiuzhang-wdsp-update-full-1.11.1-amd64.tar.gz \
+  --base-archive dist/jiuzhang-wdsp-upgrade-1.11.2-amd64.tar.gz
+
+# 本机已有 jiuzhang-<名>:<to> 镜像时跳过 docker build（若需关闭层差量可追加 --no-layer-delta）：
+WDSP_SIGNING_KEY=/path/to/ed25519-private.pem \
+  bash ops/upgrade/build-upgrade-pack.sh --to 1.11.2 --arch amd64 --skip-build
 ```
 
 - `--from` 缺省读取根目录 `VERSION.md` 的「当前已发布版本」；`--to` 必填且必须高于 `--from`。
-- `--components` 默认 `auto`，无需填写。支持组件为 `api`、`web`、`gateway`、`netmgrd`。显式清单仅作为已有基线经人工验证的兼容入口，不执行 Git 自动检测，不能证明变更已完整覆盖；日常发布不要使用。
+- `--components` 默认 `auto`，无需填写。支持全 9 个自研容器组件：`api`、`web`、`gateway`、`netmgrd`、`mirrorcap`、`tproxyd`、`logrotator`、`containerops`、`pcapd`（其中 `pcapd` 按 `request-pcap` profile 守卫：宿主机未运行 `pcapd` 时仅更新镜像标签，绝不擅自启动抓包）。显式清单仅作为已有基线经人工验证的兼容入口，不执行 Git 自动检测，不能证明变更已完整覆盖；日常发布不要使用。
+- **精确 `from → to` 镜像层差量（`layer-delta`）**：
+  - 指定 `--base-archive <基准离线包或历史升级包>`（或由构建脚本自动探测 `dist/` 下对应 `--from` 的基准归档，亦可本地联调用 `--base-from-docker`）后，构建脚本调用 `ops/upgrade/image-delta.py` 仅导出相对 `--from` 变化的新增层，未变的基础层（Alpine、Caddy、GeoIP、运行库等）仅以未压缩层摘要 `diff_id` 记录于 `manifest.json` 的 `images[].base_layers`。
+  - 若基准归档经 `no-docs-tests-v1` 裁剪（完整离线包/`update-full`），构建脚本自动同步裁剪新镜像层，保证跨版本未变层 `diff_id` 精确匹配；若未复用任何层或节省不足 1 MiB，自动回退为完整组件镜像导出（`delivery_mode: "full"`）。
+  - 宿主机执行器（`upgrade-executor.sh` + `/usr/local/libexec/jiuzhang-image-delta.py`）在加载/切换任何镜像前先对当前运行镜像做 `check-base` 预检，任一基础层缺失立即 fail-closed 中止且不触碰容器；校验通过后本地拼装并逐层校验 SHA-256 后 `docker load`。
+  - 后端升级成功后自动把 `version_to` 持久化到 `system_settings`（`system:current_version`），确保纯前端/网关/sidecar 等未替换 `api` 镜像的差量升级完成后，下一次 `from → to` 精确预检版本连续。
 - “上次”指 `VERSION.md` 当前已发布版本对应的 tag，不是上次执行打包的时间。打包不会改写版本、提交、打 tag 或推送；实际部署版本不同时须传 `--from`，缺少对应 tag 则拒绝自动打包。
 - 镜像内使用运行时构建产物，包不复制仓库、测试目录或产品文档。同名产物已存在时拒绝覆盖。跨主版本以及镜像无法交付的宿主机变更不属于此升级格式。
 - 产物在 `dist/`：`jiuzhang-wdsp-upgrade-<to>-<arch>.tar.gz` + 旁车 `.sha256`（单文件格式：签名内嵌包内根目录 `manifest.sig`，不再产独立 `.sig` 与 manifest 副本；上传只需传文件本身）。
@@ -65,22 +77,27 @@ WDSP_SIGNING_KEY=/path/to/ed25519-private.pem \
 
 ### `--components auto` 自动识别
 
-`--components auto` 以 `wdsp-v<--from>` tag 为基准，用 `git diff --name-only <tag>..HEAD` 加工作区未提交改动（含未跟踪；存在时打印警告，正式包建议先提交）自动判定该升级哪些组件。脚本只读仓库：tag 缺失时报错并提示先 `git fetch --tags`，绝不自行 fetch 或做任何 git 写操作。
+`--components auto` 以 `wdsp-v<--from>` tag 为基准，用 `git diff --name-only <tag>..HEAD` 加工作区未提交改动（含未跟踪；存在时打印警告，正式包建议先提交）自动判定该升级哪些组件。脚本只读仓库：tag 缺失时报错并提示先 `git fetch --tags`，绝不自行 fetch 或做任何 git 写操作。纯测试文件（`*_test.go`、`*/__tests__/*`、`web/e2e/*`、`*.test.ts(x)`、`*.spec.ts(x)`）自动跳过，不触发无意义镜像重建。
 
 路径 → 组件映射：
 
 | 变更路径 | 组件 |
 |---|---|
-| `server/`（含 migrations/openapi） | `api` |
+| `server/cmd/containeropsd/`、`server/internal/containeropsd/`、`deployment/containerops/Dockerfile` | `containerops` |
+| `server/go.mod`、`server/go.sum`、根 `.dockerignore` | `api` + `containerops` |
+| `server/` 其余（含 migrations/openapi） | `api` |
 | `web/` | `web` |
 | `gateway/netmgrd/`、`gateway/cmd/netmgrd/`、`gateway/images/netmgrd/` | `netmgrd` |
-| `gateway/go.mod`、`gateway/go.sum` | `gateway` + `netmgrd`（同一构建上下文） |
-| `gateway/dynamic_security/` | `api` + `gateway`；其中 `go.mod` 另包含 `netmgrd` |
-| `gateway/modules/jiuzhang_guard/go.mod`、`gateway/.dockerignore` | `gateway` + `netmgrd` |
-| 根 `.dockerignore` | `api` |
-| `gateway/` 其余 | `gateway` |
-| `deployment/`、根 Compose、`ops/upgrade/upgrade-executor.sh`、`install-executor.sh` | 拒绝自动打包：宿主机变更不能靠应用镜像替换落地 |
-| `ops/` 其余、`docs/`、`test/`、`tools/`、`scripts/` 等 | 非应用运行时变更，提示跳过 |
+| `gateway/mirrorcap/` | `mirrorcap` + `pcapd` |
+| `gateway/cmd/mirrorcap/`、`gateway/images/mirrorcap/` | `mirrorcap` |
+| `gateway/tproxyd/`、`gateway/cmd/tproxyd/`、`gateway/images/tproxyd/` | `tproxyd` |
+| `gateway/pcapcapture/`、`gateway/cmd/pcapd/`、`gateway/images/pcapd/` | `pcapd` |
+| `gateway/images/logrotator/` | `logrotator` |
+| `gateway/dynamic_security/`、`gateway/pcapevidence/`、`gateway/go.mod`/`go.sum`、`gateway/modules/jiuzhang_guard/` 共享包 | 按 Dockerfile 实际 `COPY` 依赖图自动映射到受影响组件集合 |
+| `gateway/rules/` | `api` + `gateway` |
+| `gateway/` 其余（`gateway/havipd/` 为裸机专用跳过） | `gateway` |
+| `deployment/`（除 `containerops/Dockerfile`）、根 Compose、`ops/upgrade/upgrade-executor.sh`、`install-executor.sh`、`image-delta.py`、`wdsp-agent/`、`packaging/` | 拒绝自动打包：宿主机/Agent 变更不能靠应用镜像替换落地 |
+| `ops/` 其余、`docs/`、`test/`、`tools/`、`scripts/`、测试文件等 | 非应用运行时变更，提示跳过 |
 | 未命中任何映射的路径 | 报错并列出，需补充映射 |
 
 判定证据逐组件打印（`auto 证据: <组件> ← 命中 N 条路径；示例: <前 5 条>`）后继续构建（非交互）。变更使用 NUL 分隔读取，跨目录重命名同时检查来源与目标组件；合并冲突、非祖先基准、无应用更新时拒绝打包。

@@ -4,6 +4,7 @@ package gatewayconfig
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/jiuzhang-waf/gateway/dynamic_security/gqlast"
@@ -905,7 +906,10 @@ type GuardConfig struct {
 	// tls_session_ticket_key 设置）。随发布下发到 apps.tls.session_tickets.key_source
 	// （tls.stek.jiuzhang），主备多节点共用同一份票据密钥使会话恢复跨节点可用
 	// （docs/HA_ACTIVE_STANDBY_DESIGN.md §7.2）；快照按 identity_salt 同纪律脱敏。
-	TLSSessionTicketKey        string                         `json:"tls_session_ticket_key,omitempty"`
+	TLSSessionTicketKey string `json:"tls_session_ticket_key,omitempty"`
+	// TLSSessionTicketKeys TLS 会话票据多密钥列表（1~2 个 32 字节 hex：首键加密新票据，
+	// 次键用于平滑轮换期间解密旧票据；TLSSessionTicketKey 保持首键向后兼容）。
+	TLSSessionTicketKeys []string `json:"tls_session_ticket_keys,omitempty"`
 	CredentialIPSpreadLimit    int                            `json:"credential_ip_spread_limit,omitempty"`
 	CredentialConcurrencyLimit int                            `json:"credential_concurrency_limit,omitempty"`
 	CredentialRatePerMinute    int                            `json:"credential_rate_per_minute,omitempty"`
@@ -1127,6 +1131,29 @@ type GuardConfig struct {
 	// SoftwareBypass 节点级资源阈值旁路与流量监控配置；nil = 旧版零行为变化。
 	// 非秘密材料，随访问控制版本快照保存与回滚，不受 WDSP API 动态防护门控。
 	SoftwareBypass *GuardSoftwareBypass `json:"software_bypass,omitempty"`
+}
+
+// EffectiveTLSSessionTicketKeys 返回生效的 TLS 会话票据密钥列表（向后兼容单键字段）：
+// 优先返回非空的 TLSSessionTicketKeys 拷贝；否则若 TLSSessionTicketKey 非空则返回单元素切片。
+func (g *GuardConfig) EffectiveTLSSessionTicketKeys() []string {
+	if g == nil {
+		return nil
+	}
+	if len(g.TLSSessionTicketKeys) > 0 {
+		out := make([]string, 0, len(g.TLSSessionTicketKeys))
+		for _, k := range g.TLSSessionTicketKeys {
+			if s := strings.TrimSpace(k); s != "" {
+				out = append(out, s)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if s := strings.TrimSpace(g.TLSSessionTicketKey); s != "" {
+		return []string{s}
+	}
+	return nil
 }
 
 // buildGuardHandler 构建单应用路由的 jiuzhang_guard 处理器 JSON。

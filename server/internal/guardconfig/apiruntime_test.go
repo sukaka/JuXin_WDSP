@@ -61,23 +61,59 @@ func TestApplyGatewayRuntimeSettings(t *testing.T) {
 	}
 }
 
-// TestApplyGatewayRuntimeSettingsTicketKey TLS 会话票据密钥：64 位 hex 落 cfg（小写归一），
-// 长度不足/非 hex 如实报错（中止发布，与组内其他键同一纪律）。
+// TestApplyGatewayRuntimeSettingsTicketKey TLS 会话票据密钥：支持 1~2 个逗号分隔 64 位 hex
+// （小写归一，首键写入 TLSSessionTicketKey 向后兼容，全量写入 TLSSessionTicketKeys），
+// 超 2 键/重复/空段/长度不足/非 hex 如实报错（中止发布，与组内其他键同一纪律）。
 func TestApplyGatewayRuntimeSettingsTicketKey(t *testing.T) {
-	const key = "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+	const key1 = "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+	const key1Lower = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const key2 = "FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210"
+	const key2Lower = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	const key3 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 	cfg := &gatewayconfig.GuardConfig{}
-	if err := applyGatewayRuntimeSettings(cfg, map[string]string{"tls_session_ticket_key": key}); err != nil {
-		t.Fatalf("合法键应通过: %v", err)
+	if err := applyGatewayRuntimeSettings(cfg, map[string]string{"tls_session_ticket_key": key1}); err != nil {
+		t.Fatalf("合法单键应通过: %v", err)
 	}
-	if cfg.TLSSessionTicketKey != "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
-		t.Fatalf("键未小写归一: %q", cfg.TLSSessionTicketKey)
+	if cfg.TLSSessionTicketKey != key1Lower {
+		t.Fatalf("单键未小写归一: %q", cfg.TLSSessionTicketKey)
 	}
-	for _, bad := range map[string]string{
-		"长度不足":  "abcd",
-		"非 hex": "zz3456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	if len(cfg.TLSSessionTicketKeys) != 1 || cfg.TLSSessionTicketKeys[0] != key1Lower {
+		t.Fatalf("单键 TLSSessionTicketKeys = %v", cfg.TLSSessionTicketKeys)
+	}
+
+	// 双键平滑轮换（逗号分隔，允许空白）
+	cfg2 := &gatewayconfig.GuardConfig{}
+	if err := applyGatewayRuntimeSettings(cfg2, map[string]string{"tls_session_ticket_key": key2 + " , " + key1}); err != nil {
+		t.Fatalf("合法双键应通过: %v", err)
+	}
+	if cfg2.TLSSessionTicketKey != key2Lower {
+		t.Fatalf("双键首键 TLSSessionTicketKey = %q, want %q", cfg2.TLSSessionTicketKey, key2Lower)
+	}
+	if len(cfg2.TLSSessionTicketKeys) != 2 || cfg2.TLSSessionTicketKeys[0] != key2Lower || cfg2.TLSSessionTicketKeys[1] != key1Lower {
+		t.Fatalf("双键 TLSSessionTicketKeys = %v", cfg2.TLSSessionTicketKeys)
+	}
+
+	// 脱敏双键占位 "***,***" 视同取不到，不写入也不报错
+	cfgRedacted := &gatewayconfig.GuardConfig{}
+	if err := applyGatewayRuntimeSettings(cfgRedacted, map[string]string{"tls_session_ticket_key": "***,***"}); err != nil {
+		t.Fatalf("脱敏双键占位不应报错: %v", err)
+	}
+	if cfgRedacted.TLSSessionTicketKey != "" || len(cfgRedacted.TLSSessionTicketKeys) != 0 {
+		t.Fatalf("脱敏双键占位不得写入: %+v", cfgRedacted)
+	}
+
+	for name, bad := range map[string]string{
+		"长度不足":   "abcd",
+		"非 hex":  "zz3456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"超过2个密钥": key1 + "," + key2 + "," + key3,
+		"重复密钥":   key1 + "," + key1Lower,
+		"尾部多余逗号": key1 + ",",
+		"前导多余逗号": "," + key1,
+		"第二键非法":  key1 + ",nothex",
 	} {
 		if err := applyGatewayRuntimeSettings(&gatewayconfig.GuardConfig{}, map[string]string{"tls_session_ticket_key": bad}); err == nil {
-			t.Errorf("%s: %q must fail", bad, bad)
+			t.Errorf("%s: %q must fail", name, bad)
 		}
 	}
 }
@@ -217,6 +253,10 @@ func TestComputeAPIPolicyVersion(t *testing.T) {
 	secrets := map[string]func(c *gatewayconfig.GuardConfig){
 		"tls_session_ticket_key": func(c *gatewayconfig.GuardConfig) {
 			c.TLSSessionTicketKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			c.TLSSessionTicketKeys = []string{
+				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+			}
 		},
 		"identity_salt": func(c *gatewayconfig.GuardConfig) { c.IdentitySalt = "s3cret" },
 		"api_scan_verification": func(c *gatewayconfig.GuardConfig) {

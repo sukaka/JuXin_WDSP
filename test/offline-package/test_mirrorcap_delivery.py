@@ -112,7 +112,7 @@ class MirrorcapDeliveryTests(unittest.TestCase):
             pkg_root = unpacked / f"jiuzhang-wdsp-offline-{version}-amd64"
             manifest = json.loads((pkg_root / "manifest.json").read_text(encoding="utf-8"))
             images = manifest.get("images") or []
-            self.assertEqual(len(images), 13, f"expected 13 images, got {len(images)}: {images}")
+            self.assertEqual(len(images), 15, f"expected 15 images, got {len(images)}: {images}")
             image_refs = [item.get("image") for item in images]
             self.assertIn(f"jiuzhang-mirrorcap:{version}", image_refs)
             for ref in image_refs:

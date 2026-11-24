@@ -5,30 +5,34 @@
 # 涉及的变更组件镜像。Bug 修复也使用本脚本；全新安装/跨
 # 主版本/基础设施变更请用 ops/offline-package/build.sh（规则见 docs/UPGRADE_PACKAGE_POLICY.md）。
 #
-# 组件 → 镜像 → Dockerfile（构建上下文）→ compose 服务 映射：
-#   api      → jiuzhang-server:<to>   → server/Dockerfile                 （上下文=仓库根） → api
-#   web      → jiuzhang-web:<to>      → web/Dockerfile                    （上下文=web/）    → web
-#   gateway  → jiuzhang-gateway:<to>  → gateway/Dockerfile                （上下文=gateway/）→ gateway
-#   netmgrd  → jiuzhang-netmgrd:<to>  → gateway/images/netmgrd/Dockerfile （上下文=gateway/）→ netmgrd
+# 组件 → 镜像 → Dockerfile（构建上下文）→ compose 服务 映射（共 11 个自研容器组件）：
+#   api          → jiuzhang-server:<to>       → server/Dockerfile                      （上下文=仓库根）                    → api
+#   web          → jiuzhang-web:<to>          → web/Dockerfile                         （上下文=web/）                       → web
+#   gateway      → jiuzhang-gateway:<to>      → gateway/Dockerfile                     （上下文=gateway/）                   → gateway
+#   netmgrd      → jiuzhang-netmgrd:<to>      → gateway/images/netmgrd/Dockerfile      （上下文=gateway/）                   → netmgrd
+#   mirrorcap    → jiuzhang-mirrorcap:<to>    → gateway/images/mirrorcap/Dockerfile    （上下文=gateway/）                   → mirrorcap
+#   tproxyd      → jiuzhang-tproxyd:<to>      → gateway/images/tproxyd/Dockerfile      （上下文=gateway/）                   → tproxyd
+#   havipd       → jiuzhang-havipd:<to>       → gateway/images/havipd/Dockerfile       （上下文=gateway/）                   → havipd
+#   hasyncd      → jiuzhang-hasyncd:<to>      → gateway/images/hasyncd/Dockerfile      （上下文=gateway/）                   → hasyncd
+#   logrotator   → jiuzhang-logrotator:<to>   → gateway/images/logrotator/Dockerfile   （上下文=gateway/images/logrotator/） → logrotator
+#   containerops → jiuzhang-containerops:<to> → deployment/containerops/Dockerfile     （上下文=仓库根）                    → containerops
+#   pcapd        → jiuzhang-pcapd:<to>        → gateway/images/pcapd/Dockerfile        （上下文=gateway/）                   → pcapd
 # 组件白名单与宿主机执行器 upgrade-executor.sh 保持一致；新增组件须两侧同步。
 #
 # --components auto 自动识别模式（默认；与显式清单互斥）：
 #   基准引用：wdsp-v<--from> tag（git rev-parse --verify；tag 缺失报错并提示先
 #   git fetch --tags——本脚本只读仓库，绝不自行 fetch 或任何 git 写操作）。
 #   变更清单：git diff --name-only wdsp-v<from>..HEAD + 工作区未提交改动（含未跟踪，
-#   存在时打印警告，正式包建议先提交再构建）。路径 → 组件映射：
-#     server/（含 migrations/openapi）                       → api
-#     web/                                                   → web
-#     gateway/netmgrd/、gateway/cmd/netmgrd/、
-#       gateway/images/netmgrd/                              → netmgrd
-#     gateway/go.mod、gateway/go.sum                         → gateway + netmgrd（同一构建上下文）
-#     gateway/ 其余                                          → gateway
-#     gateway/dynamic_security/                              → api + gateway（go.mod 另含 netmgrd）
-#     deployment/、执行器和安装器                            → 拒绝，应用镜像包无法更新宿主环境
-#     ops/ 其余、docs/、test/、tools/、scripts/ 等            → 非应用运行时变更，提示跳过
-#     未命中任何映射的路径                                    → 报错并列出，需补充映射
-#   判定证据逐组件打印（命中路径数 + 前 5 条示例）后继续构建（非交互）；
-#   默认直接自动构建；--plan 可以在不构建镜像的情况下预览。
+#   存在时打印警告，正式包建议先提交再构建）。支持全 11 组件精确路径映射并自动跳过
+#   纯测试/文档/构建工具路径；宿主机编排与执行器自身变更（deployment/、docker-compose*.yml、
+#   upgrade-executor.sh、install-executor.sh、image-delta.py、wdsp-agent/、packaging/）
+#   仍 fail-closed 拒绝打包。
+#
+# 镜像层差量模式（layer-delta，配合 --base-archive / --base-from-docker 或自动发现
+# dist/ 下的 --from 基准包）：
+#   仅导出相对基准版本新增/变化的 Docker 镜像层（未变的基础层如 Alpine/Caddy/GeoIP
+#   仅在 manifest.json 的 base_layers 中记录 diff_id，由宿主机执行器从当前运行镜像校验
+#   并本地拼装重建后 docker load）。可用 --no-layer-delta 强制回退为完整组件镜像导出。
 #
 # 产物同时满足两套口径（单一 manifest.json，字段不冲突）：
 #   1. 服务端 server/internal/upgrades/artifact.go：单一根目录、恰一个 manifest.json、
@@ -69,10 +73,18 @@ usage() {
       --to X.Y.Z          目标版本（必填，必须高于 --from）
       --arch ARCH         目标架构 amd64|arm64（缺省取宿主机架构；x86_64/aarch64 自动归一）
       --components LIST   默认 auto 自动识别；可显式传空格或逗号分隔的组件清单；
-                          白名单: api web gateway netmgrd；
+                          白名单: api web gateway netmgrd mirrorcap tproxyd
+                          havipd hasyncd logrotator containerops pcapd；
                           或 "auto"：以 wdsp-v<--from> tag 为基准自动识别变更组件
                           （与显式清单互斥；tag 缺失时报错并提示先 git fetch --tags；
                           路径→组件映射见脚本头注释）
+      --base-archive FILE 指定基准版本归档（完整离线包/update-full 或历史 upgrade 包，
+                          可按从旧到新顺序重复传入多个）以启用 Docker 镜像层差量导出
+                          （layer-delta）；未传时自动探测 dist/ 下的 --from 基准归档
+      --base-from-docker  从本机 Docker 的 jiuzhang-<名>:<from> 镜像读取基准层做层差量
+                          （与 --base-archive 互斥；适合本地镜像基线联调）
+      --no-layer-delta    关闭镜像层差量，仍仅打包变更组件，但每个组件导出完整镜像
+      --runtime-only      强制按 no-docs-tests-v1 裁剪镜像层（基准归档为 runtime-only 时自动开启）
       --plan              只检查变更并打印计划，不构建、不签名、不写发布基线
       --skip-build        跳过 docker build：默认改用本机已有镜像 docker save；
                           与 --images-dir 同用时完全不依赖 docker
@@ -105,6 +117,10 @@ SKIP_BUILD=false
 IMAGES_DIR=""
 UNSIGNED=false
 OUTPUT_DIR="$REPO_ROOT/dist"
+BASE_ARCHIVES=()
+BASE_FROM_DOCKER=false
+NO_LAYER_DELTA=false
+RUNTIME_ONLY=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -113,6 +129,10 @@ while [[ $# -gt 0 ]]; do
     --to) TO_VERSION="${2:-}"; shift 2 ;;
     --arch) ARCH="${2:-}"; shift 2 ;;
     --components) COMPONENTS_RAW="${2:-}"; shift 2 ;;
+    --base-archive) [[ -n "${2:-}" ]] || { printf '%s\n' '--base-archive 缺少文件路径' >&2; exit 2; }; BASE_ARCHIVES+=("$2"); shift 2 ;;
+    --base-from-docker) BASE_FROM_DOCKER=true; shift ;;
+    --no-layer-delta) NO_LAYER_DELTA=true; shift ;;
+    --runtime-only) RUNTIME_ONLY=true; shift ;;
     --skip-build) SKIP_BUILD=true; shift ;;
     --images-dir) IMAGES_DIR="${2:-}"; SKIP_BUILD=true; shift 2 ;;
     --unsigned) UNSIGNED=true; shift ;;
@@ -121,6 +141,15 @@ while [[ $# -gt 0 ]]; do
     *) printf '未知参数: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [[ "$BASE_FROM_DOCKER" == true && ${#BASE_ARCHIVES[@]} -gt 0 ]]; then
+  printf '%s\n' '--base-from-docker 与 --base-archive 互斥，请二选一' >&2
+  exit 2
+fi
+if [[ "$NO_LAYER_DELTA" == true && ( "$BASE_FROM_DOCKER" == true || ${#BASE_ARCHIVES[@]} -gt 0 ) ]]; then
+  printf '%s\n' '--no-layer-delta 与 --base-archive/--base-from-docker 互斥' >&2
+  exit 2
+fi
 
 # ---------- 参数解析与校验 ----------
 
@@ -168,8 +197,8 @@ for _c in $_raw_items; do
     continue
   fi
   case "$_c" in
-    api|web|gateway|netmgrd) ;;
-    *) printf '未知组件: %s（白名单: api web gateway netmgrd，或 auto 自动识别）\n' "$_c" >&2; exit 2 ;;
+    api|web|gateway|netmgrd|mirrorcap|tproxyd|havipd|hasyncd|logrotator|containerops|pcapd) ;;
+    *) printf '未知组件: %s（白名单: api web gateway netmgrd mirrorcap tproxyd havipd hasyncd logrotator containerops pcapd，或 auto 自动识别）\n' "$_c" >&2; exit 2 ;;
   esac
   COMPONENTS+=("$_c")
 done
@@ -206,6 +235,13 @@ component_image() { # 组件 → 镜像名:目标版本
     web) printf 'jiuzhang-web:%s\n' "$TO_VERSION" ;;
     gateway) printf 'jiuzhang-gateway:%s\n' "$TO_VERSION" ;;
     netmgrd) printf 'jiuzhang-netmgrd:%s\n' "$TO_VERSION" ;;
+    mirrorcap) printf 'jiuzhang-mirrorcap:%s\n' "$TO_VERSION" ;;
+    tproxyd) printf 'jiuzhang-tproxyd:%s\n' "$TO_VERSION" ;;
+    havipd) printf 'jiuzhang-havipd:%s\n' "$TO_VERSION" ;;
+    hasyncd) printf 'jiuzhang-hasyncd:%s\n' "$TO_VERSION" ;;
+    logrotator) printf 'jiuzhang-logrotator:%s\n' "$TO_VERSION" ;;
+    containerops) printf 'jiuzhang-containerops:%s\n' "$TO_VERSION" ;;
+    pcapd) printf 'jiuzhang-pcapd:%s\n' "$TO_VERSION" ;;
   esac
 }
 component_dockerfile() {
@@ -214,13 +250,21 @@ component_dockerfile() {
     web) printf 'web/Dockerfile\n' ;;
     gateway) printf 'gateway/Dockerfile\n' ;;
     netmgrd) printf 'gateway/images/netmgrd/Dockerfile\n' ;;
+    mirrorcap) printf 'gateway/images/mirrorcap/Dockerfile\n' ;;
+    tproxyd) printf 'gateway/images/tproxyd/Dockerfile\n' ;;
+    havipd) printf 'gateway/images/havipd/Dockerfile\n' ;;
+    hasyncd) printf 'gateway/images/hasyncd/Dockerfile\n' ;;
+    logrotator) printf 'gateway/images/logrotator/Dockerfile\n' ;;
+    containerops) printf 'deployment/containerops/Dockerfile\n' ;;
+    pcapd) printf 'gateway/images/pcapd/Dockerfile\n' ;;
   esac
 }
 component_context() {
   case "$1" in
-    api) printf '.\n' ;;
+    api|containerops) printf '.\n' ;;
     web) printf 'web\n' ;;
-    gateway|netmgrd) printf 'gateway\n' ;;
+    logrotator) printf 'gateway/images/logrotator\n' ;;
+    gateway|netmgrd|mirrorcap|tproxyd|havipd|hasyncd|pcapd) printf 'gateway\n' ;;
   esac
 }
 
@@ -295,20 +339,55 @@ PY
   ((${#changed_all[@]} > 0)) \
     || die "auto 未检测到相对 ${BASE_TAG} 的已提交变更且工作区干净；请确认 --from 取值，或显式使用 --components"
 
-  # 路径 → 组件映射（映射表见脚本头注释；顺序敏感，netmgrd 与 go.mod/go.sum 先于 gateway/ 兜底）
-  auto_api=() auto_web=() auto_gateway=() auto_netmgrd=() auto_ignored=() auto_unmatched=() auto_host=()
+  # 路径 → 组件映射（顺序敏感；测试文件先跳过，细粒度组件路径先于 server/、gateway/ 兜底）
+  auto_api=() auto_containerops=() auto_gateway=() auto_hasyncd=() auto_havipd=() auto_logrotator=() auto_mirrorcap=()
+  auto_netmgrd=() auto_pcapd=() auto_tproxyd=() auto_web=()
+  auto_ignored=() auto_unmatched=() auto_host=()
   for _p in "${changed_all[@]}"; do
     case "$_p" in
+      *_test.go|web/e2e/*|*/__tests__/*|*.test.ts|*.test.tsx|*.spec.ts|*.spec.tsx) auto_ignored+=("$_p") ;;
+      deployment/containerops/Dockerfile) auto_containerops+=("$_p") ;;
+      server/cmd/containeropsd/*|server/internal/containeropsd/*) auto_containerops+=("$_p") ;;
+      server/go.mod|server/go.sum) auto_api+=("$_p"); auto_containerops+=("$_p") ;;
       server/*) auto_api+=("$_p") ;;
       web/*) auto_web+=("$_p") ;;
-      gateway/dynamic_security/go.mod) auto_api+=("$_p"); auto_gateway+=("$_p"); auto_netmgrd+=("$_p") ;;
-      gateway/dynamic_security/*) auto_api+=("$_p"); auto_gateway+=("$_p") ;;
-      gateway/modules/jiuzhang_guard/go.mod|gateway/.dockerignore) auto_gateway+=("$_p"); auto_netmgrd+=("$_p") ;;
-      .dockerignore) auto_api+=("$_p") ;;
+      gateway/dynamic_security/go.mod|gateway/dynamic_security/go.sum)
+        auto_api+=("$_p"); auto_containerops+=("$_p"); auto_gateway+=("$_p")
+        auto_hasyncd+=("$_p"); auto_havipd+=("$_p")
+        auto_mirrorcap+=("$_p"); auto_netmgrd+=("$_p"); auto_pcapd+=("$_p"); auto_tproxyd+=("$_p") ;;
+      gateway/dynamic_security/*)
+        auto_api+=("$_p"); auto_containerops+=("$_p"); auto_gateway+=("$_p")
+        auto_mirrorcap+=("$_p"); auto_pcapd+=("$_p") ;;
+      gateway/pcapevidence/go.mod|gateway/pcapevidence/go.sum)
+        auto_api+=("$_p"); auto_containerops+=("$_p"); auto_gateway+=("$_p")
+        auto_hasyncd+=("$_p"); auto_havipd+=("$_p")
+        auto_mirrorcap+=("$_p"); auto_netmgrd+=("$_p"); auto_pcapd+=("$_p"); auto_tproxyd+=("$_p") ;;
+      gateway/pcapevidence/*)
+        auto_api+=("$_p"); auto_containerops+=("$_p"); auto_pcapd+=("$_p") ;;
+      gateway/modules/jiuzhang_guard/go.mod|gateway/modules/jiuzhang_guard/go.sum|gateway/.dockerignore)
+        auto_gateway+=("$_p"); auto_hasyncd+=("$_p"); auto_havipd+=("$_p")
+        auto_mirrorcap+=("$_p"); auto_netmgrd+=("$_p")
+        auto_pcapd+=("$_p"); auto_tproxyd+=("$_p") ;;
+      gateway/modules/jiuzhang_guard/apievents/*)
+        auto_gateway+=("$_p"); auto_mirrorcap+=("$_p"); auto_pcapd+=("$_p") ;;
+      gateway/modules/jiuzhang_guard/netif/*)
+        auto_gateway+=("$_p"); auto_mirrorcap+=("$_p") ;;
       gateway/netmgrd/*|gateway/cmd/netmgrd/*|gateway/images/netmgrd/*) auto_netmgrd+=("$_p") ;;
-      gateway/go.mod|gateway/go.sum) auto_gateway+=("$_p"); auto_netmgrd+=("$_p") ;;
+      gateway/mirrorcap/*) auto_mirrorcap+=("$_p"); auto_pcapd+=("$_p") ;;
+      gateway/cmd/mirrorcap/*|gateway/images/mirrorcap/*) auto_mirrorcap+=("$_p") ;;
+      gateway/tproxyd/*|gateway/cmd/tproxyd/*|gateway/images/tproxyd/*) auto_tproxyd+=("$_p") ;;
+      gateway/havipd/*|gateway/cmd/havipd/*|gateway/images/havipd/*) auto_havipd+=("$_p") ;;
+      gateway/hasyncd/*|gateway/cmd/hasyncd/*|gateway/images/hasyncd/*) auto_hasyncd+=("$_p") ;;
+      gateway/pcapcapture/*|gateway/cmd/pcapd/*|gateway/images/pcapd/*) auto_pcapd+=("$_p") ;;
+      gateway/images/logrotator/*) auto_logrotator+=("$_p") ;;
+      gateway/rules/*) auto_api+=("$_p"); auto_gateway+=("$_p") ;;
+      gateway/go.mod|gateway/go.sum)
+        auto_gateway+=("$_p"); auto_hasyncd+=("$_p"); auto_havipd+=("$_p")
+        auto_mirrorcap+=("$_p"); auto_netmgrd+=("$_p")
+        auto_pcapd+=("$_p"); auto_tproxyd+=("$_p") ;;
+      .dockerignore) auto_api+=("$_p"); auto_containerops+=("$_p") ;;
       gateway/*) auto_gateway+=("$_p") ;;
-      deployment/*|docker-compose*.yml|ops/upgrade/upgrade-executor.sh|ops/upgrade/install-executor.sh) auto_host+=("$_p") ;;
+      deployment/*|docker-compose*.yml|ops/upgrade/upgrade-executor.sh|ops/upgrade/install-executor.sh|ops/upgrade/image-delta.py|wdsp-agent/*|packaging/*) auto_host+=("$_p") ;;
       ops/*|docs/*|test/*|tools/*|scripts/*|licenses/*|diagram/*|output/*|dist/*|.github/*|.agent/*|*.md|.gitignore) auto_ignored+=("$_p") ;;
       *) auto_unmatched+=("$_p") ;;
     esac
@@ -342,22 +421,60 @@ PY
     (($# > 5)) && _more=" …"
     log_info "auto 证据: ${comp} ← 命中 $# 条路径；示例:${examples}${_more}"
   }
-  ((${#auto_api[@]} > 0))     && auto_take api "${auto_api[@]}"
-  ((${#auto_gateway[@]} > 0)) && auto_take gateway "${auto_gateway[@]}"
-  ((${#auto_netmgrd[@]} > 0)) && auto_take netmgrd "${auto_netmgrd[@]}"
-  ((${#auto_web[@]} > 0))     && auto_take web "${auto_web[@]}"
+  ((${#auto_api[@]} > 0))          && auto_take api "${auto_api[@]}"
+  ((${#auto_containerops[@]} > 0)) && auto_take containerops "${auto_containerops[@]}"
+  ((${#auto_gateway[@]} > 0))      && auto_take gateway "${auto_gateway[@]}"
+  ((${#auto_hasyncd[@]} > 0))      && auto_take hasyncd "${auto_hasyncd[@]}"
+  ((${#auto_havipd[@]} > 0))       && auto_take havipd "${auto_havipd[@]}"
+  ((${#auto_logrotator[@]} > 0))   && auto_take logrotator "${auto_logrotator[@]}"
+  ((${#auto_mirrorcap[@]} > 0))    && auto_take mirrorcap "${auto_mirrorcap[@]}"
+  ((${#auto_netmgrd[@]} > 0))      && auto_take netmgrd "${auto_netmgrd[@]}"
+  ((${#auto_pcapd[@]} > 0))        && auto_take pcapd "${auto_pcapd[@]}"
+  ((${#auto_tproxyd[@]} > 0))      && auto_take tproxyd "${auto_tproxyd[@]}"
+  ((${#auto_web[@]} > 0))          && auto_take web "${auto_web[@]}"
   ((${#AUTO_DETECTED[@]} > 0)) \
     || die "auto 未识别出需要构建的镜像组件（变更均为 ops/deployment/docs/测试等非镜像路径）；如需发版请显式使用 --components"
   COMPONENTS=("${AUTO_DETECTED[@]}")
   log_info "auto 识别组件: ${COMPONENTS[*]}（基准 ${BASE_TAG}..HEAD + 工作区改动）"
 fi
 
+# ---------- 基准归档自动探测（供镜像层差量使用） ----------
+if [[ "$NO_LAYER_DELTA" != true && "$BASE_FROM_DOCKER" != true && ${#BASE_ARCHIVES[@]} -eq 0 && -z "$IMAGES_DIR" ]]; then
+  for _cand in \
+    "$REPO_ROOT/dist/update-full-${FROM_VERSION}-${ARCH}/jiuzhang-wdsp-update-full-${FROM_VERSION}-${ARCH}.tar.gz" \
+    "$REPO_ROOT/dist/jiuzhang-wdsp-offline-${FROM_VERSION}-${ARCH}.tar.gz" \
+    "$REPO_ROOT/dist/jiuzhang-wdsp-upgrade-${FROM_VERSION}-${ARCH}.tar.gz"; do
+    if [[ -f "$_cand" ]]; then
+      BASE_ARCHIVES+=("$_cand")
+      log_info "自动发现基准归档: ${_cand}（启用镜像层差量打包；可用 --no-layer-delta 关闭）"
+      break
+    fi
+  done
+  unset _cand
+fi
+for _ba in ${BASE_ARCHIVES[@]+"${BASE_ARCHIVES[@]}"}; do
+  [[ -f "$_ba" ]] || die "--base-archive 指向的文件不存在: $_ba"
+done
+unset _ba
+
+LAYER_DELTA_ACTIVE=false
+if [[ "$NO_LAYER_DELTA" != true && ( ${#BASE_ARCHIVES[@]} -gt 0 || "$BASE_FROM_DOCKER" == true ) ]]; then
+  LAYER_DELTA_ACTIVE=true
+fi
+
 reject_legacy_gateway_pack
-log_info "打包计划: ${FROM_VERSION} -> ${TO_VERSION}（${CHANGE_TYPE}），架构 ${ARCH}，组件 ${COMPONENTS[*]}"
+if [[ "$LAYER_DELTA_ACTIVE" == true ]]; then
+  log_info "打包计划: ${FROM_VERSION} -> ${TO_VERSION}（${CHANGE_TYPE}，层差量模式），架构 ${ARCH}，组件 ${COMPONENTS[*]}"
+else
+  log_info "打包计划: ${FROM_VERSION} -> ${TO_VERSION}（${CHANGE_TYPE}，完整组件镜像模式），架构 ${ARCH}，组件 ${COMPONENTS[*]}"
+fi
 if [[ "$PLAN_ONLY" == true ]]; then
   exit 0
 fi
 for cmd in jq tar openssl gzip; do require_cmd "$cmd"; done
+if [[ "$LAYER_DELTA_ACTIVE" == true || "$RUNTIME_ONLY" == true ]]; then
+  [[ -f "$SCRIPT_DIR/image-delta.py" ]] || die "缺少层差量工具: $SCRIPT_DIR/image-delta.py"
+fi
 package_name="jiuzhang-wdsp-upgrade-${TO_VERSION}-${ARCH}"
 [[ ! -e "$OUTPUT_DIR/$package_name.tar.gz" && ! -e "$OUTPUT_DIR/$package_name.tar.gz.sha256" ]] \
   || die "输出文件已存在，拒绝覆盖；请更换 --output-dir 或目标版本"
@@ -371,8 +488,13 @@ if [[ "$SKIP_BUILD" != "true" ]]; then
     context="$REPO_ROOT/$(component_context "$comp")"
     [[ -f "$dockerfile" ]] || die "Dockerfile 不存在: $dockerfile"
     log_info "构建镜像 ${image}（linux/${ARCH}，$(component_dockerfile "$comp")）..."
-    docker build --platform "linux/$ARCH" -f "$dockerfile" -t "$image" "$context" \
-      || die "镜像构建失败: $comp"
+    if docker buildx version >/dev/null 2>&1; then
+      docker buildx build --platform "linux/$ARCH" --load -f "$dockerfile" -t "$image" "$context" \
+        || die "镜像构建失败: $comp"
+    else
+      docker build --platform "linux/$ARCH" -f "$dockerfile" -t "$image" "$context" \
+        || die "镜像构建失败: $comp"
+    fi
   done
 fi
 if [[ -z "$IMAGES_DIR" ]]; then
@@ -393,8 +515,38 @@ package_name="jiuzhang-wdsp-upgrade-${TO_VERSION}-${ARCH}"
 package_dir="$work_dir/$package_name"
 mkdir -p "$package_dir/images" "$package_dir/installer"
 
-# 镜像 tar（docker save | gzip；--images-dir 模式下直接收录预导出文件）
-save_image_gz() { # IMAGE OUT —— 优先按目标平台导出（containerd 存储可共存多架构），失败回退默认导出
+# 解析基准层清单（启用层差量时）
+BASE_META_FILE="$work_dir/base-meta.json"
+printf '{}\n' > "$BASE_META_FILE"
+if [[ "$LAYER_DELTA_ACTIVE" == true ]]; then
+  if [[ "$BASE_FROM_DOCKER" == true ]]; then
+    log_info "从本机 Docker 基准镜像读取层摘要（from=${FROM_VERSION}）..."
+    python3 "$SCRIPT_DIR/image-delta.py" inspect-docker \
+      --from-version "$FROM_VERSION" --components "${COMPONENTS[*]}" > "$BASE_META_FILE" \
+      || die "读取本机 Docker 基准镜像层摘要失败"
+  else
+    _ib_args=()
+    for _ba in "${BASE_ARCHIVES[@]}"; do
+      _ib_args+=(--archive "$_ba")
+    done
+    log_info "从基准归档读取层摘要（共 ${#BASE_ARCHIVES[@]} 份）..."
+    python3 "$SCRIPT_DIR/image-delta.py" inspect-base "${_ib_args[@]}" > "$BASE_META_FILE" \
+      || die "读取基准归档层摘要失败"
+    unset _ib_args _ba
+  fi
+fi
+
+# 镜像导出：支持层差量（layer-delta）与完整组件导出
+save_image_raw() { # IMAGE OUT_TAR —— 优先按目标平台导出，失败回退默认导出
+  local img="$1" out="$2"
+  rm -f "$out"
+  if docker save --platform "linux/${ARCH}" "$img" -o "$out" 2>/dev/null && [[ -s "$out" ]]; then
+    return 0
+  fi
+  rm -f "$out"
+  docker save "$img" -o "$out"
+}
+save_image_gz() {
   local img="$1" out="$2"
   rm -f "$out"
   if docker save --platform "linux/${ARCH}" "$img" 2>/dev/null | gzip -c > "$out" && [[ -s "$out" ]]; then
@@ -405,13 +557,47 @@ save_image_gz() { # IMAGE OUT —— 优先按目标平台导出（containerd �
 }
 for comp in "${COMPONENTS[@]}"; do
   tar_rel="images/${comp}-${ARCH}.tar.gz"
-  if [[ -n "$IMAGES_DIR" ]]; then
+  meta_file="$work_dir/meta-${comp}.json"
+  if [[ -n "$IMAGES_DIR" && "$LAYER_DELTA_ACTIVE" != true && "$RUNTIME_ONLY" != true ]]; then
     src="$IMAGES_DIR/${comp}-${ARCH}.tar.gz"
     [[ -f "$src" ]] || die "--images-dir 缺少镜像归档: ${src}（命名约定 <组件>-<arch>.tar.gz）"
     gzip -t "$src" 2>/dev/null || die "镜像归档不是有效 gzip: $src"
     tar -tzf "$src" >/dev/null 2>&1 || die "镜像归档不是有效 tar.gz: $src"
     cp "$src" "$package_dir/$tar_rel"
     log_info "收录预导出镜像归档: $tar_rel"
+  elif [[ "$LAYER_DELTA_ACTIVE" == true || "$RUNTIME_ONLY" == true ]]; then
+    if [[ -n "$IMAGES_DIR" ]]; then
+      target_tar="$IMAGES_DIR/${comp}-${ARCH}.tar.gz"
+      [[ -f "$target_tar" ]] || die "--images-dir 缺少镜像归档: ${target_tar}"
+      cleanup_target=false
+    else
+      target_tar="$work_dir/raw-${comp}.tar"
+      log_info "导出目标镜像 $(component_image "$comp") 用于层差量比对..."
+      save_image_raw "$(component_image "$comp")" "$target_tar" || die "docker save 失败: $comp"
+      cleanup_target=true
+    fi
+    comp_base_dids="$(jq -c --arg c "$comp" '.[$c].diff_ids // []' "$BASE_META_FILE")"
+    comp_base_sanitized="$(jq -r --arg c "$comp" '.[$c].runtime_sanitized // false' "$BASE_META_FILE")"
+    delta_args=(create --target-tar "$target_tar" --target-image "$(component_image "$comp")"
+      --base-diff-ids-json "$comp_base_dids" --output "$package_dir/$tar_rel")
+    if [[ "$RUNTIME_ONLY" == true || "$comp_base_sanitized" == true ]]; then
+      delta_args+=(--sanitize-runtime)
+    fi
+    if [[ -n "${WDSP_DELTA_MIN_SAVINGS_BYTES:-}" ]]; then
+      delta_args+=(--min-savings-bytes "$WDSP_DELTA_MIN_SAVINGS_BYTES")
+    fi
+    python3 "$SCRIPT_DIR/image-delta.py" "${delta_args[@]}" > "$meta_file" \
+      || die "镜像层差量导出失败: $comp"
+    [[ "$cleanup_target" == true ]] && rm -f "$target_tar"
+    _dmode="$(jq -r '.delivery_mode' "$meta_file")"
+    _reused="$(jq -r '.reused_bytes' "$meta_file")"
+    _delta="$(jq -r '.delta_bytes' "$meta_file")"
+    _gz_sz="$(stat -f%z "$package_dir/$tar_rel" 2>/dev/null || stat -c%s "$package_dir/$tar_rel")"
+    if [[ "$_dmode" == "layer-delta" ]]; then
+      log_info "镜像 ${comp} 采用层差量（layer-delta）：复用 $((_reused / 1048576)) MiB，差量原始 $((_delta / 1048576)) MiB，包内压缩 $((_gz_sz / 1048576)) MiB"
+    else
+      log_info "镜像 ${comp} 导出完整组件归档：压缩 $((_gz_sz / 1048576)) MiB"
+    fi
   else
     log_info "导出镜像 $(component_image "$comp") -> $tar_rel"
     save_image_gz "$(component_image "$comp")" "$package_dir/$tar_rel" \
@@ -422,27 +608,50 @@ done
 # 随附执行器文件不代表执行器会自动升级；部署基线必须预装支持 upgrade 协议的执行器。
 install -m 0755 "$SCRIPT_DIR/install-executor.sh" "$package_dir/installer/install-executor.sh"
 install -m 0755 "$SCRIPT_DIR/upgrade-executor.sh" "$package_dir/installer/upgrade-executor.sh"
+if [[ -f "$SCRIPT_DIR/image-delta.py" ]]; then
+  install -m 0755 "$SCRIPT_DIR/image-delta.py" "$package_dir/installer/image-delta.py"
+fi
 
-# 新组件 compose 片段：netmgrd 为首部随升级包引入的组件，宿主旧 compose 未定义该服务，
-# 执行器将本片段并入 <DataDir>/upgrade-executor/compose-overrides.d/ 后创建服务。
+# 新组件 compose 片段：当升级包包含可首次引入的 sidecar 组件（netmgrd / havipd / hasyncd）时，
+# 产出 compose/upgrade-services.yml；若宿主旧 compose 缺失该服务，执行器在安全校验通过后
+# 并入 <HOST_STATE_DIR>/compose-overrides.d/ 并创建服务；若宿主已具备该服务则忽略此片段。
 has_netmgrd=false
-for comp in "${COMPONENTS[@]}"; do [[ "$comp" == "netmgrd" ]] && has_netmgrd=true; done
-if [[ "$has_netmgrd" == "true" ]]; then
+has_havipd=false
+has_hasyncd=false
+for comp in "${COMPONENTS[@]}"; do
+  case "$comp" in
+    netmgrd) has_netmgrd=true ;;
+    havipd)  has_havipd=true ;;
+    hasyncd) has_hasyncd=true ;;
+  esac
+done
+has_compose_fragment=false
+if [[ "$has_netmgrd" == "true" || "$has_havipd" == "true" || "$has_hasyncd" == "true" ]]; then
+  has_compose_fragment=true
   mkdir -p "$package_dir/compose"
-  cat > "$package_dir/compose/upgrade-services.yml" <<EOF
+  {
+    cat <<EOF
 # 升级包新增组件编排片段（build-upgrade-pack.sh 生成，目标版本 ${TO_VERSION}）
 # 仅允许定义宿主旧 compose 中不存在的新服务；执行器校验「新增服务集合 == 缺失服务集合」
 # 且不得改写既有服务镜像后才并入 compose-overrides.d。
-# 服务定义口径对齐 deployment/docker-compose.stage5.yml 的 netmgrd。
+# 服务定义口径对齐 ops/offline-package/build.sh 与 deployment/docker-compose.stage5.yml。
 services:
+EOF
+    if [[ "$has_netmgrd" == "true" ]]; then
+      cat <<EOF
   netmgrd:
     image: jiuzhang-netmgrd:${TO_VERSION}
     container_name: jiuzhang-netmgrd
     restart: unless-stopped
     network_mode: service:gateway
+    group_add: ["1000"]
+    read_only: true
+    cap_drop: [ALL]
     cap_add:
       - NET_RAW
       - NET_ADMIN
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
     environment:
       NODE_NAME: \${NODE_NAME:-gateway-01}
     volumes:
@@ -450,10 +659,80 @@ services:
       - gateway-admin:/var/run/caddy
     depends_on:
       gateway: {condition: service_started}
+EOF
+    fi
+    if [[ "$has_havipd" == "true" ]]; then
+      cat <<EOF
+  havipd:
+    image: jiuzhang-havipd:${TO_VERSION}
+    container_name: jiuzhang-havipd
+    restart: unless-stopped
+    network_mode: service:gateway
+    group_add: ["1000"]
+    read_only: true
+    cap_drop: [ALL]
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - NET_BROADCAST
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=8m,mode=1777"]
+    environment:
+      GATEWAY_NODE_NAME: \${GATEWAY_NODE_NAME:-gateway-poc-01}
+    volumes:
+      - gateway-admin:/var/run/caddy
+    depends_on:
+      gateway: {condition: service_started}
+EOF
+    fi
+    if [[ "$has_hasyncd" == "true" ]]; then
+      cat <<EOF
+  hasyncd:
+    image: jiuzhang-hasyncd:${TO_VERSION}
+    container_name: jiuzhang-hasyncd
+    restart: unless-stopped
+    profiles: ["ha-sync"]
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=8m,mode=1777"]
+    environment:
+      GATEWAY_NODE_NAME: \${GATEWAY_NODE_NAME:-gateway-poc-01}
+      APP_VERSION: ${TO_VERSION}
+      HASYNC_LISTEN: \${HASYNC_LISTEN:-0.0.0.0:18443}
+      HASYNC_SECRET_FILE: \${HASYNC_SECRET_FILE:-/app/runtime/hasync.secret}
+      HASYNC_TLS_CERT: \${HASYNC_TLS_CERT:-}
+      HASYNC_TLS_KEY: \${HASYNC_TLS_KEY:-}
+      UPGRADE_PACKAGES_DIR: /app/runtime/upgrade-packages
+      UPGRADE_EXECUTOR_DIR: /app/runtime/upgrade-executor
+    ports:
+      - "\${HASYNC_BIND_ADDR:-127.0.0.1}:\${HASYNC_PORT:-18443}:18443"
+    volumes:
+      - gateway-admin:/var/run/caddy
+      - gateway-logs:/var/log/caddy:ro
+      - runtime-data:/app/runtime
+      - ./runtime/hostctl:/app/runtime/hostctl
+    depends_on:
+      gateway: {condition: service_started}
+    networks: [jiuzhang-internal]
+EOF
+    fi
+    cat <<EOF
 
 volumes:
   gateway-admin: {driver: local}
 EOF
+    if [[ "$has_hasyncd" == "true" ]]; then
+      cat <<EOF
+  gateway-logs: {driver: local}
+  runtime-data: {driver: local}
+
+networks:
+  jiuzhang-internal: {driver: bridge}
+EOF
+    fi
+  } > "$package_dir/compose/upgrade-services.yml"
 fi
 
 # ---------- 清单（双口径 manifest.json + SHA256SUMS 纵深） ----------
@@ -513,8 +792,25 @@ files_digest="$(printf '%s\n' "$files_info" | sed -n '2p')"
 
 components_json="$(jq -cn '$ARGS.positional' --args "${COMPONENTS[@]}")"
 images_json="$(for comp in "${COMPONENTS[@]}"; do
-  jq -cn --arg c "$comp" --arg img "$(component_image "$comp")" --arg tar "images/${comp}-${ARCH}.tar.gz" \
-    '{component:$c, service:$c, image:$img, tar:$tar}'
+  meta_file="$work_dir/meta-${comp}.json"
+  if [[ -f "$meta_file" ]]; then
+    jq -cn --arg c "$comp" --arg img "$(component_image "$comp")" --arg tar "images/${comp}-${ARCH}.tar.gz" \
+      --slurpfile m "$meta_file" '
+      ($m[0]) as $meta |
+      {
+        component: $c,
+        service: $c,
+        image: $img,
+        tar: $tar,
+        delivery_mode: $meta.delivery_mode,
+        runtime_sanitized: ($meta.runtime_sanitized // false),
+        diff_ids: ($meta.diff_ids // [])
+      } + (if $meta.delivery_mode == "layer-delta" then {base_layers: $meta.base_layers} else {} end)
+    '
+  else
+    jq -cn --arg c "$comp" --arg img "$(component_image "$comp")" --arg tar "images/${comp}-${ARCH}.tar.gz" \
+      '{component:$c, service:$c, image:$img, tar:$tar}'
+  fi
 done | jq -s '.')"
 
 jq -n \
@@ -564,7 +860,7 @@ fi
 # [compose/、]SHA256SUMS），无 ._* / .DS_Store 垃圾文件（归档后另有兜底校验）。
 expected_root=(SHA256SUMS images installer manifest.json)
 [[ "$PKG_SIGNED" == "true" ]] && expected_root+=(manifest.sig)
-[[ "$has_netmgrd" == "true" ]] && expected_root+=(compose)
+[[ "$has_compose_fragment" == "true" ]] && expected_root+=(compose)
 junk_entries="$(cd "$package_dir" && find . \( -name '._*' -o -name '.DS_Store' \) -print)"
 [[ -z "$junk_entries" ]] || die "包目录含 ._* / .DS_Store 垃圾文件，已中止；请检查构建环境"
 actual_root="$(cd "$package_dir" && find . -mindepth 1 -maxdepth 1 | sed 's|^\./||' | LC_ALL=C sort | tr '\n' ' ')"

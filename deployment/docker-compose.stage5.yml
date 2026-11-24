@@ -355,6 +355,79 @@ services:
       gateway:
         condition: service_started
 
+  # havipd 主备高可用 VIP 漂移 sidecar：
+  # 与网关共享网络命名空间（network_mode: service:gateway），未下发 ha-vip.json 时自动空转；
+  # 以 root + group_add ["1000"] + cap_drop ALL + cap_add [NET_ADMIN, NET_RAW, NET_BROADCAST]
+  # 运行，经共享组 1000 读写 0770/0640 的 sidecars/ha-vip.json 与 keepalived 工作目录。
+  havipd:
+    image: jiuzhang-havipd:stage5
+    build:
+      context: ../gateway
+      dockerfile: images/havipd/Dockerfile
+    container_name: jiuzhang-stage5-havipd
+    restart: unless-stopped
+    network_mode: service:gateway
+    group_add:
+      - "1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - NET_BROADCAST
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    environment:
+      GATEWAY_NODE_NAME: gateway-stage5-01
+    volumes:
+      - stage5-gateway-admin:/var/run/caddy
+    depends_on:
+      gateway:
+        condition: service_started
+
+  # hasyncd 高可用节点协同代理（可选，默认 profile 不启动，仅双机联调/主备部署启用）：
+  # 非 root 1000:1000 + cap_drop ALL，不挂载 docker.sock；未配置 HASYNC_SECRET_FILE 时 fail-closed 拒绝启动。
+  hasyncd:
+    image: jiuzhang-hasyncd:stage5
+    build:
+      context: ../gateway
+      dockerfile: images/hasyncd/Dockerfile
+    container_name: jiuzhang-stage5-hasyncd
+    restart: unless-stopped
+    profiles:
+      - ha-sync
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    environment:
+      GATEWAY_NODE_NAME: gateway-stage5-01
+      HASYNC_LISTEN: ${HASYNC_LISTEN:-0.0.0.0:18443}
+      HASYNC_SECRET_FILE: ${HASYNC_SECRET_FILE:-/app/runtime/hasync.secret}
+      HASYNC_TLS_CERT: ${HASYNC_TLS_CERT:-}
+      HASYNC_TLS_KEY: ${HASYNC_TLS_KEY:-}
+      UPGRADE_PACKAGES_DIR: /app/runtime/upgrade-packages
+      UPGRADE_EXECUTOR_DIR: /app/runtime/upgrade-executor
+    ports:
+      - "127.0.0.1:${HASYNC_PORT:-18443}:18443"
+    volumes:
+      - stage5-gateway-admin:/var/run/caddy
+      - stage5-gateway-logs:/var/log/caddy:ro
+      - stage5-runtime:/app/runtime
+      - ../runtime/hostctl:/app/runtime/hostctl
+    depends_on:
+      gateway:
+        condition: service_started
+    networks:
+      - stage5-net
+
   # 日志轮转 sidecar：对网关日志卷中常驻 append 写入的日志做 copytruncate 轮转
   # （coraza-audit.log / api-runtime-events.log / guard-events.log / access-full.jsonl；
   #  access.log 与 caddy.log 由 Caddy 自身轮转，不在此处理）
@@ -396,7 +469,7 @@ services:
       DOCKER_HOST: unix:///var/run/docker.sock
       # 仅允许运维本 compose 项目内、且在白名单中的服务（双重校验，fail-closed）
       CONTAINEROPS_PROJECT: jiuzhang-stage5
-      CONTAINEROPS_ALLOWED_SERVICES: api,gateway,postgres,valkey,logrotator,netmgrd,mirrorcap,tproxyd,testorigin,ollama
+      CONTAINEROPS_ALLOWED_SERVICES: api,gateway,postgres,valkey,logrotator,netmgrd,mirrorcap,tproxyd,havipd,hasyncd,testorigin,ollama
     volumes:
       # 全栈唯一 docker.sock 挂载点（安全底线；严禁复制到 api 或其他服务）
       - /var/run/docker.sock:/var/run/docker.sock

@@ -40,6 +40,7 @@ function makeApp(overrides: Record<string, unknown> = {}) {
     health_status: 'HEALTHY',
     last_publish_at: null,
     last_publish_result: '',
+    primary_domain: 'portal.example.com',
     domain_count: 1,
     upstream_count: 1,
     created_at: '2026-07-01T10:00:00Z',
@@ -63,7 +64,13 @@ function mockFetch(items: unknown[] = [routedApp, plainApp]) {
         jsonResponse(200, {
           code: 'SUCCESS',
           message: 'ok',
-          data: makeApp({ id: 'app-new', code: body.code, name: body.name }),
+          data: makeApp({
+            id: 'app-new',
+            code: typeof body.code === 'string' && body.code ? body.code : 'app-auto0001',
+            name: body.name,
+            primary_domain: '',
+            domain_count: 0,
+          }),
         }),
       )
     }
@@ -96,11 +103,10 @@ function renderPage() {
   )
 }
 
-/** 打开新建弹窗并填写必填项（编码/名称），返回弹窗元素 */
+/** 打开新建弹窗并填写必填项（仅应用名称，标识默认留空自动生成），返回弹窗元素 */
 async function openCreateDialog() {
   fireEvent.click(screen.getByRole('button', { name: /新\s*建\s*应\s*用/ }))
   const dialog = await screen.findByRole('dialog')
-  fireEvent.change(within(dialog).getByLabelText('应用编码'), { target: { value: 'app-new-1' } })
   fireEvent.change(within(dialog).getByLabelText('应用名称'), { target: { value: '新应用' } })
   return dialog
 }
@@ -113,6 +119,7 @@ function lastCreateCall() {
 
 describe('ApplicationsPage 部署模式', () => {
   beforeEach(() => {
+    localStorage.clear()
     vi.stubGlobal('fetch', mockFetch())
   })
 
@@ -129,7 +136,7 @@ describe('ApplicationsPage 部署模式', () => {
     expect(screen.getByText('反向代理')).toBeInTheDocument()
   })
 
-  it('新建默认反向代理：提交体含 deployment_mode=REVERSE_PROXY', async () => {
+  it('新建默认反向代理且标识留空自动生成：提交体省略 code 且含 deployment_mode=REVERSE_PROXY', async () => {
     useAuthStore.setState({ user: makeUser(['applications.create']), csrfToken: null, initialized: true })
     renderPage()
     await screen.findByText('门户应用')
@@ -137,7 +144,8 @@ describe('ApplicationsPage 部署模式', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: /确\s*定|^OK$/ }))
     await waitFor(() => expect(lastCreateCall()).toBeTruthy())
     const body = JSON.parse(String(lastCreateCall()![1]?.body)) as Record<string, unknown>
-    expect(body.code).toBe('app-new-1')
+    expect(body.code).toBeUndefined()
+    expect(body.name).toBe('新应用')
     expect(body.deployment_mode).toBe('REVERSE_PROXY')
   })
 
@@ -314,6 +322,7 @@ describe('ApplicationsPage 筛选分页上下文（BOT-023）', () => {
   }
 
   beforeEach(() => {
+    localStorage.clear()
     vi.stubGlobal('fetch', mockFetch())
   })
 
@@ -347,7 +356,7 @@ describe('ApplicationsPage 筛选分页上下文（BOT-023）', () => {
     })
     const first = renderAt('/applications')
     await screen.findByText('门户应用')
-    const search = screen.getByPlaceholderText('搜索编码或名称')
+    const search = screen.getByPlaceholderText('搜索名称、域名或标识')
     fireEvent.change(search, { target: { value: 'order' } })
     fireEvent.keyDown(search, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(lastListCall()).toContain('keyword=order'))
@@ -356,5 +365,94 @@ describe('ApplicationsPage 筛选分页上下文（BOT-023）', () => {
     vi.stubGlobal('fetch', mockFetch())
     renderAt('/applications?keyword=order')
     expect(await screen.findByDisplayValue('order')).toBeInTheDocument()
+  })
+})
+
+describe('ApplicationsPage 应用主列与可选应用标识', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('首列展示应用名称与主域名（含多域名 +N 标签及无域名占位），应用标识默认隐藏并可在列设置开启', async () => {
+    const multiDomainApp = makeApp({
+      id: 'app-multi',
+      code: 'guanwang',
+      name: '官网',
+      primary_domain: 'www.example.com',
+      domain_count: 3,
+    })
+    const emptyDomainApp = makeApp({
+      id: 'app-empty',
+      code: 'draft-site',
+      name: '草稿站点',
+      primary_domain: '',
+      domain_count: 0,
+    })
+    vi.stubGlobal('fetch', mockFetch([multiDomainApp, emptyDomainApp]))
+    useAuthStore.setState({ user: makeUser(['applications.read']), csrfToken: null, initialized: true })
+    renderPage()
+
+    expect(await screen.findByText('官网')).toBeInTheDocument()
+    expect(screen.getByText('www.example.com')).toBeInTheDocument()
+    expect(screen.getByText('+2')).toBeInTheDocument()
+    expect(screen.getByText('未配置域名')).toBeInTheDocument()
+
+    // 默认不展示应用标识列（代码值不在表格内露出）
+    const table = document.querySelector('table')!
+    expect(within(table).queryByText('guanwang')).not.toBeInTheDocument()
+    expect(within(table).queryByText('应用标识')).not.toBeInTheDocument()
+
+    // 列设置勾选「应用标识」后即可显示
+    fireEvent.click(screen.getByRole('button', { name: /列设置/ }))
+    const box = (await screen.findByText('重置列宽与显隐')).parentElement!.parentElement as HTMLElement
+    fireEvent.click(within(box).getByLabelText('应用标识'))
+    expect(within(table).getByText('guanwang')).toBeInTheDocument()
+    expect(within(table).getByText('draft-site')).toBeInTheDocument()
+  })
+
+  it('新建弹窗展开高级选项可自定义应用标识，非法格式被前端校验拦截', async () => {
+    vi.stubGlobal('fetch', mockFetch([]))
+    useAuthStore.setState({ user: makeUser(['applications.create']), csrfToken: null, initialized: true })
+    renderPage()
+
+    const dialog = await openCreateDialog()
+    fireEvent.click(within(dialog).getByText('高级选项（自定义应用标识）'))
+    const codeInput = await within(dialog).findByLabelText('应用标识')
+
+    // 非法标识被拦截，不发出 POST
+    fireEvent.change(codeInput, { target: { value: 'BAD--CODE' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /确\s*定|^OK$/ }))
+    expect(await within(dialog).findByText(/3-64 位小写字母、数字或短横线/)).toBeInTheDocument()
+    expect(lastCreateCall()).toBeUndefined()
+
+    // 改为合法自定义标识后正常提交（含 trim）
+    fireEvent.change(codeInput, { target: { value: '  portal-custom  ' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /确\s*定|^OK$/ }))
+    await waitFor(() => expect(lastCreateCall()).toBeTruthy())
+    const body = JSON.parse(String(lastCreateCall()![1]?.body)) as Record<string, unknown>
+    expect(body.code).toBe('portal-custom')
+    expect(body.name).toBe('新应用')
+  })
+
+  it('应用列表健康状态正确展示健康、降级、异常与未知四态', async () => {
+    const apps = [
+      makeApp({ id: 'a-ok', name: '健康站点', health_status: 'HEALTHY' }),
+      makeApp({ id: 'a-deg', name: '降级站点', health_status: 'DEGRADED' }),
+      makeApp({ id: 'a-bad', name: '异常站点', health_status: 'UNHEALTHY' }),
+      makeApp({ id: 'a-unk', name: '未知站点', health_status: 'UNKNOWN' }),
+    ]
+    vi.stubGlobal('fetch', mockFetch(apps))
+    useAuthStore.setState({ user: makeUser(['applications.read']), csrfToken: null, initialized: true })
+    renderPage()
+
+    expect(await screen.findByText('健康站点')).toBeInTheDocument()
+    expect(within(screen.getByText('健康站点').closest('tr')!).getByText('健康')).toBeInTheDocument()
+    expect(within(screen.getByText('降级站点').closest('tr')!).getByText('降级')).toBeInTheDocument()
+    expect(within(screen.getByText('异常站点').closest('tr')!).getByText('异常')).toBeInTheDocument()
+    expect(within(screen.getByText('未知站点').closest('tr')!).getByText('未知')).toBeInTheDocument()
   })
 })

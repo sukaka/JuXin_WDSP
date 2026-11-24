@@ -3,6 +3,7 @@ package hastatus
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,5 +198,162 @@ func TestHAVIPDisabledNoAlert(t *testing.T) {
 	}
 	if len(fa.raises) != 0 {
 		t.Fatalf("DISABLED 为运维意图不应告警: %v", fa.raises)
+	}
+}
+
+type fakeMultiNodeProvider struct {
+	groups []HAGroupSnapshot
+	nodes  []NodeStatusSnapshot
+}
+
+func (f *fakeMultiNodeProvider) ListHAGroups(context.Context) ([]HAGroupSnapshot, error) {
+	return f.groups, nil
+}
+
+func (f *fakeMultiNodeProvider) ListNodeStatuses(context.Context) ([]NodeStatusSnapshot, error) {
+	return f.nodes, nil
+}
+
+func TestMultiNodeSplitBrainDetectionEventAndAutoRecover(t *testing.T) {
+	now := time.Date(2026, 11, 25, 2, 0, 0, 0, time.UTC)
+	fresh := now.Add(-5 * time.Second)
+	provider := &fakeMultiNodeProvider{
+		groups: []HAGroupSnapshot{
+			{ID: "grp-1", Name: "ha-main", State: "ENABLED", MemberNodes: []string{"gw-a", "gw-b"}},
+		},
+		nodes: []NodeStatusSnapshot{
+			{
+				NodeName:      "gw-a",
+				HaVipStatus:   json.RawMessage(`{"group":"ha-main","node":"gw-a","state":"MASTER","keepalived_running":true,"vips_present":["192.168.31.100/24"]}`),
+				HaVipStatusAt: &fresh,
+			},
+			{
+				NodeName:      "gw-b",
+				HaVipStatus:   json.RawMessage(`{"group":"ha-main","node":"gw-b","state":"MASTER","keepalived_running":true,"vips_present":["192.168.31.100/24"]}`),
+				HaVipStatusAt: &fresh,
+			},
+		},
+	}
+
+	sv, fa, _ := newTestSweeper(t)
+	var splitEvents int
+	sv.SetClock(func() time.Time { return now }).
+		SetLocalNodeName("gw-a").
+		SetMultiNodeProvider(provider).
+		SetSplitBrainEventRecorder(func(_ context.Context, groupID, groupName string, masters, vips []string) error {
+			splitEvents++
+			if groupID != "grp-1" || groupName != "ha-main" || len(masters) != 2 || len(vips) != 1 {
+				t.Errorf("unexpected split-brain event payload: id=%s name=%s masters=%v vips=%v", groupID, groupName, masters, vips)
+			}
+			return nil
+		})
+
+	// 1. 双主脑裂首次检出 → 触发 HA_SPLIT_BRAIN 且写 1 条持久化事件
+	if err := sv.SweepOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !fa.hasRaise(TypeHASplitBrain + "|" + ComponentHAVIP) {
+		t.Fatalf("应触发 HA_SPLIT_BRAIN 告警: %v", fa.raises)
+	}
+	if splitEvents != 1 {
+		t.Fatalf("splitEvents = %d, want 1", splitEvents)
+	}
+	if systemalerts.SeverityFor(TypeHASplitBrain) != systemalerts.SeverityCritical {
+		t.Fatalf("HA_SPLIT_BRAIN severity = %q, want CRITICAL", systemalerts.SeverityFor(TypeHASplitBrain))
+	}
+
+	// 2. 持续脑裂不重复写 ha_events
+	if err := sv.SweepOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if splitEvents != 1 {
+		t.Fatalf("持续脑裂不应重复记录事件, splitEvents = %d", splitEvents)
+	}
+
+	// 3. gw-b 恢复 BACKUP 且释放 VIP → 自动恢复 HA_SPLIT_BRAIN
+	fa.raises = nil
+	fa.recovers = nil
+	provider.nodes[1].HaVipStatus = json.RawMessage(`{"group":"ha-main","node":"gw-b","state":"BACKUP","keepalived_running":true,"vips_present":[]}`)
+	if err := sv.SweepOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fa.raises) != 0 {
+		t.Fatalf("脑裂解除后不应再告警: %v", fa.raises)
+	}
+	if !fa.hasRecover(ComponentHAVIP + "|" + TypeHASplitBrain) {
+		t.Fatalf("应自动恢复 HA_SPLIT_BRAIN: %v", fa.recovers)
+	}
+}
+
+func TestMultiNodeOverlappingVIPSplitBrain(t *testing.T) {
+	now := time.Date(2026, 11, 25, 2, 0, 0, 0, time.UTC)
+	fresh := now.Add(-3 * time.Second)
+	provider := &fakeMultiNodeProvider{
+		groups: []HAGroupSnapshot{
+			{ID: "grp-2", Name: "ha-vip", State: "ENABLED", MemberNodes: []string{"gw-a", "gw-b"}},
+		},
+		nodes: []NodeStatusSnapshot{
+			{
+				NodeName:      "gw-a",
+				HaVipStatus:   json.RawMessage(`{"group":"ha-vip","node":"gw-a","state":"MASTER","keepalived_running":true,"vips_present":["10.0.0.99/24"]}`),
+				HaVipStatusAt: &fresh,
+			},
+			{
+				NodeName:      "gw-b",
+				HaVipStatus:   json.RawMessage(`{"group":"ha-vip","node":"gw-b","state":"BACKUP","keepalived_running":true,"vips_present":["10.0.0.99/24"]}`),
+				HaVipStatusAt: &fresh,
+			},
+		},
+	}
+	sv, fa, _ := newTestSweeper(t)
+	sv.SetClock(func() time.Time { return now }).SetLocalNodeName("gw-a").SetMultiNodeProvider(provider)
+
+	if err := sv.SweepOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !fa.hasRaise(TypeHASplitBrain+"|"+ComponentHAVIP) || !fa.hasRaise("10.0.0.99/24") {
+		t.Fatalf("重复持有 VIP 应触发 HA_SPLIT_BRAIN: %v", fa.raises)
+	}
+}
+
+func TestMultiNodeRemoteFaultAndNetworkAlerts(t *testing.T) {
+	now := time.Date(2026, 11, 25, 2, 0, 0, 0, time.UTC)
+	fresh := now.Add(-3 * time.Second)
+	provider := &fakeMultiNodeProvider{
+		groups: []HAGroupSnapshot{
+			{ID: "grp-1", Name: "ha-main", State: "ENABLED", MemberNodes: []string{"gw-a", "gw-b"}},
+		},
+		nodes: []NodeStatusSnapshot{
+			{
+				NodeName:        "gw-a",
+				HaVipStatus:     json.RawMessage(`{"group":"ha-main","node":"gw-a","state":"MASTER","keepalived_running":true,"vips_present":["10.0.0.10/24"]}`),
+				HaVipStatusAt:   &fresh,
+				NetworkStatus:   json.RawMessage(`{"ok":true,"link_pairs":[{"bridge":"br0","state":"BOTH_UP"}]}`),
+				NetworkStatusAt: &fresh,
+			},
+			{
+				NodeName:        "gw-b",
+				HaVipStatus:     json.RawMessage(`{"group":"ha-main","node":"gw-b","state":"FAULT","keepalived_running":false,"message":"track_interface eth2 down"}`),
+				HaVipStatusAt:   &fresh,
+				NetworkStatus:   json.RawMessage(`{"ok":false,"message":"bridge br0 apply failed","link_pairs":[{"bridge":"br0","state":"PROPAGATED_DOWN","down_port":"eth2"}]}`),
+				NetworkStatusAt: &fresh,
+			},
+		},
+	}
+
+	sv, fa, _ := newTestSweeper(t)
+	sv.SetClock(func() time.Time { return now }).SetLocalNodeName("gw-a").SetMultiNodeProvider(provider)
+
+	if err := sv.SweepOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !fa.hasRaise(TypeHAVIPFault+"|"+ComponentHAVIP) || !fa.hasRaise("gw-b") {
+		t.Fatalf("远端 FAULT 应告警并指明节点 gw-b: %v", fa.raises)
+	}
+	if !fa.hasRaise(TypeNetworkApplyFailed+"|"+ComponentNetwork) || !fa.hasRaise("bridge br0 apply failed") {
+		t.Fatalf("远端网络执行失败应告警: %v", fa.raises)
+	}
+	if !fa.hasRaise(TypeLinkPairDown+"|"+ComponentLinkPair) || !fa.hasRaise("节点 gw-b 桥 br0") {
+		t.Fatalf("远端端口联动中断应告警: %v", fa.raises)
 	}
 }

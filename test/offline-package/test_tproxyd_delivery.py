@@ -123,7 +123,7 @@ class TproxydDeliveryTests(unittest.TestCase):
             pkg_root = unpacked / f"jiuzhang-wdsp-offline-{version}-amd64"
             manifest = json.loads((pkg_root / "manifest.json").read_text(encoding="utf-8"))
             images = manifest.get("images") or []
-            self.assertEqual(len(images), 13, f"expected 13 images, got {len(images)}: {images}")
+            self.assertEqual(len(images), 15, f"expected 15 images, got {len(images)}: {images}")
             image_refs = [item.get("image") for item in images]
             self.assertIn(f"jiuzhang-tproxyd:{version}", image_refs)
             for ref in image_refs:
@@ -255,14 +255,14 @@ class TproxydDeliveryTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
         runtime_run_src = PACKAGE_RUNTIME_RUN.read_text(encoding="utf-8")
-        self.assertIn("(.images | length) == 13", runtime_run_src)
+        self.assertIn("(.images | length) == 15", runtime_run_src)
         self.assertIn("jiuzhang-tproxyd", runtime_run_src)
 
         update_full_src = BUILD_UPDATE_FULL.read_text(encoding="utf-8")
         self.assertIn("jiuzhang-tproxyd", update_full_src)
         self.assertIn("gateway/images/tproxyd/Dockerfile", update_full_src)
-        self.assertIn("(.images | length) == 13", update_full_src)
-        self.assertIn("([.images[].image] | unique | length) == 13", update_full_src)
+        self.assertIn("(.images | length) == 15", update_full_src)
+        self.assertIn("([.images[].image] | unique | length) == 15", update_full_src)
         self.assertIn(".services.tproxyd.user == \"1000:1000\"", update_full_src)
 
     def test_baremetal_delivery_unit_env_and_lifecycle_scripts(self):

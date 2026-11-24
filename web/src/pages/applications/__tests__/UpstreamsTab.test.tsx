@@ -352,3 +352,126 @@ describe('UpstreamsTab 透明串接无源站告警 (P1-13)', () => {
     )
   })
 })
+
+describe('UpstreamsTab 源站实时健康状态列', () => {
+  beforeEach(() => {
+    useAuthStore.setState({
+      user: makeUser(['upstreams.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('按源站实时探测结果展示正常耗时、异常中文错误、未启用与待探测状态', async () => {
+    const items = [
+      {
+        ...upstreamItem,
+        id: 'up-healthy',
+        name: '官网主源站',
+        health_check_enabled: true,
+        health_check_path: '/news',
+        health_status: 'HEALTHY',
+        last_health_check_at: '2026-11-25T00:05:00Z',
+        last_response_status: 200,
+        last_response_time_ms: 14,
+        consecutive_successes: 6,
+      },
+      {
+        ...upstreamItem,
+        id: 'up-timeout',
+        name: '超时源站',
+        health_check_enabled: true,
+        health_check_path: '/health',
+        health_status: 'UNHEALTHY',
+        last_health_check_at: '2026-11-25T00:05:00Z',
+        last_response_status: 0,
+        last_response_time_ms: 3001,
+        last_health_error_code: 'TIMEOUT',
+        last_health_error: 'context deadline exceeded',
+        consecutive_failures: 3,
+      },
+      {
+        ...upstreamItem,
+        id: 'up-bad-status',
+        name: '状态码异常源站',
+        health_check_enabled: true,
+        health_check_path: '/news',
+        health_status: 'UNHEALTHY',
+        last_health_check_at: '2026-11-25T00:05:00Z',
+        last_response_status: 502,
+        last_response_time_ms: 23,
+        last_health_error_code: 'UNEXPECTED_STATUS',
+        last_health_error: 'HTTP 502 不符合期望状态码（200）',
+        consecutive_failures: 2,
+      },
+      {
+        ...upstreamItem,
+        id: 'up-disabled-hc',
+        name: '未开启检查源站',
+        health_check_enabled: false,
+        health_status: 'DISABLED',
+      },
+      {
+        ...upstreamItem,
+        id: 'up-pending',
+        name: '待探测源站',
+        health_check_enabled: true,
+        health_status: 'UNKNOWN',
+      },
+    ]
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        if (String(input).includes('/applications/app-1/upstreams')) {
+          return Promise.resolve(
+            jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { items } }),
+          )
+        }
+        return Promise.reject(new Error(`unexpected url: ${String(input)}`))
+      }),
+    )
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <AntdApp>
+          <UpstreamsTab appId="app-1" />
+        </AntdApp>
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('官网主源站')).toBeInTheDocument()
+    // 表头新增「健康状态」列
+    expect(screen.getByText('健康状态')).toBeInTheDocument()
+
+    // 正常源站：正常 + 耗时
+    const healthyRow = screen.getByText('官网主源站').closest('tr')!
+    expect(within(healthyRow).getByText('正常')).toBeInTheDocument()
+    expect(within(healthyRow).getByText('14 ms')).toBeInTheDocument()
+
+    // 超时源站：异常 + 中文错误标签 + 耗时，不露出原始英文 TIMEOUT
+    const timeoutRow = screen.getByText('超时源站').closest('tr')!
+    expect(within(timeoutRow).getByText('异常')).toBeInTheDocument()
+    expect(within(timeoutRow).getByText('连接超时 · 3001 ms')).toBeInTheDocument()
+    expect(within(timeoutRow).queryByText(/TIMEOUT/)).not.toBeInTheDocument()
+
+    // 状态码不符源站：异常 + HTTP 状态码 + 耗时
+    const badStatusRow = screen.getByText('状态码异常源站').closest('tr')!
+    expect(within(badStatusRow).getByText('异常')).toBeInTheDocument()
+    expect(within(badStatusRow).getByText('HTTP 502 · 23 ms')).toBeInTheDocument()
+
+    // 未开启健康检查源站：未启用
+    const disabledRow = screen.getByText('未开启检查源站').closest('tr')!
+    expect(within(disabledRow).getByText('未启用')).toBeInTheDocument()
+
+    // 刚开启检查待探测源站：未知 + 待探测
+    const pendingRow = screen.getByText('待探测源站').closest('tr')!
+    expect(within(pendingRow).getByText('未知')).toBeInTheDocument()
+    expect(within(pendingRow).getByText('待探测')).toBeInTheDocument()
+  })
+})

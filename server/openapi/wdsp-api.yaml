@@ -1077,7 +1077,12 @@ components:
           description: 授权快照租约秒数（NG-AZ-02 D5；null=不启用，15~300=启用）
         health_status:
           type: string
-          description: 健康状态
+          enum:
+          - HEALTHY
+          - DEGRADED
+          - UNHEALTHY
+          - UNKNOWN
+          description: 应用健康状态（按已启用健康检查的活动源站探测结果汇总：全正常 HEALTHY、部分异常 DEGRADED、全异常 UNHEALTHY、未开启检查或未探测 UNKNOWN）
         current_version_id:
           type: string
           format: uuid
@@ -1091,6 +1096,9 @@ components:
         last_publish_result:
           type: string
           description: 最近发布结果（如 SUCCESS/FAILED，可为空串）
+        primary_domain:
+          type: string
+          description: 主活动域名（优先 is_primary，其次最早创建；无活动域名时为空串）
         domain_count:
           type: integer
           description: 活动域名数
@@ -1127,12 +1135,11 @@ components:
     AppCreateRequest:
       type: object
       required:
-      - code
       - name
       properties:
         code:
           type: string
-          description: 应用编码（唯一，格式由服务端校验）
+          description: 应用标识（可选；留空由服务端自动生成唯一标识 app-xxxxxxxx，显式传入时格式由服务端校验且不可重复）
         name:
           type: string
           maxLength: 128
@@ -1677,6 +1684,39 @@ components:
         version:
           type: integer
           description: 乐观锁版本号
+        health_status:
+          type: string
+          enum:
+          - HEALTHY
+          - UNHEALTHY
+          - UNKNOWN
+          - DISABLED
+          description: 源站实时健康状态（未启用健康检查 DISABLED、正常 HEALTHY、异常 UNHEALTHY、停用或尚未探测 UNKNOWN）
+        last_health_check_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近一次健康探测时间
+        last_response_status:
+          type: integer
+          nullable: true
+          description: 最近一次健康探测返回的 HTTP 状态码
+        last_response_time_ms:
+          type: integer
+          nullable: true
+          description: 最近一次健康探测耗时（毫秒）
+        last_health_error_code:
+          type: string
+          description: 最近一次健康探测失败错误码（如 TIMEOUT/CONNECTION_REFUSED/UNEXPECTED_STATUS）
+        last_health_error:
+          type: string
+          description: 最近一次健康探测失败说明
+        consecutive_successes:
+          type: integer
+          description: 连续健康次数
+        consecutive_failures:
+          type: integer
+          description: 连续失败次数
     UpstreamRequest:
       type: object
       required:
@@ -2238,6 +2278,38 @@ components:
         business_snapshot:
           type: string
           description: 目标版本业务快照（JSON 字符串）
+    ConfigVersionRetrySyncRequest:
+      type: object
+      description: 重试配置版本节点同步请求体（可选；不传 node_id 时对全部启用同步的次要节点重试）
+      properties:
+        node_id:
+          type: string
+          format: uuid
+          description: 可选，定向重试的单个次要节点 ID
+    ConfigVersionRetrySyncResult:
+      type: object
+      description: 指定配置版本次要节点重试同步统计结果
+      properties:
+        version_id:
+          type: string
+          format: uuid
+          description: 目标配置版本 ID
+        node_id:
+          type: string
+          format: uuid
+          description: 定向重试时的节点 ID（全量重试时省略）
+        attempted:
+          type: integer
+          description: 本次尝试同步的次要节点数
+        succeeded:
+          type: integer
+          description: 同步成功节点数
+        failed:
+          type: integer
+          description: 同步失败节点数
+        record_failures:
+          type: integer
+          description: 同步结果落库失败计数
     GatewayIface:
       type: object
       description: 节点物理网口清单记录
@@ -2400,7 +2472,7 @@ components:
       properties:
         node_name:
           type: string
-          description: 网关节点名；可选，缺省为默认节点，当前仅支持默认节点
+          description: 网关节点名；可选，缺省为默认节点；支持已启用 hasyncd 同步的远端节点
         bridges:
           type: array
           maxItems: 32
@@ -2460,9 +2532,43 @@ components:
           - error
         message:
           type: string
+    GatewayNetLinkPairStatus:
+      type: object
+      description: 单座网桥端口联动运行状态（netmgrd 回写）
+      properties:
+        bridge:
+          type: string
+          description: 网桥名
+        state:
+          type: string
+          enum:
+          - BOTH_UP
+          - DEGRADED
+          - PROPAGATED_DOWN
+          - SUPPRESSED
+          description: 联动状态
+        down_port:
+          type: string
+          description: 故障口名
+        propagated_port:
+          type: string
+          description: 被联动 down 的配对口名
+        propagated_by_linkpair:
+          type: boolean
+          description: 配对口是否带本组件联动标记
+        flap_count_hour:
+          type: integer
+          description: 最近 1 小时联动次数
+        last_event_at:
+          type: string
+          format: date-time
+          description: 最近联动事件时间
+        message:
+          type: string
+          description: 状态说明
     GatewayNetStatus:
       type: object
-      description: netmgrd 执行状态（sidecars/network-status.json 原样透传；文件不存在/解析失败或查询非默认节点时整体为 null）
+      description: netmgrd 执行状态（本机读 sidecars/network-status.json，远端节点取遥测汇聚快照；未上报或解析失败时为 null）
       properties:
         applied_at:
           type: string
@@ -2486,6 +2592,11 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/GatewayNetRouteStatus'
+        link_pairs:
+          type: array
+          items:
+            $ref: '#/components/schemas/GatewayNetLinkPairStatus'
+          description: 端口联动状态列表
         message:
           type: string
           description: 总体说明/错误信息
@@ -2498,6 +2609,12 @@ components:
         status:
           $ref: '#/components/schemas/GatewayNetStatus'
           nullable: true
+        default_node:
+          type: string
+          description: 本机默认网关节点名
+        remote_editable:
+          type: boolean
+          description: 目标节点是否允许编辑并下发（本机默认节点或已启用 hasyncd 同步的远端节点为 true）
     Policy:
       type: object
       description: WAF 防护策略（列表/详情/创建/更新/复制的返回体；详情另含 application_ids，见 PolicyDetail）
@@ -9656,6 +9773,13 @@ components:
           type: string
           format: uuid
           description: 升级包 ID
+        cluster_mode:
+          type: string
+          enum:
+          - LOCAL
+          - HA_ROLLING
+          default: LOCAL
+          description: 升级集群模式：LOCAL（单机，默认）或 HA_ROLLING（先备后主双机滚动升级）
     UpgradePrecheckResponse:
       type: object
       properties:
@@ -9675,6 +9799,154 @@ components:
           type: string
           format: uuid
           description: 升级包 ID（须为 VERIFIED 状态）
+        cluster_mode:
+          type: string
+          enum:
+          - LOCAL
+          - HA_ROLLING
+          default: LOCAL
+          description: 升级集群模式：LOCAL（仅升级本机，默认）或 HA_ROLLING（先备后主双机滚动升级）
+    UpgradeNodeExecution:
+      type: object
+      description: HA 集群滚动升级单节点执行明细（upgrade_node_executions，迁移 000237）
+      properties:
+        id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+          description: 所属升级任务 ID
+        node_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 关联节点 ID（主节点或节点已删除时可为 null）
+        node_name:
+          type: string
+          description: 节点名称
+        role:
+          type: string
+          enum:
+          - STANDBY
+          - PRIMARY
+          description: 节点升级角色（先 STANDBY 后 PRIMARY）
+        seq:
+          type: integer
+          description: 滚动执行序号（从 1 递增）
+        status:
+          type: string
+          enum:
+          - PENDING
+          - TRANSFERRING
+          - APPLYING
+          - VERIFYING
+          - SUCCESS
+          - FAILED
+          - SKIPPED
+          description: 单节点升级执行状态
+        from_version:
+          type: string
+          description: 升级前版本
+        to_version:
+          type: string
+          description: 目标版本
+        error_code:
+          type: string
+          description: 失败错误码（空串表示无错误）
+        error_message:
+          type: string
+          description: 失败原因说明
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    UpgradeClusterNode:
+      type: object
+      description: 集群节点版本与滚动升级就绪状态项
+      properties:
+        node_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 节点 ID
+        node_name:
+          type: string
+          description: 节点名称
+        role:
+          type: string
+          enum:
+          - PRIMARY
+          - STANDBY
+          description: 节点角色
+        sync_agent_addr:
+          type: string
+          description: 协同代理地址（主节点为空）
+        sync_enabled:
+          type: boolean
+          description: 是否已启用同步
+        reported_version:
+          type: string
+          description: 节点当前上报系统版本
+        version_aligned:
+          type: boolean
+          description: 是否与当前主节点版本一致
+        reachable:
+          type: boolean
+          description: 节点协同通道是否可达
+        caddy_reachable:
+          type: boolean
+          description: 节点本机 Caddy Admin 是否可达
+        hostctl_ready:
+          type: boolean
+          description: 节点宿主机控制通道是否就绪
+        upgrade_ready:
+          type: boolean
+          description: 节点宿主机升级执行器是否就绪
+        error:
+          type: string
+          description: 探活失败时的错误信息（可达时省略）
+    UpgradeClusterNodesResponse:
+      type: object
+      description: 升级集群节点版本与就绪状态响应
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UpgradeClusterNode'
+        current_version:
+          type: string
+          description: 当前管理面/主节点系统版本
+        split_brain:
+          type: boolean
+          description: 当前是否存在未决主备脑裂告警（为 true 时禁止启动 HA_ROLLING 升级）
+        cluster_ready:
+          type: boolean
+          description: 集群是否满足 HA_ROLLING 滚动升级条件
+    UpgradeRetryNodeRequest:
+      type: object
+      required:
+      - node_id
+      properties:
+        node_id:
+          type: string
+          format: uuid
+          description: 待重试的备节点 ID
+    UpgradeRetryNodeResponse:
+      type: object
+      properties:
+        node_execution:
+          $ref: '#/components/schemas/UpgradeNodeExecution'
     UpgradeJob:
       type: object
       properties:
@@ -9686,6 +9958,12 @@ components:
           format: uuid
           nullable: true
           description: 升级包 ID
+        cluster_mode:
+          type: string
+          enum:
+          - LOCAL
+          - HA_ROLLING
+          description: 升级集群模式（LOCAL 单机 / HA_ROLLING 先备后主滚动升级）
         status:
           type: string
           enum:
@@ -9742,6 +10020,8 @@ components:
           - MIGRATE_FAILED
           - VERIFY_FAILED
           - ROLLBACK_FAILED
+          - STANDBY_UPGRADE_FAILED
+          - CLUSTER_SPLIT_BRAIN
           description: 失败码（空表示无失败）
         failure_message:
           type: string
@@ -9749,6 +10029,11 @@ components:
         request_id:
           type: string
           description: 请求追踪 ID
+        node_executions:
+          type: array
+          items:
+            $ref: '#/components/schemas/UpgradeNodeExecution'
+          description: HA_ROLLING 模式下逐节点执行记录（按 seq 升序）
     UpgradeJobResponse:
       type: object
       properties:
@@ -10356,20 +10641,21 @@ components:
           description: VRRP 虚拟路由 ID
         iface:
           type: string
-          description: VIP 绑定网卡名
+          description: VIP 绑定网卡名（不得为网桥成员口）
         vips:
           type: array
           items:
             type: string
-          description: 虚拟 IP 列表（CIDR，如 192.168.31.100/24；1~8 个）
+          description: 虚拟 IP 列表（IPv4 CIDR，如 192.168.31.100/24；1~8 个）
         preempt:
           type: boolean
           description: 是否抢占模式
         advert_int_ms:
           type: integer
-          minimum: 200
+          minimum: 1000
           maximum: 10000
-          description: VRRP 通告间隔（毫秒，缺省 1000）
+          multipleOf: 1000
+          description: VRRP 通告间隔（毫秒，1000~10000 整秒，缺省 1000）
         unicast:
           type: boolean
           description: 是否单播 VRRP
@@ -10377,7 +10663,12 @@ components:
           type: array
           items:
             type: string
-          description: 单播对端地址（unicast=true 时必填，至多 8 个）
+          description: 单播对端地址（unicast=true 时必填，至多 8 个；非 null 数组）
+        track_interfaces:
+          type: array
+          items:
+            type: string
+          description: Keepalived track_interface 关联接口列表（至多 16 个，不得与 iface 相同；非 null 数组）
         has_auth_pass:
           type: boolean
           description: 是否已配置 VRRP 认证串（明文永不出参）
@@ -10420,20 +10711,20 @@ components:
           description: VRRP 虚拟路由 ID
         iface:
           type: string
-          description: VIP 绑定网卡名
+          description: VIP 绑定网卡名（不得为网桥成员口）
         vips:
           type: array
           items:
             type: string
-          description: 虚拟 IP 列表（CIDR；1~8 个）
+          description: 虚拟 IP 列表（IPv4 CIDR；1~8 个）
         preempt:
           type: boolean
           description: 是否抢占模式
         advert_int_ms:
           type: integer
-          minimum: 200
+          minimum: 0
           maximum: 10000
-          description: 通告间隔毫秒（0 = 缺省 1000）
+          description: 通告间隔毫秒（0 = 缺省 1000；非 0 时须为 1000~10000 的 1000 整数倍）
         unicast:
           type: boolean
           description: 是否单播 VRRP
@@ -10442,14 +10733,21 @@ components:
           items:
             type: string
           description: 单播对端地址（unicast=true 时必填）
+        track_interfaces:
+          type: array
+          maxItems: 16
+          items:
+            type: string
+          description: Keepalived track_interface 关联接口列表（合法接口名，去重，不得等于 iface）
         auth_pass:
           type: string
-          description: VRRP 认证串（≤8 字符；不传=不变更、空串=清除、其他=设置，加密落库）
+          pattern: ^[A-Za-z0-9._:@+-]{0,8}$
+          description: VRRP 认证串（不传=不变更、空串=清除、非空须匹配 ^[A-Za-z0-9._:@+-]{1,8}$，加密落库）
         members:
           type: array
           items:
             $ref: '#/components/schemas/HaGroupMember'
-          description: 成员节点（恰 2 个，优先级互异）
+          description: 成员节点（恰 2 个，优先级互异，单节点互斥不可跨组复用）
         version:
           type: integer
           description: 乐观锁版本号（修改时必填；创建忽略）
@@ -10516,6 +10814,94 @@ components:
           items:
             $ref: '#/components/schemas/HaVipEvent'
           description: 漂移/状态迁移事件
+    HaNodeRuntimeStatus:
+      type: object
+      description: 单节点汇聚后的 HA VIP 运行状态快照
+      properties:
+        node_name:
+          type: string
+          description: 节点名称
+        status:
+          $ref: '#/components/schemas/HaVipStatus'
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 状态最近刷新时间
+        fresh:
+          type: boolean
+          description: 状态是否在 30 秒新鲜窗口内
+        source:
+          type: string
+          enum:
+          - local
+          - remote
+          description: 状态来源（本机边车卷或远端遥测汇聚）
+    HaSyncResult:
+      type: object
+      description: 单节点 ha-vip.json 边车配置同步结果
+      properties:
+        node_name:
+          type: string
+          description: 节点名称（未区分节点名的单机模式可为空串）
+        scope:
+          type: string
+          enum:
+          - local
+          - remote
+          description: 同步范围
+        status:
+          type: string
+          enum:
+          - SUCCESS
+          - FAILED
+          description: 同步状态
+        error:
+          type: string
+          description: 失败原因（成功时省略）
+    HaEvent:
+      type: object
+      description: 主备高可用持久化历史事件（ha_events）
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: 事件自增 ID
+        group_id:
+          type: string
+          format: uuid
+          description: 主备组 ID（组已删除或非特定组事件可省略）
+        group_name:
+          type: string
+          description: 主备组名
+        node_name:
+          type: string
+          description: 关联节点名
+        event_type:
+          type: string
+          description: 事件类型（FAILBACK/SYNC_FAILED/SPLIT_BRAIN/VIP_TRANSITION/LINK_PAIR_CHANGE 等）
+        detail:
+          type: object
+          additionalProperties: true
+          description: 结构化事件明细
+        occurred_at:
+          type: string
+          format: date-time
+          description: 发生时间（UTC）
+    HaEventListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/HaEvent'
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+          format: int64
     HaGroupListResponse:
       type: object
       properties:
@@ -10525,6 +10911,14 @@ components:
             $ref: '#/components/schemas/HaGroup'
         status:
           $ref: '#/components/schemas/HaVipStatus'
+        node_statuses:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/HaNodeRuntimeStatus'
+          description: 全部成员节点的汇聚运行状态（键为 node_name）
+        split_brain:
+          type: boolean
+          description: 是否检测到主备脑裂（任一组 ≥2 个新鲜成员报告 MASTER 或持有 VIP）
     HaGroupDetailResponse:
       type: object
       properties:
@@ -10532,6 +10926,14 @@ components:
           $ref: '#/components/schemas/HaGroup'
         status:
           $ref: '#/components/schemas/HaVipStatus'
+        node_statuses:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/HaNodeRuntimeStatus'
+          description: 本组成员节点的汇聚运行状态（键为 node_name）
+        split_brain:
+          type: boolean
+          description: 本组是否检测到主备脑裂
     HaGroupResponse:
       type: object
       properties:
@@ -10540,6 +10942,22 @@ components:
           description: 操作结果提示（部分接口返回）
         group:
           $ref: '#/components/schemas/HaGroup'
+        sync_results:
+          type: array
+          items:
+            $ref: '#/components/schemas/HaSyncResult'
+          description: 逐节点边车配置同步结果
+    HaGroupDeleteResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          description: 删除结果提示
+        sync_results:
+          type: array
+          items:
+            $ref: '#/components/schemas/HaSyncResult'
+          description: 逐节点边车配置收回结果
     HaFailbackRequest:
       type: object
       required:
@@ -11358,10 +11776,33 @@ components:
           items:
             $ref: '#/components/schemas/ApiSecConfirmFailedItem'
           description: 联动启动学习失败明细
+    ApiSecLearningBatchFilter:
+      type: object
+      properties:
+        asset_status:
+          type: string
+          description: 资产状态过滤（DISCOVERED/CONFIRMED 等）
+        learning_status:
+          type: string
+          description: 学习状态过滤（NOT_STARTED/LEARNING/PAUSED/LEARNED）
+        keyword:
+          type: string
+          description: 路径关键字过滤
+        application_id:
+          type: string
+          format: uuid
+          description: 站点（应用）ID 过滤
+        unassigned:
+          type: boolean
+          description: 为 true 时仅筛选未归属接口
+        directory_path:
+          type: string
+          description: 目录前缀过滤
+        business_type:
+          type: string
+          description: 业务类型过滤
     ApiSecLearningStartBatchRequest:
       type: object
-      required:
-      - ids
       properties:
         ids:
           type: array
@@ -11370,7 +11811,13 @@ components:
             format: uuid
           minItems: 1
           maxItems: 100
-          description: 待启动学习的接口 ID 列表（单次最多 100 个）
+          description: 待启动学习的接口 ID 列表（单次最多 100 个；与 apply_to_filtered 二选一）
+        apply_to_filtered:
+          type: boolean
+          description: 为 true 时按 filter 跨页批量启动全部命中接口（单次上限 2000 个）
+        filter:
+          $ref: '#/components/schemas/ApiSecLearningBatchFilter'
+          description: apply_to_filtered=true 时的筛选条件（可选，缺省表示全部活跃未学习接口）
         sample_target:
           type: integer
           minimum: 10
@@ -11384,6 +11831,8 @@ components:
       - skipped
       - skipped_ids
       - failed
+      - matched_total
+      - truncated
       - sample_target
       - message
       properties:
@@ -11398,7 +11847,7 @@ components:
           description: 成功启动学习的接口 ID 列表
         skipped:
           type: integer
-          description: 自动跳过的接口数量（已在学习中）
+          description: 自动跳过的接口数量（学习中/已完成/非活跃资产）
         skipped_ids:
           type: array
           items:
@@ -11410,6 +11859,13 @@ components:
           items:
             $ref: '#/components/schemas/ApiSecConfirmFailedItem'
           description: 启动失败明细（如接口不存在）
+        matched_total:
+          type: integer
+          format: int64
+          description: 本次命中的接口总数
+        truncated:
+          type: boolean
+          description: 筛选命中数是否超过单次上限（2000）被截断
         sample_target:
           type: integer
           description: 本次批量启动生效的样本目标
@@ -19754,7 +20210,7 @@ components:
             $ref: '#/components/schemas/ApiSecPostureTargetHighRisk'
     ApiSecGatewayNode:
       type: object
-      description: 网关节点视图行（api_gateway_nodes；事件遥测聚合 + 心跳活性维护，000074 叠加配置面同步登记与结果列，非节点注册协议）
+      description: 网关节点视图行（api_gateway_nodes；事件遥测 + 心跳 + hasyncd 遥测汇聚 + 同步登记与结果）
       required:
       - id
       - node_name
@@ -19765,6 +20221,9 @@ components:
       - event_count
       - status
       - admin_addr
+      - sync_agent_addr
+      - has_sync_secret
+      - reported_version
       - sync_enabled
       - last_sync_at
       - last_sync_result
@@ -19780,18 +20239,18 @@ components:
           description: 节点行 ID
         node_name:
           type: string
-          description: 节点名（事件 gateway_node 字段）
+          description: 节点名（GATEWAY_NODE_NAME / 事件 gateway_node）
         first_seen_at:
           type: string
           format: date-time
-          description: 首次观测时间
+          description: 首次观测或登记时间
         last_seen_at:
           type: string
           format: date-time
-          description: 最近活性时间（业务事件与心跳取新；状态判定基准）
+          description: 最近活性时间（业务事件、心跳与 hasyncd 遥测取新）
         last_policy_version:
           type: string
-          description: 策略版本（心跳上报优先，否则最新业务事件版本；空串 = 旧版网关未上报）
+          description: 策略版本（空串 = 未上报）
         last_model_version:
           type: string
           description: 最新业务事件模型版本（空串 = 未上报）
@@ -19808,10 +20267,39 @@ components:
           description: 节点状态（ACTIVE 5 分钟内 / STALE 5 分钟~1 小时 / SILENT 超 1 小时）
         admin_addr:
           type: string
-          description: 节点 Caddy Admin 通道标识（空串 = 未登记，不参与扇出）
+          description: 节点 Caddy Admin 通道标识（空串 = 未登记）
+        sync_agent_addr:
+          type: string
+          description: 节点 hasyncd 协同代理地址（内网 http(s)://host:port；空串 = 未配置）
+        has_sync_secret:
+          type: boolean
+          description: 是否已配置 hasyncd HMAC 共享密钥（密钥密文永不回显）
+        reported_version:
+          type: string
+          description: 节点协同代理上报的当前系统版本（空串 = 未知）
+        ha_vip_status:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: 节点最新汇聚的 ha-vip-status.json 状态快照（null = 未上报）
+        ha_vip_status_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 节点最新 ha_vip_status 采集时间（null = 未上报）
+        network_status:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: 节点最新汇聚的 network-status.json 状态快照（null = 未上报）
+        network_status_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 节点最新 network_status 采集时间（null = 未上报）
         sync_enabled:
           type: boolean
-          description: 是否参与发布扇出
+          description: 是否参与发布扇出与跨节点同步
         last_sync_at:
           type: string
           format: date-time
@@ -19843,18 +20331,86 @@ components:
         updated_at:
           type: string
           format: date-time
+    ApiSecNodeCreateRequest:
+      type: object
+      description: 手动预登记网关节点请求体（POST /api-security/nodes）
+      required:
+      - node_name
+      properties:
+        node_name:
+          type: string
+          maxLength: 128
+          description: 节点名（须唯一，匹配网关 GATEWAY_NODE_NAME）
+        admin_addr:
+          type: string
+          maxLength: 255
+          description: 可选，Caddy Admin 内网通道地址
+        sync_agent_addr:
+          type: string
+          maxLength: 255
+          description: 可选，hasyncd 协同代理内网地址（http(s)://host:port）
+        sync_secret:
+          type: string
+          description: 可选，hasyncd HMAC 共享密钥（≥64 位十六进制字符，加密落库）
+        sync_enabled:
+          type: boolean
+          description: 是否启用发布扇出与同步（默认 false）
     ApiSecNodeSyncUpdateRequest:
       type: object
-      description: 节点同步登记编辑入参（PATCH /nodes/{id}；两字段均可选，至少提供一项，均未提供返回 400）
+      description: 节点同步登记编辑入参（PATCH /nodes/{id}；四字段均可选，至少提供一项，均未提供返回 400）
       properties:
         admin_addr:
           type: string
           maxLength: 255
-          description: 节点 Caddy Admin 通道标识：unix socket 绝对路径 / unix:///path / http(s)://host[:port] （仅内网管理面地址，主机名逐一解析校验；拒绝
-            userinfo/非根路径/查询/片段）； 空串 = 清除登记
+          description: 节点 Caddy Admin 通道标识：unix socket 绝对路径 / unix:///path / http(s)://host[:port] （仅内网管理面地址）；空串 = 清除登记
+        sync_agent_addr:
+          type: string
+          maxLength: 255
+          description: 节点 hasyncd 协同代理内网地址（http(s)://host:port）；空串 = 清除登记
+        sync_secret:
+          type: string
+          nullable: true
+          description: hasyncd HMAC 共享密钥（省略/null = 不变更；空串 "" = 清除已有密钥；非空须为 ≥64 位 hex，加密落库）
         sync_enabled:
           type: boolean
-          description: 是否参与发布扇出（默认 false，登记 admin_addr 后须显式开启）
+          description: 是否参与发布扇出与同步
+    ApiSecNodeTestResponse:
+      type: object
+      description: 节点连通性探测结果（POST /api-security/nodes/{id}/test）
+      required:
+      - ok
+      - channel
+      - latency_ms
+      properties:
+        ok:
+          type: boolean
+          description: 探测是否成功
+        channel:
+          type: string
+          enum:
+          - hasyncd
+          - caddy_admin
+          - none
+          description: 实际探测使用的通道类型
+        latency_ms:
+          type: integer
+          format: int64
+          description: 探测耗时（毫秒）
+        version:
+          type: string
+          description: hasyncd 返回的节点系统版本（hasyncd 通道有效）
+        caddy_reachable:
+          type: boolean
+          description: 节点本机 Caddy Admin 是否可达（hasyncd 通道有效）
+        hostctl_ready:
+          type: boolean
+          description: 节点宿主机 hostctl 通道是否就绪（hasyncd 通道有效）
+        upgrade_ready:
+          type: boolean
+          description: 节点宿主机升级执行器是否就绪（hasyncd 通道有效）
+        error:
+          type: string
+          description: 探测失败时的错误说明（成功时省略）
     ApiSecNodeListResponse:
       type: object
       description: 节点列表响应（总体一致性口径与 /nodes/consistency 一致）
@@ -31881,8 +32437,8 @@ paths:
       tags:
       - login-logs
       summary: 导出登录日志（CSV）
-      description: '按筛选条件导出登录日志 CSV（UTF-8，最多 10000 条）， 响应头 Content-Disposition: attachment; filename="login-logs.csv"。 权限：login_logs.export。导出接口按来源
-        IP 限流 5 次/分钟，超限返回 429。 CSV 列：occurred_at,username,source_ip,event_type,result,failure_code,request_id。'
+      description: '按筛选条件导出登录日志 CSV（UTF-8 含 BOM，防公式注入，最多 10000 条）， 响应头 Content-Disposition: attachment; filename="login-logs.csv"。
+        权限：login_logs.export。导出接口按来源 IP 限流 5 次/分钟，超限返回 429。 CSV 中文表头：发生时间,用户名,来源 IP,事件类型,结果,失败原因,请求 ID（事件类型、结果与失败原因已映射为中文）。'
       parameters:
       - name: username
         in: query
@@ -32086,8 +32642,8 @@ paths:
       tags:
       - audits
       summary: 导出操作审计（CSV）
-      description: '按筛选条件导出审计记录 CSV（UTF-8，最多 10000 条）， 响应头 Content-Disposition: attachment; filename="operation-audits.csv"。
-        权限：audits.export。导出接口按来源 IP 限流 5 次/分钟，超限返回 429。 CSV 列：occurred_at,username,source_ip,module,action,object_type,object_id,result,risk_level,request_id。'
+      description: '按筛选条件导出审计记录 CSV（UTF-8 含 BOM，防公式注入，最多 10000 条）， 响应头 Content-Disposition: attachment; filename="operation-audits.csv"。
+        权限：audits.export。导出接口按来源 IP 限流 5 次/分钟，超限返回 429。 CSV 中文表头：操作时间,操作人,来源 IP,模块,操作,对象类型,对象标识,结果,风险等级,请求 ID（模块、操作、对象类型、结果与风险等级已映射为中文）。'
       parameters:
       - name: username
         in: query
@@ -32302,14 +32858,14 @@ paths:
       tags:
       - applications
       summary: 应用分页列表
-      description: 按创建时间倒序返回应用列表，支持关键字（编码/名称模糊匹配）、状态、防护模式筛选；每项附带活动域名数与活动源站数统计。权限：`applications.read`
+      description: 按创建时间倒序返回应用列表，支持关键字（应用标识/名称/域名模糊匹配）、状态、防护模式、部署模式筛选；每项附带主活动域名、活动域名数与活动源站数统计。权限：`applications.read`
       parameters:
       - name: keyword
         in: query
         required: false
         schema:
           type: string
-        description: 关键字（应用编码或名称模糊匹配）
+        description: 关键字（应用标识、名称或域名模糊匹配）
       - name: status
         in: query
         required: false
@@ -32379,7 +32935,7 @@ paths:
       tags:
       - applications
       summary: 创建应用
-      description: 创建 Web 应用，初始状态为 DRAFT（草稿）；应用编码唯一，重复返回 409。权限：`applications.create`
+      description: 创建 Web 应用，初始状态为 DRAFT（草稿）；应用标识（code）留空时由服务端自动生成唯一标识（如 app-7k2m9x4p），显式传入时须唯一，重复返回 409。权限：`applications.create`
       requestBody:
         required: true
         content:
@@ -34086,6 +34642,178 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 02-applications.yaml
+  /certificates/acme/config:
+    get:
+      operationId: acmeConfigGet
+      tags:
+      - certificates
+      summary: 获取全局 ACME 自动证书配置
+      description: 查询全局自动申请/续约 SSL 证书配置（不回显 EAB HMAC 明文）。权限：`certificates.read`
+      responses:
+        '200':
+          description: 查询成功
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      operationId: acmeConfigUpdate
+      tags:
+      - certificates
+      summary: 更新全局 ACME 自动证书配置
+      description: 更新全局 CA 提供商、联系邮箱、自定义目录与 SSRF 允许列表、EAB 加密凭据、提前续约天数及自动发布策略。权限：`certificates.update`
+      responses:
+        '200':
+          description: 更新成功
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    x-source: 02-applications.yaml
+  /certificates/acme/config/test:
+    post:
+      operationId: acmeConfigTest
+      tags:
+      - certificates
+      summary: 测试 ACME 目录连通性
+      description: 执行 SSRF 安全校验并探测目标 ACME v2 目录端点可达性与延迟（不落库）。权限：`certificates.update`
+      responses:
+        '200':
+          description: 测试完成
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    x-source: 02-applications.yaml
+  /certificates/acme/orders:
+    get:
+      operationId: acmeOrdersList
+      tags:
+      - certificates
+      summary: 分页查询 ACME 证书申请与续约订单
+      description: 查询自动申请、到期自动续约、域名同步与手工触发任务记录。权限：`certificates.read`
+      responses:
+        '200':
+          description: 查询成功
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    x-source: 02-applications.yaml
+  /certificates/{id}/renew:
+    post:
+      operationId: certRenew
+      tags:
+      - certificates
+      summary: 立即续约指定 ACME 托管证书
+      description: 为 ACME 托管证书创建异步续约任务，成功后原子替换应用绑定并按策略自动发布。权限：`certificates.create`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 证书ID
+      responses:
+        '202':
+          description: 已受理异步续约任务
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    x-source: 02-applications.yaml
+  /applications/{id}/auto-ssl:
+    get:
+      operationId: appAutoSslGet
+      tags:
+      - certificates
+      summary: 获取站点自动 SSL 状态与就绪检查
+      description: 返回站点自动 SSL 开关、HTTPS 域名列表、最新订单、失败退避状态与前置就绪提示。权限：`certificates.read`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 应用ID
+      responses:
+        '200':
+          description: 查询成功
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: appAutoSslUpdate
+      tags:
+      - certificates
+      summary: 更新站点自动 SSL 开关与续约配置
+      description: 开启或关闭站点自动申请与到期续约 SSL 证书；开启且无证书时异步触发首次申请。权限：`certificates.bind`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 应用ID
+      responses:
+        '200':
+          description: 更新成功
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    x-source: 02-applications.yaml
+  /applications/{id}/auto-ssl/issue:
+    post:
+      operationId: appAutoSslIssue
+      tags:
+      - certificates
+      summary: 一键立即申请或重签站点 SSL 证书
+      description: 立即为指定站点创建异步 ACME 签发任务，覆盖该站点全部启用 HTTPS 的精确域名。权限：`certificates.create`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 应用ID
+      responses:
+        '202':
+          description: 已受理异步签发任务
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    x-source: 02-applications.yaml
   /gateway-config/preview:
     post:
       operationId: gatewayConfigPreview
@@ -34515,6 +35243,58 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 02-applications.yaml
+  /config-versions/{id}/retry-sync:
+    post:
+      operationId: configVersionRetryNodeSync
+      tags:
+      - gateway-config
+      summary: 重试指定配置版本的次要节点同步
+      description: 对指定已成功发布的配置版本重新向全部（或请求体 node_id 指定的单个）已启用同步的次要节点执行配置扇出 （优先经 hasyncd /v1/caddy/load + 边车/防火墙端口同步，未配置协同代理时回退直连
+        admin_addr 并保留目标 admin.listen 段；私钥与多键 STEK 由服务端按证书 ID / 加密表重注入；采用剥离顶层 admin 段的 CanonicalBusinessConfigHash 校验一致性；自动拒绝本机主节点）。高危操作，全程审计。
+        权限：`gateway_configs.publish` 或 `api_policy.publish`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 已发布的配置版本 ID
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigVersionRetrySyncRequest'
+      responses:
+        '200':
+          description: 节点重试同步统计结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    example: SUCCESS
+                  message:
+                    type: string
+                    example: 操作成功
+                  data:
+                    $ref: '#/components/schemas/ConfigVersionRetrySyncResult'
+                  request_id:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 02-applications.yaml
   /gateway/status:
     get:
       operationId: gatewayStatusGet
@@ -34644,8 +35424,9 @@ paths:
       tags:
       - gateway-config
       summary: 查询节点网络期望配置与执行状态
-      description: 返回节点网络期望配置（desired，来自 node_network_configs 表；无记录时返回空配置， bridges/routes 为空数组、updated_at 为 null）与 netmgrd
-        执行状态（status，原样透传 共享卷 sidecars/network-status.json；文件不存在/解析失败或查询非默认节点时为 null）。 仅 WDSP 产品形态可用。权限：`system_health.read`
+      description: 返回节点网络期望配置（desired，来自 node_network_configs 表；无记录时返回空配置， bridges/routes 为空数组、updated_at 为 null）、netmgrd
+        执行状态（status：默认节点读本机共享卷 sidecars/network-status.json，已接入 hasyncd 的远端节点返回经遥测汇聚的 network_status； 未上报或解析失败时为 null）、default_node
+        与 remote_editable（默认节点或已配置 sync_agent_addr 且启用同步的远端节点为 true，允许直接保存下发）。权限：`system_health.read`
       parameters:
       - name: node_name
         in: query
@@ -34681,11 +35462,12 @@ paths:
       operationId: gatewayNetConfigUpdate
       tags:
       - gateway-config
-      summary: 保存节点网络配置（网桥/转发/路由牵引）
-      description: 整体替换节点网络期望配置：严格校验后保存 node_network_configs 表，并原子写共享卷 sidecars/network.json（网关节点 netmgrd 读取执行，回写 network-status.json
-        供 GET 透传）。 校验规则：桥名须匹配 br\d{1,2} 且唯一；桥成员口 ≥2，全部存在于该节点网口清单且 present=true；role=MANAGEMENT 的管理口禁止入桥；同一接口不得出现在两个桥（同桥内亦不
-        得重复）；routes 的 dst 必须为合法 CIDR、via 必须为合法 IP 且 dst 不得重复。node_name 可选、缺省为默认节点，当前仅支持默认节点（sidecar 卷属于本网关节点，写错节点即错配 执行端）。updated_at
-        由服务端生成，客户端传入将被拒绝（未知字段）。写操作审计 （module=system，action=update_gateway_network_config，风险 MEDIUM——网络变更）。 仅 WDSP 产品形态可用。权限：`system_settings.update`
+      summary: 保存节点网络配置（网桥/转发/路由牵引，支持远端同步节点）
+      description: 整体替换节点网络期望配置：按目标节点自身网口清单严格校验后保存 node_network_configs 表； 若目标为默认节点则原子写本机共享卷 sidecars/network.json，若目标为已配置
+        sync_agent_addr 且启用同步的远端节点（remote_editable=true）则经 hasyncd PUT /v1/sidecars/network.json 原子下发。 校验规则：桥名须匹配 br\d{1,2}
+        且唯一；桥成员口 ≥2，全部存在于该节点网口清单且 present=true； role=MANAGEMENT 的管理口与正被主备组使用的 VRRP 承载口禁止入桥；同一接口不得出现在两个桥； routes 的 dst 必须为合法
+        CIDR、via 必须为合法 IP 且 dst 不得重复。updated_at 由服务端生成， 客户端传入将被拒绝（未知字段）。写操作审计（module=system，action=update_gateway_network_config，风险
+        MEDIUM）。 权限：`system_settings.update`
       requestBody:
         required: true
         content:
@@ -37208,9 +37990,13 @@ paths:
       tags:
       - access-rules
       summary: 批量导入规则（JSON 携带 CSV/纯文本内容）
-      description: 'JSON 请求体携带导入内容（非文件上传）：`content` 为 CSV（含表头，必须含 address 列，识别列
+      description: 'JSON 请求体携带导入内容（非文件上传）：`content` 为 CSV（自动兼容 UTF-8 BOM，支持中文或英文表头，
 
-        address,rule_type,scope_type,application_code,effective_until,reason）或纯文本（每行一个地址），
+        必须含 `address`/`地址` 列，识别列 `address`/`地址`、`rule_type`/`规则类型`、`scope_type`/`生效范围`、
+
+        `application_code`/`应用编码`、`effective_until`/`失效时间`、`reason`/`原因`，规则类型与生效范围兼容中英文取值，
+
+        可直接回灌本页导出 CSV）或纯文本（每行一个地址），
 
         内容 ≤1MB、行数 ≤10000。`dry_run=true` 时只校验并返回前 50 条预览，不落库。
 
@@ -37251,11 +38037,13 @@ paths:
       tags:
       - access-rules
       summary: 导出规则 CSV
-      description: '按筛选条件导出规则 CSV（含表头，防公式注入，最多 10000 条），
+      description: '按筛选条件导出规则 CSV（UTF-8 含 BOM，含中文表头，防公式注入，最多 10000 条），
 
-        列为 id,name,rule_type,scope_type,application_code,address,ip_version,priority,status,validity_type,
+        中文表头为 规则 ID,规则名称,规则类型,生效范围,应用编码,地址,IP 版本,优先级,状态,有效期类型,
 
-        effective_from,effective_until,reason,source_type,hit_count,last_hit_at,created_at。
+        生效开始时间,失效时间,原因,来源,命中次数,最近命中时间,创建时间（规则类型、生效范围、IP 版本、状态、
+
+        有效期类型与来源已映射为中文，支持直接回灌 `/access-rules/import`）。
 
         响应头 Content-Disposition 附件文件名形如 ip_access_rules_YYYYMMDD.csv。
 
@@ -38499,11 +39287,11 @@ paths:
       tags:
       - access-control-events
       summary: 导出访问控制事件 CSV
-      description: '按筛选条件导出事件 CSV（含表头，防公式注入，最多 10000 条），
+      description: '按筛选条件导出事件 CSV（UTF-8 含 BOM，含中文表头，防公式注入，最多 10000 条），
 
-        列为 occurred_at,request_id,application_code,client_ip,connection_ip,domain,method,path,event_type,
+        中文表头为 发生时间,请求 ID,应用编码,客户端 IP,连接 IP,域名,请求方法,请求路径,事件类型,
 
-        action,policy_id,access_rule_id,current_count,limit_value,window_seconds,response_status,gateway_node_id,message。
+        动作,策略 ID,规则 ID,当前计数,阈值,统计窗口（秒）,响应状态码,网关节点,消息（事件类型与动作已映射为中文）。
 
         响应头 Content-Disposition 附件文件名为 access-control-events.csv。
 
@@ -39153,8 +39941,8 @@ paths:
       tags:
       - security-events
       summary: 导出安全事件（CSV）
-      description: 导出筛选后的安全事件为 CSV 文件（security-events.csv），列：occurred_at, client_ip, domain, method, uri, attack_type, severity,
-        anomaly_score, action, response_status, disposition_status, request_id。 导出总量上限 10000 行。权限：security_events.export。导出行为记录操作审计（中风险）。
+      description: 导出筛选后的安全事件为 CSV 文件（security-events.csv，UTF-8 含 BOM，防公式注入）， 中文表头：发生时间,客户端 IP,域名,请求方法,请求路径,攻击类型,严重级别,异常评分,动作,响应状态码,处置状态,请求
+        ID （攻击类型、严重级别、动作与处置状态已映射为中文）。 导出总量上限 10000 行。权限：security_events.export。导出行为记录操作审计（中风险）。
       parameters:
       - name: start_time
         in: query
@@ -39870,9 +40658,8 @@ paths:
       tags:
       - access-logs
       summary: 导出访问日志（CSV）
-      description: 导出筛选后的访问日志为 CSV 文件（access-logs.csv），列：occurred_at, client_ip, domain, method, uri, status, waf_action,
-        bytes_in, bytes_out, duration_ms, gateway_node_id, request_id。上限 10000 行。 权限：access_logs.export。限流：每 IP 5 次/分钟（超限返回
-        429）。导出行为记录操作审计（中风险）。
+      description: 导出筛选后的访问日志为 CSV 文件（access-logs.csv，UTF-8 含 BOM，防公式注入）， 中文表头：发生时间,客户端 IP,域名,请求方法,请求路径,响应状态码,WAF 动作,请求大小（字节）,响应大小（字节）,耗时（ms）,网关节点,请求
+        ID （WAF 动作已映射为中文）。上限 10000 行。 权限：access_logs.export。限流：每 IP 5 次/分钟（超限返回 429）。导出行为记录操作审计（中风险）。
       parameters:
       - name: start_time
         in: query
@@ -40974,9 +41761,9 @@ paths:
       tags:
       - system-alerts
       summary: 导出系统告警 CSV
-      description: 按筛选条件导出告警 CSV（含表头，防公式注入：= + - @ 制表符前导字符加单引号，最多 10000 条）， 列为 id,alert_type,severity,component,title,message,status,occurrence_count,first_seen_at,
-        last_seen_at,resolved_at,resolve_type。响应头 Content-Disposition 附件文件名为 system-alerts.csv。 限流：每 IP 5 次/分钟（导出类接口共享）。记录低风险审计。
-        权限：system_alerts.read / system_alerts.read_security / system_alerts.read_audit 任一。
+      description: 按筛选条件导出告警 CSV（UTF-8 含 BOM，含中文表头，防公式注入：= + - @ 制表符/回车前导字符加单引号，最多 10000 条）， 中文表头：告警 ID,告警类型,严重级别,组件,标题,详情,状态,发生次数,首次发生时间,最近发生时间,解决时间,解决方式
+        （告警类型、严重级别、组件、状态与解决方式已映射为中文）。响应头 Content-Disposition 附件文件名为 system-alerts.csv。 限流：每 IP 5 次/分钟（导出类接口共享）。记录低风险审计。 权限：system_alerts.read
+        / system_alerts.read_security / system_alerts.read_audit 任一。
       parameters:
       - name: status
         in: query
@@ -42747,6 +43534,13 @@ paths:
                   format: date-time
                   description: 可选定时执行时间（RFC3339 且必须带时区偏移）；须不早于当前时间 +2 分钟且不晚于 +90 天，非法返回 400。不传则 VERIFIED 后立即自动执行
                   example: '2026-09-14T20:00:00+08:00'
+                cluster_mode:
+                  type: string
+                  enum:
+                  - LOCAL
+                  - HA_ROLLING
+                  default: LOCAL
+                  description: 可选集群升级模式：LOCAL（仅升级本机，默认）或 HA_ROLLING（先备后主双机滚动升级）
       responses:
         '200':
           description: 上传并登记成功（校验未通过时包状态为 REJECTED 且 message 说明原因；执行创建失败时 execution 为 null 且 warning 说明）
@@ -42767,14 +43561,36 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
     x-source: 06-ops.yaml
+  /upgrades/nodes:
+    get:
+      operationId: upgradeClusterNodesList
+      tags:
+      - upgrades
+      summary: 查询升级集群节点版本与就绪状态
+      description: 返回主备集群各节点当前版本、协同代理连通性与升级执行器就绪状态、当前是否存在未决主备脑裂（split_brain） 以及整体是否具备 HA_ROLLING 滚动升级条件（cluster_ready）。权限：`upgrades.read`、`upgrade_records.read`
+        任一。
+      responses:
+        '200':
+          description: 集群节点版本与升级就绪状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpgradeClusterNodesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 06-ops.yaml
   /upgrades/precheck:
     post:
       operationId: upgradePrecheck
       tags:
       - upgrades
       summary: 升级前检查
-      description: 对指定升级包执行升级前检查（版本匹配、磁盘空间、依赖可达性、进行中任务、迁移版本、主密钥、 最近已验证备份、未决 CRITICAL 告警、升级包文件完整性（服务端目录中文件存在且 SHA-256/大小与登记一致，
-        缺失或不一致即 FAIL）等），返回逐项结果与整体是否通过。权限：`upgrades.precheck`。
+      description: 对指定升级包执行升级前检查（版本匹配、磁盘空间、依赖可达性、进行中任务、迁移版本、主密钥、 最近已验证备份、未决 CRITICAL 告警、升级包文件完整性等）；当 cluster_mode=HA_ROLLING
+        时额外校验 无未决主备脑裂（HA_SPLIT_BRAIN）及全部已启用同步备节点的连通性、执行器就绪态与版本兼容性。 权限：`upgrades.precheck`。
       requestBody:
         required: true
         content:
@@ -43005,6 +43821,50 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
     x-source: 06-ops.yaml
+  /upgrades/{id}/retry-node:
+    post:
+      operationId: upgradeRetryNode
+      tags:
+      - upgrades
+      summary: 重试滚动升级中失败或跳过的备节点
+      description: 对已进入终态的 HA_ROLLING 升级任务中 FAILED 或 SKIPPED 状态的 STANDBY 备节点单独重新执行 上传升级包、触发远端执行器与健康/版本验收，不重新触碰已成功节点。高危操作，全程审计。
+        权限：`upgrades.execute`。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 升级任务 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpgradeRetryNodeRequest'
+      responses:
+        '200':
+          description: 单节点重试完成或已更新节点执行记录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpgradeRetryNodeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    x-source: 06-ops.yaml
   /delivery-checks:
     get:
       operationId: deliveryCheckList
@@ -43131,7 +43991,7 @@ paths:
             text/csv:
               schema:
                 type: string
-                description: CSV 文本，表头：item_key,item_name,category,critical,result,message
+                description: CSV 文本（UTF-8 含 BOM，防公式注入），中文表头：检查项标识,检查项名称,分类,是否关键项,检查结果,说明（是否关键项与检查结果已映射为中文）
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -43453,10 +44313,11 @@ paths:
       tags:
       - ha
       summary: 主备组列表
-      description: 列出全部主备高可用组，并透传 havipd 回写的运行状态（status 为 ha-vip-status.json 内容， 节点未上报时为 null）。权限：`ha.read`。
+      description: 列出全部主备高可用组，透传本机 havipd 状态（status），并汇聚返回全部成员节点运行状态 （node_statuses，按节点名索引）及脑裂判定标记（split_brain：同组 ≥2 个新鲜成员报告
+        MASTER 或持有 VIP 时为 true）。权限：`ha.read`。
       responses:
         '200':
-          description: 主备组列表与运行状态
+          description: 主备组列表与双节点汇聚状态
           content:
             application/json:
               schema:
@@ -43472,8 +44333,8 @@ paths:
       tags:
       - ha
       summary: 创建主备组
-      description: 创建主备高可用组（恰 2 个成员节点，priority 大者倾向 MASTER）；保存 DB 后原子下发 sidecars/ha-vip.json 由 havipd 执行。组名冲突返回 409。高危操作，全程操作审计。
-        权限：`ha.manage`。
+      description: 在显式数据库事务内创建主备高可用组（恰 2 个已登记成员节点，单节点同时仅可归属一个组， 跨组冲突返回 409；priority 大者倾向 MASTER；支持 track_interfaces）。保存后按本机成员归属
+        原子写本地 sidecars/ha-vip.json（权限 0640，目录 0770）并经可选 RemoteSyncer 推送远端成员， 响应返回逐节点 sync_results。高危操作，全程操作审计。权限：`ha.manage`。
       requestBody:
         required: true
         content:
@@ -43482,7 +44343,7 @@ paths:
               $ref: '#/components/schemas/HaGroupUpsertRequest'
       responses:
         '200':
-          description: 创建成功，返回主备组
+          description: 创建成功，返回主备组与同步结果
           content:
             application/json:
               schema:
@@ -43504,7 +44365,7 @@ paths:
       tags:
       - ha
       summary: 主备组详情
-      description: 按 ID 查询主备组详情，并透传 havipd 运行状态。权限：`ha.read`。
+      description: 按 ID 查询主备组详情，返回本机 status、组内全量成员汇聚状态 node_statuses 与 split_brain 脑裂标记。 权限：`ha.read`。
       parameters:
       - name: id
         in: path
@@ -43514,7 +44375,7 @@ paths:
         description: 主备组 ID
       responses:
         '200':
-          description: 主备组详情与运行状态
+          description: 主备组详情与汇聚运行状态
           content:
             application/json:
               schema:
@@ -43532,8 +44393,8 @@ paths:
       tags:
       - ha
       summary: 更新主备组
-      description: 更新主备组配置（version 乐观锁，冲突返回 409）；auth_pass：不传=不变更、空串=清除、其他=设置 （VRRPv2 上限 8 字符，加密落库）。保存后重新下发边车配置。高危操作，全程操作审计。
-        权限：`ha.manage`。
+      description: 在显式事务内更新主备组配置（version 乐观锁与单节点互斥，冲突均返回 409）；auth_pass： 不传=不变更、空串=清除、其他=设置（1~8 位安全字符 ^[A-Za-z0-9._:@+-]{1,8}$，加密落库）。
+        保存后同步下发最新配置至本机（若属组成员）与远端成员，并对本次被移出的旧成员收回 ha-vip.json， 响应返回逐节点 sync_results。高危操作，全程操作审计。权限：`ha.manage`。
       parameters:
       - name: id
         in: path
@@ -43549,7 +44410,7 @@ paths:
               $ref: '#/components/schemas/HaGroupUpsertRequest'
       responses:
         '200':
-          description: 更新成功，返回主备组
+          description: 更新成功，返回主备组与同步结果
           content:
             application/json:
               schema:
@@ -43571,7 +44432,8 @@ paths:
       tags:
       - ha
       summary: 删除主备组
-      description: 收回主备能力：先删边车配置（havipd 停止实例释放 VIP），再删 DB 记录。高危操作，全程操作审计。 权限：`ha.manage`。
+      description: 收回主备能力：仅在本机属于待删组（或无其他组占用本机）时删本机 ha-vip.json 防误删， 并经 RemoteSyncer 通知远端成员收回配置，再删 DB 记录；返回 message 与 sync_results。
+        高危操作，全程操作审计。权限：`ha.manage`。
       parameters:
       - name: id
         in: path
@@ -43585,7 +44447,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MessageResponse'
+                $ref: '#/components/schemas/HaGroupDeleteResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -43601,9 +44463,8 @@ paths:
       tags:
       - ha
       summary: 主备组人工回切
-      description: 人工回切（nopreempt 场景把 MASTER 倾向切到指定节点）：请求体 node_id 为期望持有 VIP 的节点。 幂等判定以「目标节点已实际持有 VIP」为准：目标已持有 VIP 时直接返回、不做变更；
-        目标优先级低于对端时交换两成员优先级并重新下发，VIP 随选举回切； 目标已是高优先级但确认未持有 VIP（nopreempt 故障转移后的典型场景）时， 微调对端优先级强制其 keepalived 重载让位，仍可执行回切； 目标已是高优先级且无法确认
-        VIP 实际持有方（havipd 未上报或状态过期）时不做变更。 高危操作，全程操作审计。权限：`ha.manage`。
+      description: 人工回切（nopreempt 场景把 MASTER 倾向切到指定节点）：请求体 node_id 为期望持有 VIP 的节点。 持有方判定优先综合全量成员的新鲜汇聚状态（NodeStatusProvider
+        + 本机状态文件），即使管理面独立部署亦可识别； 执行变更后同步双节点、记录 FAILBACK 事件入 ha_events，并返回 message、group 与 sync_results。 高危操作，全程操作审计。权限：`ha.manage`。
       parameters:
       - name: id
         in: path
@@ -43634,6 +44495,67 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 06-ops.yaml
+  /ha/events:
+    get:
+      operationId: haEventList
+      tags:
+      - ha
+      summary: 主备高可用历史事件分页列表
+      description: 分页查询 ha_events 持久化历史事件（按 occurred_at 降序、id 降序），支持按 group_id、 node_name、event_type 筛选（如 FAILBACK、SYNC_FAILED、SPLIT_BRAIN、VIP_TRANSITION、LINK_PAIR_CHANGE）。
+        权限：`ha.read`。
+      parameters:
+      - name: group_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+        description: 按主备组 UUID 筛选
+      - name: node_name
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 按节点名筛选
+      - name: event_type
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 按事件类型筛选（FAILBACK/SYNC_FAILED/SPLIT_BRAIN/VIP_TRANSITION/LINK_PAIR_CHANGE 等）
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+        description: 页码，从 1 开始
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+        description: 每页条数（上限 100）
+      responses:
+        '200':
+          description: HA 事件分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HaEventListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 06-ops.yaml
@@ -44116,7 +45038,9 @@ paths:
       tags:
       - api-security
       summary: 导出 API 接口资产清单（CSV）
-      description: 按当前筛选条件导出 API 接口资产清单。筛选参数与分页列表一致，服务端分页拉取， 单次最多 10000 行；CSV 字段已做公式注入转义。共享导出限流。 权限：`api_asset.export`；成功导出记录操作审计。
+      description: 按当前筛选条件导出 API 接口资产清单（UTF-8 含 BOM）。筛选参数与分页列表一致，服务端分页拉取， 单次最多 10000 行；CSV 中文表头：所属站点,站点域名,目录路径,请求方法,路径模板,原始路径示例,接口键,
+        协议类型,是否 API,置信度,资产状态,学习状态,业务标签,资产价值,命中次数,首次发现时间,最近访问时间,确认时间,僵尸态起点 （协议类型、是否 API、资产状态、学习状态、业务标签与资产价值已映射为中文，全字符串列防公式注入）。共享导出限流。
+        权限：`api_asset.export`；成功导出记录操作审计。
       parameters:
       - name: format
         in: query
@@ -44432,8 +45356,9 @@ paths:
       tags:
       - api-security
       summary: 批量启动接口学习
-      description: 批量为选中的 API 接口启动模型学习任务（单次最多 100 个），可选 `sample_target`（10~100000，缺省 100）； 已在学习中（RUNNING）的接口自动跳过并计入 `skipped_ids`，不存在的接口计入
-        `failed`。写操作审计。 权限：`api_learning.start`
+      description: '批量为 API 接口启动模型学习任务，支持两种模式（二选一，不可同时指定）： 1) 指定 `ids`（单次最多 100 个，已在学习中自动跳过）； 2) 指定 `apply_to_filtered: true`
+        + 可选 `filter`（按当前筛选条件跨页批量处理，单次最多处理 2000 个， 自动跳过学习中、非活跃资产及未显式筛选的已完成接口）。可选 `sample_target`（10~100000，缺省 100）。写操作审计。
+        权限：`api_learning.start`'
       requestBody:
         required: true
         content:
@@ -52523,11 +53448,11 @@ paths:
       operationId: apiSecNodeList
       tags:
       - api-security
-      summary: 网关节点列表（状态+版本+同步登记/结果+一致性标记）
-      description: W12 多节点版本校验 v1 + W18-SYNC 配置面同步登记：列出 api_gateway_nodes 节点视图 （SweepOnce 按 api_runtime_events.gateway_node
-        增量聚合，绝对值覆盖幂等； W17-HB 起节点活性/策略版本另有网关心跳写入方，取新不回退）， 逐项 version_consistent 标记该节点策略版本是否与活跃多数派一致 （null = 未参与判定：SILENT 离线或未上报版本）；响应总体
-        consistent/evaluated_nodes 与 /nodes/consistency 同一判定口径。节点行另带出配置面同步登记与结果列 （admin_addr/sync_enabled/last_sync_*，迁移 000074；登记编辑走
-        PATCH /nodes/{id}）。 状态词表：ACTIVE（5 分钟内有事件）/STALE（5 分钟~1 小时）/SILENT（超 1 小时）。 权限：`api_runtime.read`
+      summary: 网关节点列表（状态+版本+协同代理/同步结果+一致性标记）
+      description: 全产品形态（纯 WAF 与 WDSP）可用：列出 api_gateway_nodes 节点视图 （包含事件遥测、网关心跳与 hasyncd 15s 遥测汇聚维护的活性/策略版本/系统版本/HA与网络状态快照），
+        逐项 version_consistent 标记该节点策略版本是否与活跃多数派一致 （null = 未参与判定：SILENT 离线或未上报版本）；响应总体 consistent/evaluated_nodes 与 /nodes/consistency
+        同一判定口径。节点行带出 admin_addr、sync_agent_addr、has_sync_secret （密钥密文永不回显）、reported_version、ha_vip_status、network_status、sync_enabled
+        与 last_sync_*。 权限：`api_runtime.read` 或 `ha.read`
       responses:
         '200':
           description: 节点列表与总体一致性标记
@@ -52541,6 +53466,37 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
+    post:
+      operationId: apiSecNodeCreate
+      tags:
+      - api-security
+      summary: 手动预登记网关节点
+      description: 在纯 WAF 与 WDSP 全产品形态下手动预登记网关节点（支持预先配置 admin_addr、sync_agent_addr、 sync_secret 与 sync_enabled，解除备节点尚未产出流量前无法加入主备组与同步扇出的限制）。
+        sync_agent_addr 强制校验仅允许内网 http(s)://host:port（拒绝公网/云元数据/链路本地）； sync_secret 要求至少 32 字节 hex（≥64 位十六进制字符），加密落库永不回显；node_name
+        冲突返回 409。 写操作审计。权限：`api_policy.publish` 或 `ha.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiSecNodeCreateRequest'
+      responses:
+        '201':
+          description: 创建成功，返回节点视图行
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSecGatewayNode'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
     x-source: 07-api-security.yaml
   /api-security/nodes/consistency:
     get:
@@ -52550,6 +53506,7 @@ paths:
       summary: 节点版本一致性对比报告
       description: 活跃（非 SILENT）节点按 last_policy_version 分组对比，consistent 字段明确回答 「所有节点版本是否一致」：参与判定节点（非 SILENT 且已上报版本）版本去重 ≤ 1
         即为一致； 参与节点为 0 时无版本数据可比，consistent 如实为 true 且 evaluated_nodes=0； 未上报版本（空串）的活跃节点单列一组但不参与判定；SILENT 离线节点不参与判定、 如实列入 silent_nodes。权限：`api_runtime.read`
+        或 `ha.read`
       responses:
         '200':
           description: 版本一致性报告
@@ -52569,11 +53526,10 @@ paths:
       operationId: apiSecNodeSyncRegistrationUpdate
       tags:
       - api-security
-      summary: 节点同步登记编辑（admin_addr / sync_enabled）
-      description: W18-SYNC §200 配置面主动同步 v2 登记入口：编辑节点 Caddy Admin 通道标识与扇出开关。 admin_addr 支持 unix socket 绝对路径 / unix:///path
-        / http(s)://host[:port] （仅内网管理面地址：回环/私网/链路本地单播，主机名逐一解析校验；拒绝 userinfo、 非根路径、查询与片段；超过 255 字符拒绝），空串 = 清除登记； sync_enabled
-        控制该节点是否参与发布扇出（默认关闭，登记后须显式开启）。 两字段均可选但至少提供一项，均未提供返回 400；地址非法返回 400；节点不存在返回 404。 登记后主节点发布成功时将同一份最终配置扇出到全部登记次要节点（/load
-        + 规范化哈希比对）， 逐节点回填 last_sync_*，次要节点失败不阻断主发布（落库并产系统告警）。 写操作审计（api_security / update / api_gateway_node，风险中）。 权限：`api_policy.publish`
+      summary: 节点同步登记编辑（admin_addr / sync_agent_addr / sync_secret / sync_enabled）
+      description: 编辑网关节点的 Caddy Admin 地址、hasyncd 协同代理地址/密钥与扇出开关（四字段均可选，至少提供一项， 均未提供返回 400）。admin_addr 与 sync_agent_addr 均执行严格内网
+        SSRF 校验；sync_secret 采用指针语义 （省略或 null = 保持不变；空串 "" = 清除已有密钥；非空须为 ≥64 位合法 hex 密钥，加密落库永不回显）。 节点不存在返回 404。写操作审计。权限：`api_policy.publish`
+        或 `ha.manage`
       parameters:
       - name: id
         in: path
@@ -52595,6 +53551,73 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiSecGatewayNode'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: apiSecNodeDelete
+      tags:
+      - api-security
+      summary: 删除离网网关节点
+      description: 删除指定网关节点登记记录；若该节点仍被任一主备高可用组（ha_group_members）引用则拒绝并返回 409。 写操作审计。权限：`api_policy.publish` 或 `ha.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 节点行 ID
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 07-api-security.yaml
+  /api-security/nodes/{id}/test:
+    post:
+      operationId: apiSecNodeTestConnection
+      tags:
+      - api-security
+      summary: 探测网关节点协同代理或管理通道连通性
+      description: 按节点配置执行连通性探测：若配置了 sync_agent_addr 则通过 HMAC 认证探测 hasyncd GET /v1/health （返回延迟、远端版本及 caddy_reachable/hostctl_ready/upgrade_ready）；否则若配置了
+        admin_addr 则探测 Caddy Admin Ping；二者皆未配置时返回 ok=false、channel=none。 权限：`api_policy.publish` 或 `ha.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 节点行 ID
+      responses:
+        '200':
+          description: 连通性探测结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSecNodeTestResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':

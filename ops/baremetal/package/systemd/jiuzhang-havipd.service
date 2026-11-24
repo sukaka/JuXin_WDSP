@@ -1,0 +1,24 @@
+# 九章 WDSP 主备高可用 VIP 漂移 sidecar havipd（裸机）
+# __ROOT__/__USER__/__NODE_NAME__ 由 install.sh 渲染替换后安装到 /etc/systemd/system/
+[Unit]
+Description=JiuZhang WDSP havipd (HA active/standby VRRP keepalived supervisor, baremetal)
+After=network-online.target jiuzhang-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# havipd 需驱动 keepalived 操作宿主机 VIP 与 VRRP 报文，以 root 运行并通过
+# SupplementaryGroups=__USER__ 访问 0770/0640 的 sidecars 目录与 ha-vip.json；
+# 能力集严格收敛至 CAP_NET_ADMIN / CAP_NET_RAW / CAP_NET_BROADCAST。
+User=root
+Group=root
+SupplementaryGroups=__USER__
+NoNewPrivileges=yes
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BROADCAST
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BROADCAST
+ExecStart=__ROOT__/bin/havipd --node __NODE_NAME__ --config __ROOT__/data/run/caddy/sidecars/ha-vip.json --status __ROOT__/data/run/caddy/sidecars/ha-vip-status.json --workdir __ROOT__/data/run/caddy/sidecars/keepalived
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

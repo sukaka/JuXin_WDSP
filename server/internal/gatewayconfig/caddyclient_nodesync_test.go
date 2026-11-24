@@ -25,6 +25,7 @@ func TestValidateNodeAdminAddr(t *testing.T) {
 		// 放行：unix socket 白名单目录 + 内网 http(s)
 		{"unix /run/caddy/", "/run/caddy/admin.sock", false},
 		{"unix /var/run/caddy/", "/var/run/caddy/admin.sock", false},
+		{"unix /var/run/caddy/node-b/", "/var/run/caddy/node-b/admin.sock", false},
 		{"unix:// /run/caddy/", "unix:///run/caddy/admin.sock", false},
 		{"unix:// /var/run/caddy/", "unix:///var/run/caddy/admin.sock", false},
 		{"http 私网地址带端口", "http://10.0.0.5:2019", false},
@@ -78,13 +79,15 @@ func TestValidateNodeAdminAddr(t *testing.T) {
 	}
 }
 
-// fakeCaddyAdmin 假 Caddy Admin API（/load 存原文，/config/ 返回已加载原文）。
+// fakeCaddyAdmin 假 Caddy Admin API（/load 存原文，/config/ 返回已加载原文，/config/admin 返回目标节点自身 admin 配置）。
 type fakeCaddyAdmin struct {
-	mu       sync.Mutex
-	loaded   string
-	loadCode int // 非 0 时 /load 返回该状态码（推送失败注入）
-	config   string
-	loadBody []string
+	mu          sync.Mutex
+	loaded      string
+	loadCode    int // 非 0 时 /load 返回该状态码（推送失败注入）
+	config      string
+	adminConfig string // 空时默认返回 {"listen":"127.0.0.1:2019"}
+	adminCode   int    // 非 0 时 /config/admin 返回该状态码
+	loadBody    []string
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -121,6 +124,21 @@ func (f *fakeCaddyAdmin) handler() http.Handler {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /config/admin", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		code := f.adminCode
+		out := f.adminConfig
+		f.mu.Unlock()
+		if code != 0 {
+			http.Error(w, `{"error":"admin unavailable"}`, code)
+			return
+		}
+		if out == "" {
+			out = `{"listen":"127.0.0.1:2019"}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(out))
 	})
 	mux.HandleFunc("GET /config/", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -319,5 +337,77 @@ func TestCaddyClientPingRejectsInterruptedResponseBody(t *testing.T) {
 	err := client.Ping(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "admin api response body") {
 		t.Fatalf("Ping error = %v, want interrupted response-body context", err)
+	}
+}
+
+func TestCaddyClientGetAdminConfig(t *testing.T) {
+	t.Run("returns admin object", func(t *testing.T) {
+		fake := &fakeCaddyAdmin{adminConfig: `{"listen":"10.0.0.2:2019","enforce_origin":true}`}
+		srv := httptest.NewServer(fake.handler())
+		defer srv.Close()
+
+		client, err := NewCaddyClientForAdminAddr(srv.URL)
+		if err != nil {
+			t.Fatalf("NewCaddyClientForAdminAddr: %v", err)
+		}
+		if !client.IsHTTP() {
+			t.Fatal("expected IsHTTP() == true for HTTP target")
+		}
+		admin, err := client.GetAdminConfig(context.Background())
+		if err != nil {
+			t.Fatalf("GetAdminConfig: %v", err)
+		}
+		if admin["listen"] != "10.0.0.2:2019" || admin["enforce_origin"] != true {
+			t.Fatalf("admin = %+v", admin)
+		}
+	})
+	t.Run("rejects empty or null admin config", func(t *testing.T) {
+		for _, body := range []string{"null", "{}"} {
+			fake := &fakeCaddyAdmin{adminConfig: body}
+			srv := httptest.NewServer(fake.handler())
+			client, _ := NewCaddyClientForAdminAddr(srv.URL)
+			_, err := client.GetAdminConfig(context.Background())
+			srv.Close()
+			if err == nil {
+				t.Fatalf("body %q: expected error, got nil", body)
+			}
+		}
+	})
+	t.Run("propagates non-200 status", func(t *testing.T) {
+		fake := &fakeCaddyAdmin{adminCode: http.StatusServiceUnavailable}
+		srv := httptest.NewServer(fake.handler())
+		defer srv.Close()
+		client, _ := NewCaddyClientForAdminAddr(srv.URL)
+		if _, err := client.GetAdminConfig(context.Background()); err == nil || !strings.Contains(err.Error(), "status 503") {
+			t.Fatalf("err = %v, want status 503", err)
+		}
+	})
+}
+
+func TestCanonicalBusinessConfigHashIgnoresAdmin(t *testing.T) {
+	c1 := `{"admin":{"listen":"unix//var/run/caddy/admin.sock"},"apps":{"http":{"servers":{"srv0":{"listen":[":80"]}}}}}`
+	c2 := `{"apps":{"http":{"servers":{"srv0":{"listen":[":80"]}}}},"admin":{"listen":"10.0.0.2:2019","enforce_origin":true}}`
+	c3 := `{"admin":{"listen":"10.0.0.2:2019"},"apps":{"http":{"servers":{"srv0":{"listen":[":8080"]}}}}}`
+
+	h1, err := CanonicalBusinessConfigHash(c1)
+	if err != nil {
+		t.Fatalf("c1: %v", err)
+	}
+	h2, err := CanonicalBusinessConfigHash(c2)
+	if err != nil {
+		t.Fatalf("c2: %v", err)
+	}
+	h3, err := CanonicalBusinessConfigHash(c3)
+	if err != nil {
+		t.Fatalf("c3: %v", err)
+	}
+	if h1 != h2 {
+		t.Fatalf("same business config with different admin must have same hash: %s != %s", h1, h2)
+	}
+	if h1 == h3 {
+		t.Fatalf("different business config must produce different hash: %s", h1)
+	}
+	if _, err := CanonicalBusinessConfigHash("null"); err == nil {
+		t.Fatal("null JSON must fail CanonicalBusinessConfigHash")
 	}
 }

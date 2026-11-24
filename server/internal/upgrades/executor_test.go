@@ -214,3 +214,107 @@ func TestProcessExecutorResultFailedStatusNoDoubleRollback(t *testing.T) {
 		t.Fatalf("double rollback detected: %d", rollbacks)
 	}
 }
+
+type fakeVersionResultStore struct {
+	fakeResultStore
+	packages       map[uuid.UUID]*Package
+	currentVersion string
+	setVersionErr  error
+}
+
+func (f *fakeVersionResultStore) GetPackage(_ context.Context, id uuid.UUID) (*Package, error) {
+	p, ok := f.packages[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := *p
+	return &cp, nil
+}
+
+func (f *fakeVersionResultStore) SetCurrentVersion(_ context.Context, version string) error {
+	if f.setVersionErr != nil {
+		return f.setVersionErr
+	}
+	f.currentVersion = version
+	return nil
+}
+
+func TestProcessExecutorResultPersistsCurrentVersionOnSuccess(t *testing.T) {
+	t.Parallel()
+	jobID := uuid.New()
+	pkgID := uuid.New()
+	fs := &fakeVersionResultStore{
+		fakeResultStore: fakeResultStore{
+			jobs: map[uuid.UUID]*Job{
+				jobID: {ID: jobID, PackageID: &pkgID, Status: StatusApplying},
+			},
+		},
+		packages: map[uuid.UUID]*Package{
+			pkgID: {ID: pkgID, VersionFrom: "1.11.1", VersionTo: "1.11.2"},
+		},
+	}
+	svc := &Service{
+		resStore: fs,
+		verifyFn: func(context.Context) error { return nil },
+	}
+	if err := svc.processExecutorResult(context.Background(), &ExecutorResult{
+		JobID: jobID.String(), Status: "SUCCESS", Stage: StatusVerifying,
+	}); err != nil {
+		t.Fatalf("processExecutorResult failed: %v", err)
+	}
+	if fs.jobs[jobID].Status != StatusSuccess {
+		t.Fatalf("job status = %s, want SUCCESS", fs.jobs[jobID].Status)
+	}
+	if fs.currentVersion != "1.11.2" {
+		t.Fatalf("persisted currentVersion = %q, want 1.11.2", fs.currentVersion)
+	}
+}
+
+func TestProcessExecutorResultPropagatesVersionPersistError(t *testing.T) {
+	t.Parallel()
+	jobID := uuid.New()
+	pkgID := uuid.New()
+	fs := &fakeVersionResultStore{
+		fakeResultStore: fakeResultStore{
+			jobs: map[uuid.UUID]*Job{
+				jobID: {ID: jobID, PackageID: &pkgID, Status: StatusApplying},
+			},
+		},
+		packages: map[uuid.UUID]*Package{
+			pkgID: {ID: pkgID, VersionFrom: "1.11.1", VersionTo: "1.11.2"},
+		},
+		setVersionErr: errors.New("db write failed"),
+	}
+	svc := &Service{
+		resStore: fs,
+		verifyFn: func(context.Context) error { return nil },
+	}
+	if err := svc.processExecutorResult(context.Background(), &ExecutorResult{
+		JobID: jobID.String(), Status: "SUCCESS", Stage: StatusVerifying,
+	}); err == nil {
+		t.Fatal("expected error when persisting current_version fails")
+	}
+	if fs.jobs[jobID].Status == StatusSuccess {
+		t.Fatal("job must not be marked SUCCESS when current_version persistence failed")
+	}
+}
+
+func TestResolveEffectiveSystemVersion(t *testing.T) {
+	t.Parallel()
+	// 纯前端/网关差量升级后库内版本高于未替换的 API 二进制：应返回库内新版本
+	if got := resolveEffectiveSystemVersion("1.11.2", "1.11.1"); got != "1.11.2" {
+		t.Fatalf("got %q, want 1.11.2", got)
+	}
+	// 宿主机完整包升级替换了 API 二进制而库内仍为旧版本：应返回更高的二进制版本
+	if got := resolveEffectiveSystemVersion("1.11.1", "1.12.0"); got != "1.12.0" {
+		t.Fatalf("got %q, want 1.12.0", got)
+	}
+	// 相同版本
+	if got := resolveEffectiveSystemVersion("1.12.0", "1.12.0"); got != "1.12.0" {
+		t.Fatalf("got %q, want 1.12.0", got)
+	}
+	// 异常库值原样返回给预检 fail-closed
+	if got := resolveEffectiveSystemVersion("corrupted", "1.12.0"); got != "corrupted" {
+		t.Fatalf("got %q, want corrupted", got)
+	}
+}

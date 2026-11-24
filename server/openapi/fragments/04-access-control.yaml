@@ -339,8 +339,10 @@ paths:
       tags: [access-rules]
       summary: 批量导入规则（JSON 携带 CSV/纯文本内容）
       description: |
-        JSON 请求体携带导入内容（非文件上传）：`content` 为 CSV（含表头，必须含 address 列，识别列
-        address,rule_type,scope_type,application_code,effective_until,reason）或纯文本（每行一个地址），
+        JSON 请求体携带导入内容（非文件上传）：`content` 为 CSV（自动兼容 UTF-8 BOM，支持中文或英文表头，
+        必须含 `address`/`地址` 列，识别列 `address`/`地址`、`rule_type`/`规则类型`、`scope_type`/`生效范围`、
+        `application_code`/`应用编码`、`effective_until`/`失效时间`、`reason`/`原因`，规则类型与生效范围兼容中英文取值，
+        可直接回灌本页导出 CSV）或纯文本（每行一个地址），
         内容 ≤1MB、行数 ≤10000。`dry_run=true` 时只校验并返回前 50 条预览，不落库。
         ALL_OR_NOTHING 模式存在错误行时整体不导入并返回 400（details 为行级错误）；
         SKIP_ERRORS 模式跳过错误行逐条插入。正式导入成功的规则统一落 DRAFT 草稿状态：不参与发布快照、
@@ -368,9 +370,10 @@ paths:
       tags: [access-rules]
       summary: 导出规则 CSV
       description: |
-        按筛选条件导出规则 CSV（含表头，防公式注入，最多 10000 条），
-        列为 id,name,rule_type,scope_type,application_code,address,ip_version,priority,status,validity_type,
-        effective_from,effective_until,reason,source_type,hit_count,last_hit_at,created_at。
+        按筛选条件导出规则 CSV（UTF-8 含 BOM，含中文表头，防公式注入，最多 10000 条），
+        中文表头为 规则 ID,规则名称,规则类型,生效范围,应用编码,地址,IP 版本,优先级,状态,有效期类型,
+        生效开始时间,失效时间,原因,来源,命中次数,最近命中时间,创建时间（规则类型、生效范围、IP 版本、状态、
+        有效期类型与来源已映射为中文，支持直接回灌 `/access-rules/import`）。
         响应头 Content-Disposition 附件文件名形如 ip_access_rules_YYYYMMDD.csv。
         限流：每 IP 5 次/分钟（导出类接口共享）。记录低风险审计。权限：`access_rules.read`
       parameters:
@@ -1113,9 +1116,9 @@ paths:
       tags: [access-control-events]
       summary: 导出访问控制事件 CSV
       description: |
-        按筛选条件导出事件 CSV（含表头，防公式注入，最多 10000 条），
-        列为 occurred_at,request_id,application_code,client_ip,connection_ip,domain,method,path,event_type,
-        action,policy_id,access_rule_id,current_count,limit_value,window_seconds,response_status,gateway_node_id,message。
+        按筛选条件导出事件 CSV（UTF-8 含 BOM，含中文表头，防公式注入，最多 10000 条），
+        中文表头为 发生时间,请求 ID,应用编码,客户端 IP,连接 IP,域名,请求方法,请求路径,事件类型,
+        动作,策略 ID,规则 ID,当前计数,阈值,统计窗口（秒）,响应状态码,网关节点,消息（事件类型与动作已映射为中文）。
         响应头 Content-Disposition 附件文件名为 access-control-events.csv。
         限流：每 IP 5 次/分钟（导出类接口共享）。记录中风险审计。权限：`access_control_events.export`
       parameters:

@@ -2,7 +2,8 @@
 // 与漂移事件，回写 ha-vip-status.json。
 //
 // 状态语义（进程永不因配置/执行失败退出，不 crash-loop）：
-//   - 配置不存在 → STOPPED（曾生效后被删除 = 收回：停 keepalived 释放 VIP）；
+//   - 配置不存在 → STOPPED（曾生效后被删除或重启后发现残留 pidfile = 收回：
+//     停本组件管理的 keepalived 释放 VIP）；
 //   - 配置解析/校验失败 → 保留 last-good，status 显式报错；
 //   - 配置指纹变化 → 生成 keepalived 配置并启动/重载；DISABLED → 停止实例；
 //   - 本机不在 members 中 → 配置非发本节点：停实例 + status 显式报错；
@@ -18,6 +19,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,12 +154,18 @@ func (s *Supervisor) configTick() {
 	cfg, err := LoadConfig(s.ConfigPath)
 	if errors.Is(err, os.ErrNotExist) {
 		// 收回语义：配置被删除 = 发布方收回主备能力 → 停实例释放 VIP（VIP 残留
-		// 会导致双主/黑洞，比停机更危险）。
-		if s.cfg != nil || s.keepalivedPidLocked() > 0 {
-			log.Printf("[havipd] 配置已被删除（发布方收回）：停止 keepalived 并释放 VIP")
+		// 会导致双主/黑洞，比停机更危险）。即使 havipd 重启后 s.cfg == nil，
+		// 也必须扫描 WorkDir/*.pid 清理残留孤儿 keepalived 实例。
+		hadCfg := s.cfg != nil
+		if hadCfg {
 			s.stopKeepalivedLocked()
+		}
+		orphansStopped := s.stopAnyManagedKeepalivedLocked("")
+		if hadCfg || orphansStopped > 0 {
+			log.Printf("[havipd] 配置不存在（发布方收回/孤儿清理）：停止 keepalived 并释放 VIP（orphans=%d）", orphansStopped)
 			s.cfg = nil
 			s.lastFP = ""
+			s.vipsHeld = nil
 			s.transitionLocked(StateStopped, "配置收回，实例停止")
 		}
 		return
@@ -173,8 +181,10 @@ func (s *Supervisor) configTick() {
 	if !ok {
 		s.logOnce("notme:"+cfg.Group, "配置组 %s 不含本节点 %s（非发本节点），实例保持停止", cfg.Group, s.Node)
 		s.stopKeepalivedLocked()
+		s.stopAnyManagedKeepalivedLocked("")
 		s.cfg = nil
 		s.lastFP = ""
+		s.vipsHeld = nil
 		s.message = fmt.Sprintf("配置组 %s 的 members 不含本节点 %s", cfg.Group, s.Node)
 		s.transitionLocked(StateStopped, s.message)
 		return
@@ -192,6 +202,8 @@ func (s *Supervisor) configTick() {
 		s.stopKeepalivedLocked()
 		s.lastFP = ""
 	}
+	// 兜底：若重启前遗留其他组名 pidfile，切换前先清理防双实例脑裂。
+	s.stopAnyManagedKeepalivedLocked(cfg.Group)
 	s.cfg = &cfg
 	s.self = self
 
@@ -328,14 +340,12 @@ func (s *Supervisor) transitionLocked(next, detail string) {
 // keepalivedPidLocked 读 pidfile 并校验存活（不存活清理 stale pidfile）。
 func (s *Supervisor) keepalivedPidLocked() int {
 	if s.cfg == nil {
-		// 无配置时仍可能残留实例：按工作目录下全部 pidfile 判定过于宽泛，
-		// M2 单组语义下仅在持有组名时管理实例。
 		return 0
 	}
 	return s.pidFromFileLocked(pathsFor(s.WorkDir, s.cfg.Group).PidFile)
 }
 
-// pidFromFileLocked 读指定 pidfile 并校验存活与身份。
+// pidFromFileLocked 读指定 pidfile 并校验存活与身份（非 keepalived/无效/已退出自动清理 stale pidfile）。
 func (s *Supervisor) pidFromFileLocked(pidFile string) int {
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -343,6 +353,7 @@ func (s *Supervisor) pidFromFileLocked(pidFile string) int {
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil || pid <= 0 {
+		_ = os.Remove(pidFile)
 		return 0
 	}
 	if !s.Proc.Alive(pid) {
@@ -351,7 +362,7 @@ func (s *Supervisor) pidFromFileLocked(pidFile string) int {
 	}
 	// 防 PID 复用误信号：pidfile 中的 keepalived 死后 PID 被系统复用给其他进程时，
 	// 仅凭存活判定会把 SIGHUP/SIGTERM 发给无关进程（lab 实测暴露）。
-	if !procCommMatches(pid, "keepalived") {
+	if !procCommMatchesFn(pid, "keepalived") {
 		_ = os.Remove(pidFile)
 		return 0
 	}
@@ -368,13 +379,16 @@ func procCommMatches(pid int, want string) bool {
 	return strings.TrimSpace(string(data)) == want
 }
 
-// startKeepalivedLocked 启动实例（keepalived 自行 daemonize）。
+// procCommMatchesFn 进程名校验函数（变量化便于测试覆盖 PID 复用防误杀路径）。
+var procCommMatchesFn = procCommMatches
+
+// startKeepalivedLocked 启动实例（keepalived 自行 daemonize；同时指定 -r 避免 read_only 容器写 /run/vrrp.pid）。
 func (s *Supervisor) startKeepalivedLocked(paths keepalivedPaths) error {
 	if _, err := execLookPath("keepalived"); err != nil {
 		return fmt.Errorf("keepalived 未安装或不在 PATH: %w", err)
 	}
 	_, err := s.Runner.Run(context.Background(), "keepalived",
-		"-f", paths.Conf, "--pid", paths.PidFile)
+		"-f", paths.Conf, "--pid", paths.PidFile, "-r", paths.VrrpPidFile)
 	if err != nil {
 		return err
 	}
@@ -388,25 +402,84 @@ var (
 	stopKillMaxPolls = 10 // SIGKILL 确认退出等待 1s
 )
 
-// stopKeepalivedLocked 停止本组件管理的实例（先 SIGTERM 释放 VIP，超时升级 SIGKILL）。
-// 停止为同步语义：轮询等待进程退出并清理 pidfile——否则 DISABLED 后立即重新 ENABLED
-// 或组名切换时，可能向尚未退出的旧实例误发 SIGHUP 或产生双实例脑裂。
+// stopKeepalivedLocked 停止当前配置组由本组件管理的实例（先 SIGTERM 释放 VIP，超时升级 SIGKILL）。
 func (s *Supervisor) stopKeepalivedLocked() {
 	if s.cfg == nil {
 		return
 	}
-	pidFile := pathsFor(s.WorkDir, s.cfg.Group).PidFile
+	paths := pathsFor(s.WorkDir, s.cfg.Group)
+	s.stopPidFileLocked(paths.PidFile)
+	// 主进程退出后若 VRRP 子进程仍存活则兜底停止，否则清理残留 vrrp pidfile
+	s.stopPidFileLocked(paths.VrrpPidFile)
+}
+
+// stopAnyManagedKeepalivedLocked 扫描 s.WorkDir/*.pid，经 /proc/<pid>/comm == "keepalived"
+// 身份校验后停止除 keepGroup 之外的全部残留 keepalived 实例并清理过期 pidfile。
+// 返回本次实际向存活 keepalived 进程发起停止的实例数。
+func (s *Supervisor) stopAnyManagedKeepalivedLocked(keepGroup string) int {
+	if s.WorkDir == "" {
+		return 0
+	}
+	entries, err := os.ReadDir(s.WorkDir)
+	if err != nil {
+		return 0
+	}
+	keepMain := ""
+	keepVrrp := ""
+	if keepGroup != "" {
+		keepMain = keepGroup + ".pid"
+		keepVrrp = keepGroup + ".vrrp.pid"
+	}
+
+	var mainPids, vrrpPids []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".pid") {
+			continue
+		}
+		if name == keepMain || name == keepVrrp {
+			continue
+		}
+		full := filepath.Join(s.WorkDir, name)
+		if strings.HasSuffix(name, ".vrrp.pid") {
+			vrrpPids = append(vrrpPids, full)
+		} else {
+			mainPids = append(mainPids, full)
+		}
+	}
+
+	// 先停主进程（优雅触发 VRRP 发 0 优先级通告释放 VIP），再处理孤立 vrrp 子进程 pidfile
+	stopped := 0
+	for _, pf := range mainPids {
+		if s.stopPidFileLocked(pf) {
+			stopped++
+		}
+	}
+	for _, pf := range vrrpPids {
+		if s.stopPidFileLocked(pf) {
+			stopped++
+		}
+	}
+	return stopped
+}
+
+// stopPidFileLocked 停止单个 pidfile 对应的 keepalived 进程（SIGTERM → 轮询 → SIGKILL），
+// 确认退出后清理 pidfile。返回是否定位并向存活 keepalived 进程发起了停止动作。
+func (s *Supervisor) stopPidFileLocked(pidFile string) bool {
 	pid := s.pidFromFileLocked(pidFile)
 	if pid <= 0 {
-		return
+		return false
 	}
 	if err := s.Proc.Signal(pid, syscall.SIGTERM); err != nil {
 		if !s.Proc.Alive(pid) {
 			_ = os.Remove(pidFile)
-			return
+			return true
 		}
 		s.logOnce("stoperr", "keepalived 停止失败（pid=%d）: %v", pid, err)
-		return
+		return true
 	}
 	for i := 0; i < stopTermMaxPolls; i++ {
 		if !s.Proc.Alive(pid) {
@@ -418,7 +491,7 @@ func (s *Supervisor) stopKeepalivedLocked() {
 		log.Printf("[havipd] keepalived SIGTERM 宽限超时仍存活（pid=%d），升级 SIGKILL", pid)
 		if err := s.Proc.Signal(pid, syscall.SIGKILL); err != nil && s.Proc.Alive(pid) {
 			s.logOnce("killerr", "keepalived SIGKILL 失败（pid=%d）: %v", pid, err)
-			return
+			return true
 		}
 		for i := 0; i < stopKillMaxPolls; i++ {
 			if !s.Proc.Alive(pid) {
@@ -428,11 +501,12 @@ func (s *Supervisor) stopKeepalivedLocked() {
 		}
 		if s.Proc.Alive(pid) {
 			s.logOnce("stillalive", "keepalived SIGKILL 后仍存活（pid=%d），保留 pidfile", pid)
-			return
+			return true
 		}
 	}
 	_ = os.Remove(pidFile) // keepalived 正常退出会自删；异常残留由本组件兜底清理
 	log.Printf("[havipd] keepalived 已停止（pid=%d），VIP 已释放", pid)
+	return true
 }
 
 // queryIfaceAddrsLocked 查询承载口地址（srcIP 用于 unicast，addrs 用于 VIP 在位判定）。

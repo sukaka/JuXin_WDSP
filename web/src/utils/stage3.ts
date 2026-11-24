@@ -25,6 +25,15 @@ export const APP_STATUS_META: Record<string, { color: string; label: string }> =
   DELETED: { color: 'default', label: '已删除' },
 }
 
+/** 应用健康状态展示元数据（按已启用健康检查的活动源站探测结果汇总） */
+export const APP_HEALTH_META: Record<string, { color: string; label: string }> = {
+  HEALTHY: { color: 'green', label: '健康' },
+  DEGRADED: { color: 'orange', label: '降级' },
+  UNHEALTHY: { color: 'red', label: '异常' },
+  DOWN: { color: 'red', label: '异常' },
+  UNKNOWN: { color: 'default', label: '未知' },
+}
+
 export const DEPLOYMENT_STATUS_META: Record<string, { color: string; label: string }> = {
   NOT_PUBLISHED: { color: 'default', label: '未发布' },
   PUBLISHING: { color: 'processing', label: '发布中' },
@@ -40,6 +49,44 @@ export const CERT_STATUS_META: Record<string, { color: string; label: string }> 
   EXPIRED: { color: 'red', label: '已过期' },
   INVALID: { color: 'default', label: '无效' },
   KEY_MISMATCH: { color: 'red', label: '密钥不匹配' },
+  REPLACED: { color: 'default', label: '已续签替换' },
+}
+
+export const ACME_PROVIDER_META: Record<string, { color: string; label: string }> = {
+  LETSENCRYPT: { color: 'blue', label: "Let's Encrypt 生产" },
+  LETSENCRYPT_STAGING: { color: 'gold', label: "Let's Encrypt 测试" },
+  CUSTOM: { color: 'purple', label: '自定义 ACME CA' },
+}
+
+export const ACME_TRIGGER_META: Record<string, { color: string; label: string }> = {
+  AUTO_INIT: { color: 'blue', label: '首次自动申请' },
+  AUTO_RENEW: { color: 'cyan', label: '到期自动续约' },
+  AUTO_DOMAIN_SYNC: { color: 'purple', label: '域名变更补签' },
+  MANUAL_ISSUE: { color: 'geekblue', label: '手动立即申请' },
+  MANUAL_RENEW: { color: 'geekblue', label: '手动立即续约' },
+}
+
+export const ACME_ORDER_STATUS_META: Record<string, { color: string; label: string }> = {
+  PENDING: { color: 'default', label: '排队中' },
+  PREPARING: { color: 'processing', label: '准备挑战路由' },
+  VALIDATING: { color: 'processing', label: '验证域名所有权' },
+  FINALIZING: { color: 'processing', label: '签发证书中' },
+  ISSUED: { color: 'cyan', label: '已签发待发布' },
+  PUBLISHING: { color: 'processing', label: '自动发布中' },
+  SUCCEEDED: { color: 'green', label: '成功' },
+  PUBLISH_FAILED: { color: 'orange', label: '签发成功/发布失败' },
+  FAILED: { color: 'red', label: '失败' },
+}
+
+export function isActiveAcmeOrderStatus(status?: string | null): boolean {
+  return (
+    status === 'PENDING' ||
+    status === 'PREPARING' ||
+    status === 'VALIDATING' ||
+    status === 'FINALIZING' ||
+    status === 'ISSUED' ||
+    status === 'PUBLISHING'
+  )
 }
 
 export const PUBLISH_RESULT_META: Record<string, { color: string; label: string }> = {

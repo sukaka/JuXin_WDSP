@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -568,6 +569,112 @@ func TestReadPackageManifestInfoFile(t *testing.T) {
 	}
 	if info.versionFrom != "2.0.0" || info.versionTo != "2.1.0" || !info.hasEmbeddedSig {
 		t.Fatalf("manifest 信息=%+v", info)
+	}
+}
+
+func TestVerifyPackageArtifactLayerDeltaValidation(t *testing.T) {
+	t.Parallel()
+	validDigest := "sha256:" + strings.Repeat("a", 64)
+	payload := map[string][]byte{"images/web-" + runtime.GOARCH + ".tar.gz": []byte("delta-bytes")}
+
+	buildSigned := func(t *testing.T, manifestObj packageManifest) (string, *Package, ed25519.PublicKey) {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "jiuzhang-wdsp-upgrade-1.11.2-"+runtime.GOARCH+".tar.gz")
+		var files []manifestFile
+		for p, d := range payload {
+			files = append(files, manifestFile{Path: p, SHA256: hashHex(d), Size: int64(len(d))})
+		}
+		filesJSON, err := json.Marshal(files)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifestObj.Files = files
+		manifestObj.FilesManifestSHA256 = hashHex(filesJSON)
+		manifestBytes, err := json.Marshal(manifestObj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub, priv, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, manifestBytes)) + "\n"
+		entries := []testArchiveEntry{
+			{name: "pkg/manifest.json", data: manifestBytes},
+			{name: "pkg/manifest.sig", data: []byte(sig)},
+		}
+		for p, d := range payload {
+			entries = append(entries, testArchiveEntry{name: "pkg/" + p, data: d})
+		}
+		archiveBytes := writeTestArchive(t, path, entries)
+		pkg := &Package{
+			FileName:    filepath.Base(path),
+			VersionFrom: "1.11.1",
+			VersionTo:   "1.11.2",
+			FileHash:    hashHex(archiveBytes),
+			FileSize:    int64(len(archiveBytes)),
+		}
+		return path, pkg, pub
+	}
+
+	// 1. 合法的 layer-delta 包通过校验
+	goodPath, goodPkg, goodPub := buildSigned(t, packageManifest{
+		Product:     "wdsp",
+		PackageType: "upgrade",
+		Version:     "1.11.2",
+		VersionFrom: "1.11.1",
+		VersionTo:   "1.11.2",
+		Arch:        runtime.GOARCH,
+		Components:  []string{"web"},
+		Images: []manifestImage{{
+			Component:        "web",
+			Service:          "web",
+			Image:            "jiuzhang-web:1.11.2",
+			Tar:              "images/web-" + runtime.GOARCH + ".tar.gz",
+			DeliveryMode:     "layer-delta",
+			BaseLayers:       []string{validDigest},
+			DiffIDs:          []string{validDigest},
+			RuntimeSanitized: true,
+		}},
+	})
+	if err := verifyPackageArtifactWithKey(goodPath, goodPkg, goodPub); err != nil {
+		t.Fatalf("合法 layer-delta 升级包校验失败: %v", err)
+	}
+
+	// 2. layer-delta 缺少 base_layers 拒绝
+	pEmpty, pkgEmpty, pubEmpty := buildSigned(t, packageManifest{
+		Product: "wdsp", PackageType: "upgrade", Version: "1.11.2", VersionFrom: "1.11.1", VersionTo: "1.11.2", Arch: runtime.GOARCH,
+		Images: []manifestImage{{Component: "web", Service: "web", Image: "jiuzhang-web:1.11.2", Tar: "images/web-" + runtime.GOARCH + ".tar.gz", DeliveryMode: "layer-delta"}},
+	})
+	if err := verifyPackageArtifactWithKey(pEmpty, pkgEmpty, pubEmpty); err == nil {
+		t.Fatal("缺少 base_layers 的 layer-delta 包应被拒绝")
+	}
+
+	// 3. layer-delta 含非法 base_layers 摘要拒绝
+	pBadDig, pkgBadDig, pubBadDig := buildSigned(t, packageManifest{
+		Product: "wdsp", PackageType: "upgrade", Version: "1.11.2", VersionFrom: "1.11.1", VersionTo: "1.11.2", Arch: runtime.GOARCH,
+		Images: []manifestImage{{Component: "web", Service: "web", Image: "jiuzhang-web:1.11.2", Tar: "images/web-" + runtime.GOARCH + ".tar.gz", DeliveryMode: "layer-delta", BaseLayers: []string{"sha256:nothex"}}},
+	})
+	if err := verifyPackageArtifactWithKey(pBadDig, pkgBadDig, pubBadDig); err == nil {
+		t.Fatal("非法 base_layers 摘要应被拒绝")
+	}
+
+	// 4. 未知 delivery_mode 拒绝
+	pBadMode, pkgBadMode, pubBadMode := buildSigned(t, packageManifest{
+		Product: "wdsp", PackageType: "upgrade", Version: "1.11.2", VersionFrom: "1.11.1", VersionTo: "1.11.2", Arch: runtime.GOARCH,
+		Images: []manifestImage{{Component: "web", Service: "web", Image: "jiuzhang-web:1.11.2", Tar: "images/web-" + runtime.GOARCH + ".tar.gz", DeliveryMode: "binary-patch"}},
+	})
+	if err := verifyPackageArtifactWithKey(pBadMode, pkgBadMode, pubBadMode); err == nil {
+		t.Fatal("非法 delivery_mode 应被拒绝")
+	}
+
+	// 5. manifest.version_from 与登记记录不一致拒绝
+	pBadFrom, pkgBadFrom, pubBadFrom := buildSigned(t, packageManifest{
+		Product: "wdsp", PackageType: "upgrade", Version: "1.11.2", VersionFrom: "1.10.0", VersionTo: "1.11.2", Arch: runtime.GOARCH,
+	})
+	if err := verifyPackageArtifactWithKey(pBadFrom, pkgBadFrom, pubBadFrom); err == nil {
+		t.Fatal("version_from 不一致应被拒绝")
 	}
 }
 

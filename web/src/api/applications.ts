@@ -24,7 +24,8 @@ export interface ApplicationListParams {
 }
 
 export interface CreateApplicationBody {
-  code: string
+  /** 应用标识（可选；留空由服务端自动生成唯一标识） */
+  code?: string
   name: string
   description: string
   business_owner: string

@@ -84,6 +84,7 @@ export default function DomainsTab({
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['domains', appId] })
     void queryClient.invalidateQueries({ queryKey: ['application', appId] })
+    void queryClient.invalidateQueries({ queryKey: ['applications'] })
   }
 
   const onError = (e: unknown) => {

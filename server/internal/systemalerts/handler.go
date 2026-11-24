@@ -277,8 +277,22 @@ func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
+	csvContent := renderExportCSV(list)
+	h.recordAudit(r, p, "export", "", "system_alerts", audits.ResultSuccess, audits.RiskLow)
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="system-alerts.csv"`)
+	_, _ = w.Write([]byte(csvContent))
+}
+
+const exportCSVUTF8BOM = "\xef\xbb\xbf"
+
+const exportCSVHeader = "告警 ID,告警类型,严重级别,组件,标题,详情,状态,发生次数,首次发生时间,最近发生时间,解决时间,解决方式\n"
+
+// renderExportCSV 渲染系统告警 CSV（含 UTF-8 BOM、中文表头与枚举中文化、防公式注入）。
+func renderExportCSV(list []Alert) string {
 	var b strings.Builder
-	b.WriteString("id,alert_type,severity,component,title,message,status,occurrence_count,first_seen_at,last_seen_at,resolved_at,resolve_type\n")
+	b.WriteString(exportCSVUTF8BOM)
+	b.WriteString(exportCSVHeader)
 	for _, a := range list {
 		resolvedAt, resolveType := "", ""
 		if a.ResolvedAt != nil {
@@ -288,15 +302,172 @@ func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 			resolveType = *a.ResolveType
 		}
 		fmt.Fprintf(&b, "%s,%s,%s,%s,%s,%s,%s,%d,%s,%s,%s,%s\n",
-			a.ID.String(), a.AlertType, a.Severity, csvCell(a.Component), csvCell(a.Title),
-			csvCell(a.Message), a.Status, a.OccurrenceCount,
-			a.FirstSeenAt.UTC().Format(time.RFC3339), a.LastSeenAt.UTC().Format(time.RFC3339),
-			resolvedAt, resolveType)
+			csvCell(a.ID.String()),
+			csvCell(exportAlertTypeLabel(a.AlertType)),
+			csvCell(exportAlertSeverityLabel(a.Severity)),
+			csvCell(exportAlertComponentLabel(a.Component)),
+			csvCell(a.Title),
+			csvCell(a.Message),
+			csvCell(exportAlertStatusLabel(a.Status)),
+			a.OccurrenceCount,
+			a.FirstSeenAt.UTC().Format(time.RFC3339),
+			a.LastSeenAt.UTC().Format(time.RFC3339),
+			resolvedAt,
+			csvCell(exportResolveTypeLabel(resolveType)))
 	}
-	h.recordAudit(r, p, "export", "", "system_alerts", audits.ResultSuccess, audits.RiskLow)
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="system-alerts.csv"`)
-	_, _ = w.Write([]byte(b.String()))
+	return b.String()
+}
+
+var exportAlertTypeLabels = map[string]string{
+	TypeGatewayDown:              "网关不可用",
+	TypeManagementAPIDown:        "管理 API 不可用",
+	TypeDatabaseUnavailable:      "数据库不可用",
+	TypeValkeyUnavailable:        "缓存服务不可用",
+	TypeEventCollectorLag:        "事件采集积压",
+	TypeParseFailureRateHigh:     "事件解析失败率高",
+	TypeSourceUnhealthy:          "源站不健康",
+	TypeCertificateExpiring:        "证书即将到期",
+	TypeCertificateExpired:         "证书已过期",
+	TypeCertificateAutoRenewFailed: "自动申请/续约证书失败",
+	TypeConfigPublishFailed:      "配置发布失败",
+	TypeConfigHashMismatch:       "配置哈希不一致",
+	TypeDiskSpaceLow:             "磁盘空间不足",
+	TypeDatabaseCapacityHigh:     "数据库容量高",
+	TypeFDUsageHigh:              "文件句柄使用率高",
+	TypeBackupFailed:             "备份失败",
+	TypeBackupVerifyFailed:       "备份校验失败",
+	TypeRestoreValidationFailed:  "恢复校验失败",
+	TypeRestoreCleanupFailed:     "恢复清理失败",
+	TypeReportFailed:             "报告生成失败",
+	TypeUpgradeFailed:            "升级失败",
+	TypeUpgradeRollbackFailed:    "升级回滚失败",
+	TypeUpgradeRolledBack:        "升级已回滚",
+	TypeAuditIntegrityFailed:     "审计完整性失败",
+	TypeAuditWriteFailed:         "审计写入失败",
+	TypeVulnIntelNew:             "漏洞情报",
+	TypeAPICriticalFinding:       "API 严重风险发现",
+	TypeAPIFindingSpike:          "API 风险发现激增",
+	TypeAPIMaskFailure:           "API 响应脱敏失败",
+	TypeSecurityEventSpike:       "安全事件激增",
+	TypeLoginBruteForce:          "登录暴力破解",
+	TypeCCBanSpike:               "CC 封禁激增",
+	TypeLicenseInvalid:           "系统授权无效",
+	TypeLicenseExpiringSoon:      "系统授权即将到期",
+	TypeLicenseQuotaExceeded:     "授权配额超限",
+	TypeHAVIPFault:               "高可用虚拟 IP 故障",
+	TypeHASplitBrain:             "主备双主脑裂",
+	TypeNetworkApplyFailed:       "网络配置应用失败",
+	TypeLinkPairDown:             "网桥链路对中断",
+	TypeLinkPairSuppressed:       "网桥链路对联动抑制",
+	TypeEndpointLatencyHigh:      "端点时延偏高",
+	TypeEndpointErrorRateHigh:    "端点错误率偏高",
+	TypeAPMSLOBreach:             "APM SLO 违约",
+	TypeAPMIngestLag:             "APM 采集入库滞后",
+	TypeAIOpsScheduleCircuitOpen: "AI 定时运营任务熔断",
+}
+
+func exportAlertTypeLabel(v string) string {
+	key := strings.ToUpper(strings.TrimSpace(v))
+	if key == "" {
+		return ""
+	}
+	if label, ok := exportAlertTypeLabels[key]; ok {
+		return label
+	}
+	return v
+}
+
+func exportAlertSeverityLabel(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "":
+		return ""
+	case SeverityCritical:
+		return "严重"
+	case SeverityHigh:
+		return "高危"
+	case SeverityMedium:
+		return "中危"
+	case SeverityLow:
+		return "低危"
+	case SeverityInfo:
+		return "提示"
+	default:
+		return v
+	}
+}
+
+var exportAlertComponentLabels = map[string]string{
+	"GATEWAY":               "防护网关",
+	"CORAZA":                "WAF 引擎",
+	"GUARD":                 "访问控制模块",
+	"API":                   "管理 API",
+	"POSTGRES":              "数据库",
+	"VALKEY":                "缓存服务",
+	"EVENT_COLLECTOR":       "事件采集器",
+	"UPSTREAM":              "源站",
+	"CERTIFICATE":           "证书",
+	"DISK":                  "磁盘",
+	"API_SECURITY":          "API 安全采集",
+	"APM_CLICKHOUSE":        "APM 时序存储",
+	"WAF":                   "WAF 防护",
+	"CC":                    "CC 防护",
+	"CLICKHOUSE":            "ClickHouse 时序存储",
+	"AUDIT":                 "操作审计",
+	"LICENSE":               "系统授权",
+	"BACKUP":                "系统备份",
+	"RESTORE":               "系统恢复",
+	"UPGRADE":               "系统升级",
+	"REPORT":                "安全报告",
+	"HA_VIP":                "主备虚拟 IP",
+	"NETWORK":               "网络配置",
+	"LINK_PAIR":             "网桥链路对",
+	"AI_OPS":                "AI 智能运营",
+	"API_GATEWAY_NODES":     "多节点网关",
+	"API_GATEWAY_NODE_SYNC": "网关节点配置同步",
+}
+
+func exportAlertComponentLabel(v string) string {
+	trimmed := strings.TrimSpace(v)
+	if trimmed == "" {
+		return ""
+	}
+	if label, ok := exportAlertComponentLabels[strings.ToUpper(trimmed)]; ok {
+		return label
+	}
+	if len(trimmed) > len("vuln_intel:") && strings.EqualFold(trimmed[:len("vuln_intel:")], "vuln_intel:") {
+		return "漏洞情报:" + trimmed[len("vuln_intel:"):]
+	}
+	return v
+}
+
+func exportAlertStatusLabel(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "":
+		return ""
+	case StatusOpen:
+		return "未处理"
+	case StatusAcknowledged:
+		return "已确认"
+	case StatusResolved:
+		return "已解决"
+	case StatusIgnored:
+		return "已忽略"
+	default:
+		return v
+	}
+}
+
+func exportResolveTypeLabel(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "":
+		return ""
+	case ResolveManual:
+		return "人工解决"
+	case ResolveRecovered:
+		return "自动恢复"
+	default:
+		return v
+	}
 }
 
 // ListMaintenanceWindows 维护窗口列表（阶段6 §11.5）。
@@ -350,11 +521,14 @@ func (h *Handler) DeleteMaintenanceWindow(w http.ResponseWriter, r *http.Request
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "维护窗口已删除"})
 }
 
-// csvCell CSV 单元格转义 + 公式注入防护（= + - @ 前导字符加单引号）。
+// csvCell CSV 单元格转义 + 公式注入防护（= + - @ \t \r 前导字符加单引号）。
 func csvCell(s string) string {
+	leadingCR := len(s) > 0 && s[0] == '\r'
 	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) > 0 {
+	if leadingCR {
+		s = "'" + s
+	} else if len(s) > 0 {
 		switch s[0] {
 		case '=', '+', '-', '@', '\t':
 			s = "'" + s

@@ -35,6 +35,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -90,6 +91,13 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 	// 单次发布探针使用独立密钥；非法认证段拒绝装配，绝不退化为固定头认证。
 	if err := g.assemblePublishSmoke(); err != nil {
 		return err
+	}
+	// 进程级环境变量 GATEWAY_NODE_NAME 优先于 JSON 配置中的 gateway_node（与
+	// netcollector.go、software_bypass.go 口径一致），使跨节点扇出同一份配置时各节点自动保有唯一身份。
+	if envNode := strings.TrimSpace(os.Getenv("GATEWAY_NODE_NAME")); envNode != "" {
+		g.GatewayNode = envNode
+	} else {
+		g.GatewayNode = strings.TrimSpace(g.GatewayNode)
 	}
 	if g.GatewayNode == "" {
 		g.GatewayNode = "gateway-unknown"

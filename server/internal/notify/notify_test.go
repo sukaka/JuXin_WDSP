@@ -47,8 +47,14 @@ func TestCategoriesContract(t *testing.T) {
 		}
 		total += len(c.AlertTypes)
 	}
-	if total != 37 {
-		t.Errorf("告警类型总数应为 37, got %d", total)
+	if total != 38 {
+		t.Errorf("告警类型总数应为 38, got %d", total)
+	}
+	if got := CategoryOf("HA_SPLIT_BRAIN"); got != "infrastructure" {
+		t.Errorf("CategoryOf(HA_SPLIT_BRAIN) = %s, want infrastructure", got)
+	}
+	if got := AlertTypeName("HA_SPLIT_BRAIN"); got != "主备双主脑裂" {
+		t.Errorf("AlertTypeName(HA_SPLIT_BRAIN) = %s, want 主备双主脑裂", got)
 	}
 	// CategoryOf 映射
 	if got := CategoryOf("GATEWAY_DOWN"); got != "infrastructure" {

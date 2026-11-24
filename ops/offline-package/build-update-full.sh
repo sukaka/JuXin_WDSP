@@ -75,6 +75,8 @@ build_image jiuzhang-gateway gateway/Dockerfile gateway
 build_image jiuzhang-netmgrd gateway/images/netmgrd/Dockerfile gateway
 build_image jiuzhang-mirrorcap gateway/images/mirrorcap/Dockerfile gateway
 build_image jiuzhang-tproxyd gateway/images/tproxyd/Dockerfile gateway
+build_image jiuzhang-havipd gateway/images/havipd/Dockerfile gateway
+build_image jiuzhang-hasyncd gateway/images/hasyncd/Dockerfile gateway
 build_image jiuzhang-logrotator gateway/images/logrotator/Dockerfile gateway/images/logrotator
 build_image jiuzhang-containerops deployment/containerops/Dockerfile .
 build_image jiuzhang-pcapd gateway/images/pcapd/Dockerfile gateway
@@ -135,13 +137,14 @@ jq -e --arg version "$VERSION" --arg commit "$(git rev-parse HEAD)" --arg mode "
   .edition == "wdsp" and .version == $version and .arch == "amd64" and
   .delivery_mode == $mode and .signed == $signed and .traceability.build_commit == $commit and
   .traceability.signature.key_id == "wdsp-release-ed25519-0db8c1fc0fe556fd" and
-  (.images | length) == 13 and all(.images[]; (.image | contains(":latest") | not)) and
-  ([.images[].image] | unique | length) == 13' "$ROOT_DIR/manifest.json" >/dev/null \
-  || die "manifest 的版本、提交、签名状态或 13 个镜像清单不合格"
+  (.images | length) == 15 and all(.images[]; (.image | contains(":latest") | not)) and
+  ([.images[].image] | unique | length) == 15' "$ROOT_DIR/manifest.json" >/dev/null \
+  || die "manifest 的版本、提交、签名状态或 15 个镜像清单不合格"
 COMPOSE_JSON="$(POSTGRES_PASSWORD=verify-only VALKEY_PASSWORD=verify-only JIUZHANG_MASTER_KEY=verify-only \
   docker compose -f "$ROOT_DIR/docker-compose.yml" --env-file /dev/null config --format json)" \
   || die "交付 Compose 无法渲染"
 jq -e '(.services | has("pcapd") | not) and
+  (.services | has("hasyncd") | not) and
   .services.gateway.user == "0:0" and
   .services.gateway.entrypoint == ["/usr/local/bin/wdsp-gateway-bind"] and
   .services.gateway.cap_drop == ["ALL"] and
@@ -160,9 +163,24 @@ jq -e '(.services | has("pcapd") | not) and
   (.services.tproxyd.cap_drop == ["ALL"]) and
   ((.services.tproxyd.cap_add // []) | length == 0) and
   ((.services.tproxyd.security_opt // []) | index("no-new-privileges:true") != null) and
+  (.services.havipd.network_mode == "service:gateway") and
+  ((.services.havipd.group_add // []) | map(tostring) | index("1000") != null) and
+  (.services.havipd.read_only == true) and
+  (.services.havipd.cap_drop == ["ALL"]) and
+  (.services.havipd.cap_add | sort == (["NET_ADMIN", "NET_BROADCAST", "NET_RAW"] | sort)) and
+  ((.services.havipd.security_opt // []) | index("no-new-privileges:true") != null) and
   any(.services.api.volumes[]?; .source == "gateway-certs" and .target == "/app/runtime/certificates") and
   any(.services.gateway.volumes[]?; .source == "gateway-certs" and .target == "/etc/caddy/certs" and .read_only == true)' <<<"$COMPOSE_JSON" >/dev/null \
-  || die "交付 Compose 的低端口、证书下发、sidecar、mirrorcap、tproxyd 或默认关闭 PCAP 契约不合格"
+  || die "交付 Compose 的低端口、证书下发、sidecar、mirrorcap、tproxyd、havipd 或默认关闭 hasyncd/PCAP 契约不合格"
+COMPOSE_HASYNC_JSON="$(POSTGRES_PASSWORD=verify-only VALKEY_PASSWORD=verify-only JIUZHANG_MASTER_KEY=verify-only \
+  docker compose -f "$ROOT_DIR/docker-compose.yml" --profile ha-sync --env-file /dev/null config --format json)" \
+  || die "交付 Compose（ha-sync profile）无法渲染"
+jq -e '.services.hasyncd.user == "1000:1000" and
+  .services.hasyncd.read_only == true and
+  .services.hasyncd.cap_drop == ["ALL"] and
+  ((.services.hasyncd.cap_add // []) | length == 0) and
+  ((.services.hasyncd.security_opt // []) | index("no-new-privileges:true") != null)' <<<"$COMPOSE_HASYNC_JSON" >/dev/null \
+  || die "交付 Compose 的 hasyncd 安全契约不合格"
 SCAN="$OUTPUT_DIR/jiuzhang-wdsp-offline-$VERSION-amd64.scan.json"
 jq -e --arg digest "$(sha256_of "$ARCHIVE" | awk '{print $1}')" '.result == "PASS" and .input.sha256 == $digest' "$SCAN" >/dev/null \
   || die "最终内容扫描未绑定本次交付归档"
@@ -171,5 +189,5 @@ log_info "完整升级介质已校验: ${ARCHIVE}（${SIZE} 字节）"
 if [[ "$DEVELOPMENT" == true ]]; then
   log_warn "development 未签名产物只用于本地验证，不能用于正式升级"
 else
-  log_info "生产签名、别名摘要、13 镜像、交付 Compose、清单及扫描均通过；目标 Linux 升级/回滚与外部访问仍须单独验收"
+  log_info "生产签名、别名摘要、15 镜像、交付 Compose、清单及扫描均通过；目标 Linux 升级/回滚与外部访问仍须单独验收"
 fi

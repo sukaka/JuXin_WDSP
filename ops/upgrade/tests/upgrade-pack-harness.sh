@@ -97,6 +97,16 @@ if python3 "$SCRIPT_DIR/test_gateway_upgrade_executor_contract.py"; then
 else
   fail "Web gateway 启动契约门禁与切换前回滚回归"
 fi
+if python3 "$SCRIPT_DIR/test_image_delta.py"; then
+  pass "镜像层差量工具（layer-delta）单测回归"
+else
+  fail "镜像层差量工具（layer-delta）单测回归"
+fi
+if python3 "$SCRIPT_DIR/test_layer_delta_executor.py"; then
+  pass "Web 签名层差量端到端与 9 组件/pcapd 守卫回归"
+else
+  fail "Web 签名层差量端到端与 9 组件/pcapd 守卫回归"
+fi
 
 # ---------- 1. 用法与参数校验 ----------
 expect_exit "--help 退出码 0" 0 bash "$BUILDER" --help
@@ -362,7 +372,7 @@ CHECKER="$CHECKER_SRC/artifactcheck"
 # ---------- 3. 测试夹具：预造小假镜像 tar（<组件>-<arch>.tar.gz） ----------
 FIX="$TMP_ROOT/images-in"
 mkdir -p "$FIX"
-for c in api web gateway netmgrd; do
+for c in api web gateway netmgrd havipd hasyncd; do
   d="$TMP_ROOT/imgsrc/$c"
   mkdir -p "$d"
   printf 'fake image payload for %s\n' "$c" > "$d/payload.txt"
@@ -426,18 +436,18 @@ else
   fail "manifest 字段双口径断言"
 fi
 
-# files 清单：恰为 4 镜像 + 2 安装器 + 1 compose 片段 + SHA256SUMS，且不含 manifest.json/manifest.sig
+# files 清单：恰为 4 镜像 + 3 安装器/差量工具 + 1 compose 片段 + SHA256SUMS，且不含 manifest.json/manifest.sig
 if jq -e '
-  (.files | length == 8) and
+  (.files | length == 9) and
   (all(.files[]; (.path | test("^[A-Za-z0-9._/-]+$")) and .path != "manifest.json" and .path != "manifest.sig"
     and (.sha256 | test("^[0-9a-f]{64}$")) and (.size | type == "number" and . > 0))) and
   ([.files[].path] | sort) == (["SHA256SUMS",
     "compose/upgrade-services.yml",
     "images/api-'"$HOST_ARCH"'.tar.gz", "images/gateway-'"$HOST_ARCH"'.tar.gz",
     "images/netmgrd-'"$HOST_ARCH"'.tar.gz", "images/web-'"$HOST_ARCH"'.tar.gz",
-    "installer/install-executor.sh", "installer/upgrade-executor.sh"] | sort)
+    "installer/image-delta.py", "installer/install-executor.sh", "installer/upgrade-executor.sh"] | sort)
 ' "$MANIFEST" >/dev/null; then
-  pass "files 清单精确收录 8 个文件且不含 manifest.json/manifest.sig"
+  pass "files 清单精确收录 9 个文件且不含 manifest.json/manifest.sig"
 else
   fail "files 清单内容（$(jq -r '.files[].path' "$MANIFEST" | tr '\n' ' ')）"
 fi
@@ -520,6 +530,39 @@ then
   pred_reject "判定式拒绝 files 收录 manifest.json" '.files[0].path = "manifest.json"'
   pred_reject "判定式拒绝 files 收录 manifest.sig" '.files[0].path = "manifest.sig"'
   pred_reject "判定式拒绝 files 路径穿越" '.files[0].path = "../evil"'
+  pred_reject "判定式拒绝缺 base_layers 的 layer-delta" '.images[0].delivery_mode = "layer-delta"'
+  pred_reject "判定式拒绝非法 delivery_mode" '.images[0].delivery_mode = "binary-diff"'
+  # 正例：带合法 base_layers 的 layer-delta 应被执行器判定式接受
+  jq '.images[0].delivery_mode = "layer-delta" | .images[0].base_layers = ["sha256:'"$(printf 'a%.0s' {1..64})"'"]' \
+    "$MANIFEST" > "$TMP_ROOT/delta-ok.json"
+  if jq -e --arg from "1.2.0" --arg to "1.3.0" -f "$PRED_JQ" "$TMP_ROOT/delta-ok.json" >/dev/null; then
+    pass "判定式接受合法 layer-delta manifest"
+  else
+    fail "判定式拒绝合法 layer-delta manifest"
+  fi
+  # 正例：havipd 与 hasyncd 应通过构建器 + 执行器判定式并产出 compose 片段
+  DIST_HA="$TMP_ROOT/dist-ha"
+  PKG_HA="$DIST_HA/jiuzhang-wdsp-upgrade-1.3.0-$HOST_ARCH.tar.gz"
+  if env -u WDSP_SIGNING_KEY bash "$BUILDER" --from 1.2.0 --to 1.3.0 --arch "$HOST_ARCH" \
+      --components "havipd hasyncd" --skip-build --images-dir "$FIX" \
+      --unsigned --output-dir "$DIST_HA" >/dev/null 2>&1; then
+    EX_HA="$TMP_ROOT/extract-ha"
+    mkdir -p "$EX_HA"
+    tar -xzf "$PKG_HA" -C "$EX_HA"
+    HA_MANIFEST="$EX_HA/jiuzhang-wdsp-upgrade-1.3.0-$HOST_ARCH/manifest.json"
+    HA_FRAG="$EX_HA/jiuzhang-wdsp-upgrade-1.3.0-$HOST_ARCH/compose/upgrade-services.yml"
+    if jq -e --arg from "1.2.0" --arg to "1.3.0" -f "$PRED_JQ" "$HA_MANIFEST" >/dev/null \
+       && grep -q 'image: jiuzhang-havipd:1.3.0' "$HA_FRAG" \
+       && grep -q 'NET_BROADCAST' "$HA_FRAG" \
+       && grep -q 'image: jiuzhang-hasyncd:1.3.0' "$HA_FRAG" \
+       && grep -q 'profiles: \["ha-sync"\]' "$HA_FRAG"; then
+      pass "havipd + hasyncd 构建、compose 片段与执行器判定式全部通过"
+    else
+      fail "havipd + hasyncd 判定式或 compose 片段校验失败"
+    fi
+  else
+    fail "havipd + hasyncd 升级包构建失败"
+  fi
   if jq -e --arg from "1.2.0" --arg to "1.2.0" -f "$PRED_JQ" "$MANIFEST" >/dev/null 2>&1; then
     fail "判定式拒绝 version_to 与任务不一致"
   else
@@ -703,16 +746,18 @@ fi
 # ---------- 13. --from 缺省读取 VERSION.md ----------
 VER_BASE="$(grep -E '当前已发布版本：`[0-9]+\.[0-9]+\.[0-9]+`' "$REPO_ROOT/VERSION.md" \
   | head -1 | sed -E 's/.*`([0-9]+\.[0-9]+\.[0-9]+)`.*/\1/')"
+IFS=. read -r _vmaj _vmin _vpat <<<"$VER_BASE"
+VER_NEXT="${_vmaj}.$((_vmin + 1)).0"
 DIST_D="$TMP_ROOT/dist-default-from"
-ROOT_D="jiuzhang-wdsp-upgrade-1.6.0-$HOST_ARCH"
-if env -u WDSP_SIGNING_KEY bash "$BUILDER" --to 1.6.0 --arch "$HOST_ARCH" \
+ROOT_D="jiuzhang-wdsp-upgrade-${VER_NEXT}-$HOST_ARCH"
+if env -u WDSP_SIGNING_KEY bash "$BUILDER" --to "$VER_NEXT" --arch "$HOST_ARCH" \
     --components "api web" --images-dir "$FIX" --unsigned --output-dir "$DIST_D" >/dev/null 2>&1; then
   EX_D="$TMP_ROOT/extract-default"
   mkdir -p "$EX_D"
   tar -xzf "$DIST_D/$ROOT_D.tar.gz" -C "$EX_D" "$ROOT_D/manifest.json"
-  if jq -e --arg v "$VER_BASE" '.version_from == $v and .version == "1.6.0" and .version_to == "1.6.0"' \
+  if jq -e --arg v "$VER_BASE" --arg next "$VER_NEXT" '.version_from == $v and .version == $next and .version_to == $next' \
       "$EX_D/$ROOT_D/manifest.json" >/dev/null; then
-    pass "--from 缺省读取 VERSION.md（${VER_BASE}）"
+    pass "--from 缺省读取 VERSION.md（${VER_BASE} -> ${VER_NEXT}）"
   else
     fail "--from 缺省值未写入 manifest"
   fi

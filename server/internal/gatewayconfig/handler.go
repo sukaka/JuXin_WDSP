@@ -1,9 +1,12 @@
 package gatewayconfig
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/applications"
@@ -35,13 +38,24 @@ func (h *Handler) Preview(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
+	acmeCfg, acmeErr := pub.loadACMEHTTP01Config(r.Context(), nil)
+	if acmeErr != nil {
+		response.InternalError(w, r, acmeErr)
+		return
+	}
 	gen, err := Generate(GenerateInput{
 		Apps:                   appsData,
 		AdminSocket:            pub.caddy.SocketPath(),
 		GatewayTracing:         pub.gatewayTracing,
 		TransparentHTTPListen:  pub.effectiveTproxyTarget(),
 		TransparentHTTPSListen: pub.effectiveTproxyTargetTLS(),
+		ACMEHTTP01:             acmeCfg,
 	})
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	previewJSON, err := RedactConfigSecrets(gen.JSON)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
@@ -51,7 +65,7 @@ func (h *Handler) Preview(w http.ResponseWriter, r *http.Request) {
 		"server_count":       gen.ServerCount,
 		"route_count":        gen.RouteCount,
 		"business_snapshot":  snapshot,
-		"config_preview":     gen.JSON,
+		"config_preview":     previewJSON,
 	}
 	if tproxySidecar, tErr := pub.buildTproxydSidecarFor(r.Context(), appsData); tErr == nil {
 		payload["tproxyd_preview"] = tproxySidecar
@@ -69,12 +83,18 @@ func (h *Handler) Validate(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusOK, response.CodeInvalidArgument, err.Error())
 		return
 	}
+	acmeCfg, acmeErr := pub.loadACMEHTTP01Config(r.Context(), nil)
+	if acmeErr != nil {
+		response.InternalError(w, r, acmeErr)
+		return
+	}
 	gen, err := Generate(GenerateInput{
 		Apps:                   appsData,
 		AdminSocket:            pub.caddy.SocketPath(),
 		GatewayTracing:         pub.gatewayTracing,
 		TransparentHTTPListen:  pub.effectiveTproxyTarget(),
 		TransparentHTTPSListen: pub.effectiveTproxyTargetTLS(),
+		ACMEHTTP01:             acmeCfg,
 	})
 	if err != nil {
 		response.JSON(w, r, http.StatusOK, map[string]interface{}{
@@ -266,6 +286,71 @@ func (h *Handler) Rollback(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, taskItem(task))
 }
 
+type retryNodeSyncRequest struct {
+	NodeID string `json:"node_id"`
+}
+
+// RetryNodeSync 对指定已发布版本重跑次要节点同步（支持可选 {"node_id":"..."} 单节点定向重试）。
+// 路由：POST /api/v1/gateway/publish/versions/{id}/retry-sync（由装配侧 app.go 挂接权限与 CSRF）。
+func (h *Handler) RetryNodeSync(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	versionID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的版本ID")
+		return
+	}
+	var req retryNodeSyncRequest
+	if r.Body != nil {
+		if err := response.DecodeJSON(w, r, &req, 4096); err != nil && !errors.Is(err, io.EOF) {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+			return
+		}
+	}
+	var targetNodeID *uuid.UUID
+	if trimmed := strings.TrimSpace(req.NodeID); trimmed != "" {
+		parsed, err := uuid.Parse(trimmed)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的节点ID")
+			return
+		}
+		targetNodeID = &parsed
+	}
+
+	res, err := h.publisher.RetryNodeSyncForVersionTargeted(r.Context(), versionID, targetNodeID)
+	if err != nil {
+		if p != nil {
+			h.recordAudit(r, p, "gateway_configs", "retry_node_sync", "gateway_config_version", versionID.String(), "gateway",
+				"", err.Error(), audits.ResultFailure, audits.RiskHigh)
+		}
+		switch {
+		case errors.Is(err, ErrVersionNotFound):
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "目标配置版本不存在")
+		case errors.Is(err, ErrSyncTargetNotFound):
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "目标同步节点不存在或未启用同步")
+		case errors.Is(err, ErrVersionNotPublished):
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "目标版本未成功发布，不能重试同步")
+		case errors.Is(err, ErrNodeSyncNotConfigured):
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "多节点同步仓储未配置")
+		case errors.Is(err, ErrLocalPrimaryTarget):
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "该节点为本机主网关节点，无需作为次要节点重试同步")
+		default:
+			response.InternalError(w, r, err)
+		}
+		return
+	}
+
+	summaryBytes, _ := json.Marshal(res)
+	auditResult := audits.ResultSuccess
+	if res.Failed > 0 || res.RecordFailures > 0 {
+		auditResult = audits.ResultFailure
+	}
+	if p != nil {
+		h.recordAudit(r, p, "gateway_configs", "retry_node_sync", "gateway_config_version", versionID.String(), "gateway",
+			"", string(summaryBytes), auditResult, audits.RiskHigh)
+	}
+	response.JSON(w, r, http.StatusOK, res)
+}
+
 // GatewayStatus 网关状态。
 func (h *Handler) GatewayStatus(w http.ResponseWriter, r *http.Request) {
 	// 网关管理接口可用性
@@ -361,6 +446,9 @@ func errString(err error) string {
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, action, objType, objID, objName, before, after, result, risk string) {
+	if h.audits == nil || p == nil {
+		return
+	}
 	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:        &p.UserID,
 		Username:      p.Username,

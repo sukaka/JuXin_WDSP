@@ -22,6 +22,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/accesscontrolversions"
 	"github.com/jiuzhang-waf/server/internal/accesslogs"
 	"github.com/jiuzhang-waf/server/internal/accessrules"
+	"github.com/jiuzhang-waf/server/internal/acme"
 	"github.com/jiuzhang-waf/server/internal/agents"
 	"github.com/jiuzhang-waf/server/internal/aggregations"
 	"github.com/jiuzhang-waf/server/internal/aiagents"
@@ -93,6 +94,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/netconfig"
 	"github.com/jiuzhang-waf/server/internal/netdiag"
 	"github.com/jiuzhang-waf/server/internal/nodeinterfaces"
+	"github.com/jiuzhang-waf/server/internal/nodesync"
 	"github.com/jiuzhang-waf/server/internal/notify"
 	"github.com/jiuzhang-waf/server/internal/product"
 	"github.com/jiuzhang-waf/server/internal/protectedaddresses"
@@ -170,8 +172,9 @@ type App struct {
 	apiNodesSweeper *apinodes.Sweeper
 	// 阶段8 / WDSP：API 网络暴露面判定引擎（仅 API 动态防护开启时装配；
 	// 10 分钟周期评估由 cmd/api/main.go sweeper 群启动）
-	apiExposureSweeper *apiexposure.Sweeper
-	haStatusSweeper    *hastatus.Sweeper
+	apiExposureSweeper   *apiexposure.Sweeper
+	haStatusSweeper      *hastatus.Sweeper
+	nodeTelemetrySweeper *nodesync.TelemetrySweeper
 	// 阶段8 / WDSP：API 资产发现静态资源与非 API 过滤配置加载器（所有发现入口共享同一热缓存）
 	apiDiscoveryFilter *apiassets.DiscoveryFilterProvider
 	// 离线授权：产品侧授权服务（门控中间件/发布通道/配额强制共用其内存状态；
@@ -193,6 +196,7 @@ type App struct {
 	apiObservationProjector *apidataflow.Projector
 	dataflowWorker          *apidataflow.DataflowWorker
 	requestPCAP             *requestpcap.Runtime
+	acmeWorker              *acme.Worker
 }
 
 func (a *App) StartRequestPCAP(ctx context.Context) {
@@ -282,6 +286,9 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	var publisher *gatewayconfig.Publisher
 	var appHandler *applications.Handler
 	var certHandler *certificates.Handler
+	var acmeSvc *acme.Service
+	var acmeWorker *acme.Worker
+	var acmeHandler *acme.Handler
 	var upstreamTestHandler *upstreams.TestHandler
 	var gatewayHandler *gatewayconfig.Handler
 	policyStore := protectionpolicies.NewStore(db)
@@ -311,6 +318,31 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		})
 		certHandler = certificates.NewHandler(certStore, auditSvc)
 		certHandler.SetDomainLister(appStore)
+		acmeStore := acme.NewStore(db, encSvc)
+		acmeSolver := acme.NewHTTP01Solver(c, cfg.Gateway.DataDir)
+		acmeSvc = acme.NewService(acmeStore, appStore, certStore, publisher, c, acmeSolver, acme.NewIssuer(), auditSvc)
+		acmeWorker = acme.NewWorker(acmeSvc, acmeStore, appStore, certStore, c, acmeSolver, 0)
+		acmeSvc.SetNotifyAppFunc(acmeWorker.NotifyApp)
+		appHandler.SetOnDomainsChanged(acmeWorker.NotifyApp)
+		publisher.SetACMEHTTP01Provider(func(ctx context.Context) (*gatewayconfig.ACMEHTTP01Config, error) {
+			needed, err := acmeSvc.NeedsHTTP01Route(ctx)
+			if err != nil || !needed {
+				return nil, err
+			}
+			var vk *gatewayconfig.GuardValkey
+			if cfg.Cache.Host != "" {
+				vk = &gatewayconfig.GuardValkey{
+					Address:  cfg.Cache.Addr(),
+					Password: cfg.Cache.Password,
+					DB:       cfg.Cache.DB,
+				}
+			}
+			return &gatewayconfig.ACMEHTTP01Config{
+				Enabled: true,
+				Valkey:  vk,
+			}, nil
+		})
+		acmeHandler = acme.NewHandler(acmeSvc, auditSvc)
 		upstreamTestHandler = upstreams.NewTestHandler(auditSvc)
 		gatewayHandler = gatewayconfig.NewHandler(publisher, appStore, auditSvc)
 	}
@@ -777,6 +809,9 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		Maintenance: alertStore,
 	}
 	alertEngine := systemalerts.NewEngine(alertStore, alertEngineOpts)
+	if acmeSvc != nil {
+		acmeSvc.SetAlertSink(acme.SystemAlertsAdapter{Engine: alertEngine})
+	}
 	auditSvc.SetFallbackHooks(
 		func(ctx context.Context, pending uint64, _ error) {
 			if _, err := alertEngine.NotifyFailure(ctx, systemalerts.TypeAuditWriteFailed, "AUDIT",
@@ -1057,6 +1092,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		auditSvc: auditSvc, syslogFw: syslogFw, notifyDispatcher: notifyDispatcher,
 	}
 	a.alertEngine = alertEngine
+	a.acmeWorker = acmeWorker
 	a.licenseSvc = licSvc
 	a.attackSessionAgg = attackSessionAgg
 	a.vulnIntelSyncer = vulnIntelSyncer
@@ -1120,6 +1156,9 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		// APM 数据面容量/健康：APM_CLICKHOUSE 组件探针（nil 时该组件不采集）
 		APMClickHouse: chProber,
 	})
+	if appHandler != nil {
+		appHandler.SetOnUpstreamChanged(a.healthCollector.TriggerUpstreamProbe)
+	}
 
 	// 路由
 	mux := http.NewServeMux()
@@ -1269,6 +1308,17 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		// 证书绑定/解绑独立接口（阶段3遗留补齐）
 		mux.Handle("POST /api/v1/certificates/{id}/bind", authz(middleware.RequirePermission("certificates.bind")(http.HandlerFunc(certHandler.Bind))))
 		mux.Handle("POST /api/v1/certificates/{id}/unbind", authz(middleware.RequirePermission("certificates.bind")(http.HandlerFunc(certHandler.Unbind))))
+		// 自动 SSL / ACME 证书管理（迁移 000238）
+		if acmeHandler != nil {
+			mux.Handle("GET /api/v1/certificates/acme/config", authz(middleware.RequirePermission("certificates.read")(http.HandlerFunc(acmeHandler.GetConfig))))
+			mux.Handle("PUT /api/v1/certificates/acme/config", authz(middleware.RequirePermission("certificates.update")(http.HandlerFunc(acmeHandler.UpdateConfig))))
+			mux.Handle("POST /api/v1/certificates/acme/config/test", authz(middleware.RequirePermission("certificates.update")(http.HandlerFunc(acmeHandler.TestConfig))))
+			mux.Handle("GET /api/v1/certificates/acme/orders", authz(middleware.RequirePermission("certificates.read")(http.HandlerFunc(acmeHandler.ListOrders))))
+			mux.Handle("POST /api/v1/certificates/{id}/renew", authz(middleware.RequirePermission("certificates.create")(http.HandlerFunc(acmeHandler.RenewCert))))
+			mux.Handle("GET /api/v1/applications/{id}/auto-ssl", authz(middleware.RequirePermission("certificates.read")(http.HandlerFunc(acmeHandler.GetAppAutoSSL))))
+			mux.Handle("PUT /api/v1/applications/{id}/auto-ssl", authz(middleware.RequirePermission("certificates.bind")(http.HandlerFunc(acmeHandler.UpdateAppAutoSSL))))
+			mux.Handle("POST /api/v1/applications/{id}/auto-ssl/issue", authz(middleware.RequirePermission("certificates.create")(http.HandlerFunc(acmeHandler.IssueAppCert))))
+		}
 
 		// 配置发布/版本/网关状态
 		mux.Handle("POST /api/v1/gateway-config/preview", authz(middleware.RequirePermission("gateway_configs.preview")(http.HandlerFunc(gatewayHandler.Preview))))
@@ -1281,6 +1331,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		mux.Handle("GET /api/v1/config-versions/{id}", authz(middleware.RequirePermission("config_versions.read")(http.HandlerFunc(gatewayHandler.GetVersion))))
 		mux.Handle("GET /api/v1/config-versions/{id}/diff", authz(middleware.RequirePermission("config_versions.read")(http.HandlerFunc(gatewayHandler.GetVersionDiff))))
 		mux.Handle("POST /api/v1/config-versions/{id}/rollback", authz(middleware.RequirePermission("gateway_configs.rollback")(http.HandlerFunc(gatewayHandler.Rollback))))
+		mux.Handle("POST /api/v1/config-versions/{id}/retry-sync", authz(requireAnyPerm("gateway_configs.publish", apinodes.PermPolicyPublish)(http.HandlerFunc(gatewayHandler.RetryNodeSync))))
 		mux.Handle("GET /api/v1/gateway/status", authz(middleware.RequirePermission("gateway_status.read")(http.HandlerFunc(gatewayHandler.GatewayStatus))))
 	}
 
@@ -1600,16 +1651,60 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	upgradeHandler.RegisterRoutes(mux, authz)
 	deliveryHandler.RegisterRoutes(mux, authz)
 
-	// 网关节点仓储（主备高可用 /ha-groups、多节点发布扇出与 WDSP 节点一致性视图共用；
-	// 节点只读列表接口全产品形态注册，避免 edition=waf 下 /ha-groups 页面 404）。
+	// 网关节点仓储与节点协同管理器（主备高可用 /ha-groups、多节点发布扇出、远端网络编辑、
+	// HA 集群滚动升级与节点一致性视图共用；全产品形态注册以保证 edition=waf 同样完整支持 HA 集群）。
 	apiNodeStore := apinodes.NewStore(db)
+	var nodeSyncDecryptor nodesync.SecretDecryptor
+	if encSvc != nil {
+		nodeSyncDecryptor = encSvc
+	}
+	nodeSyncMgr := nodesync.NewManager(nodeSyncStoreAdapter{apiNodeStore}, nodeSyncDecryptor, loadNodeSyncManagerConfig(cfg.WAF.GatewayNodeName))
+
 	apiNodeHandler := apinodes.NewHandler(apiNodeStore).SetAudits(auditSvc)
-	mux.Handle("GET /api/v1/api-security/nodes",
-		authz(requireAnyPerm(apinodes.PermRuntimeRead, "ha.read")(http.HandlerFunc(apiNodeHandler.ListNodes))))
-	// 多节点发布扇出（§200 配置面同步）：主发布成功后将同一份配置推送至登记的次要节点（逐节点记录结果）
+	if encSvc != nil {
+		apiNodeHandler.SetEncryptor(encSvc)
+	}
+	apiNodeHandler.SetNodeTester(func(ctx context.Context, nodeID uuid.UUID) (*apinodes.NodeTestResult, error) {
+		resp, latencyMs, err := nodeSyncMgr.ProbeNodeHealth(ctx, nodeID)
+		if err != nil {
+			return &apinodes.NodeTestResult{
+				OK:        false,
+				Channel:   "hasyncd",
+				LatencyMs: latencyMs,
+				Error:     err.Error(),
+			}, nil
+		}
+		caddyOK := resp.CaddyReachable
+		hostctlOK := resp.HostctlReady
+		upgradeOK := resp.UpgradeReady
+		return &apinodes.NodeTestResult{
+			OK:             true,
+			Channel:        "hasyncd",
+			LatencyMs:      latencyMs,
+			Version:        resp.Version,
+			CaddyReachable: &caddyOK,
+			HostctlReady:   &hostctlOK,
+			UpgradeReady:   &upgradeOK,
+		}, nil
+	})
+	apinodes.RegisterRoutes(mux, authz, apiNodeHandler)
+	a.apiNodesSweeper = apinodes.NewSweeper(apiNodeStore).SetAlerter(alertEngine)
+
+	// 多节点发布扇出（§200 配置面同步）：主发布成功后通过 hasyncd 或 Caddy Admin 推送至次要节点（跳过本机节点）
 	if publisher != nil {
+		publisher.SetLocalNodeName(cfg.WAF.GatewayNodeName)
 		publisher.SetNodeSyncStore(apiNodeStore)
+		publisher.SetNodeAgentSyncer(nodeSyncMgr)
 		publisher.SetSyncAlerter(syncAlerterAdapter{alertEngine})
+	}
+	// HA 集群滚动升级（先备后主）：装配节点协同客户端与本机节点名
+	if upgradeSvc != nil {
+		upgradeSvc.SetLocalNodeName(cfg.WAF.GatewayNodeName)
+		upgradeSvc.SetClusterSyncClient(upgradesClusterSyncAdapter{
+			nodeStore:  apiNodeStore,
+			alertStore: alertStore,
+			mgr:        nodeSyncMgr,
+		})
 	}
 
 	// ---- 阶段8 / WDSP：API 动态防护（任务书 /api/v1/api-security 命名空间）----
@@ -1800,9 +1895,6 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		llmStore := apillm.NewStore(db)
 		apillm.RegisterRoutes(mux, authz, apillm.NewHandler(llmStore))
 		apillm.RegisterSecurityPolicyRoutes(mux, authz, apillm.NewSecurityPolicyHandler(llmStore, auditSvc))
-		// 多节点版本校验（§201 遥测路径）：一致性视图/登记编辑 + 周期聚合（节点只读列表已在全形态注册）
-		a.apiNodesSweeper = apinodes.NewSweeper(apiNodeStore).SetAlerter(alertEngine)
-		apinodes.RegisterSyncRoutes(mux, authz, apiNodeHandler)
 		// 统一执行覆盖查询（NG-COV-02 查询侧）：五态聚合 agg / 节点阶段计数 stages
 		// （权限 api_protection.read，种子见迁移 000169；采集摄入见 cmd/api/main.go）
 		coverage.RegisterRoutes(mux, authz, coverage.NewHandler(coverage.NewStore(db)))
@@ -1852,6 +1944,9 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	haStore := hagroups.NewStore(db)
 	haHandler := hagroups.NewHandler(haStore, haNodeLister{apiNodeStore}, encSvc, auditSvc)
 	haHandler.SetSidecarDir(cfg.WAF.SidecarDir)
+	haHandler.SetLocalNodeName(cfg.WAF.GatewayNodeName)
+	haHandler.SetRemoteSyncer(nodeSyncMgr)
+	haHandler.SetNodeStatusProvider(nodeSyncMgr)
 	haHandler.SetBridgePortChecker(func(ctx context.Context, nodeNames []string, iface string) (string, string, error) {
 		for _, nodeName := range nodeNames {
 			br, err := netStore.BridgePortOwner(ctx, nodeName, iface)
@@ -1865,8 +1960,40 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		return "", "", nil
 	})
 	hagroups.RegisterRoutes(mux, authz, haHandler)
-	// HA/网络执行状态告警清扫（M4）：周期读本节点边车状态文件 → 系统告警 → 通知渠道
-	a.haStatusSweeper = hastatus.NewSweeper(cfg.WAF.SidecarDir).SetAlerter(alertEngine)
+	// HA/网络执行状态告警清扫（M4 + Phase 3 多节点汇聚与双主脑裂检测）：周期评估本机与远端节点状态 → 系统告警 → 通知渠道
+	a.haStatusSweeper = hastatus.NewSweeper(cfg.WAF.SidecarDir).
+		SetAlerter(alertEngine).
+		SetLocalNodeName(cfg.WAF.GatewayNodeName).
+		SetMultiNodeProvider(haMultiNodeAdapter{haStore: haStore, nodeStore: apiNodeStore}).
+		SetSplitBrainEventRecorder(func(ctx context.Context, groupID, groupName string, masters, overlappingVIPs []string) error {
+			return haStore.RecordEvent(ctx, hagroups.HaEvent{
+				GroupID:   groupID,
+				GroupName: groupName,
+				NodeName:  strings.Join(masters, ","),
+				EventType: hagroups.EventTypeSplitBrain,
+				Detail: map[string]any{
+					"masters":          masters,
+					"overlapping_vips": overlappingVIPs,
+				},
+				OccurredAt: time.Now().UTC(),
+			})
+		})
+	// 节点协同遥测汇聚清扫器（15s 轮询 hasyncd GET /v1/status → 回填 api_gateway_nodes + 合并远端网口 + 记录 HA 切换/联动事件）
+	a.nodeTelemetrySweeper = nodesync.NewTelemetrySweeper(nodeSyncMgr, nodeTelemetrySinkAdapter{apiNodeStore}).
+		SetInterfaceApplier(ifaceStore).
+		SetHAEventRecorder(haStore).
+		SetGroupIDResolver(func(ctx context.Context, groupName string) string {
+			groups, err := haStore.List(ctx)
+			if err != nil {
+				return ""
+			}
+			for _, g := range groups {
+				if g.Name == groupName {
+					return g.ID
+				}
+			}
+			return ""
+		})
 
 	// 节点网口管理与网桥/路由网络配置：与前端菜单口径一致，全产品形态（WAF/WDSP）均可使用；
 	// 角色变更（标记/取消 MIRROR 或 TRAFFIC 口）及网桥变更后立即刷新边车配置，无需手动重发。
@@ -1883,6 +2010,8 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	nodeinterfaces.RegisterRoutes(mux, authz, ifaceHandler)
 	netHandler := netconfig.NewHandler(netStore, ifaceStore, auditSvc, cfg.WAF.GatewayNodeName)
 	netHandler.SetSidecarDir(cfg.WAF.SidecarDir)
+	netHandler.SetRemoteSyncer(nodeSyncMgr)
+	netHandler.SetRemoteStatusProvider(nodeSyncMgr)
 	netHandler.SetHAVRRPIfaceChecker(func(ctx context.Context, nodeName, iface string) (string, error) {
 		groups, err := haStore.List(ctx)
 		if err != nil {
@@ -2304,6 +2433,238 @@ func (a haNodeLister) Names(ctx context.Context, nodeIDs []string) (map[string]s
 	return out, nil
 }
 
+// loadNodeSyncManagerConfig 读取可选 hasyncd 客户端 TLS 配置环境变量并构造 ManagerConfig。
+func loadNodeSyncManagerConfig(localNodeName string) nodesync.ManagerConfig {
+	cfg := nodesync.ManagerConfig{
+		LocalNodeName: strings.TrimSpace(localNodeName),
+		TLSCertSHA256: strings.TrimSpace(os.Getenv("HASYNC_TLS_CERT_SHA256")),
+	}
+	if caPath := strings.TrimSpace(os.Getenv("HASYNC_TLS_CA_FILE")); caPath != "" {
+		pemBytes, err := os.ReadFile(caPath)
+		if err != nil {
+			slog.Warn("read HASYNC_TLS_CA_FILE failed", "path", caPath, "error", err)
+		} else {
+			cfg.TLSCAPEM = pemBytes
+		}
+	}
+	return cfg
+}
+
+func toNodeSyncCredential(c *apinodes.NodeSyncCredentials) *nodesync.NodeCredential {
+	if c == nil {
+		return nil
+	}
+	return &nodesync.NodeCredential{
+		NodeID:               c.NodeID,
+		NodeName:             c.NodeName,
+		AdminAddr:            c.AdminAddr,
+		SyncAgentAddr:        c.SyncAgentAddr,
+		SyncSecretCiphertext: c.SyncSecretCiphertext,
+		SyncEnabled:          c.SyncEnabled,
+		ReportedVersion:      c.ReportedVersion,
+		HaVipStatus:          c.HaVipStatus,
+		HaVipStatusAt:        c.HaVipStatusAt,
+		NetworkStatus:        c.NetworkStatus,
+		NetworkStatusAt:      c.NetworkStatusAt,
+	}
+}
+
+// nodeSyncStoreAdapter 适配 *apinodes.Store 到 nodesync.NodeStore（避免 apinodes ↔ nodesync 循环依赖）。
+type nodeSyncStoreAdapter struct{ store *apinodes.Store }
+
+func (a nodeSyncStoreAdapter) GetCredentialByID(ctx context.Context, nodeID uuid.UUID) (*nodesync.NodeCredential, error) {
+	c, err := a.store.GetNodeSyncCredentials(ctx, nodeID)
+	if err != nil {
+		if errors.Is(err, apinodes.ErrNodeNotFound) {
+			return nil, nodesync.ErrNodeNotFound
+		}
+		return nil, err
+	}
+	return toNodeSyncCredential(c), nil
+}
+
+func (a nodeSyncStoreAdapter) GetCredentialByName(ctx context.Context, nodeName string) (*nodesync.NodeCredential, error) {
+	c, err := a.store.GetNodeSyncCredentialsByName(ctx, nodeName)
+	if err != nil {
+		if errors.Is(err, apinodes.ErrNodeNotFound) {
+			return nil, nodesync.ErrNodeNotFound
+		}
+		return nil, err
+	}
+	return toNodeSyncCredential(c), nil
+}
+
+func (a nodeSyncStoreAdapter) ListSyncAgentNodes(ctx context.Context) ([]nodesync.NodeCredential, error) {
+	list, err := a.store.ListNodesWithSyncAgent(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]nodesync.NodeCredential, 0, len(list))
+	for i := range list {
+		out = append(out, *toNodeSyncCredential(&list[i]))
+	}
+	return out, nil
+}
+
+func (a nodeSyncStoreAdapter) ListNodesByNames(ctx context.Context, nodeNames []string) ([]nodesync.NodeCredential, error) {
+	list, err := a.store.ListNodeCredentialsByNames(ctx, nodeNames)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]nodesync.NodeCredential, 0, len(list))
+	for i := range list {
+		out = append(out, *toNodeSyncCredential(&list[i]))
+	}
+	return out, nil
+}
+
+// nodeTelemetrySinkAdapter 适配 *apinodes.Store 到 nodesync.TelemetrySink。
+type nodeTelemetrySinkAdapter struct{ store *apinodes.Store }
+
+func (a nodeTelemetrySinkAdapter) SaveTelemetry(ctx context.Context, rec nodesync.TelemetryRecord) error {
+	return a.store.UpdateNodeTelemetry(ctx, apinodes.NodeTelemetryUpdate{
+		NodeName:        rec.NodeName,
+		LastSeenAt:      rec.CollectedAt,
+		PolicyVersion:   rec.PolicyVersion,
+		ReportedVersion: rec.ReportedVersion,
+		HaVipStatus:     rec.HaVipStatus,
+		HaVipStatusAt:   rec.HaVipStatusAt,
+		NetworkStatus:   rec.NetworkStatus,
+		NetworkStatusAt: rec.NetworkStatusAt,
+	})
+}
+
+// haMultiNodeAdapter 适配 *hagroups.Store 与 *apinodes.Store 到 hastatus.MultiNodeProvider。
+type haMultiNodeAdapter struct {
+	haStore   *hagroups.Store
+	nodeStore *apinodes.Store
+}
+
+func (a haMultiNodeAdapter) ListHAGroups(ctx context.Context) ([]hastatus.HAGroupSnapshot, error) {
+	groups, err := a.haStore.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]hastatus.HAGroupSnapshot, 0, len(groups))
+	for _, g := range groups {
+		members := make([]string, 0, len(g.Members))
+		for _, m := range g.Members {
+			if m.NodeName != "" {
+				members = append(members, m.NodeName)
+			}
+		}
+		out = append(out, hastatus.HAGroupSnapshot{
+			ID:          g.ID,
+			Name:        g.Name,
+			State:       g.State,
+			MemberNodes: members,
+		})
+	}
+	return out, nil
+}
+
+func (a haMultiNodeAdapter) ListNodeStatuses(ctx context.Context) ([]hastatus.NodeStatusSnapshot, error) {
+	nodes, err := a.nodeStore.ListNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]hastatus.NodeStatusSnapshot, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, hastatus.NodeStatusSnapshot{
+			NodeName:        n.NodeName,
+			HaVipStatus:     n.HaVipStatus,
+			HaVipStatusAt:   n.HaVipStatusAt,
+			NetworkStatus:   n.NetworkStatus,
+			NetworkStatusAt: n.NetworkStatusAt,
+		})
+	}
+	return out, nil
+}
+
+// upgradesClusterSyncAdapter 适配 apinodes/systemalerts/nodesync 到 upgrades.ClusterSyncClient。
+type upgradesClusterSyncAdapter struct {
+	nodeStore  *apinodes.Store
+	alertStore *systemalerts.Store
+	mgr        *nodesync.Manager
+}
+
+var _ upgrades.ClusterSyncClient = upgradesClusterSyncAdapter{}
+
+func (a upgradesClusterSyncAdapter) ListClusterNodes(ctx context.Context) ([]upgrades.ClusterNode, error) {
+	nodes, err := a.nodeStore.ListNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]upgrades.ClusterNode, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, upgrades.ClusterNode{
+			NodeID:          n.ID,
+			NodeName:        n.NodeName,
+			SyncAgentAddr:   n.SyncAgentAddr,
+			ReportedVersion: n.ReportedVersion,
+			SyncEnabled:     n.SyncEnabled,
+		})
+	}
+	return out, nil
+}
+
+func (a upgradesClusterSyncAdapter) HasOpenSplitBrain(ctx context.Context) (bool, error) {
+	open, err := a.alertStore.ListOpenByTypes(ctx, []string{systemalerts.TypeHASplitBrain})
+	if err != nil {
+		return false, err
+	}
+	return len(open) > 0, nil
+}
+
+func (a upgradesClusterSyncAdapter) CheckNodeHealth(ctx context.Context, nodeID uuid.UUID) (*upgrades.ClusterNodeHealth, error) {
+	resp, _, err := a.mgr.ProbeNodeHealth(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	return &upgrades.ClusterNodeHealth{
+		Node:           resp.Node,
+		Version:        resp.Version,
+		CaddyReachable: resp.CaddyReachable,
+		HostctlReady:   resp.HostctlReady,
+		UpgradeReady:   resp.UpgradeReady,
+	}, nil
+}
+
+func (a upgradesClusterSyncAdapter) UploadPackage(ctx context.Context, nodeID uuid.UUID, filePath, fileName, sha256Hex string) error {
+	_, err := a.mgr.UploadUpgradePackage(ctx, nodeID, filePath, fileName, sha256Hex)
+	return err
+}
+
+func (a upgradesClusterSyncAdapter) StartRemoteUpgrade(ctx context.Context, nodeID uuid.UUID, req upgrades.ExecutorRequest) error {
+	_, err := a.mgr.ExecuteUpgrade(ctx, nodeID, nodesync.UpgradeExecuteRequest{
+		JobID:         req.JobID,
+		PackageFile:   req.PackageFile,
+		PackageSHA256: req.PackageSHA256,
+		VersionFrom:   req.VersionFrom,
+		VersionTo:     req.VersionTo,
+		RequestedAt:   req.RequestedAt,
+	})
+	return err
+}
+
+func (a upgradesClusterSyncAdapter) PollRemoteResult(ctx context.Context, nodeID uuid.UUID, jobID string) (*upgrades.ExecutorResult, bool, error) {
+	res, err := a.mgr.GetUpgradeJobResult(ctx, nodeID, jobID)
+	if err != nil {
+		return nil, false, err
+	}
+	if res == nil || res.Pending {
+		return nil, false, nil
+	}
+	return &upgrades.ExecutorResult{
+		JobID:      res.JobID,
+		Status:     res.Status,
+		Stage:      res.Stage,
+		ErrorCode:  res.ErrorCode,
+		Message:    res.Message,
+		FinishedAt: res.FinishedAt,
+	}, true, nil
+}
+
 func (a *App) StartStage6Workers(ctx context.Context) {
 	if a.auditSvc != nil {
 		go a.auditSvc.RunFallback(ctx, 10*time.Second)
@@ -2345,6 +2706,9 @@ func (a *App) StartStage6Workers(ctx context.Context) {
 	// 多节点版本校验聚合（§201 遥测路径；周期从 api_runtime_events 聚合并判定一致性）
 	if a.haStatusSweeper != nil {
 		go a.haStatusSweeper.Run(ctx)
+	}
+	if a.nodeTelemetrySweeper != nil {
+		go a.nodeTelemetrySweeper.Run(ctx)
 	}
 	if a.apiNodesSweeper != nil {
 		go a.apiNodesSweeper.Run(ctx)
@@ -2416,6 +2780,10 @@ func (a *App) StartStage6Workers(ctx context.Context) {
 	// 攻击活动会话聚合（60s：四源事件滑动窗聚合 + 收口 + Business 滥用检测）
 	if a.attackSessionAgg != nil {
 		go a.attackSessionAgg.Run(ctx)
+	}
+	// 自动 SSL（ACME）证书申请与到期自动续约后台调度（默认每 10 分钟巡检 + 站点开关/域名变更即时唤醒）
+	if a.acmeWorker != nil {
+		go a.acmeWorker.Run(ctx)
 	}
 	// 告警评估：每 30s 基于最新健康快照评估一次
 	if a.alertEngine != nil && a.healthCollector != nil {

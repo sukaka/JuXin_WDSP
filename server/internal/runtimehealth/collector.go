@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,10 +32,20 @@ const (
 	defaultAccessLogStaleAfter = 120 * time.Second
 	// defaultAPIEventStaleAfter API 运行时事件停滞降级阈值（默认 10 分钟）。
 	// 低流量站点分钟级无事件属正常，阈值取保守值避免误报。
-	defaultAPIEventStaleAfter = 10 * time.Minute
-	maxUpstreamProbes         = 20 // 单轮最多探测的源站数（控制采集耗时）
-	maxUpstreamFailDetails    = 5  // metrics 中最多记录的失败明细
-	probeDBTimeout            = 5 * time.Second
+	defaultAPIEventStaleAfter   = 10 * time.Minute
+	maxUpstreamProbes           = 100              // 单轮最多探测的源站数（并发探测控制总耗时）
+	maxUpstreamProbeConcurrency = 8                // 源站并发探测上限
+	maxUpstreamProbeTimeout     = 10 * time.Second // 单个源站探测最大超时上限（防慢源站拖死采集循环）
+	maxUpstreamFailDetails      = 5                // metrics 中最多记录的失败明细
+	probeDBTimeout              = 5 * time.Second
+)
+
+// 应用级健康状态枚举（写回 applications.health_status，与前端应用列表/详情及仪表盘口径一致）。
+const (
+	AppHealthHealthy   = "HEALTHY"
+	AppHealthDegraded  = "DEGRADED"
+	AppHealthUnhealthy = "UNHEALTHY"
+	AppHealthUnknown   = "UNKNOWN"
 )
 
 // startedAt 记录进程启动时间（API 自测 uptime）。
@@ -73,8 +84,13 @@ type Options struct {
 	GuardStaleAfter time.Duration
 	// APIEventStaleAfter API 运行时事件停滞降级阈值（默认 10 分钟）
 	APIEventStaleAfter time.Duration
-	// UpstreamTimeout 源站健康探测超时（默认 3 秒）
+	// UpstreamTimeout 源站健康探测默认超时（默认 3 秒；单个源站若配置更大超时将按上限夹紧）
 	UpstreamTimeout time.Duration
+	// AllowPrivateUpstreams 是否允许定时探测已落库且经审计的 RFC1918/ULA 内网源站（nil 默认 true；
+	// 回环/链路本地/云元数据/未指定/组播地址仍由 upstreams.TestConnectivity 无条件拦截）
+	AllowPrivateUpstreams *bool
+	// UpstreamProber 源站探测执行函数（nil 默认 upstreams.TestConnectivity；供单测注入）
+	UpstreamProber func(ctx context.Context, in upstreams.TestInput) *upstreams.TestResult
 	// EventLagDegradedSeconds 事件采集滞后降级阈值（默认 120 秒）
 	EventLagDegradedSeconds float64
 	// DiskLowFreePercent 磁盘剩余不足降级阈值（默认 10%）
@@ -125,7 +141,17 @@ func (o *Options) withDefaults() Options {
 	if out.Now == nil {
 		out.Now = func() time.Time { return time.Now().UTC() }
 	}
+	if out.UpstreamProber == nil {
+		out.UpstreamProber = upstreams.TestConnectivity
+	}
 	return out
+}
+
+func (c *Collector) allowPrivateUpstreams() bool {
+	if c.opts.AllowPrivateUpstreams != nil {
+		return *c.opts.AllowPrivateUpstreams
+	}
+	return true
 }
 
 // Collector 周期性采集组件健康并写入快照表。
@@ -134,16 +160,34 @@ type Collector struct {
 	store *Store
 	opts  Options
 
-	lastHealthPurge time.Time // 上次源站健康记录清理时间（按周期节流）
+	lastHealthPurge time.Time     // 上次源站健康记录清理时间（按周期节流）
+	upstreamTrigger chan struct{} // 非阻塞源站探测即时触发通道（合并高频配置变更）
 }
 
 // NewCollector 创建采集器。
 func NewCollector(db *pgxpool.Pool, opts Options) *Collector {
-	return &Collector{db: db, store: NewStore(db), opts: opts.withDefaults()}
+	return &Collector{
+		db:              db,
+		store:           NewStore(db),
+		opts:            opts.withDefaults(),
+		upstreamTrigger: make(chan struct{}, 1),
+	}
 }
 
 // Store 返回快照仓储（供查询复用）。
 func (c *Collector) Store() *Store { return c.store }
+
+// TriggerUpstreamProbe 非阻塞触发一轮源站探测与 applications.health_status 同步
+// （用于源站或应用启停变更后尽快刷新健康状态，避免等待下一个 30s 周期）。
+func (c *Collector) TriggerUpstreamProbe() {
+	if c == nil || c.upstreamTrigger == nil {
+		return
+	}
+	select {
+	case c.upstreamTrigger <- struct{}{}:
+	default:
+	}
+}
 
 // Run 周期采集，直到 ctx 取消。启动时立即采集一轮。
 func (c *Collector) Run(ctx context.Context, interval time.Duration) {
@@ -161,7 +205,20 @@ func (c *Collector) Run(ctx context.Context, interval time.Duration) {
 			return
 		case <-ticker.C:
 			c.collectSafe(ctx)
+		case <-c.upstreamTrigger:
+			c.probeUpstreamsSafe(ctx)
 		}
+	}
+}
+
+// probeUpstreamsSafe 独立执行一轮源站探测并刷新 UPSTREAM 快照与 applications.health_status。
+func (c *Collector) probeUpstreamsSafe(ctx context.Context) {
+	snap := c.probeUpstreams(ctx)
+	if snap == nil {
+		return
+	}
+	if err := c.store.Insert(ctx, snap); err != nil {
+		slog.Error("runtime health upstream snapshot insert error", "error", err)
 	}
 }
 
@@ -553,31 +610,54 @@ func SummarizeCheckpoints(cps []CheckpointLag) (maxLag float64, missing int) {
 
 // ---------- UPSTREAM ----------
 
-// probeUpstreams 探测启用健康检查的 HTTP 源站（SSRF 防护复用 upstreams 包，仅 http 协议）。
+type upstreamProbeTarget struct {
+	id            uuid.UUID
+	applicationID uuid.UUID
+	name          string
+	scheme        string
+	host          string
+	port          int
+	path          string
+	method        string
+	timeoutSec    int
+	expected      string
+	tlsServerName string
+	tlsVerify     bool
+}
+
+// probeUpstreams 探测启用健康检查的 HTTP/HTTPS 源站（仅活跃且非镜像应用，SSRF 防护复用 upstreams 包），
+// 将单源站结果写入 upstream_health_records，并按应用汇总回写 applications.health_status。
 func (c *Collector) probeUpstreams(ctx context.Context) *Snapshot {
 	snap := &Snapshot{Component: ComponentUpstream, Metrics: map[string]interface{}{}}
 	qCtx, cancel := context.WithTimeout(ctx, probeDBTimeout)
 	defer cancel()
 	rows, err := c.db.Query(qCtx, `
-SELECT id, name, host, port, health_check_path, expected_status_codes
-FROM upstreams
-WHERE status = 'ACTIVE' AND health_check_enabled = TRUE AND deleted_at IS NULL AND scheme = 'http'
-ORDER BY created_at ASC LIMIT $1`, maxUpstreamProbes)
+SELECT u.id, u.application_id, u.name, u.scheme, u.host, u.port,
+       u.health_check_path, u.health_check_method, u.health_check_timeout_seconds,
+       u.expected_status_codes, u.tls_server_name, u.tls_verify
+FROM upstreams u
+JOIN applications a ON a.id = u.application_id
+WHERE u.status = 'ACTIVE'
+  AND u.health_check_enabled = TRUE
+  AND u.deleted_at IS NULL
+  AND u.scheme IN ('http', 'https')
+  AND a.deleted_at IS NULL
+  AND a.status = 'ACTIVE'
+  AND a.deployment_mode <> 'MIRROR'
+ORDER BY u.created_at ASC LIMIT $1`, maxUpstreamProbes)
 	if err != nil {
 		snap.Status = StatusUnknown
 		snap.Message = "源站清单查询失败"
 		return snap
 	}
 	defer rows.Close()
-	type target struct {
-		id                         uuid.UUID
-		name, host, path, expected string
-		port                       int
-	}
-	var targets []target
+	var targets []upstreamProbeTarget
 	for rows.Next() {
-		var t target
-		if err := rows.Scan(&t.id, &t.name, &t.host, &t.port, &t.path, &t.expected); err != nil {
+		var t upstreamProbeTarget
+		if err := rows.Scan(
+			&t.id, &t.applicationID, &t.name, &t.scheme, &t.host, &t.port,
+			&t.path, &t.method, &t.timeoutSec, &t.expected, &t.tlsServerName, &t.tlsVerify,
+		); err != nil {
 			snap.Status = StatusUnknown
 			snap.Message = "源站清单读取失败"
 			return snap
@@ -590,49 +670,73 @@ ORDER BY created_at ASC LIMIT $1`, maxUpstreamProbes)
 		return snap
 	}
 	if len(targets) == 0 {
+		// 若此前存在已探测应用现已停用/关闭健康检查，需把 applications.health_status 重置为 UNKNOWN
+		c.syncApplicationHealthStatuses(ctx, nil)
 		snap.Status = StatusUp
-		snap.Message = "无启用健康检查的 HTTP 源站"
+		snap.Message = "无启用健康检查的源站"
 		snap.Metrics[MetricUpstreamTotal] = 0
 		snap.Metrics[MetricUpstreamHealthy] = 0
 		snap.Metrics[MetricUpstreamUnhealthy] = 0
 		return snap
 	}
 
+	records := make([]upstreamHealthRecord, len(targets))
+	healthyFlags := make([]bool, len(targets))
+	allowPrivate := c.allowPrivateUpstreams()
+	prober := c.opts.UpstreamProber
+	if prober == nil {
+		prober = upstreams.TestConnectivity
+	}
+
+	sem := make(chan struct{}, maxUpstreamProbeConcurrency)
+	var wg sync.WaitGroup
+	for i, t := range targets {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, target upstreamProbeTarget) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			timeout := probeTimeoutFor(target.timeoutSec, c.opts.UpstreamTimeout)
+			probeCtx, probeCancel := context.WithTimeout(ctx, timeout)
+			res := prober(probeCtx, upstreams.TestInput{
+				Scheme:          target.scheme,
+				Host:            target.host,
+				Port:            target.port,
+				Method:          probeMethodFor(target.method),
+				HealthCheckPath: target.path,
+				TLSServerName:   target.tlsServerName,
+				TLSVerify:       target.tlsVerify,
+				Timeout:         timeout,
+				AllowPrivate:    allowPrivate,
+			})
+			probeCancel()
+			rec, ok := evaluateUpstreamProbe(target, res)
+			records[idx] = rec
+			healthyFlags[idx] = ok
+		}(i, t)
+	}
+	wg.Wait()
+
 	healthy := 0
 	var failures []map[string]interface{}
-	var records []upstreamHealthRecord
-	for _, t := range targets {
-		probeCtx, probeCancel := context.WithTimeout(ctx, c.opts.UpstreamTimeout)
-		res := upstreams.TestConnectivity(probeCtx, upstreams.TestInput{
-			Scheme:          "http",
-			Host:            t.host,
-			Port:            t.port,
-			HealthCheckPath: t.path,
-		})
-		probeCancel()
-		rec := upstreamHealthRecord{
-			upstreamID:     t.id,
-			responseStatus: res.HTTPStatus,
-			responseTimeMs: res.ResponseTimeMs,
-			errorCode:      res.ErrorCode,
-			errorMessage:   res.ErrorMessage,
-		}
-		if res.ErrorCode == "" && upstreams.CheckExpectedStatus(res.HTTPStatus, t.expected) {
+	for i, rec := range records {
+		if healthyFlags[i] {
 			healthy++
-			rec.status = StatusUp
-		} else {
-			rec.status = StatusDown
-			if len(failures) < maxUpstreamFailDetails {
-				failures = append(failures, map[string]interface{}{
-					"name": t.name, "host": t.host, "port": t.port,
-					"error_code": res.ErrorCode, "http_status": res.HTTPStatus,
-				})
-			}
+			continue
 		}
-		records = append(records, rec)
+		if len(failures) < maxUpstreamFailDetails {
+			t := targets[i]
+			failures = append(failures, map[string]interface{}{
+				"name": t.name, "host": t.host, "port": t.port,
+				"error_code": rec.errorCode, "http_status": rec.responseStatus,
+			})
+		}
 	}
-	// 逐源站健康记录落库（报告/仪表盘数据源；此前该表无写入方，报告只能显示 UNKNOWN）
+	// 逐源站健康记录落库（源站列表、报告与仪表盘数据源）
 	c.writeUpstreamHealthRecords(ctx, records)
+	// 按应用聚合回写 applications.health_status（列表页、详情页与异常应用统计数据源）
+	c.syncApplicationHealthStatuses(ctx, aggregateAppHealthStatuses(targets, records))
+
 	total := len(targets)
 	unhealthy := total - healthy
 	snap.Metrics[MetricUpstreamTotal] = total
@@ -642,6 +746,144 @@ ORDER BY created_at ASC LIMIT $1`, maxUpstreamProbes)
 	snap.Status = upstreamStatus(total, healthy)
 	snap.Message = fmt.Sprintf("源站健康 %d/%d", healthy, total)
 	return snap
+}
+
+func probeTimeoutFor(upstreamTimeoutSec int, defaultTimeout time.Duration) time.Duration {
+	timeout := defaultTimeout
+	if upstreamTimeoutSec > 0 {
+		timeout = time.Duration(upstreamTimeoutSec) * time.Second
+	}
+	if timeout < time.Second {
+		return time.Second
+	}
+	if timeout > maxUpstreamProbeTimeout {
+		return maxUpstreamProbeTimeout
+	}
+	return timeout
+}
+
+func probeMethodFor(raw string) string {
+	m := strings.ToUpper(strings.TrimSpace(raw))
+	if m == "HEAD" {
+		return "HEAD"
+	}
+	return "GET"
+}
+
+// evaluateUpstreamProbe 将单次探测结果判定为 UP/DOWN 记录，并补齐非期望状态码的可读错误码与说明。
+func evaluateUpstreamProbe(target upstreamProbeTarget, res *upstreams.TestResult) (upstreamHealthRecord, bool) {
+	if res == nil {
+		return upstreamHealthRecord{
+			upstreamID:   target.id,
+			status:       StatusDown,
+			errorCode:    "CONNECTION_FAILED",
+			errorMessage: "源站探测无响应",
+		}, false
+	}
+	rec := upstreamHealthRecord{
+		upstreamID:     target.id,
+		responseStatus: res.HTTPStatus,
+		responseTimeMs: res.ResponseTimeMs,
+		errorCode:      res.ErrorCode,
+		errorMessage:   res.ErrorMessage,
+	}
+	if res.ErrorCode != "" {
+		rec.status = StatusDown
+		return rec, false
+	}
+	if !upstreams.CheckExpectedStatus(res.HTTPStatus, target.expected) {
+		expected := strings.TrimSpace(target.expected)
+		if expected == "" {
+			expected = "200"
+		}
+		rec.status = StatusDown
+		rec.errorCode = "UNEXPECTED_STATUS"
+		rec.errorMessage = fmt.Sprintf("HTTP %d 不符合期望状态码（%s）", res.HTTPStatus, expected)
+		return rec, false
+	}
+	rec.status = StatusUp
+	return rec, true
+}
+
+// aggregateAppHealthStatus 按应用下参与健康检查的活动源站结果推导应用健康状态：
+// 无探测源站 → UNKNOWN；全部正常 → HEALTHY；全部异常 → UNHEALTHY；部分正常 → DEGRADED。
+func aggregateAppHealthStatus(totalChecked, healthy int) string {
+	switch {
+	case totalChecked <= 0:
+		return AppHealthUnknown
+	case healthy >= totalChecked:
+		return AppHealthHealthy
+	case healthy <= 0:
+		return AppHealthUnhealthy
+	default:
+		return AppHealthDegraded
+	}
+}
+
+// aggregateAppHealthStatuses 将单轮各源站探测结果按 application_id 聚合为应用级健康状态。
+func aggregateAppHealthStatuses(targets []upstreamProbeTarget, records []upstreamHealthRecord) map[uuid.UUID]string {
+	type tally struct {
+		total   int
+		healthy int
+	}
+	counts := make(map[uuid.UUID]*tally)
+	for i, t := range targets {
+		if i >= len(records) {
+			break
+		}
+		c := counts[t.applicationID]
+		if c == nil {
+			c = &tally{}
+			counts[t.applicationID] = c
+		}
+		c.total++
+		if records[i].status == StatusUp {
+			c.healthy++
+		}
+	}
+	out := make(map[uuid.UUID]string, len(counts))
+	for appID, c := range counts {
+		out[appID] = aggregateAppHealthStatus(c.total, c.healthy)
+	}
+	return out
+}
+
+// syncApplicationHealthStatuses 回写 applications.health_status（不修改 version/updated_at，
+// 避免后台健康刷新触发管理员编辑表单的乐观锁冲突），并把已停用/关闭健康检查的应用复位为 UNKNOWN。
+func (c *Collector) syncApplicationHealthStatuses(ctx context.Context, appStatuses map[uuid.UUID]string) {
+	if c.db == nil {
+		return
+	}
+	qCtx, cancel := context.WithTimeout(ctx, probeDBTimeout)
+	defer cancel()
+	for appID, status := range appStatuses {
+		if _, err := c.db.Exec(qCtx, `
+UPDATE applications
+SET health_status = $1
+WHERE id = $2 AND deleted_at IS NULL AND health_status IS DISTINCT FROM $1`,
+			status, appID); err != nil {
+			slog.Error("update application health status failed", "application_id", appID, "status", status, "error", err)
+		}
+	}
+	if _, err := c.db.Exec(qCtx, `
+UPDATE applications a
+SET health_status = $1
+WHERE a.deleted_at IS NULL
+  AND a.health_status IS DISTINCT FROM $1
+  AND (
+    a.status <> 'ACTIVE'
+    OR a.deployment_mode = 'MIRROR'
+    OR NOT EXISTS (
+      SELECT 1 FROM upstreams u
+      WHERE u.application_id = a.id
+        AND u.deleted_at IS NULL
+        AND u.status = 'ACTIVE'
+        AND u.health_check_enabled = TRUE
+        AND u.scheme IN ('http', 'https')
+    )
+  )`, AppHealthUnknown); err != nil {
+		slog.Error("reset stale application health status failed", "error", err)
+	}
 }
 
 // upstreamHealthRecord 单条源站健康探测记录。

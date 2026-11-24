@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,8 +24,14 @@ import (
 	"github.com/jiuzhang-waf/server/internal/gatewayconfig"
 )
 
-// ErrNodeNotFound 节点不存在（GetNode / 同步登记编辑）。
+// ErrNodeNotFound 节点不存在（GetNode / 同步登记编辑 / 删除）。
 var ErrNodeNotFound = errors.New("api gateway node not found")
+
+// ErrNodeNameExists 节点名已存在（CreateNode 冲突）。
+var ErrNodeNameExists = errors.New("api gateway node name already exists")
+
+// ErrNodeInHAGroup 节点仍被主备高可用组引用，禁止删除。
+var ErrNodeInHAGroup = errors.New("api gateway node is referenced by an ha group")
 
 // Repository 节点视图仓储接口（*Store 实现；sweeper/handler 面向接口，便于测试注入）。
 type Repository interface {
@@ -42,10 +49,17 @@ type Repository interface {
 	UpdateNodeStatus(ctx context.Context, nodeName, status string, now time.Time) error
 	// GetNode 按 ID 查询节点（W18-SYNC 同步登记编辑/审计 before 用；不存在返回 ErrNodeNotFound）
 	GetNode(ctx context.Context, id uuid.UUID) (*Node, error)
-	// UpdateSyncRegistration 更新节点同步登记（W18-SYNC；admin_addr 空串 = 清除登记；
-	// 不清空 last_sync_*——它们是「上一次同步」的历史事实，与新登记共存如实呈现）
+	// GetNodeByName 按节点名查询节点（不存在返回 ErrNodeNotFound）
+	GetNodeByName(ctx context.Context, nodeName string) (*Node, error)
+	// CreateNode 手动登记新网关节点（节点名重复返回 ErrNodeNameExists）
+	CreateNode(ctx context.Context, in CreateNodeInput) (*Node, error)
+	// DeleteNode 删除网关节点（若被 ha_group_members 引用返回 ErrNodeInHAGroup）
+	DeleteNode(ctx context.Context, id uuid.UUID) error
+	// UpdateSyncRegistration 更新节点同步登记（向后兼容旧签名，仅改 admin_addr 与 sync_enabled）
 	UpdateSyncRegistration(ctx context.Context, id uuid.UUID, adminAddr string, syncEnabled bool) error
-	// ListSyncTargets 全量同步目标（W18-SYNC；sync_enabled 且 admin_addr 非空，
+	// UpdateNodeRegistration 更新节点完整同步登记（admin_addr / sync_agent_addr / 可选 sync_secret_ciphertext / sync_enabled）
+	UpdateNodeRegistration(ctx context.Context, id uuid.UUID, upd SyncRegistrationUpdate) error
+	// ListSyncTargets 全量同步目标（sync_enabled 且 admin_addr 或 sync_agent_addr 非空，
 	// gatewayconfig 发布扇出逐节点推送用）
 	ListSyncTargets(ctx context.Context) ([]gatewayconfig.SyncTarget, error)
 	// RecordSyncResult 回填单节点同步结果（W18-SYNC；last_sync_* + 本次版本）
@@ -225,11 +239,16 @@ ON CONFLICT (node_name) DO UPDATE SET
 	return err
 }
 
-// nodeCols 列表查询列（含 W18-SYNC 同步登记与结果列）。
+// nodeCols 列表查询列（含 W18-SYNC 同步登记与 000236 协同代理/遥测状态列；永不查出密文，只返回 has_sync_secret 布尔）。
 const nodeCols = `id, node_name, first_seen_at, last_seen_at, last_policy_version,
 	last_model_version, event_count, status,
 	admin_addr, sync_enabled, last_sync_at, last_sync_result, last_sync_error, last_sync_version_id,
+	sync_agent_addr, (sync_secret_ciphertext <> ''), reported_version,
+	ha_vip_status, ha_vip_status_at, network_status, network_status_at,
 	created_at, updated_at`
+
+const nodeCredCols = `id, node_name, admin_addr, sync_agent_addr, sync_secret_ciphertext, sync_enabled,
+	reported_version, ha_vip_status, ha_vip_status_at, network_status, network_status_at`
 
 // ListNodes 全量节点列表（node_name 升序）。
 func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
@@ -262,13 +281,227 @@ func (s *Store) GetNode(ctx context.Context, id uuid.UUID) (*Node, error) {
 	return &n, nil
 }
 
+// GetNodeByName 按节点名查询节点。
+func (s *Store) GetNodeByName(ctx context.Context, nodeName string) (*Node, error) {
+	row := s.db.QueryRow(ctx, `SELECT `+nodeCols+` FROM api_gateway_nodes WHERE node_name=$1`, strings.TrimSpace(nodeName))
+	var n Node
+	if err := scanNode(row, &n); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNodeNotFound
+		}
+		return nil, err
+	}
+	return &n, nil
+}
+
+// CreateNode 手动登记新网关节点（初始状态 SILENT、last_seen_at 置 Unix 纪元，
+// 直到首次心跳或 hasyncd 遥测推进活性；节点名冲突返回 ErrNodeNameExists）。
+func (s *Store) CreateNode(ctx context.Context, in CreateNodeInput) (*Node, error) {
+	nodeName := strings.TrimSpace(in.NodeName)
+	if nodeName == "" {
+		return nil, fmt.Errorf("node_name required")
+	}
+	now := time.Now().UTC()
+	neverSeen := time.Unix(0, 0).UTC()
+	row := s.db.QueryRow(ctx, `
+INSERT INTO api_gateway_nodes
+(node_name, first_seen_at, last_seen_at, last_policy_version, last_model_version, event_count, status,
+ admin_addr, sync_agent_addr, sync_secret_ciphertext, sync_enabled, created_at, updated_at)
+VALUES ($1, $2, $3, '', '', 0, $4, $5, $6, $7, $8, $2, $2)
+RETURNING `+nodeCols,
+		nodeName, now, neverSeen, StatusSilent,
+		strings.TrimSpace(in.AdminAddr), strings.TrimSpace(in.SyncAgentAddr), in.SyncSecretCiphertext, in.SyncEnabled)
+	var n Node
+	if err := scanNode(row, &n); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, ErrNodeNameExists
+		}
+		return nil, err
+	}
+	return &n, nil
+}
+
+// DeleteNode 删除网关节点（事务内校验 ha_group_members 引用，存在引用返回 ErrNodeInHAGroup）。
+func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var inGroup bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM ha_group_members WHERE node_id = $1)`, id).Scan(&inGroup); err != nil {
+		return err
+	}
+	if inGroup {
+		return ErrNodeInHAGroup
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM api_gateway_nodes WHERE id = $1`, id)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return ErrNodeInHAGroup
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNodeNotFound
+	}
+	return tx.Commit(ctx)
+}
+
 // scanNode 按 nodeCols 列序扫描单行（pgx.Row 与 pgx.Rows 共用）。
 func scanNode(row pgx.Row, n *Node) error {
-	return row.Scan(&n.ID, &n.NodeName, &n.FirstSeenAt, &n.LastSeenAt,
+	var haRaw, netRaw []byte
+	err := row.Scan(&n.ID, &n.NodeName, &n.FirstSeenAt, &n.LastSeenAt,
 		&n.LastPolicyVersion, &n.LastModelVersion, &n.EventCount, &n.Status,
 		&n.AdminAddr, &n.SyncEnabled, &n.LastSyncAt, &n.LastSyncResult,
 		&n.LastSyncError, &n.LastSyncVersionID,
+		&n.SyncAgentAddr, &n.HasSyncSecret, &n.ReportedVersion,
+		&haRaw, &n.HaVipStatusAt, &netRaw, &n.NetworkStatusAt,
 		&n.CreatedAt, &n.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	if len(haRaw) > 0 {
+		n.HaVipStatus = json.RawMessage(haRaw)
+	} else {
+		n.HaVipStatus = nil
+	}
+	if len(netRaw) > 0 {
+		n.NetworkStatus = json.RawMessage(netRaw)
+	} else {
+		n.NetworkStatus = nil
+	}
+	return nil
+}
+
+func scanNodeCredentials(row pgx.Row, c *NodeSyncCredentials) error {
+	var haRaw, netRaw []byte
+	err := row.Scan(&c.NodeID, &c.NodeName, &c.AdminAddr, &c.SyncAgentAddr, &c.SyncSecretCiphertext, &c.SyncEnabled,
+		&c.ReportedVersion, &haRaw, &c.HaVipStatusAt, &netRaw, &c.NetworkStatusAt)
+	if err != nil {
+		return err
+	}
+	if len(haRaw) > 0 {
+		c.HaVipStatus = json.RawMessage(haRaw)
+	} else {
+		c.HaVipStatus = nil
+	}
+	if len(netRaw) > 0 {
+		c.NetworkStatus = json.RawMessage(netRaw)
+	} else {
+		c.NetworkStatus = nil
+	}
+	return nil
+}
+
+// GetNodeSyncCredentials 按 ID 获取节点协同凭据与状态快照（内部 nodesync 专用）。
+func (s *Store) GetNodeSyncCredentials(ctx context.Context, id uuid.UUID) (*NodeSyncCredentials, error) {
+	row := s.db.QueryRow(ctx, `SELECT `+nodeCredCols+` FROM api_gateway_nodes WHERE id=$1`, id)
+	var c NodeSyncCredentials
+	if err := scanNodeCredentials(row, &c); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNodeNotFound
+		}
+		return nil, err
+	}
+	return &c, nil
+}
+
+// GetNodeSyncCredentialsByName 按节点名获取节点协同凭据与状态快照（内部 nodesync 专用）。
+func (s *Store) GetNodeSyncCredentialsByName(ctx context.Context, nodeName string) (*NodeSyncCredentials, error) {
+	row := s.db.QueryRow(ctx, `SELECT `+nodeCredCols+` FROM api_gateway_nodes WHERE node_name=$1`, strings.TrimSpace(nodeName))
+	var c NodeSyncCredentials
+	if err := scanNodeCredentials(row, &c); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNodeNotFound
+		}
+		return nil, err
+	}
+	return &c, nil
+}
+
+// ListNodesWithSyncAgent 返回所有配置了 sync_agent_addr 的节点凭据（供 TelemetrySweeper 周期轮询）。
+func (s *Store) ListNodesWithSyncAgent(ctx context.Context) ([]NodeSyncCredentials, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+nodeCredCols+` FROM api_gateway_nodes WHERE sync_agent_addr <> '' ORDER BY node_name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []NodeSyncCredentials{}
+	for rows.Next() {
+		var c NodeSyncCredentials
+		if err := scanNodeCredentials(rows, &c); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ListNodeCredentialsByNames 批量按节点名查询凭据与状态快照（HA 汇聚/多节点检查用）。
+func (s *Store) ListNodeCredentialsByNames(ctx context.Context, nodeNames []string) ([]NodeSyncCredentials, error) {
+	if len(nodeNames) == 0 {
+		return []NodeSyncCredentials{}, nil
+	}
+	rows, err := s.db.Query(ctx, `SELECT `+nodeCredCols+` FROM api_gateway_nodes WHERE node_name = ANY($1) ORDER BY node_name`, nodeNames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []NodeSyncCredentials{}
+	for rows.Next() {
+		var c NodeSyncCredentials
+		if err := scanNodeCredentials(rows, &c); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// UpdateNodeTelemetry 持久化节点协同代理遥测快照（GET /v1/status 周期拉取回填）。
+// last_seen_at 遵循合并不回退口径；ha_vip_status / network_status 按最新一次成功响应整体覆写（无文件时落 NULL 避免残留过期快照）。
+func (s *Store) UpdateNodeTelemetry(ctx context.Context, upd NodeTelemetryUpdate) error {
+	nodeName := strings.TrimSpace(upd.NodeName)
+	if nodeName == "" {
+		return fmt.Errorf("telemetry node name required")
+	}
+	now := time.Now().UTC()
+	lastSeen := upd.LastSeenAt.UTC()
+	if lastSeen.IsZero() {
+		lastSeen = now
+	}
+	var haRaw []byte
+	if len(upd.HaVipStatus) > 0 {
+		haRaw = []byte(upd.HaVipStatus)
+	}
+	var netRaw []byte
+	if len(upd.NetworkStatus) > 0 {
+		netRaw = []byte(upd.NetworkStatus)
+	}
+	status := StatusFor(now, lastSeen)
+	res, err := s.db.Exec(ctx, `
+UPDATE api_gateway_nodes
+SET last_seen_at        = GREATEST(last_seen_at, $2),
+    status              = CASE WHEN $2 >= last_seen_at THEN $3 ELSE status END,
+    last_policy_version = CASE WHEN $4 <> '' THEN $4 ELSE last_policy_version END,
+    reported_version    = CASE WHEN $5 <> '' THEN $5 ELSE reported_version END,
+    ha_vip_status       = $6,
+    ha_vip_status_at    = $7,
+    network_status      = $8,
+    network_status_at   = $9,
+    updated_at          = $10
+WHERE node_name = $1`,
+		nodeName, lastSeen, status,
+		strings.TrimSpace(upd.PolicyVersion), strings.TrimSpace(upd.ReportedVersion),
+		haRaw, upd.HaVipStatusAt, netRaw, upd.NetworkStatusAt, now)
+	if err != nil {
+		return err
+	}
+	return ensureNodeUpdate(res)
 }
 
 // UpdateSyncRegistration 更新节点同步登记（admin_addr 已在 handler 层校验；
@@ -286,11 +519,34 @@ UPDATE api_gateway_nodes SET admin_addr=$2, sync_enabled=$3, updated_at=now() WH
 	return nil
 }
 
-// ListSyncTargets 全量同步目标（sync_enabled 且已登记 admin_addr；node_name 升序）。
+// UpdateNodeRegistration 更新节点完整同步登记（admin_addr / sync_agent_addr / 可选 sync_secret_ciphertext / sync_enabled）。
+func (s *Store) UpdateNodeRegistration(ctx context.Context, id uuid.UUID, upd SyncRegistrationUpdate) error {
+	var res pgconn.CommandTag
+	var err error
+	if upd.SyncSecretCiphertext == nil {
+		res, err = s.db.Exec(ctx, `
+UPDATE api_gateway_nodes
+SET admin_addr=$2, sync_agent_addr=$3, sync_enabled=$4, updated_at=now()
+WHERE id=$1`,
+			id, upd.AdminAddr, upd.SyncAgentAddr, upd.SyncEnabled)
+	} else {
+		res, err = s.db.Exec(ctx, `
+UPDATE api_gateway_nodes
+SET admin_addr=$2, sync_agent_addr=$3, sync_secret_ciphertext=$4, sync_enabled=$5, updated_at=now()
+WHERE id=$1`,
+			id, upd.AdminAddr, upd.SyncAgentAddr, *upd.SyncSecretCiphertext, upd.SyncEnabled)
+	}
+	if err != nil {
+		return err
+	}
+	return ensureNodeUpdate(res)
+}
+
+// ListSyncTargets 全量同步目标（sync_enabled 且已登记 admin_addr 或 sync_agent_addr；node_name 升序）。
 func (s *Store) ListSyncTargets(ctx context.Context) ([]gatewayconfig.SyncTarget, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT id, node_name, admin_addr FROM api_gateway_nodes
-WHERE sync_enabled = TRUE AND admin_addr <> '' ORDER BY node_name`)
+SELECT id, node_name, admin_addr, sync_agent_addr FROM api_gateway_nodes
+WHERE sync_enabled = TRUE AND (admin_addr <> '' OR sync_agent_addr <> '') ORDER BY node_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +554,7 @@ WHERE sync_enabled = TRUE AND admin_addr <> '' ORDER BY node_name`)
 	out := []gatewayconfig.SyncTarget{}
 	for rows.Next() {
 		var t gatewayconfig.SyncTarget
-		if err := rows.Scan(&t.NodeID, &t.NodeName, &t.AdminAddr); err != nil {
+		if err := rows.Scan(&t.NodeID, &t.NodeName, &t.AdminAddr, &t.SyncAgentAddr); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -307,12 +563,12 @@ WHERE sync_enabled = TRUE AND admin_addr <> '' ORDER BY node_name`)
 }
 
 // ListFailedSyncTargets 返回指定配置版本最近一次同步失败或哈希不一致的节点。
-// 仅选择当前仍启用且登记了管理地址的节点，供发布恢复入口定向重试；没有记录该版本
+// 仅选择当前仍启用且登记了管理地址或协同代理地址的节点，供发布恢复入口定向重试；没有记录该版本
 // 的节点不在结果中，避免把尚未参与该版本发布的节点误当作失败节点。
 func (s *Store) ListFailedSyncTargets(ctx context.Context, versionID uuid.UUID) ([]gatewayconfig.SyncTarget, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT id, node_name, admin_addr FROM api_gateway_nodes
-WHERE sync_enabled = TRUE AND admin_addr <> ''
+SELECT id, node_name, admin_addr, sync_agent_addr FROM api_gateway_nodes
+WHERE sync_enabled = TRUE AND (admin_addr <> '' OR sync_agent_addr <> '')
   AND last_sync_version_id = $1
   AND last_sync_result IN ($2, $3)
 ORDER BY node_name`, versionID, gatewayconfig.NodeSyncFailed, gatewayconfig.NodeSyncHashMismatch)
@@ -323,7 +579,7 @@ ORDER BY node_name`, versionID, gatewayconfig.NodeSyncFailed, gatewayconfig.Node
 	out := []gatewayconfig.SyncTarget{}
 	for rows.Next() {
 		var t gatewayconfig.SyncTarget
-		if err := rows.Scan(&t.NodeID, &t.NodeName, &t.AdminAddr); err != nil {
+		if err := rows.Scan(&t.NodeID, &t.NodeName, &t.AdminAddr, &t.SyncAgentAddr); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

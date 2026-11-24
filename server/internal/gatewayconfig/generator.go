@@ -51,6 +51,15 @@ type GenerateInput struct {
 	// TransparentHTTPSListen 透明串接模式专用 HTTPS 回环监听地址（与 tproxyd.json target_tls 同步，
 	// 缺省 127.0.0.1:15443；避免与控制台 8443 端口冲突）。
 	TransparentHTTPSListen string
+	// ACMEHTTP01 自动 SSL HTTP-01 挑战应答配置（nil 或 Enabled=false 时零变化）。
+	ACMEHTTP01 *ACMEHTTP01Config
+}
+
+// ACMEHTTP01Config 是网关 ACME HTTP-01 挑战应答配置（jiuzhang_acme_http01）。
+type ACMEHTTP01Config struct {
+	Enabled      bool         `json:"enabled"`
+	ChallengeDir string       `json:"challenge_dir,omitempty"`
+	Valkey       *GuardValkey `json:"valkey,omitempty"`
 }
 
 // AppData 是单个应用的完整数据。
@@ -64,10 +73,16 @@ type AppData struct {
 	DeploymentMode string
 	Domains        []applications.Domain
 	Upstreams      []applications.Upstream
-	// 证书（HTTPS 应用）：PEM 与私钥 PEM（发布时解密提供）。
+	// 证书（HTTPS 应用）：PEM 与私钥 PEM（发布时解密提供，仅内存流转，不入审计日志）。
 	CertID       string
-	CertFileName string // 写入网关证书目录的文件名（不含目录）
+	CertFileName string // 写入网关证书目录的文件名（不含目录，向后兼容 load_files 回退）
+	CertPEM      string // 证书 PEM（与 KeyPEM 同时非空时优先产出 Caddy 原生 load_pem）
+	ChainPEM     string // 证书链 PEM（可选，合并至 certificate 尾部）
+	KeyPEM       string // 私钥 PEM（仅内存流转，版本表与预览强制脱敏）
 	HasCert      bool
+	// PendingAutoSSL 标记开启自动 SSL 且尚未签发首次证书的应用：
+	// 允许先发布 :80 HTTP 与 ACME 挑战路由，暂缓生成 :443 HTTPS 与 308 跳转，待证书签发后再自动发布上线。
+	PendingAutoSSL bool
 	// 阶段4策略参数（可选，为零值时使用默认）
 	ParanoiaLevel     int
 	InboundThreshold  int
@@ -141,24 +156,29 @@ func Generate(in GenerateInput) (*Generated, error) {
 		},
 	}
 
-	// apps.tls 段（证书文件加载 + TLS 会话票据密钥），任一存在才产出：
-	//   - certificates.load_files：HTTPS 应用证书，引用发布器写入网关证书目录的
-	//     <certID>.pem/.key（files.go WriteCertificateFiles 落盘约定），每个证书以
-	//     certTag 打标，供 server tls_connection_policies 的
-	//     certificate_selection.any_tag 选择（见 buildTLSPolicies）；
-	//   - session_tickets（HA §7.2）：配置了下发 tls.stek.jiuzhang 静态键
-	//     （主备多节点共用 → 会话恢复跨节点可用）；
-	// 均未配置保持缺省（无 apps.tls 段，Go 标准库进程内随机票据键，跨节点恢复
-	// 回退完整握手，如实记录）。
+	// apps.tls 段（内联 PEM 证书 / 兼容证书文件加载 + TLS 会话票据密钥），任一存在才产出：
+	//   - certificates.load_pem：优先路径，使用 Caddy 原生 PEMLoader 在内存中直接加载证书链与私钥
+	//     （跨节点扇出无需共享本地证书目录，版本存储由 RedactConfigSecrets 强制脱敏 key 为 "***"）；
+	//   - certificates.load_files：向后兼容路径，仅当应用仅提供 CertFileName 而无内联 PEM 时产出；
+	//   - session_tickets（HA §7.2）：配置了下发 tls.stek.jiuzhang 静态键（支持 1~2 键平滑轮换，
+	//     主备多节点共用 → 会话恢复跨节点可用）；
+	// 均未配置保持缺省（无 apps.tls 段，Go 标准库进程内随机票据键，跨节点恢复回退完整握手）。
 	tlsApp := mapT{}
-	if pairs := buildCertFilePairs(in); len(pairs) > 0 {
-		tlsApp["certificates"] = mapT{"load_files": pairs}
+	certsCfg := mapT{}
+	if pemPairs := buildCertPEMPairs(in); len(pemPairs) > 0 {
+		certsCfg["load_pem"] = pemPairs
 	}
-	if in.Guard != nil && in.Guard.TLSSessionTicketKey != "" {
+	if filePairs := buildCertFilePairs(in); len(filePairs) > 0 {
+		certsCfg["load_files"] = filePairs
+	}
+	if len(certsCfg) > 0 {
+		tlsApp["certificates"] = certsCfg
+	}
+	if ticketKeys := in.Guard.EffectiveTLSSessionTicketKeys(); len(ticketKeys) > 0 {
 		tlsApp["session_tickets"] = mapT{
 			"key_source": mapT{
 				"provider": "jiuzhang",
-				"keys_hex": []string{in.Guard.TLSSessionTicketKey},
+				"keys_hex": ticketKeys,
 			},
 		}
 	}
@@ -284,8 +304,9 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 			// 泛域名 Caddy 用 *.example.com 形式（Caddy 支持通配符 host matcher）
 			if d.HTTPEnabled && d.HTTPPort != nil {
 				var entries []routeEntry
-				// HTTP 跳 HTTPS：仅返回 308 重定向，绝不下发路径转发路由绕过 HTTPS 强制跳转
-				if d.RedirectHTTPToHTTPS && d.HTTPSEnabled {
+				// HTTP 跳 HTTPS：仅返回 308 重定向，绝不下发路径转发路由绕过 HTTPS 强制跳转；
+				// 处于 PendingAutoSSL 首次等待签发期时暂缓 308 跳转，避免把流量导向尚未就绪的 HTTPS 端口。
+				if d.RedirectHTTPToHTTPS && d.HTTPSEnabled && !app.PendingAutoSSL {
 					location := "https://{http.request.host}{http.request.uri}"
 					if d.HTTPSPort != nil && *d.HTTPSPort != 443 {
 						location = fmt.Sprintf("https://{http.request.host}:%d{http.request.uri}", *d.HTTPSPort)
@@ -313,7 +334,7 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 					httpServers[addr] = append(httpServers[addr], entries...)
 				}
 			}
-			if d.HTTPSEnabled && d.HTTPSPort != nil {
+			if d.HTTPSEnabled && d.HTTPSPort != nil && !app.PendingAutoSSL {
 				route := mapT{
 					"match":  []interface{}{mapT{"host": hosts}},
 					"handle": buildHandles(in, app, d, *d.HTTPSPort),
@@ -333,12 +354,20 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 	routeCount := 0
 	serverIdx := 0
 
+	acmeEnabled := in.ACMEHTTP01 != nil && in.ACMEHTTP01.Enabled
+	hasPublicPort80 := false
+
 	// HTTP servers（REVERSE_PROXY / ROUTED）
 	for _, addr := range sortedKeys(httpServers) {
 		entries := httpServers[addr]
 		// 路由按应用编码排序（确定性）；stable 保持同应用内路径转发先于默认路由
 		sort.SliceStable(entries, func(i, j int) bool { return entries[i].appCode < entries[j].appCode })
 		var routes []interface{}
+		if acmeEnabled && addr == ":80" {
+			hasPublicPort80 = true
+			routes = append(routes, buildACMEHTTP01Route(in))
+			routeCount++
+		}
 		for _, e := range entries {
 			routes = append(routes, e.route)
 			routeCount++
@@ -351,6 +380,24 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 			"errors":          buildErrorRoutes(in),
 		}
 		serverIdx++
+	}
+	// 开启 ACME HTTP-01 但尚无公网 :80 站点时，合成专用 :80 挑战应答 server（保证纯 HTTPS 站点或首个自动 SSL 站点完成 HTTP-01）
+	if acmeEnabled && !hasPublicPort80 {
+		servers["srv_acme_http01"] = mapT{
+			"listen": []string{":80"},
+			"routes": []interface{}{
+				buildACMEHTTP01Route(in),
+				mapT{
+					"handle": []interface{}{
+						mapT{"handler": "static_response", "status_code": 404, "body": "404 Not Found"},
+					},
+				},
+			},
+			"automatic_https": mapT{"disable": true},
+			"logs":            mapT{"default_logger_name": "access"},
+			"errors":          buildErrorRoutes(in),
+		}
+		routeCount++
 	}
 	// HTTPS servers（REVERSE_PROXY / ROUTED，带证书）
 	publicTLSPolicies := buildTLSPoliciesForMode(in, false)
@@ -382,7 +429,11 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 		sort.SliceStable(transparentHTTPRoutes, func(i, j int) bool {
 			return transparentHTTPRoutes[i].appCode < transparentHTTPRoutes[j].appCode
 		})
-		routes := make([]interface{}, 0, len(transparentHTTPRoutes))
+		routes := make([]interface{}, 0, len(transparentHTTPRoutes)+1)
+		if acmeEnabled {
+			routes = append(routes, buildACMEHTTP01Route(in))
+			routeCount++
+		}
 		for _, e := range transparentHTTPRoutes {
 			routes = append(routes, e.route)
 			routeCount++
@@ -434,6 +485,31 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 		servers["srv_transparent_https"] = server
 	}
 	return servers, routeCount
+}
+
+// buildACMEHTTP01Route 构建 ACME HTTP-01 挑战应答路由（位于 :80 路由表最前，优先于 308 跳转、Guard 与 WAF）。
+// 未命中已注册挑战令牌时由 jiuzhang_acme_http01 原样透传后续路由。
+func buildACMEHTTP01Route(in GenerateInput) mapT {
+	challengeDir := ""
+	if in.ACMEHTTP01 != nil {
+		challengeDir = strings.TrimSpace(in.ACMEHTTP01.ChallengeDir)
+	}
+	if challengeDir == "" {
+		challengeDir = filepath.Join(in.CertFileDir, ".acme-challenges")
+	}
+	handler := mapT{
+		"handler":       "jiuzhang_acme_http01",
+		"challenge_dir": challengeDir,
+	}
+	if in.ACMEHTTP01 != nil && in.ACMEHTTP01.Valkey != nil && strings.TrimSpace(in.ACMEHTTP01.Valkey.Address) != "" {
+		handler["valkey"] = in.ACMEHTTP01.Valkey
+	}
+	return mapT{
+		"match": []interface{}{
+			mapT{"path": []string{"/.well-known/acme-challenge/*"}},
+		},
+		"handle": []interface{}{handler},
+	}
 }
 
 // buildErrorRoutes 构建 server 级错误路由（等价静态 Caddyfile 的 handle_errors 块）。
@@ -490,31 +566,100 @@ func buildErrorRoutes(in GenerateInput) mapT {
 }
 
 // certTag 返回证书选择标签：取证书 ID（发布器 buildSnapshot 保证随 HasCert 一并设置）；
-// 缺失 ID 的输入退化为证书文件名。load_files 与连接策略经同一函数取标签，保证两侧一致。
+// 缺失 ID 的输入依次退化为证书文件名/应用标识。load_pem/load_files 与连接策略经同一函数取标签，保证两侧一致。
 func certTag(app AppData) string {
 	if app.CertID != "" {
 		return app.CertID
 	}
-	return app.CertFileName
+	if app.CertFileName != "" {
+		return app.CertFileName
+	}
+	if app.AppID != "" {
+		return app.AppID
+	}
+	return app.Code
 }
 
-// buildCertFilePairs 构建 apps.tls.certificates.load_files 条目（Caddy v2.11.4
-// tls.certificates.load_files，modules/caddytls/fileloader.go）：引用发布器写入
-// 网关证书目录（CertFileDir 为网关内路径）的证书/私钥文件，每个证书以 certTag 打标；
-// 同一证书被多应用绑定只加载一次（按 tag 去重），条目按 tag 排序保证确定性。
-func buildCertFilePairs(in GenerateInput) []interface{} {
+func hasCertPEM(app AppData) bool {
+	return app.HasCert && strings.TrimSpace(app.CertPEM) != "" && strings.TrimSpace(app.KeyPEM) != ""
+}
+
+func hasCertFile(app AppData) bool {
+	return app.HasCert && app.CertFileName != ""
+}
+
+// mergeCertChainPEM 将非空证书链合并到主证书 PEM 尾部（若主证书内尚未包含该链）。
+func mergeCertChainPEM(certPEM, chainPEM string) string {
+	chainTrim := strings.TrimSpace(chainPEM)
+	if chainTrim == "" {
+		return certPEM
+	}
+	certTrim := strings.TrimSpace(certPEM)
+	if certTrim == "" {
+		return chainPEM
+	}
+	normCert := strings.ReplaceAll(certTrim, "\r\n", "\n")
+	normChain := strings.ReplaceAll(chainTrim, "\r\n", "\n")
+	if strings.Contains(normCert, normChain) {
+		return certPEM
+	}
+	return normCert + "\n" + normChain + "\n"
+}
+
+// buildCertPEMPairs 构建 apps.tls.certificates.load_pem 条目（Caddy v2.11.4
+// tls.certificates.load_pem，modules/caddytls/pemloader.go）：将证书链与私钥直接以
+// PEM 形式下发内存加载，彻底解除跨节点共享证书磁盘文件的依赖；同一证书多应用绑定按 tag 去重并排序。
+func buildCertPEMPairs(in GenerateInput) []interface{} {
 	seen := map[string]bool{}
 	var pairs []interface{}
 	for _, app := range in.Apps {
-		// 无证书或缺文件名无从引用；MIRROR 应用无内联站点路由，不加载其证书
-		if !app.HasCert || app.CertFileName == "" {
+		if !hasCertPEM(app) {
 			continue
 		}
 		if app.DeploymentMode == applications.DeployModeMirror {
 			continue
 		}
 		tag := certTag(app)
-		if seen[tag] {
+		if tag == "" || seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		pairs = append(pairs, mapT{
+			"certificate": mergeCertChainPEM(app.CertPEM, app.ChainPEM),
+			"key":         app.KeyPEM,
+			"tags":        []string{tag},
+		})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		return pairs[i].(mapT)["tags"].([]string)[0] < pairs[j].(mapT)["tags"].([]string)[0]
+	})
+	return pairs
+}
+
+// buildCertFilePairs 构建 apps.tls.certificates.load_files 条目（向后兼容路径）：
+// 仅在应用未提供内联 PEM（CertPEM/KeyPEM 为空）且具备 CertFileName 时产出；
+// 同一证书被多应用绑定或已由 load_pem 加载时只加载一次（按 tag 去重），按 tag 排序保证确定性。
+func buildCertFilePairs(in GenerateInput) []interface{} {
+	pemTags := map[string]bool{}
+	for _, app := range in.Apps {
+		if hasCertPEM(app) && app.DeploymentMode != applications.DeployModeMirror {
+			if tag := certTag(app); tag != "" {
+				pemTags[tag] = true
+			}
+		}
+	}
+	seen := map[string]bool{}
+	var pairs []interface{}
+	for _, app := range in.Apps {
+		// 优先使用 load_pem；无内联 PEM 且缺文件名无从引用；MIRROR 应用无内联站点路由，不加载其证书
+		if hasCertPEM(app) || !hasCertFile(app) {
+			continue
+		}
+		if app.DeploymentMode == applications.DeployModeMirror {
+			continue
+		}
+		tag := certTag(app)
+		if tag == "" || pemTags[tag] || seen[tag] {
 			continue
 		}
 		seen[tag] = true
@@ -531,19 +676,19 @@ func buildCertFilePairs(in GenerateInput) []interface{} {
 	return pairs
 }
 
-// buildTLSPolicies 构建 TLS 连接策略（证书文件引用）：默认用于公网 HTTPS server。
+// buildTLSPolicies 构建 TLS 连接策略（证书选择）：默认用于公网 HTTPS server。
 func buildTLSPolicies(in GenerateInput) []interface{} {
 	return buildTLSPoliciesForMode(in, false)
 }
 
 // buildTLSPoliciesForMode 按透明/非透明模式隔离构建 TLS 连接策略：按证书 tag 分组，
-// 每组一条策略——SNI 命中该组域名时由 certificate_selection.any_tag 选中 load_files 以
+// 每组一条策略——SNI 命中该组域名时由 certificate_selection.any_tag 选中 load_pem/load_files 以
 // 同一 tag 加载的证书，使每个域名关联到本应用的证书。any_tag 在 Caddy v2.11.4 为 []string
 // （modules/caddytls/certselection.go），输出字符串会在 /load 直接失败。
 func buildTLSPoliciesForMode(in GenerateInput, transparentOnly bool) []interface{} {
 	groups := map[string][]string{} // cert tag -> sni domains
 	for _, app := range in.Apps {
-		if !app.HasCert || app.CertFileName == "" {
+		if !hasCertPEM(app) && !hasCertFile(app) {
 			continue
 		}
 		// MIRROR 应用无内联站点路由，不为其域名生成 TLS 连接策略
@@ -555,6 +700,9 @@ func buildTLSPoliciesForMode(in GenerateInput, transparentOnly bool) []interface
 			continue
 		}
 		tag := certTag(app)
+		if tag == "" {
+			continue
+		}
 		for _, d := range app.Domains {
 			if d.HTTPSEnabled {
 				groups[tag] = append(groups[tag], d.NormalizedHostname)

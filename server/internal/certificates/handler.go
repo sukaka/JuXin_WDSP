@@ -40,9 +40,10 @@ func (h *Handler) SetDomainLister(apps DomainLister) {
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	status := r.URL.Query().Get("status")
+	includeReplaced := r.URL.Query().Get("include_replaced") == "true" || status == StatusReplaced
 	page := queryInt(r, "page", 1)
 	pageSize := queryInt(r, "page_size", 20)
-	list, total, err := h.store.List(r.Context(), name, status, page, pageSize)
+	list, total, err := h.store.ListWithOptions(r.Context(), name, status, includeReplaced, page, pageSize)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
@@ -171,6 +172,10 @@ func (h *Handler) GetApplication(w http.ResponseWriter, r *http.Request) {
 // ---------- 辅助 ----------
 
 func certItem(c *Certificate, usage int) map[string]interface{} {
+	managedBy := c.ManagedBy
+	if managedBy == "" {
+		managedBy = ManagedByManual
+	}
 	return map[string]interface{}{
 		"id": c.ID, "name": c.Name, "certificate_type": c.CertificateType,
 		"common_name": c.CommonName, "subject": c.Subject, "issuer": c.Issuer,
@@ -178,6 +183,11 @@ func certItem(c *Certificate, usage int) map[string]interface{} {
 		"fingerprint_sha256": c.FingerprintSHA256, "public_key_algorithm": c.PublicKeyAlgorithm,
 		"public_key_bits": c.PublicKeyBits, "signature_algorithm": c.SignatureAlgorithm,
 		"san_domains": c.SANDomains, "status": c.Status, "usage_count": usage,
+		"managed_by": managedBy, "acme_provider": c.ACMEProvider,
+		"acme_directory_url": c.ACMEDirectoryURL, "auto_renew": c.AutoRenew,
+		"renew_before_days": c.RenewBeforeDays,
+		"replaces_certificate_id": c.ReplacesCertificateID,
+		"superseded_by": c.SupersededBy, "last_renewed_at": c.LastRenewedAt,
 		"created_at": c.CreatedAt, "updated_at": c.UpdatedAt, "version": c.Version,
 	}
 }

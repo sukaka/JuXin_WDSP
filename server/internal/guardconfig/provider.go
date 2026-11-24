@@ -807,10 +807,19 @@ func RedactGuardConfig(cfg *gatewayconfig.GuardConfig) *gatewayconfig.GuardConfi
 	if cfg.IdentitySalt != "" {
 		cp.IdentitySalt = "***"
 	}
-	// tls_session_ticket_key 为 TLS 会话票据密钥明文，快照脱敏（同一纪律）；
+	// tls_session_ticket_key / tls_session_ticket_keys 为 TLS 会话票据密钥明文，快照脱敏（同一纪律）；
 	// 回滚发布时按当前 gateway_runtime 设置重新注入
 	if cfg.TLSSessionTicketKey != "" {
 		cp.TLSSessionTicketKey = "***"
+	}
+	if len(cfg.TLSSessionTicketKeys) > 0 {
+		redactedKeys := make([]string, len(cfg.TLSSessionTicketKeys))
+		for i, k := range cfg.TLSSessionTicketKeys {
+			if k != "" {
+				redactedKeys[i] = "***"
+			}
+		}
+		cp.TLSSessionTicketKeys = redactedKeys
 	}
 	if cfg.APIAuthzObjectHMACKeyHex != "" {
 		cp.APIAuthzObjectHMACKeyHex = "***"
@@ -982,6 +991,7 @@ func (p *Provider) replayRuntimeSecrets(ctx context.Context, cfg *gatewayconfig.
 		cfg.BehaviorStoreTTLSeconds = 0
 		cfg.IdentitySalt = ""
 		cfg.TLSSessionTicketKey = ""
+		cfg.TLSSessionTicketKeys = nil
 		cfg.CredentialIPSpreadLimit = 0
 		cfg.CredentialConcurrencyLimit = 0
 		cfg.CredentialRatePerMinute = 0

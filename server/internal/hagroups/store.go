@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,9 @@ var ErrVersionConflict = errors.New("ha group version conflict")
 // ErrNameConflict 组名冲突。
 var ErrNameConflict = errors.New("ha group name conflict")
 
+// ErrNodeAlreadyInGroup 成员节点已归属其他主备组。
+var ErrNodeAlreadyInGroup = errors.New("ha group member node already in another group")
+
 // Repository 仓储接口（*Store 与 *MemStore 实现）。
 type Repository interface {
 	List(ctx context.Context) ([]Group, error)
@@ -35,6 +39,7 @@ type Repository interface {
 	Update(ctx context.Context, g *Group, authCiphertext *string) error
 	// Delete 删除组（成员级联）。
 	Delete(ctx context.Context, id string) error
+	EventRepository
 }
 
 // ---------- PostgreSQL ----------
@@ -48,23 +53,44 @@ type Store struct {
 func NewStore(db *pgxpool.Pool) *Store { return &Store{db: db} }
 
 const groupCols = `id, name, state, vrid, iface, vips, preempt, advert_int_ms, unicast, unicast_peers,
-COALESCE(auth_ciphertext, ''), version, created_at, updated_at`
+track_interfaces, COALESCE(auth_ciphertext, ''), version, created_at, updated_at`
+
+func marshalStringSlice(s []string) ([]byte, error) {
+	if s == nil {
+		s = []string{}
+	}
+	return json.Marshal(s)
+}
 
 func scanGroup(row interface{ Scan(...any) error }) (*Group, error) {
 	var g Group
-	var vips, peers []byte
+	var vips, peers, tracks []byte
 	var authCipher string
 	var createdAt, updatedAt time.Time
 	err := row.Scan(&g.ID, &g.Name, &g.State, &g.VRID, &g.Iface, &vips, &g.Preempt,
-		&g.AdvertIntMs, &g.Unicast, &peers, &authCipher, &g.Version, &createdAt, &updatedAt)
+		&g.AdvertIntMs, &g.Unicast, &peers, &tracks, &authCipher, &g.Version, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(vips, &g.VIPs); err != nil {
 		return nil, fmt.Errorf("解析 vips: %w", err)
 	}
+	if g.VIPs == nil {
+		g.VIPs = []string{}
+	}
 	if err := json.Unmarshal(peers, &g.UnicastPeers); err != nil {
 		return nil, fmt.Errorf("解析 unicast_peers: %w", err)
+	}
+	if g.UnicastPeers == nil {
+		g.UnicastPeers = []string{}
+	}
+	if len(tracks) > 0 {
+		if err := json.Unmarshal(tracks, &g.TrackInterfaces); err != nil {
+			return nil, fmt.Errorf("解析 track_interfaces: %w", err)
+		}
+	}
+	if g.TrackInterfaces == nil {
+		g.TrackInterfaces = []string{}
 	}
 	g.HasAuthPass = authCipher != ""
 	g.CreatedAt = createdAt.UTC().Format(time.RFC3339)
@@ -134,43 +160,91 @@ WHERE m.group_id=$1 ORDER BY m.priority DESC`, g.ID)
 	return rows.Err()
 }
 
-// Create 创建组（同事务写成员）。
+// Create 创建组（显式事务原子写主表与成员表，任一失败整体回滚）。
 func (s *Store) Create(ctx context.Context, g *Group, authCiphertext string) error {
-	vips, _ := json.Marshal(g.VIPs)
-	peers, _ := json.Marshal(g.UnicastPeers)
+	vips, err := marshalStringSlice(g.VIPs)
+	if err != nil {
+		return fmt.Errorf("序列化 vips: %w", err)
+	}
+	peers, err := marshalStringSlice(g.UnicastPeers)
+	if err != nil {
+		return fmt.Errorf("序列化 unicast_peers: %w", err)
+	}
+	tracks, err := marshalStringSlice(g.TrackInterfaces)
+	if err != nil {
+		return fmt.Errorf("序列化 track_interfaces: %w", err)
+	}
 	var auth any
 	if authCiphertext != "" {
 		auth = authCiphertext
 	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("开启事务: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	id := uuid.New()
-	_, err := s.db.Exec(ctx, `
-INSERT INTO ha_groups (id, name, state, vrid, iface, vips, preempt, advert_int_ms, unicast, unicast_peers, auth_ciphertext)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		id, g.Name, g.State, g.VRID, g.Iface, vips, g.Preempt, g.AdvertIntMs, g.Unicast, peers, auth)
+	_, err = tx.Exec(ctx, `
+INSERT INTO ha_groups (id, name, state, vrid, iface, vips, preempt, advert_int_ms, unicast, unicast_peers, track_interfaces, auth_ciphertext)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		id, g.Name, g.State, g.VRID, g.Iface, vips, g.Preempt, g.AdvertIntMs, g.Unicast, peers, tracks, auth)
 	if isUniqueViolation(err) {
 		return ErrNameConflict
 	}
 	if err != nil {
 		return err
 	}
+	if err := s.replaceMembersTx(ctx, tx, id, g.Members); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("提交事务: %w", err)
+	}
 	g.ID = id.String()
-	return s.replaceMembers(ctx, id, g.Members)
+	return nil
 }
 
-// Update 整体更新（乐观锁 version；authCiphertext nil 不变更）。
+// Update 整体更新（显式事务 + 乐观锁 version；authCiphertext nil 不变更）。
 func (s *Store) Update(ctx context.Context, g *Group, authCiphertext *string) error {
-	vips, _ := json.Marshal(g.VIPs)
-	peers, _ := json.Marshal(g.UnicastPeers)
-	authExpr := `auth_ciphertext`
-	args := []any{g.Name, g.State, g.VRID, g.Iface, vips, g.Preempt, g.AdvertIntMs, g.Unicast, peers, g.ID, g.Version}
-	if authCiphertext != nil {
-		authExpr = `$12`
-		args = append(args, *authCiphertext)
+	uid, err := uuid.Parse(g.ID)
+	if err != nil {
+		return ErrNotFound
 	}
-	tag, err := s.db.Exec(ctx, fmt.Sprintf(`
+	vips, err := marshalStringSlice(g.VIPs)
+	if err != nil {
+		return fmt.Errorf("序列化 vips: %w", err)
+	}
+	peers, err := marshalStringSlice(g.UnicastPeers)
+	if err != nil {
+		return fmt.Errorf("序列化 unicast_peers: %w", err)
+	}
+	tracks, err := marshalStringSlice(g.TrackInterfaces)
+	if err != nil {
+		return fmt.Errorf("序列化 track_interfaces: %w", err)
+	}
+	authExpr := `auth_ciphertext`
+	args := []any{g.Name, g.State, g.VRID, g.Iface, vips, g.Preempt, g.AdvertIntMs, g.Unicast, peers, tracks, g.ID, g.Version}
+	if authCiphertext != nil {
+		authExpr = `$13`
+		var authVal any
+		if *authCiphertext != "" {
+			authVal = *authCiphertext
+		}
+		args = append(args, authVal)
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("开启事务: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx, fmt.Sprintf(`
 UPDATE ha_groups SET name=$1, state=$2, vrid=$3, iface=$4, vips=$5, preempt=$6,
-    advert_int_ms=$7, unicast=$8, unicast_peers=$9, auth_ciphertext=%s, updated_at=now(), version=version+1
-WHERE id=$10 AND version=$11`, authExpr), args...)
+    advert_int_ms=$7, unicast=$8, unicast_peers=$9, track_interfaces=$10, auth_ciphertext=%s, updated_at=now(), version=version+1
+WHERE id=$11 AND version=$12`, authExpr), args...)
 	if isUniqueViolation(err) {
 		return ErrNameConflict
 	}
@@ -178,14 +252,22 @@ WHERE id=$10 AND version=$11`, authExpr), args...)
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		// 版本冲突或不存在：区分报错语义
-		if _, gerr := s.Get(ctx, g.ID); errors.Is(gerr, ErrNotFound) {
+		// 版本冲突或不存在：在同事务内区分报错语义
+		var exists int
+		if gerr := tx.QueryRow(ctx, `SELECT 1 FROM ha_groups WHERE id=$1`, g.ID).Scan(&exists); errors.Is(gerr, pgx.ErrNoRows) {
 			return ErrNotFound
+		} else if gerr != nil {
+			return gerr
 		}
 		return ErrVersionConflict
 	}
-	uid, _ := uuid.Parse(g.ID)
-	return s.replaceMembers(ctx, uid, g.Members)
+	if err := s.replaceMembersTx(ctx, tx, uid, g.Members); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("提交事务: %w", err)
+	}
+	return nil
 }
 
 // AuthCiphertext 取认证串密文（下发构造用）。
@@ -210,15 +292,18 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// replaceMembers 整体替换成员（先删后插；组内恰 2 行由 Validate 保证）。
-func (s *Store) replaceMembers(ctx context.Context, groupID uuid.UUID, members []Member) error {
-	if _, err := s.db.Exec(ctx, `DELETE FROM ha_group_members WHERE group_id=$1`, groupID); err != nil {
+// replaceMembersTx 在给定事务内整体替换成员（先删后插；组内恰 2 行由 Validate 保证）。
+func (s *Store) replaceMembersTx(ctx context.Context, tx pgx.Tx, groupID uuid.UUID, members []Member) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM ha_group_members WHERE group_id=$1`, groupID); err != nil {
 		return err
 	}
 	for _, m := range members {
-		if _, err := s.db.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`INSERT INTO ha_group_members (group_id, node_id, priority) VALUES ($1,$2,$3)`,
 			groupID, m.NodeID, m.Priority); err != nil {
+			if isNodeUniqueViolation(err) {
+				return ErrNodeAlreadyInGroup
+			}
 			return fmt.Errorf("写入成员: %w", err)
 		}
 	}
@@ -230,18 +315,33 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
+func isNodeUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return false
+	}
+	return pgErr.ConstraintName == "uq_ha_group_members_node_id" ||
+		strings.Contains(pgErr.Detail, "(node_id)")
+}
+
 // ---------- 内存实现（测试） ----------
 
 // MemStore 内存仓储。
 type MemStore struct {
-	mu     sync.Mutex
-	groups map[string]*Group
-	auths  map[string]string
+	mu          sync.Mutex
+	groups      map[string]*Group
+	auths       map[string]string
+	events      []HaEvent
+	nextEventID int64
 }
 
 // NewMemStore 创建内存仓储。
 func NewMemStore() *MemStore {
-	return &MemStore{groups: map[string]*Group{}, auths: map[string]string{}}
+	return &MemStore{
+		groups: map[string]*Group{},
+		auths:  map[string]string{},
+		events: []HaEvent{},
+	}
 }
 
 // List 实现 Repository。
@@ -276,6 +376,9 @@ func (m *MemStore) Create(_ context.Context, g *Group, authCiphertext string) er
 			return ErrNameConflict
 		}
 	}
+	if m.hasMemberConflictLocked("", g.Members) {
+		return ErrNodeAlreadyInGroup
+	}
 	ng := cloneGroup(g)
 	ng.ID = uuid.New().String()
 	ng.Version = 1
@@ -302,6 +405,9 @@ func (m *MemStore) Update(_ context.Context, g *Group, authCiphertext *string) e
 			return ErrNameConflict
 		}
 	}
+	if m.hasMemberConflictLocked(g.ID, g.Members) {
+		return ErrNodeAlreadyInGroup
+	}
 	ng := cloneGroup(g)
 	ng.Version = old.Version + 1
 	if authCiphertext != nil {
@@ -310,6 +416,24 @@ func (m *MemStore) Update(_ context.Context, g *Group, authCiphertext *string) e
 	ng.HasAuthPass = m.auths[g.ID] != ""
 	m.groups[g.ID] = ng
 	return nil
+}
+
+func (m *MemStore) hasMemberConflictLocked(excludeGroupID string, members []Member) bool {
+	wanted := make(map[string]bool, len(members))
+	for _, mem := range members {
+		wanted[mem.NodeID] = true
+	}
+	for id, x := range m.groups {
+		if id == excludeGroupID {
+			continue
+		}
+		for _, xm := range x.Members {
+			if wanted[xm.NodeID] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Delete 实现 Repository。
@@ -333,8 +457,25 @@ func (m *MemStore) AuthCiphertext(_ context.Context, id string) (string, error) 
 
 func cloneGroup(g *Group) *Group {
 	ng := *g
-	ng.VIPs = append([]string(nil), g.VIPs...)
-	ng.UnicastPeers = append([]string(nil), g.UnicastPeers...)
-	ng.Members = append([]Member(nil), g.Members...)
+	if g.VIPs == nil {
+		ng.VIPs = []string{}
+	} else {
+		ng.VIPs = append([]string{}, g.VIPs...)
+	}
+	if g.UnicastPeers == nil {
+		ng.UnicastPeers = []string{}
+	} else {
+		ng.UnicastPeers = append([]string{}, g.UnicastPeers...)
+	}
+	if g.TrackInterfaces == nil {
+		ng.TrackInterfaces = []string{}
+	} else {
+		ng.TrackInterfaces = append([]string{}, g.TrackInterfaces...)
+	}
+	if g.Members == nil {
+		ng.Members = []Member{}
+	} else {
+		ng.Members = append([]Member{}, g.Members...)
+	}
 	return &ng
 }

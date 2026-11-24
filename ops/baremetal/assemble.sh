@@ -6,7 +6,7 @@
 # 【不删除 bin/】），最后打 tar.gz 并生成 .sha256 旁车。
 #
 # 用法：bash ops/baremetal/assemble.sh
-# 前置：bin/ 下已具备 caddy / jiuzhang-api / netmgrd / mirrorcap / tproxyd / logrotator.sh / pg/ / valkey/
+# 前置：bin/ 下已具备 caddy / jiuzhang-api / netmgrd / mirrorcap / tproxyd / havipd / hasyncd / logrotator.sh / pg/ / valkey/
 # 兼容 macOS /bin/bash 3.2。
 set -euo pipefail
 
@@ -23,7 +23,7 @@ die() { log_err "${1:-未知错误}"; exit "${2:-1}"; }
 
 # ---------- 0. 前置检查：bin/ 半成品必须已就绪（保留，不删） ----------
 log_info "==> [0/6] 前置检查（bin/ 半成品）"
-for f in caddy jiuzhang-api netmgrd mirrorcap tproxyd logrotator.sh; do
+for f in caddy jiuzhang-api netmgrd mirrorcap tproxyd havipd hasyncd logrotator.sh; do
   [[ -f "${DIST_DIR}/bin/${f}" ]] || die "缺少 ${DIST_DIR}/bin/${f}——请先执行 ops/baremetal/build-binaries.sh"
 done
 [[ -x "${DIST_DIR}/bin/pg/lib/postgresql/16/bin/postgres" ]] || die "缺少 bin/pg 运行库——请先执行 ops/baremetal/build-runtimes.sh"

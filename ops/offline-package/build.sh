@@ -79,8 +79,8 @@ usage() {
   arm64   ARM64
 
 包内：
-  images/             docker save 的 server/gateway/web/logrotator/netmgrd/mirrorcap/tproxyd/containerops/pcapd/postgres/valkey
-                      及 APM 数据面镜像 clickhouse/opentelemetry-collector-contrib（共 13 个）
+  images/             docker save 的 server/gateway/web/logrotator/netmgrd/mirrorcap/tproxyd/havipd/hasyncd/containerops/pcapd/postgres/valkey
+                      及 APM 数据面镜像 clickhouse/opentelemetry-collector-contrib（共 15 个）
   gateway-linux-<arch>.tar.gz  裸机网关包（caddy 二进制 + sha256sums + VERSION + rules +
                       blockpage + bootstrap + unit + 安装/验收脚本）
   gateway/            生产 compose gateway 服务挂载源（rules/bootstrap Caddyfile/blockpage）
@@ -120,7 +120,7 @@ usage() {
   ops/offline-package/build-all.sh -v 2.0.0
 
 前置条件:
-  - 本机已按目标架构构建 jiuzhang-server/gateway/web/logrotator/netmgrd/mirrorcap/tproxyd/pcapd/containerops:{version}
+  - 本机已按目标架构构建 jiuzhang-server/gateway/web/logrotator/netmgrd/mirrorcap/tproxyd/havipd/hasyncd/pcapd/containerops:{version}
     （docker buildx build --platform linux/{arch}；containerops 用 -f deployment/containerops/Dockerfile，上下文=仓库根）
   - 已生成 docs/SBOM.spdx.json / docs/SBOM.cyclonedx.json（可选但建议）
 
@@ -255,6 +255,8 @@ LOGROTATOR_IMAGE="jiuzhang-logrotator:$VERSION"
 NETMGRD_IMAGE="jiuzhang-netmgrd:$VERSION"
 MIRRORCAP_IMAGE="jiuzhang-mirrorcap:$VERSION"
 TPROXYD_IMAGE="jiuzhang-tproxyd:$VERSION"
+HAVIPD_IMAGE="jiuzhang-havipd:$VERSION"
+HASYNCD_IMAGE="jiuzhang-hasyncd:$VERSION"
 PCAPD_IMAGE="jiuzhang-pcapd:$VERSION"
 # 容器运维 sidecar（本地构建镜像；唯一挂载 docker.sock 的组件，构建上下文=仓库根，
 # Dockerfile 为 deployment/containerops/Dockerfile，基础镜像 digest 在其文件内锁定）
@@ -299,7 +301,7 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
       docker pull --platform "linux/${ARCH}" "$img" || die "拉取失败: $img"
     fi
   done
-  for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$MIRRORCAP_IMAGE" "$TPROXYD_IMAGE" "$PCAPD_IMAGE" "$CONTAINEROPS_IMAGE"; do
+  for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$MIRRORCAP_IMAGE" "$TPROXYD_IMAGE" "$HAVIPD_IMAGE" "$HASYNCD_IMAGE" "$PCAPD_IMAGE" "$CONTAINEROPS_IMAGE"; do
     docker image inspect "$img" >/dev/null 2>&1 \
       || die "镜像不存在: ${img}（请先用 docker buildx build --platform linux/${ARCH} 构建）"
   done
@@ -314,6 +316,8 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
   check_image_arch "$NETMGRD_IMAGE" "请构建 gateway/images/netmgrd/Dockerfile"
   check_image_arch "$MIRRORCAP_IMAGE" "请构建 gateway/images/mirrorcap/Dockerfile"
   check_image_arch "$TPROXYD_IMAGE" "请构建 gateway/images/tproxyd/Dockerfile"
+  check_image_arch "$HAVIPD_IMAGE" "请构建 gateway/images/havipd/Dockerfile"
+  check_image_arch "$HASYNCD_IMAGE" "请构建 gateway/images/hasyncd/Dockerfile"
   check_image_arch "$PCAPD_IMAGE" "请构建 gateway/images/pcapd/Dockerfile"
   check_image_arch "$CONTAINEROPS_IMAGE" "请用 docker buildx build --platform linux/${ARCH} -f deployment/containerops/Dockerfile -t ${CONTAINEROPS_IMAGE} . 重新构建"
 fi
@@ -362,6 +366,8 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
   save_image NETMGRD_IMAGE "$pkg_dir/images/jiuzhang-netmgrd.tar"
   save_image MIRRORCAP_IMAGE "$pkg_dir/images/jiuzhang-mirrorcap.tar"
   save_image TPROXYD_IMAGE "$pkg_dir/images/jiuzhang-tproxyd.tar"
+  save_image HAVIPD_IMAGE "$pkg_dir/images/jiuzhang-havipd.tar"
+  save_image HASYNCD_IMAGE "$pkg_dir/images/jiuzhang-hasyncd.tar"
   save_image PCAPD_IMAGE "$pkg_dir/images/jiuzhang-pcapd.tar"
   save_image CONTAINEROPS_IMAGE "$pkg_dir/images/jiuzhang-containerops.tar"
   save_image POSTGRES_IMAGE "$pkg_dir/images/postgres.tar"
@@ -370,7 +376,7 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
   save_image OTEL_COLLECTOR_IMAGE "$pkg_dir/images/opentelemetry-collector-contrib.tar"
 fi
 if [[ "$RUNTIME_ONLY" != "true" || "$SKIP_IMAGES" == "true" ]]; then
-for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$MIRRORCAP_IMAGE" "$TPROXYD_IMAGE" "$PCAPD_IMAGE" "$CONTAINEROPS_IMAGE" "$POSTGRES_IMAGE" "$VALKEY_IMAGE" "$CLICKHOUSE_IMAGE" "$OTEL_COLLECTOR_IMAGE"; do
+for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$MIRRORCAP_IMAGE" "$TPROXYD_IMAGE" "$HAVIPD_IMAGE" "$HASYNCD_IMAGE" "$PCAPD_IMAGE" "$CONTAINEROPS_IMAGE" "$POSTGRES_IMAGE" "$VALKEY_IMAGE" "$CLICKHOUSE_IMAGE" "$OTEL_COLLECTOR_IMAGE"; do
   if [[ "$SKIP_IMAGES" != "true" ]]; then
     digest="$(docker image inspect --platform "linux/${ARCH}" "$img" --format '{{.Id}}' 2>/dev/null || docker image inspect "$img" --format '{{.Id}}')"
   else
@@ -783,6 +789,61 @@ services:
     depends_on:
       gateway: {condition: service_started}
 
+  # 主备高可用 VIP 漂移 sidecar（havipd）：
+  # 与网关共享网络命名空间（network_mode: service:gateway）；未下发 ha-vip.json 时自动空转。
+  # 以 root + group_add ["1000"] + cap_drop: [ALL] + cap_add: [NET_ADMIN, NET_RAW, NET_BROADCAST]
+  # 运行，经共享组 1000 读写 0770/0640 的 sidecars/ha-vip.json 与 keepalived 工作目录。
+  havipd:
+    image: $HAVIPD_IMAGE
+    container_name: jiuzhang-havipd
+    restart: unless-stopped
+    network_mode: service:gateway
+    group_add: ["1000"]
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW, NET_BROADCAST]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=8m,mode=1777"]
+    environment:
+      GATEWAY_NODE_NAME: \${GATEWAY_NODE_NAME:-gateway-poc-01}
+    volumes:
+      - gateway-admin:/var/run/caddy
+    depends_on:
+      gateway: {condition: service_started}
+
+  # 高可用节点协同代理（hasyncd，可选，默认 profile 不启动，仅主备双机部署启用）：
+  # 全程以非 root 1000:1000 + cap_drop: [ALL] 运行，不挂载 docker.sock；
+  # 启用前需在宿主机准备 0600 共享 HMAC 密钥文件（至少 32 字节 hex），并通过 --profile ha-sync 启动。
+  hasyncd:
+    image: $HASYNCD_IMAGE
+    container_name: jiuzhang-hasyncd
+    restart: unless-stopped
+    profiles: ["ha-sync"]
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=8m,mode=1777"]
+    environment:
+      GATEWAY_NODE_NAME: \${GATEWAY_NODE_NAME:-gateway-poc-01}
+      APP_VERSION: ${VERSION}
+      HASYNC_LISTEN: \${HASYNC_LISTEN:-0.0.0.0:18443}
+      HASYNC_SECRET_FILE: \${HASYNC_SECRET_FILE:-/app/runtime/hasync.secret}
+      HASYNC_TLS_CERT: \${HASYNC_TLS_CERT:-}
+      HASYNC_TLS_KEY: \${HASYNC_TLS_KEY:-}
+      UPGRADE_PACKAGES_DIR: /app/runtime/upgrade-packages
+      UPGRADE_EXECUTOR_DIR: /app/runtime/upgrade-executor
+    ports:
+      - "\${HASYNC_BIND_ADDR:-127.0.0.1}:\${HASYNC_PORT:-18443}:18443"
+    volumes:
+      - gateway-admin:/var/run/caddy
+      - gateway-logs:/var/log/caddy:ro
+      - runtime-data:/app/runtime
+      - ./runtime/hostctl:/app/runtime/hostctl
+    depends_on:
+      gateway: {condition: service_started}
+    networks: [jiuzhang-internal]
+
   # 请求PCAP为显式启用的独立组件；默认profile不会启动持续抓包。
   pcapd:
     image: $PCAPD_IMAGE
@@ -822,7 +883,7 @@ services:
       DOCKER_HOST: unix:///var/run/docker.sock
       # 仅允许运维本 compose 项目内、且在白名单中的服务（双重校验，fail-closed）
       CONTAINEROPS_PROJECT: jiuzhang-${PRODUCT}
-      CONTAINEROPS_ALLOWED_SERVICES: api,web,gateway,postgres,valkey,logrotator,netmgrd,mirrorcap,tproxyd,pcapd
+      CONTAINEROPS_ALLOWED_SERVICES: api,web,gateway,postgres,valkey,logrotator,netmgrd,mirrorcap,tproxyd,havipd,hasyncd,pcapd
     volumes:
       # 全栈唯一 docker.sock 挂载点（安全底线；严禁复制到 api 或其他服务）
       - /var/run/docker.sock:/var/run/docker.sock
@@ -889,6 +950,15 @@ CLICKHOUSE_APM_WRITER_PASSWORD=
 # 安装期执行 bash ops/install/prepare-containerops.sh -e .env 自动探测写入，
 # 缺省 0 适配 Docker Desktop / root-owned socket 场景
 CONTAINEROPS_DOCKER_GID=0
+
+# ---------- 主备高可用节点协同代理（hasyncd，可选，默认 profile ha-sync 关闭）----------
+# 仅主备双机部署时启用（COMPOSE_PROFILES=ha-sync 或 --profile ha-sync）；
+# 默认仅绑定回环，双机部署时改为本机内网管理口 IP，并准备 0600 共享 HMAC 密钥文件（至少 32 字节 hex）
+HASYNC_BIND_ADDR=127.0.0.1
+HASYNC_PORT=18443
+HASYNC_SECRET_FILE=/app/runtime/hasync.secret
+HASYNC_TLS_CERT=
+HASYNC_TLS_KEY=
 EOF
 } > "$pkg_dir/.env.example"
 

@@ -653,4 +653,63 @@ describe('NetworkConfigPage', () => {
     expect(screen.queryByText(/br_netfilter/)).not.toBeInTheDocument()
     expect(screen.queryByText(/REDIRECT/)).not.toBeInTheDocument()
   })
+
+  it('远端节点 remote_editable=true 时解锁编辑与保存，并展示远端汇聚状态与 link_pairs 表', async () => {
+    configs['node-1'] = { ...EMPTY_CONFIG, default_node: 'node-1', remote_editable: true }
+    configs['node-2'] = {
+      default_node: 'node-1',
+      remote_editable: true,
+      desired: {
+        bridges: [{ name: 'br1', ports: ['eno1', 'eno2'] }],
+        ip_forward: false,
+        routes: [{ dst: '10.30.0.0/16', via: '172.30.10.1' }],
+      },
+      status: {
+        applied_at: '2026-11-24T12:10:00Z',
+        ok: true,
+        bridges: [{ name: 'br1', state: 'ok', message: 'remote ok' }],
+        ip_forward: 'skipped',
+        routes: [{ dst: '10.30.0.0/16', via: '172.30.10.1', state: 'ok' }],
+        link_pairs: [
+          {
+            bridge: 'br1',
+            state: 'BOTH_UP',
+            flap_count_hour: 0,
+            message: '远端双口正常',
+          },
+        ],
+        message: 'remote applied',
+      },
+    }
+    vi.mocked(networkConfigApi.save).mockResolvedValue(configs['node-2'])
+    renderPage()
+    await screen.findByLabelText('网桥名称')
+
+    openSelect('节点')
+    await pickOption('node-2')
+
+    expect(await screen.findByText('正在编辑远端节点「node-2」的网络配置')).toBeInTheDocument()
+    expect(screen.queryByText('当前节点「node-2」仅支持只读查看')).not.toBeInTheDocument()
+    expect(screen.getByText('远端汇聚')).toBeInTheDocument()
+    expect(screen.getByText('远端双口正常')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /新建网桥/ })).toBeEnabled()
+    expect(screen.getByRole('switch', { name: '内核三层转发' })).toBeEnabled()
+
+    // 修改并保存至远端节点
+    fireEvent.click(screen.getByRole('switch', { name: '内核三层转发' }))
+    const saveBtn = screen.getByRole('button', { name: /保存配置/ })
+    expect(saveBtn).toBeEnabled()
+    fireEvent.click(saveBtn)
+    await confirmSave()
+
+    await waitFor(() => expect(networkConfigApi.save).toHaveBeenCalledTimes(1))
+    expect(networkConfigApi.save).toHaveBeenCalledWith(
+      {
+        bridges: [{ name: 'br1', ports: ['eno1', 'eno2'] }],
+        ip_forward: true,
+        routes: [{ dst: '10.30.0.0/16', via: '172.30.10.1' }],
+      },
+      'node-2',
+    )
+  })
 })

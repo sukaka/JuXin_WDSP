@@ -74,6 +74,7 @@ describe('阶段6 展示元数据完整性', () => {
         'SOURCE_UNHEALTHY',
         'CERTIFICATE_EXPIRING',
         'CERTIFICATE_EXPIRED',
+        'CERTIFICATE_AUTO_RENEW_FAILED',
         'CONFIG_PUBLISH_FAILED',
         'CONFIG_HASH_MISMATCH',
         'DISK_SPACE_LOW',

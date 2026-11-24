@@ -508,4 +508,128 @@ func TestHandlerHAVRRPIfaceConflictOnChangeRewriteAndDefaultNode(t *testing.T) {
 	if tpxMap == nil || tpxMap["state"] != "ACTIVE" {
 		t.Fatalf("GET status.transparent not passed through: %v", data["status"])
 	}
+	if data["remote_editable"] != true {
+		t.Fatalf("GET default node remote_editable = %v, want true", data["remote_editable"])
+	}
+}
+
+type fakeRemoteNet struct {
+	editable map[string]bool
+	statuses map[string]json.RawMessage
+	pushed   map[string][]byte
+	pushErr  error
+}
+
+func (f *fakeRemoteNet) PushNetworkConfig(_ context.Context, nodeName string, payload []byte) error {
+	if f.pushErr != nil {
+		return f.pushErr
+	}
+	if f.pushed == nil {
+		f.pushed = map[string][]byte{}
+	}
+	f.pushed[nodeName] = append([]byte(nil), payload...)
+	return nil
+}
+
+func (f *fakeRemoteNet) IsRemoteEditable(_ context.Context, nodeName string) (bool, error) {
+	return f.editable[nodeName], nil
+}
+
+func (f *fakeRemoteNet) GetNodeNetworkStatus(_ context.Context, nodeName string) (json.RawMessage, error) {
+	return f.statuses[nodeName], nil
+}
+
+func (f *fakeRemoteNet) ListRemoteEditableNodes(_ context.Context) ([]string, error) {
+	var out []string
+	for name, ok := range f.editable {
+		if ok {
+			out = append(out, name)
+		}
+	}
+	return out, nil
+}
+
+// TestRemoteNodeEditStatusAndRewrite 验证远端节点可编辑性、汇聚状态透传、远端推送不写本机盘、以及 DNS/NTP 重写扇出。
+func TestRemoteNodeEditStatusAndRewrite(t *testing.T) {
+	h, store, dir := newTestHandler(t)
+	remote := &fakeRemoteNet{
+		editable: map[string]bool{"gw-2": true, "gw-readonly": false},
+		statuses: map[string]json.RawMessage{
+			"gw-2": json.RawMessage(`{"ok":true,"node":"gw-2","message":"remote applied"}`),
+		},
+	}
+	h.SetRemoteSyncer(remote).SetRemoteStatusProvider(remote)
+	mux := newTestMux(h, injectPrincipal)
+
+	// 1. GET 远端可编辑节点：remote_editable=true，status 返回远端汇聚快照
+	rr := doJSON(t, mux, http.MethodGet, "/api/v1/gateway/network-config?node_name=gw-2", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET gw-2 status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	data := decodeData(t, rr)
+	if data["remote_editable"] != true {
+		t.Fatalf("gw-2 remote_editable = %v, want true", data["remote_editable"])
+	}
+	st, _ := data["status"].(map[string]any)
+	if st == nil || st["node"] != "gw-2" || st["ok"] != true {
+		t.Fatalf("gw-2 status = %v", data["status"])
+	}
+
+	// 2. GET 远端不可编辑节点：remote_editable=false
+	rr = doJSON(t, mux, http.MethodGet, "/api/v1/gateway/network-config?node_name=gw-readonly", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET gw-readonly status=%d", rr.Code)
+	}
+	data = decodeData(t, rr)
+	if data["remote_editable"] != false {
+		t.Fatalf("gw-readonly remote_editable = %v, want false", data["remote_editable"])
+	}
+
+	// 3. PUT 远端不可编辑节点 → 400
+	bodyReadOnly := validBody()
+	bodyReadOnly["node_name"] = "gw-readonly"
+	if rr := doJSON(t, mux, http.MethodPut, "/api/v1/gateway/network-config", bodyReadOnly); rr.Code != http.StatusBadRequest {
+		t.Fatalf("PUT gw-readonly = %d, want 400", rr.Code)
+	}
+
+	// 4. PUT 远端可编辑节点 gw-2 → 保存 DB + 走 RemoteSyncer，不覆盖本机 network.json
+	bodyRemote := validBody()
+	bodyRemote["node_name"] = "gw-2"
+	rr = doJSON(t, mux, http.MethodPut, "/api/v1/gateway/network-config", bodyRemote)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT gw-2 status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	data = decodeData(t, rr)
+	if data["remote_editable"] != true {
+		t.Fatalf("PUT gw-2 remote_editable = %v, want true", data["remote_editable"])
+	}
+	if _, err := os.Stat(filepath.Join(dir, "network.json")); !os.IsNotExist(err) {
+		t.Fatalf("PUT remote node must NOT write local network.json")
+	}
+	if len(remote.pushed["gw-2"]) == 0 {
+		t.Fatalf("expected network.json pushed to gw-2")
+	}
+	if _, _, found, err := store.Get(context.Background(), "gw-2"); err != nil || !found {
+		t.Fatalf("gw-2 config not saved to DB: found=%v err=%v", found, err)
+	}
+
+	// 5. PUT 远端推送失败 → 500（不静默吞错）
+	remote.pushErr = errors.New("peer unreachable")
+	if rr := doJSON(t, mux, http.MethodPut, "/api/v1/gateway/network-config", bodyRemote); rr.Code != http.StatusInternalServerError {
+		t.Fatalf("PUT gw-2 push failure = %d, want 500", rr.Code)
+	}
+	remote.pushErr = nil
+
+	// 6. RewriteSidecar 同时重写本机并推送远端可编辑节点的 DNS/NTP
+	store.SetServers("223.5.5.5", "ntp.aliyun.com")
+	if err := h.RewriteSidecar(context.Background()); err != nil {
+		t.Fatalf("RewriteSidecar: %v", err)
+	}
+	var nf networkFile
+	if err := json.Unmarshal(remote.pushed["gw-2"], &nf); err != nil {
+		t.Fatalf("unmarshal pushed gw-2 network.json: %v", err)
+	}
+	if len(nf.DNSServers) != 1 || nf.DNSServers[0] != "223.5.5.5" || len(nf.NTPServers) != 1 || nf.NTPServers[0] != "ntp.aliyun.com" {
+		t.Fatalf("RewriteSidecar did not push DNS/NTP to gw-2: %+v", nf)
+	}
 }

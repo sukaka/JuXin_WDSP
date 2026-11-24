@@ -1,3 +1,5 @@
+import { UPSTREAM_ERROR_CODE_LABELS } from '../../../utils/i18nLabels'
+
 export const UPSTREAM_DETAIL_FIELD_LABELS: Record<string, string> = {
   id: '源站 ID',
   application_id: '应用 ID',
@@ -9,6 +11,14 @@ export const UPSTREAM_DETAIL_FIELD_LABELS: Record<string, string> = {
   weight: '权重',
   priority: '优先级',
   status: '状态',
+  health_status: '健康状态',
+  last_health_check_at: '最近探测时间',
+  last_response_status: '最近探测 HTTP 状态码',
+  last_response_time_ms: '最近探测耗时（毫秒）',
+  last_health_error_code: '最近探测错误类型',
+  last_health_error: '最近探测错误详情',
+  consecutive_successes: '连续健康次数',
+  consecutive_failures: '连续失败次数',
   health_check_enabled: '启用主动健康检查',
   health_check_path: '健康检查路径',
   health_check_method: '健康检查方法',
@@ -27,4 +37,13 @@ export const UPSTREAM_DETAIL_FIELD_LABELS: Record<string, string> = {
 
 export const UPSTREAM_DETAIL_VALUE_LABELS: Record<string, Record<string, string>> = {
   status: { ACTIVE: '启用', DISABLED: '停用' },
+  health_status: {
+    HEALTHY: '正常',
+    UP: '正常',
+    UNHEALTHY: '异常',
+    DOWN: '异常',
+    DISABLED: '未启用',
+    UNKNOWN: '未知',
+  },
+  last_health_error_code: UPSTREAM_ERROR_CODE_LABELS,
 }

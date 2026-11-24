@@ -388,11 +388,17 @@ if [[ "$FULL_UPGRADE" == true ]]; then
   if jq -e '.services.tproxyd.image | strings' <<<"$TARGET_COMPOSE_JSON" >/dev/null 2>&1; then
     SERVICES+=(tproxyd)
   fi
+  if jq -e '.services.havipd.image | strings' <<<"$TARGET_COMPOSE_JSON" >/dev/null 2>&1; then
+    SERVICES+=(havipd)
+  fi
+  if jq -e '.services.hasyncd.image | strings' <<<"$OLD_COMPOSE_JSON" >/dev/null 2>&1; then
+    SERVICES+=(hasyncd)
+  fi
   if jq -e '.services.pcapd.image | strings' <<<"$OLD_COMPOSE_JSON" >/dev/null 2>&1; then
     SERVICES+=(pcapd)
   fi
 else
-  for service in "${candidates[@]}" mirrorcap tproxyd; do
+  for service in "${candidates[@]}" mirrorcap tproxyd havipd hasyncd; do
     jq -e --arg s "$service" '.services[$s].image' <<<"$OLD_COMPOSE_JSON" >/dev/null 2>&1 || continue
     jq -e --arg s "$service" '.services[$s].image' <<<"$TARGET_COMPOSE_JSON" >/dev/null 2>&1 || continue
     SERVICES+=("$service")
@@ -530,6 +536,8 @@ wait_selected_services() {
         netmgrd) timeout 8 docker exec "$id" /usr/local/bin/netmgrd --healthcheck || { ready=false; break; } ;;
         mirrorcap) timeout 8 docker exec "$id" /usr/local/bin/mirrorcap --healthcheck || { ready=false; break; } ;;
         tproxyd) timeout 8 docker exec "$id" /usr/local/bin/tproxyd --healthcheck || { ready=false; break; } ;;
+        havipd) timeout 8 docker exec "$id" /usr/local/bin/havipd --healthcheck || { ready=false; break; } ;;
+        hasyncd) timeout 8 docker exec "$id" /usr/local/bin/hasyncd --healthcheck || { ready=false; break; } ;;
       esac
     done
     if [[ "$ready" == true ]] && curl -fsS --max-time 5 "$JZ_API_BASE/api/v1/health" >/dev/null 2>&1; then

@@ -564,8 +564,11 @@ func TestStage5AccessRuleExport(t *testing.T) {
 	if !strings.HasPrefix(ct, "text/csv") {
 		t.Errorf("export Content-Type = %q, want text/csv", ct)
 	}
-	if !strings.HasPrefix(body, "id,name,rule_type,scope_type,") {
+	if !strings.HasPrefix(body, "\xef\xbb\xbf规则 ID,规则名称,规则类型,生效范围,") {
 		t.Errorf("export header missing, body starts with: %.80q", body)
+	}
+	if !strings.Contains(body, ",黑名单,全局,") {
+		t.Errorf("export row should localize rule_type/scope_type, body: %q", body)
 	}
 	// 以 = 开头的字段必须被 ' 转义（防公式注入）
 	if !strings.Contains(body, "'=SUM(1,2)") {
@@ -730,8 +733,8 @@ func TestStage5AccessControlEventsList(t *testing.T) {
 	if !strings.HasPrefix(ct, "text/csv") {
 		t.Errorf("events export Content-Type = %q, want text/csv", ct)
 	}
-	if body == "" {
-		t.Errorf("events export body empty (should at least contain header)")
+	if !strings.HasPrefix(body, "\xef\xbb\xbf发生时间,请求 ID,应用编码,客户端 IP,") {
+		t.Errorf("events export header missing, body starts with: %.80q", body)
 	}
 }
 

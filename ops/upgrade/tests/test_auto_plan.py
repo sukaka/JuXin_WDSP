@@ -60,11 +60,60 @@ class AutoPlanTest(unittest.TestCase):
     def test_shared_dependency(self):
         self.write('gateway/dynamic_security/policy.go', 'new')
         output = self.plan()
-        self.assertIn('auto 识别组件: api gateway', output)
+        self.assertIn('auto 识别组件: api containerops gateway mirrorcap pcapd', output)
 
     def test_shared_module_metadata(self):
         self.write('gateway/dynamic_security/go.mod', 'module example')
-        self.assertIn('auto 识别组件: api gateway netmgrd', self.plan())
+        self.assertIn(
+            'auto 识别组件: api containerops gateway hasyncd havipd mirrorcap netmgrd pcapd tproxyd',
+            self.plan(),
+        )
+
+    def test_sidecar_components_individually(self):
+        self.write('gateway/cmd/mirrorcap/main.go', 'new')
+        self.assertIn('auto 识别组件: mirrorcap', self.plan())
+        self.git('clean', '-fdq')
+        self.write('gateway/tproxyd/proxy.go', 'new')
+        self.assertIn('auto 识别组件: tproxyd', self.plan())
+        self.git('clean', '-fdq')
+        self.write('gateway/havipd/daemon.go', 'new')
+        self.assertIn('auto 识别组件: havipd', self.plan())
+        self.git('clean', '-fdq')
+        self.write('gateway/cmd/havipd/main.go', 'new')
+        self.assertIn('auto 识别组件: havipd', self.plan())
+        self.git('clean', '-fdq')
+        self.write('gateway/images/havipd/Dockerfile', 'FROM alpine')
+        self.assertIn('auto 识别组件: havipd', self.plan())
+        self.git('clean', '-fdq')
+        self.write('gateway/hasyncd/server.go', 'new')
+        self.assertIn('auto 识别组件: hasyncd', self.plan())
+        self.git('clean', '-fdq')
+        self.write('gateway/cmd/hasyncd/main.go', 'new')
+        self.assertIn('auto 识别组件: hasyncd', self.plan())
+        self.git('clean', '-fdq')
+        self.write('gateway/images/hasyncd/Dockerfile', 'FROM alpine')
+        self.assertIn('auto 识别组件: hasyncd', self.plan())
+        self.git('clean', '-fdq')
+        self.write('gateway/images/logrotator/rotate.sh', 'new')
+        self.assertIn('auto 识别组件: logrotator', self.plan())
+        self.git('clean', '-fdq')
+        self.write('server/internal/containeropsd/server.go', 'new')
+        self.assertIn('auto 识别组件: containerops', self.plan())
+        self.git('clean', '-fdq')
+        self.write('gateway/pcapcapture/cap.go', 'new')
+        self.assertIn('auto 识别组件: pcapd', self.plan())
+
+    def test_test_only_changes_do_not_trigger_image_build(self):
+        self.write('server/internal/users/store_test.go', 'package users')
+        self.write('web/src/pages/__tests__/Page.test.tsx', 'test')
+        self.assertIn('未识别出需要构建的镜像组件', self.plan(ok=False))
+
+    def test_agent_and_delta_helper_fail_closed_as_host_change(self):
+        self.write('wdsp-agent/cmd/agent/main.go', 'new')
+        self.assertIn('宿主机', self.plan(ok=False))
+        self.git('clean', '-fdq')
+        self.write('ops/upgrade/image-delta.py', 'new')
+        self.assertIn('宿主机', self.plan(ok=False))
 
     def test_rename_counts_source_and_destination(self):
         (self.repo / 'web').mkdir()

@@ -2,14 +2,14 @@
 # 九章双节点 HA lab 验证（docs/HA_TWO_NODE_DESIGN.md §6 场景落地）
 #
 # 覆盖场景（每场景独立函数，可单独跑）：
-#   S1 配置一致性：登记两节点 + 扇出发布 → /nodes/consistency consistent=true，
-#      两节点 last_sync_result=SUCCESS、心跳 ACTIVE；
+#   S1 配置一致性：登记次节点 gw-b + 扇出发布 → /nodes/consistency consistent=true，
+#      gw-b last_sync_result=SUCCESS、双节点心跳 ACTIVE；
 #   S2 共享计数（任务书 §123 形态）：behavior_store=valkey 下，同身份写请求
 #      A60（直连 gw-a）+ B60（直连 gw-b）+ 10 经 LB，阈值 100 → 共 130>100
 #      触发统一 RATE_LIMIT（429）；按节点直连分段断言证明跨节点共享计数
 #      （若为单节点内存计数，60/60 分段各自不越限，B 段零阻断）；
 #   S3 故障摘除：docker stop gw-b → LB 摘除 + 流量全走 A（事件按节点归因断言）
-#      + 节点视图 STALE → start gw-b → --resume 恢复补丁态配置 → 心跳 ACTIVE
+#      + 节点视图 STALE → start gw-b → --resume 恢复配置 → 心跳 ACTIVE
 #      → 采集追平（停前计数 + 期间/恢复后新增 == 恢复后计数，零丢失零双计）；
 #   S4 发布中故障：停 gw-b 后发布（等价"发布瞬间杀 B"的确定形态）→ 主发布成功、
 #      B 记 FAILED + CONFIG_PUBLISH_FAILED 告警 → B 恢复（--resume 回旧版，
@@ -21,7 +21,6 @@
 #   1. docker / docker compose v2 可用；
 #   2. ha-lab 栈已启动（仓库根目录）：
 #        docker compose -f deployment/ha-lab/docker-compose.ha-lab.yml up -d --build
-#      （脚本前置检查会按需自动构建 nodepatch 工具镜像，主栈镜像由上面的 --build 产出）
 #   3. 本机 18880-18883/15932/15979 端口空闲（编排注释有说明）；
 #   4. 依赖 curl + python3（与 test/waf/scripts/ 既有 harness 相同）。
 #   清理：docker compose -f deployment/ha-lab/docker-compose.ha-lab.yml down -v
@@ -33,8 +32,8 @@
 # 退出码：0=所选场景全部通过；1=存在断言失败；2=环境前置不满足（docker/栈/端口/镜像）。
 #
 # 注意（lab 形态如实声明，详见编排文件头注释）：
-#   - gateway_node/心跳周期由 nodepatch 在每次发布后逐节点补丁（发布扇出为同构配置，
-#     按节点注入是发布通道后续工程）；
+#   - 节点唯一身份由容器环境变量 GATEWAY_NODE_NAME（gw-a / gw-b）原生生效，心跳周期由
+#     gateway_runtime.api_node_heartbeat_seconds 随配置下发，不再依赖 nodepatch；
 #   - api-runtime-events 为双节点共写追加式事件总线（管理面当前单采集器单路径；
 #     生产每节点独立日志+独立采集器为后续工程）；事件归因断言直读 PostgreSQL
 #     （api_runtime_events.gateway_node 列，只读校验，不绕任何权限/审计写路径）。
@@ -117,38 +116,8 @@ ha_psql_scalar() {
   echo "$1" | ha_psql | head -1
 }
 
-# nodepatch：经 compose tools 一次性容器对单节点打身份补丁（gateway_node + 心跳周期）
-# $1: a|b  $2: 节点名  $3: 可选 source 侧（a|b；首次纳管引导时从源节点读配置）
-# 返回码：0=已补丁；2=目标节点无 guard 处理器（首次发布前，调用方按场景容忍）；
-#         1=硬错误（连接/协议失败）
-ha_patch_node() {
-  local side="$1" node="$2" src="${3:-}" out rc
-  local extra=()
-  [ -n "$src" ] && extra=(-source-sock "/sock/$src/admin.sock")
-  out=$(docker compose -f "$COMPOSE_FILE" --profile tools run --rm -T --no-deps \
-    nodepatch -sock "/sock/$side/admin.sock" -node "$node" -heartbeat "$HB_SECONDS" ${extra[@]+"${extra[@]}"} 2>&1)
-  rc=$?
-  if [ $rc -ne 0 ]; then
-    echo "  [nodepatch $node rc=$rc] $out" >&2
-    return $rc
-  fi
-  echo "$out" | grep -o "已补丁 [0-9]* 个" | head -1
-  return 0
-}
-
-# 双节点身份补丁（每次发布后必须重打：扇出 /load 会把节点身份重置回基准值）。
-# 单侧 rc=2（该节点尚未拿到 guard 配置，如首次发布前的 gw-b）仅记录不失败；
-# rc=1（连接失败，如节点停机）如实失败返回。
-ha_patch_nodes() {
-  local ra rb rca=0 rcb=0
-  ra=$(ha_patch_node a gw-a) || rca=$?
-  rb=$(ha_patch_node b gw-b) || rcb=$?
-  [ $rca -eq 1 ] || [ $rcb -eq 1 ] && return 1
-  echo "  [nodepatch] gw-a ${ra:-跳过} / gw-b ${rb:-跳过}"
-  return 0
-}
-
-# 发布并等待成功，随后重打双节点身份补丁；输出 PUBLISH_OK/PUBLISH_FAILED/PUBLISH_TIMEOUT
+# 发布并等待成功；输出 PUBLISH_OK/PUBLISH_FAILED/PUBLISH_TIMEOUT
+# 节点身份由容器 GATEWAY_NODE_NAME 环境变量原生决定，心跳周期由 gateway_runtime 设置下发，无需 nodepatch。
 ha_publish() {
   local csrf="$1" cookie="/tmp/s5-$SEC_USER.txt"
   local task st
@@ -168,18 +137,18 @@ ha_publish() {
     sleep 1
   done
   [ "$st" = "SUCCESS" ] || { echo "PUBLISH_TIMEOUT(st=$st)"; return 1; }
-  ha_patch_nodes || { echo "PATCH_FAILED"; return 1; }
   echo "PUBLISH_OK"
 }
 
-# 播种 gateway_runtime 组设置（behavior_store=valkey 共享计数 / 写限速阈值 100 / 身份盐）。
+# 播种 gateway_runtime 组设置（behavior_store=valkey 共享计数 / 写限速阈值 100 / 身份盐 / 心跳周期）。
 # 管理面 PUT 仅支持既有行（乐观锁），行播种走 psql（lab fixture，幂等 upsert）。
 ha_seed_settings() {
   docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1 <<SQL
 INSERT INTO system_settings (setting_group, setting_key, setting_value, value_type, description)
 VALUES ('gateway_runtime','behavior_store','"valkey"','string','ha-lab：双节点共享行为/限速计数'),
        ('gateway_runtime','api_write_rate_per_minute','"100"','string','ha-lab：S2 写限速阈值'),
-       ('gateway_runtime','identity_salt','"$HA_IDENTITY_SALT"','string','ha-lab：身份指纹盐（lab 固定值）')
+       ('gateway_runtime','identity_salt','"$HA_IDENTITY_SALT"','string','ha-lab：身份指纹盐（lab 固定值）'),
+       ('gateway_runtime','api_node_heartbeat_seconds','"$HB_SECONDS"','string','ha-lab：网关心跳周期（秒）')
 ON CONFLICT (setting_group, setting_key) DO UPDATE
 SET setting_value = EXCLUDED.setting_value, updated_at = now(), version = system_settings.version + 1;
 SQL
@@ -351,20 +320,15 @@ preflight() {
     curl -s -o /dev/null --max-time 3 -H "Host: $HOST_HEADER" "$u/" \
       || { echo "ERROR: $u 不可达（ha-lab 栈未就绪）"; exit 2; }
   done
-  # nodepatch 工具镜像缺失则自动构建（锁定基础镜像，秒级）
-  if ! docker image inspect jiuzhang-ha-nodepatch:ha-lab >/dev/null 2>&1; then
-    echo "[preflight] 构建 nodepatch 工具镜像..."
-    docker compose -f "$COMPOSE_FILE" --profile tools build nodepatch >/dev/null 2>&1 \
-      || { echo "ERROR: nodepatch 镜像构建失败"; exit 2; }
-  fi
 }
 
-# ---- S0 前置准备（幂等）：登录/应用/设置/发布/登记 ----
-# 结束后状态：应用 PROTECT 已发布；gateway_runtime 三键生效；两节点身份补丁+心跳 30s；
-# 两节点已登记（sync_enabled=true）且至少完成一次扇出发布。
+# ---- S0 前置准备（幂等）：登录/应用/设置/登记次节点/发布 ----
+# 结束后状态：应用 PROTECT 已发布；gateway_runtime 四键生效（含心跳 30s）；
+# gw-b 已登记（admin_addr=/var/run/caddy/node-b/admin.sock, sync_enabled=true），
+# gw-a 作为主节点不登记为次要同步目标；双节点凭借 GATEWAY_NODE_NAME 原生上报心跳 ACTIVE。
 setup() {
   echo "------------------------------------------------------------"
-  echo "S0 前置准备（登录/应用/设置/发布/节点登记）"
+  echo "S0 前置准备（登录/应用/设置/登记次节点/发布）"
   SYS_CSRF=$(ha_ensure_sysadmin) || { echo "ERROR: sysadmin 登录失败"; exit 2; }
   SEC_CSRF=$(s5_ensure_secuser "$SYS_CSRF")
   [ -n "$SEC_CSRF" ] || { echo "ERROR: sec 登录失败"; exit 2; }
@@ -374,75 +338,80 @@ setup() {
   echo "[setup] app=$APP_ID marker=${MARKER_ID:-none}"
 
   ha_seed_settings || { echo "ERROR: gateway_runtime 设置播种失败"; exit 2; }
-  echo "[setup] gateway_runtime: behavior_store=valkey api_write_rate_per_minute=100 identity_salt=***"
+  echo "[setup] gateway_runtime: behavior_store=valkey api_write_rate_per_minute=100 heartbeat=${HB_SECONDS}s identity_salt=***"
 
-  echo "[setup] 首次发布（主通道 → gw-a）..."
-  local p1
-  p1=$(ha_publish "$SEC_CSRF")
-  echo "$p1" | tail -1 | grep -q PUBLISH_OK || { echo "ERROR: 首次发布失败: $p1"; exit 2; }
-
-  # 首次纳管引导：gw-b 尚在引导配置（无 guard 处理器，发布扇出只推登记节点），
-  # 从 gw-a 的发布态配置复制改写身份后 /load（节点注册握手协议未交付前的
-  # lab 引导动作，见 nodepatch 头注释）；此后 gw-b 心跳上报、进入节点视图可登记
-  echo "[setup] gw-b 首次纳管引导（从 gw-a 发布态复制 + 改写身份）..."
-  local boot
-  boot=$(ha_patch_node b gw-b a) || { echo "ERROR: gw-b 引导失败: $boot"; exit 2; }
-  echo "  [bootstrap] gw-b $boot"
-
-  # 打流让端点资产有数据，并等心跳把两节点送入节点视图
-  ha_burst "$LB_URL" "/api/json" "ha-setup-$RUN_ID" 3 > /dev/null
-  local i na nb
-  for i in $(seq 1 20); do
-    na=$(ha_node_field gw-a status); nb=$(ha_node_field gw-b status)
-    [ -n "$na" ] && [ -n "$nb" ] && break
-    sleep 3
-  done
-  if [ -z "$na" ] || [ -z "$nb" ]; then
-    echo "ERROR: 节点视图未出现 gw-a/gw-b（心跳/采集链路未通）a='$na' b='$nb'"; exit 2
-  fi
-  echo "[setup] 节点视图已见 gw-a($na) gw-b($nb)"
-
-  # 登记两节点（admin_addr=各节点 Admin Socket 在 api 容器内的可达路径）
-  local ida idb
-  ida=$(curl -s -b "/tmp/s5-$SEC_USER.txt" "$API_URL/api/v1/api-security/nodes" | python3 -c "
-import json,sys
-items=json.load(sys.stdin)['data'].get('items') or []
-print(next((n['id'] for n in items if n.get('node_name')=='gw-a'),''))" 2>/dev/null)
+  # 确保次要节点 gw-b 已存在并登记（优先走管理面 POST 预注册接口；旧阶段回退 psql 预置空行后再经 PATCH 校验登记）
+  local idb rc_create rc2
   idb=$(curl -s -b "/tmp/s5-$SEC_USER.txt" "$API_URL/api/v1/api-security/nodes" | python3 -c "
 import json,sys
 items=json.load(sys.stdin)['data'].get('items') or []
 print(next((n['id'] for n in items if n.get('node_name')=='gw-b'),''))" 2>/dev/null)
-  [ -n "$ida" ] && [ -n "$idb" ] || { echo "ERROR: 节点 ID 获取失败"; exit 2; }
-  local rc1 rc2
-  rc1=$(curl -s -o /dev/null -w "%{http_code}" -b "/tmp/s5-$SEC_USER.txt" -X PATCH \
-    "$API_URL/api/v1/api-security/nodes/$ida" -H 'Content-Type: application/json' \
-    -H "X-CSRF-Token: $SEC_CSRF" \
-    -d '{"admin_addr":"/var/run/caddy/admin.sock","sync_enabled":true}')
+  if [ -z "$idb" ]; then
+    rc_create=$(curl -s -o /dev/null -w "%{http_code}" -b "/tmp/s5-$SEC_USER.txt" -X POST \
+      "$API_URL/api/v1/api-security/nodes" -H 'Content-Type: application/json' \
+      -H "X-CSRF-Token: $SEC_CSRF" \
+      -d '{"node_name":"gw-b","admin_addr":"/var/run/caddy/node-b/admin.sock","sync_enabled":true}')
+    if [ "$rc_create" != "200" ] && [ "$rc_create" != "201" ]; then
+      docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1 <<SQL
+INSERT INTO api_gateway_nodes (node_name) VALUES ('gw-b') ON CONFLICT (node_name) DO NOTHING;
+SQL
+    fi
+    idb=$(curl -s -b "/tmp/s5-$SEC_USER.txt" "$API_URL/api/v1/api-security/nodes" | python3 -c "
+import json,sys
+items=json.load(sys.stdin)['data'].get('items') or []
+print(next((n['id'] for n in items if n.get('node_name')=='gw-b'),''))" 2>/dev/null)
+  fi
+  [ -n "$idb" ] || { echo "ERROR: 获取次要节点 gw-b ID 失败"; exit 2; }
   rc2=$(curl -s -o /dev/null -w "%{http_code}" -b "/tmp/s5-$SEC_USER.txt" -X PATCH \
     "$API_URL/api/v1/api-security/nodes/$idb" -H 'Content-Type: application/json' \
     -H "X-CSRF-Token: $SEC_CSRF" \
-    -d '{"admin_addr":"/var/run/caddy-node-b/admin.sock","sync_enabled":true}')
-  [ "$rc1" = "200" ] && [ "$rc2" = "200" ] || { echo "ERROR: 节点登记失败 rc=$rc1/$rc2"; exit 2; }
-  echo "[setup] 两节点已登记（gw-a=/var/run/caddy/admin.sock gw-b=/var/run/caddy-node-b/admin.sock）"
+    -d '{"admin_addr":"/var/run/caddy/node-b/admin.sock","sync_enabled":true}')
+  [ "$rc2" = "200" ] || { echo "ERROR: 次要节点 gw-b 登记失败 rc=$rc2"; exit 2; }
+  echo "[setup] 次要节点已登记（gw-b=/var/run/caddy/node-b/admin.sock；gw-a 为主发布通道不重复登记）"
 
-  echo "[setup] 二次发布（扇出两节点）..."
-  local p2
-  p2=$(ha_publish "$SEC_CSRF")
-  echo "$p2" | tail -1 | grep -q PUBLISH_OK || { echo "ERROR: 扇出发布失败: $p2"; exit 2; }
+  # 复跑清理：若历史运行曾登记 gw-a 为次要同步目标，关闭其 sync_enabled
+  local ida
+  ida=$(curl -s -b "/tmp/s5-$SEC_USER.txt" "$API_URL/api/v1/api-security/nodes" | python3 -c "
+import json,sys
+items=json.load(sys.stdin)['data'].get('items') or []
+print(next((n['id'] for n in items if n.get('node_name')=='gw-a'),''))" 2>/dev/null)
+  if [ -n "$ida" ]; then
+    curl -s -o /dev/null -b "/tmp/s5-$SEC_USER.txt" -X PATCH \
+      "$API_URL/api/v1/api-security/nodes/$ida" -H 'Content-Type: application/json' \
+      -H "X-CSRF-Token: $SEC_CSRF" \
+      -d '{"sync_enabled":false}'
+  fi
+
+  echo "[setup] 发布配置（主通道 → gw-a，扇出 → gw-b）..."
+  local p1
+  p1=$(ha_publish "$SEC_CSRF")
+  echo "$p1" | tail -1 | grep -q PUBLISH_OK || { echo "ERROR: 发布失败: $p1"; exit 2; }
+
+  # 打流让端点资产有数据，并等心跳把两节点送入节点视图（两节点依靠 GATEWAY_NODE_NAME 自动区分身份）
+  ha_burst "$LB_URL" "/api/json" "ha-setup-$RUN_ID" 3 > /dev/null
+  local i na nb
+  for i in $(seq 1 20); do
+    na=$(ha_node_field gw-a status); nb=$(ha_node_field gw-b status)
+    [ "$na" = "ACTIVE" ] && [ "$nb" = "ACTIVE" ] && break
+    sleep 3
+  done
+  if [ "$na" != "ACTIVE" ] || [ "$nb" != "ACTIVE" ]; then
+    echo "ERROR: 节点视图未见双节点 ACTIVE（心跳/采集链路未通）a='$na' b='$nb'"; exit 2
+  fi
+  echo "[setup] 节点视图已见 gw-a($na) gw-b($nb)"
   echo "[setup] 完成"
 }
 
-# ---- S1 配置一致性：登记 + 扇出发布 → consistent=true ----
+# ---- S1 配置一致性：登记次节点 + 扇出发布 → consistent=true ----
 s1() {
   echo "------------------------------------------------------------"
   echo "S1 配置一致性（扇出发布 + /nodes/consistency）"
-  local sa sb ra rb
+  local sa sb rb
   sa=$(ha_node_field gw-a status); sb=$(ha_node_field gw-b status)
   [ "$sa" = "ACTIVE" ] && record "S1 节点 gw-a 心跳 ACTIVE" 1 || record "S1 节点 gw-a 心跳 ACTIVE" 0 "status=$sa"
   [ "$sb" = "ACTIVE" ] && record "S1 节点 gw-b 心跳 ACTIVE" 1 || record "S1 节点 gw-b 心跳 ACTIVE" 0 "status=$sb"
 
-  ra=$(ha_node_field gw-a last_sync_result); rb=$(ha_node_field gw-b last_sync_result)
-  [ "$ra" = "SUCCESS" ] && record "S1 gw-a 扇出结果 SUCCESS" 1 || record "S1 gw-a 扇出结果 SUCCESS" 0 "got=$ra"
+  rb=$(ha_node_field gw-b last_sync_result)
   [ "$rb" = "SUCCESS" ] && record "S1 gw-b 扇出结果 SUCCESS" 1 || record "S1 gw-b 扇出结果 SUCCESS" 0 "got=$rb"
 
   # 心跳/事件收集有秒级延迟，一致性视图短轮询
@@ -631,9 +600,7 @@ s4() {
   sleep 2
   local p3
   p3=$(ha_publish "$SEC_CSRF")
-  # 注意：ha_publish 末尾的 nodepatch 对停机节点会失败——属预期，单独重打 A 即可
-  if echo "$p3" | grep -q "PUBLISH_OK\|PATCH_FAILED"; then
-    ha_patch_node a gw-a > /dev/null 2>&1
+  if echo "$p3" | tail -1 | grep -q "PUBLISH_OK"; then
     record "S4 停机发布主流程 SUCCESS（次节点失败不阻断）" 1
   else
     record "S4 停机发布主流程 SUCCESS（次节点失败不阻断）" 0 "$p3"

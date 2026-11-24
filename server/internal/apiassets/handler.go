@@ -315,27 +315,86 @@ func (h *Handler) LearningOptions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+const (
+	// learningBatchMaxIDs 手工勾选 IDs 批量启动学习单次上限。
+	learningBatchMaxIDs = 100
+	// learningBatchMaxFiltered 按筛选条件批量启动学习单次最大处理数（防误操作引发超大任务风暴）。
+	learningBatchMaxFiltered = 2000
+	// learningBatchPageSize 后端分页拉取筛选命中的页大小（对齐 Store.List 上限 100）。
+	learningBatchPageSize = 100
+)
+
+type learningBatchFilterRequest struct {
+	AssetStatus     string `json:"asset_status"`
+	LearningStatus  string `json:"learning_status"`
+	Keyword         string `json:"keyword"`
+	ApplicationID   string `json:"application_id"`
+	Unassigned      bool   `json:"unassigned"`
+	DirectoryPrefix string `json:"directory_path"`
+	BusinessType    string `json:"business_type"`
+}
+
+func parseLearningBatchFilter(in *learningBatchFilterRequest) (ListFilter, error) {
+	f := ListFilter{
+		Page:     1,
+		PageSize: learningBatchPageSize,
+	}
+	if in == nil {
+		return f, nil
+	}
+	f.AssetStatus = strings.ToUpper(strings.TrimSpace(in.AssetStatus))
+	f.LearningStatus = strings.ToUpper(strings.TrimSpace(in.LearningStatus))
+	f.Keyword = strings.TrimSpace(in.Keyword)
+	f.DirectoryPrefix = strings.TrimSpace(in.DirectoryPrefix)
+	f.Unassigned = in.Unassigned
+	if v := strings.TrimSpace(in.ApplicationID); v != "" {
+		appID, err := uuid.Parse(v)
+		if err != nil {
+			return ListFilter{}, fmt.Errorf("无效的application_id")
+		}
+		f.ApplicationID = &appID
+	}
+	if v := strings.TrimSpace(in.BusinessType); v != "" {
+		bt := NormalizeBusinessType(v)
+		if !validBusinessTypes[bt] {
+			return ListFilter{}, fmt.Errorf("无效的业务类型")
+		}
+		f.BusinessType = bt
+	}
+	return f, nil
+}
+
 // LearningStartBatch POST /api/v1/api-security/endpoints/learning/start
-// {ids:[...], sample_target?: int}
-// 批量启动接口模型学习（单次最多 100 个，权限：api_learning.start）；
-// 已在学习中（RUNNING）的接口自动跳过并计入 skipped，不存在的接口计入 failed，写操作审计。
+// 支持两种模式（权限：api_learning.start）：
+//  1. 指定勾选 IDs：{ids:[...], sample_target?: int}（单次最多 100 个，已在学习中的自动跳过）；
+//  2. 按当前筛选条件：{apply_to_filtered: true, filter?: {...}, sample_target?: int}
+//     （后端分页收集全部命中接口，单次最多处理 2000 个；自动跳过学习中、非活跃资产及未显式筛选的已完成接口）。
 func (h *Handler) LearningStartBatch(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	var req struct {
-		IDs          []uuid.UUID `json:"ids"`
-		SampleTarget *int        `json:"sample_target"`
+		IDs             []uuid.UUID                 `json:"ids"`
+		ApplyToFiltered bool                        `json:"apply_to_filtered"`
+		Filter          *learningBatchFilterRequest `json:"filter"`
+		SampleTarget    *int                        `json:"sample_target"`
 	}
 	if err := response.DecodeJSON(w, r, &req, 8192); err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
 		return
 	}
-	if len(req.IDs) == 0 {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "ids 不能为空")
+	if req.ApplyToFiltered && len(req.IDs) > 0 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "ids 与 apply_to_filtered 不能同时指定")
 		return
 	}
-	if len(req.IDs) > 100 {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "单次最多启动 100 个接口学习")
-		return
+	if !req.ApplyToFiltered {
+		if len(req.IDs) == 0 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "ids 不能为空")
+			return
+		}
+		if len(req.IDs) > learningBatchMaxIDs {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+				fmt.Sprintf("单次最多启动 %d 个接口学习", learningBatchMaxIDs))
+			return
+		}
 	}
 	sampleTarget := 0
 	if req.SampleTarget != nil {
@@ -350,7 +409,6 @@ func (h *Handler) LearningStartBatch(w http.ResponseWriter, r *http.Request) {
 	if effectiveTarget == 0 {
 		effectiveTarget = DefaultSampleTarget
 	}
-	ids := dedupUUIDs(req.IDs)
 	var createdBy *uuid.UUID
 	if p != nil {
 		uid := p.UserID
@@ -363,6 +421,108 @@ func (h *Handler) LearningStartBatch(w http.ResponseWriter, r *http.Request) {
 	started := []string{}
 	skipped := []string{}
 	failed := []failedItem{}
+
+	if req.ApplyToFiltered {
+		filter, err := parseLearningBatchFilter(req.Filter)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+			return
+		}
+		// 先完整分页收集命中快照再逐个启动，避免启动学习改变 learning_status 引发翻页偏移漏项。
+		var candidates []Endpoint
+		seen := make(map[uuid.UUID]struct{})
+		var matchedTotal int64
+		truncated := false
+		for {
+			list, total, listErr := h.store.List(r.Context(), filter)
+			if listErr != nil {
+				response.InternalError(w, r, listErr)
+				return
+			}
+			if filter.Page == 1 {
+				matchedTotal = total
+			}
+			for _, ep := range list {
+				if _, dup := seen[ep.ID]; dup {
+					continue
+				}
+				seen[ep.ID] = struct{}{}
+				candidates = append(candidates, ep)
+				if len(candidates) >= learningBatchMaxFiltered {
+					break
+				}
+			}
+			if len(candidates) >= learningBatchMaxFiltered {
+				if matchedTotal > int64(learningBatchMaxFiltered) {
+					truncated = true
+				}
+				break
+			}
+			if int64(filter.Page*filter.PageSize) >= total || len(list) == 0 {
+				break
+			}
+			filter.Page++
+		}
+		for _, ep := range candidates {
+			// 按筛选批量启动时，始终跳过非活跃资产（已忽略/已下线/僵尸）与学习中接口；
+			// 已完成学习的接口仅在用户显式筛选 learning_status=LEARNED 时重新学习，否则自动跳过。
+			if ep.AssetStatus == "IGNORED" || ep.AssetStatus == "DEPRECATED" || ep.AssetStatus == "ZOMBIE" {
+				skipped = append(skipped, ep.ID.String())
+				continue
+			}
+			if ep.LearningStatus == "LEARNING" {
+				skipped = append(skipped, ep.ID.String())
+				continue
+			}
+			if ep.LearningStatus == "LEARNED" && filter.LearningStatus != "LEARNED" {
+				skipped = append(skipped, ep.ID.String())
+				continue
+			}
+			_, startErr := h.store.StartLearning(r.Context(), ep.ID, sampleTarget, createdBy)
+			if errors.Is(startErr, ErrNotFound) {
+				failed = append(failed, failedItem{ID: ep.ID.String(), Reason: "接口不存在"})
+				continue
+			}
+			if errors.Is(startErr, ErrLearningRunning) {
+				skipped = append(skipped, ep.ID.String())
+				continue
+			}
+			if startErr != nil {
+				response.InternalError(w, r, startErr)
+				return
+			}
+			started = append(started, ep.ID.String())
+		}
+		h.recordAudit(r, p, "learning_start_batch", "",
+			fmt.Sprintf("按筛选批量启动学习（命中 %d 个接口）", matchedTotal),
+			summaryJSON(map[string]any{
+				"apply_to_filtered": true,
+				"filter":            req.Filter,
+				"sample_target":     effectiveTarget,
+			}),
+			summaryJSON(map[string]any{
+				"matched_total": matchedTotal,
+				"truncated":     truncated,
+				"started":       len(started),
+				"skipped":       len(skipped),
+				"failed":        len(failed),
+				"sample_target": effectiveTarget,
+			}), audits.RiskLow)
+		response.JSON(w, r, http.StatusOK, map[string]any{
+			"started":       len(started),
+			"started_ids":   started,
+			"skipped":       len(skipped),
+			"skipped_ids":   skipped,
+			"failed":        failed,
+			"matched_total": matchedTotal,
+			"truncated":     truncated,
+			"sample_target": effectiveTarget,
+			"message":       formatFilteredLearningStartMessage(matchedTotal, len(started), len(skipped), len(failed), truncated),
+		})
+		return
+	}
+
+	ids := dedupUUIDs(req.IDs)
 	for _, id := range ids {
 		_, err := h.store.StartLearning(r.Context(), id, sampleTarget, createdBy)
 		if errors.Is(err, ErrNotFound) {
@@ -397,9 +557,38 @@ func (h *Handler) LearningStartBatch(w http.ResponseWriter, r *http.Request) {
 		"skipped":       len(skipped),
 		"skipped_ids":   skipped,
 		"failed":        failed,
+		"matched_total": len(ids),
+		"truncated":     false,
 		"sample_target": effectiveTarget,
 		"message":       formatBatchLearningStartMessage(len(started), len(skipped), len(failed)),
 	})
+}
+
+func formatFilteredLearningStartMessage(matchedTotal int64, started, skipped, failed int, truncated bool) string {
+	if matchedTotal == 0 {
+		return "当前筛选条件下无可启动学习的接口"
+	}
+	if started == 0 && skipped > 0 && failed == 0 {
+		return fmt.Sprintf("当前筛选命中的 %d 个接口均已在学习中、已完成或为非活跃资产，已自动跳过", skipped)
+	}
+	parts := make([]string, 0, 3)
+	if started > 0 {
+		parts = append(parts, fmt.Sprintf("已批量启动 %d 个接口学习", started))
+	}
+	if skipped > 0 {
+		parts = append(parts, fmt.Sprintf("跳过 %d 个（学习中/已完成/非活跃）", skipped))
+	}
+	if failed > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个失败", failed))
+	}
+	msg := strings.Join(parts, "，")
+	if msg == "" {
+		msg = "未启动任何学习任务"
+	}
+	if truncated {
+		msg += fmt.Sprintf("（筛选共命中 %d 个，单次上限处理 %d 个）", matchedTotal, learningBatchMaxFiltered)
+	}
+	return msg
 }
 
 func dedupUUIDs(in []uuid.UUID) []uuid.UUID {

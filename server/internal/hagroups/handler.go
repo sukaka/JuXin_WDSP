@@ -1,6 +1,6 @@
-// 主备高可用 REST 接口（docs/HA_ACTIVE_STANDBY_DESIGN.md §8.4，M2 范围）。
+// 主备高可用 REST 接口（docs/HA_ACTIVE_STANDBY_DESIGN.md §8.4）。
 // 全部写操作：CSRF + 参数校验 + 操作审计（高危）；配置生效 = 保存 DB +
-// 原子写 sidecars/ha-vip.json（havipd 执行），与 network.json 同一边车纪律。
+// 原子写本机 sidecars/ha-vip.json（如本机为成员或单机模式）+ 可选 RemoteSyncer 推送远端成员。
 package hagroups
 
 import (
@@ -10,8 +10,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/middleware"
@@ -35,17 +38,49 @@ type NodeLister interface {
 // BridgePortChecker 检查指定节点集合上某接口是否为网桥成员口（返回冲突节点名与桥名；空串 = 未入桥）。
 type BridgePortChecker func(ctx context.Context, nodeNames []string, iface string) (conflictNode, bridgeName string, err error)
 
+// RemoteSyncer 远端成员节点 ha-vip.json 同步接口（Phase 3 nodesync 装配）。
+type RemoteSyncer interface {
+	PushHaVip(ctx context.Context, nodeName string, payload []byte) error
+	DeleteHaVip(ctx context.Context, nodeName string) error
+}
+
+// NodeRuntimeStatus 单节点汇聚后的 HA VIP 运行状态快照。
+type NodeRuntimeStatus struct {
+	NodeName  string          `json:"node_name"`
+	Status    json.RawMessage `json:"status,omitempty"`
+	UpdatedAt *time.Time      `json:"updated_at,omitempty"`
+	Fresh     bool            `json:"fresh"`
+	Source    string          `json:"source,omitempty"` // "local" | "remote"
+}
+
+// NodeStatusProvider 节点级 ha-vip-status 汇聚提供者（Phase 3 apinodes/nodesync 装配）。
+// 返回 map[nodeName]NodeRuntimeStatus（调用方按统一新鲜度阈值计算 Fresh 并合并本机状态）。
+type NodeStatusProvider interface {
+	GetNodeHaVipStatuses(ctx context.Context, nodeNames []string) (map[string]NodeRuntimeStatus, error)
+}
+
+// SyncResult 单节点边车配置同步结果。
+type SyncResult struct {
+	NodeName string `json:"node_name"`
+	Scope    string `json:"scope"`  // "local" | "remote"
+	Status   string `json:"status"` // "SUCCESS" | "FAILED"
+	Error    string `json:"error,omitempty"`
+}
+
 var errBridgePortCheckInternal = errors.New("check bridge port conflict failed")
 
 // Handler 主备组处理器。
 type Handler struct {
-	store         Repository
-	nodes         NodeLister
-	enc           Encryptor // nil = 未装配加密服务
-	audits        *audits.Service
-	sidecarDir    string
-	now           func() time.Time
-	bridgeChecker BridgePortChecker
+	store          Repository
+	nodes          NodeLister
+	enc            Encryptor // nil = 未装配加密服务
+	audits         *audits.Service
+	sidecarDir     string
+	localNodeName  string
+	now            func() time.Time
+	bridgeChecker  BridgePortChecker
+	remoteSyncer   RemoteSyncer
+	statusProvider NodeStatusProvider
 }
 
 // NewHandler 创建处理器。
@@ -59,6 +94,24 @@ func (h *Handler) SetSidecarDir(dir string) { h.sidecarDir = dir }
 // SetBridgePortChecker 注入网桥成员口冲突检查器（禁止将网桥成员口用作 HA VRRP 承载网卡）。
 func (h *Handler) SetBridgePortChecker(fn BridgePortChecker) *Handler {
 	h.bridgeChecker = fn
+	return h
+}
+
+// SetRemoteSyncer 注入远端节点 ha-vip.json 同步器（Phase 3 nodesync 接入）。
+func (h *Handler) SetRemoteSyncer(s RemoteSyncer) *Handler {
+	h.remoteSyncer = s
+	return h
+}
+
+// SetLocalNodeName 设置管理面所在本地网关节点名（为空表示兼容单机/未区分节点模式）。
+func (h *Handler) SetLocalNodeName(name string) *Handler {
+	h.localNodeName = strings.TrimSpace(name)
+	return h
+}
+
+// SetNodeStatusProvider 注入全量节点 HA 运行状态提供者（Phase 3 apinodes/nodesync 接入）。
+func (h *Handler) SetNodeStatusProvider(p NodeStatusProvider) *Handler {
+	h.statusProvider = p
 	return h
 }
 
@@ -77,6 +130,7 @@ func RegisterRoutes(mux *http.ServeMux, authzFn func(http.Handler) http.Handler,
 	mux.Handle("PATCH /api/v1/ha/groups/{id}", authzFn(middleware.RequirePermission("ha.manage")(http.HandlerFunc(h.Update))))
 	mux.Handle("DELETE /api/v1/ha/groups/{id}", authzFn(middleware.RequirePermission("ha.manage")(http.HandlerFunc(h.Delete))))
 	mux.Handle("POST /api/v1/ha/groups/{id}/failback", authzFn(middleware.RequirePermission("ha.manage")(http.HandlerFunc(h.Failback))))
+	mux.Handle("GET /api/v1/ha/events", authzFn(middleware.RequirePermission("ha.read")(http.HandlerFunc(h.ListEvents))))
 }
 
 // List GET /api/v1/ha/groups
@@ -86,9 +140,19 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
+	nodeStatuses := h.collectMemberStatuses(r.Context(), groups)
+	splitBrain := false
+	for i := range groups {
+		if isGroupSplitBrain(&groups[i], nodeStatuses) {
+			splitBrain = true
+			break
+		}
+	}
 	response.JSON(w, r, http.StatusOK, map[string]any{
-		"items":  groups,
-		"status": readHaVipStatus(h.dir()),
+		"items":         groups,
+		"status":        readHaVipStatus(h.dir()),
+		"node_statuses": nodeStatuses,
+		"split_brain":   splitBrain,
 	})
 }
 
@@ -103,10 +167,54 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
+	nodeStatuses := h.collectMemberStatuses(r.Context(), []Group{*g})
 	response.JSON(w, r, http.StatusOK, map[string]any{
-		"group":  g,
-		"status": readHaVipStatus(h.dir()),
+		"group":         g,
+		"status":        readHaVipStatus(h.dir()),
+		"node_statuses": nodeStatuses,
+		"split_brain":   isGroupSplitBrain(g, nodeStatuses),
 	})
+}
+
+// ListEvents GET /api/v1/ha/events
+func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	filter := EventFilter{
+		GroupID:   strings.TrimSpace(q.Get("group_id")),
+		NodeName:  strings.TrimSpace(q.Get("node_name")),
+		EventType: strings.TrimSpace(q.Get("event_type")),
+	}
+	if filter.GroupID != "" {
+		if _, err := uuid.Parse(filter.GroupID); err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "group_id 参数必须为合法 UUID")
+			return
+		}
+	}
+	if rawPage := strings.TrimSpace(q.Get("page")); rawPage != "" {
+		v, err := strconv.Atoi(rawPage)
+		if err != nil || v < 1 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "page 参数必须为正整数")
+			return
+		}
+		filter.Page = v
+	}
+	if rawSize := strings.TrimSpace(q.Get("page_size")); rawSize != "" {
+		v, err := strconv.Atoi(rawSize)
+		if err != nil || v < 1 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "page_size 参数必须为正整数")
+			return
+		}
+		filter.PageSize = v
+	}
+	page, pageSize := normalizeEventPagination(filter.Page, filter.PageSize)
+	filter.Page, filter.PageSize = page, pageSize
+
+	items, total, err := h.store.ListEvents(r.Context(), filter)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.Page(w, r, items, total, page, pageSize)
 }
 
 // Create POST /api/v1/ha/groups
@@ -142,13 +250,17 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g = ng
-	if err := h.pushSidecar(r.Context(), g); err != nil {
+	syncResults, err := h.syncSidecarPush(r.Context(), g, nil)
+	if err != nil {
 		h.recordAudit(r, p, "create_ha_group", g, audits.ResultFailure, "配置已入库，但边车配置写入失败: "+err.Error())
 		response.InternalError(w, r, fmt.Errorf("配置已保存，但下发边车配置失败: %w", err))
 		return
 	}
 	h.recordAudit(r, p, "create_ha_group", g, audits.ResultSuccess, "")
-	response.JSON(w, r, http.StatusOK, map[string]any{"group": g})
+	response.JSON(w, r, http.StatusOK, map[string]any{
+		"group":        g,
+		"sync_results": syncResults,
+	})
 }
 
 // Update PATCH /api/v1/ha/groups/{id}
@@ -197,17 +309,22 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
-	if err := h.pushSidecar(r.Context(), ng); err != nil {
+	syncResults, err := h.syncSidecarPush(r.Context(), ng, old)
+	if err != nil {
 		h.recordAudit(r, p, "update_ha_group", ng, audits.ResultFailure, "配置已入库，但边车配置写入失败: "+err.Error())
 		response.InternalError(w, r, fmt.Errorf("配置已保存，但下发边车配置失败: %w", err))
 		return
 	}
 	h.recordAudit(r, p, "update_ha_group", ng, audits.ResultSuccess, "")
-	response.JSON(w, r, http.StatusOK, map[string]any{"group": ng})
+	response.JSON(w, r, http.StatusOK, map[string]any{
+		"group":        ng,
+		"sync_results": syncResults,
+	})
 }
 
 // Delete DELETE /api/v1/ha/groups/{id}
-// 收回主备能力：先删边车配置（havipd 停止实例释放 VIP），再删 DB。
+// 收回主备能力：仅在本机属于该组（或无其他组占用本机）时删本机边车配置，
+// 并经可选 RemoteSyncer 同步收回远端成员配置，最后删 DB。
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	g, err := h.store.Get(r.Context(), r.PathValue("id"))
@@ -219,7 +336,8 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
-	if err := deleteHaVipJSON(h.dir()); err != nil {
+	syncResults, err := h.syncSidecarDelete(r.Context(), g)
+	if err != nil {
 		h.recordAudit(r, p, "delete_ha_group", g, audits.ResultFailure, "边车配置删除失败: "+err.Error())
 		response.InternalError(w, r, err)
 		return
@@ -229,16 +347,18 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.recordAudit(r, p, "delete_ha_group", g, audits.ResultSuccess, "")
-	response.JSON(w, r, http.StatusOK, map[string]any{"message": "主备组已删除，VIP 已随配置收回释放"})
+	response.JSON(w, r, http.StatusOK, map[string]any{
+		"message":      "主备组已删除，VIP 已随配置收回释放",
+		"sync_results": syncResults,
+	})
 }
 
 // Failback POST /api/v1/ha/groups/{id}/failback
 // 人工回切（把 VIP 切到指定节点）：调整成员优先级后整体更新并重新下发。
 // 请求体 {"node_id":"..."} = 期望持有 VIP 的节点。
 //
-// 判定以「VIP 实际持有」为准而非配置优先级：nopreempt 自动故障转移后，配置
-// 高优先级节点并不持有 VIP，此时回切必须可执行（MED-29）。持有方判定来源为
-// 本节点 havipd 回写状态（仅本节点卷，双节点汇聚待采集通道，见设计 §15 M2 边界）。
+// 判定以「VIP 实际持有」为准而非配置优先级：优先综合全部成员的新鲜汇聚状态
+// （NodeStatusProvider + 本机状态文件），未装配汇聚提供者时回退本机状态文件。
 func (h *Handler) Failback(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	g, err := h.store.Get(r.Context(), r.PathValue("id"))
@@ -274,7 +394,8 @@ func (h *Handler) Failback(w http.ResponseWriter, r *http.Request) {
 	}
 	target, peer := &g.Members[ti], &g.Members[1-ti]
 
-	holder := vipHolderName(g, readHaVipRuntime(h.dir(), h.now()))
+	nodeStatuses := h.collectMemberStatuses(r.Context(), []Group{*g})
+	holder := vipHolderFromStatuses(g, nodeStatuses, readHaVipRuntime(h.dir(), h.now()))
 	if holder != "" && holder == target.NodeName {
 		response.JSON(w, r, http.StatusOK, map[string]any{"message": "目标节点已持有 VIP，无需回切", "group": g})
 		return
@@ -320,22 +441,49 @@ func (h *Handler) Failback(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
-	if err := h.pushSidecar(r.Context(), ng); err != nil {
+	syncResults, err := h.syncSidecarPush(r.Context(), ng, nil)
+	if err != nil {
 		h.recordAudit(r, p, "failback_ha_group", ng, audits.ResultFailure, "优先级已入库，但边车配置写入失败: "+err.Error())
 		response.InternalError(w, r, fmt.Errorf("配置已保存，但下发边车配置失败: %w", err))
 		return
 	}
+	opUser := ""
+	if p != nil {
+		opUser = p.Username
+	}
+	h.recordEvent(r.Context(), HaEvent{
+		GroupID:   ng.ID,
+		GroupName: ng.Name,
+		NodeName:  target.NodeName,
+		EventType: EventTypeFailback,
+		Detail: map[string]any{
+			"target_node_id":   target.NodeID,
+			"target_node_name": target.NodeName,
+			"peer_node_name":   peer.NodeName,
+			"previous_holder":  holder,
+			"message":          msg,
+			"operator":         opUser,
+			"sync_results":     syncResults,
+		},
+		OccurredAt: h.now().UTC(),
+	})
 	h.recordAudit(r, p, "failback_ha_group", ng, audits.ResultSuccess, "")
-	response.JSON(w, r, http.StatusOK, map[string]any{"message": msg, "group": ng})
+	response.JSON(w, r, http.StatusOK, map[string]any{
+		"message":      msg,
+		"group":        ng,
+		"sync_results": syncResults,
+	})
 }
 
-// vipHolderName 由本节点运行状态推断当前 VIP 持有节点名（"" = 未知）：
-//   - 本节点 MASTER/已持有 VIP → 本节点；
-//   - 本节点 BACKUP 且 keepalived 存活 → 组内另一成员（2 节点组的健康推断：
-//     本机不持有则对端持有）；
-//   - 其他（FAULT/DISABLED/STOPPED/状态缺失/本节点不在组内）→ 未知。
+// vipHolderName 由单节点运行状态推断当前 VIP 持有节点名（"" = 未知）：
+//   - 该节点 MASTER/已持有 VIP → 该节点；
+//   - 该节点 BACKUP 且 keepalived 存活 → 组内另一成员（2 节点组的健康推断）；
+//   - 其他（FAULT/DISABLED/STOPPED/状态缺失/节点不在组内）→ 未知。
 func vipHolderName(g *Group, st *haVipRuntime) string {
 	if st == nil || st.Node == "" {
+		return ""
+	}
+	if st.Group != "" && st.Group != g.Name {
 		return ""
 	}
 	self := -1
@@ -348,16 +496,175 @@ func vipHolderName(g *Group, st *haVipRuntime) string {
 	if self < 0 {
 		return ""
 	}
-	if st.State == "MASTER" || len(st.VIPsPresent) > 0 {
+	if isMasterOrHoldingVIP(st) {
 		return st.Node
 	}
-	if st.State == "BACKUP" && st.KeepalivedRunning {
+	if strings.EqualFold(st.State, "BACKUP") && st.KeepalivedRunning {
 		return g.Members[1-self].NodeName
 	}
 	return ""
 }
 
+// vipHolderFromStatuses 优先基于全部成员的新鲜汇聚状态判定当前 VIP 持有方，
+// 缺失或不可判定时回退至本机状态文件（vipHolderName）。
+func vipHolderFromStatuses(g *Group, statuses map[string]NodeRuntimeStatus, localFallback *haVipRuntime) string {
+	if len(g.Members) != 2 {
+		return ""
+	}
+	runtimes := make(map[string]*haVipRuntime, len(g.Members))
+	masters := make([]string, 0, len(g.Members))
+	for _, m := range g.Members {
+		ns, ok := statuses[m.NodeName]
+		if !ok || !ns.Fresh || len(ns.Status) == 0 {
+			continue
+		}
+		var rt haVipRuntime
+		if err := json.Unmarshal(ns.Status, &rt); err != nil {
+			continue
+		}
+		if rt.Group != "" && rt.Group != g.Name {
+			continue
+		}
+		if rt.Node == "" {
+			rt.Node = m.NodeName
+		}
+		runtimes[m.NodeName] = &rt
+		if isMasterOrHoldingVIP(&rt) {
+			masters = append(masters, m.NodeName)
+		}
+	}
+	if len(masters) == 1 {
+		return masters[0]
+	}
+	if len(masters) >= 2 {
+		// 脑裂态：双方均声称持有 VIP，不判定为唯一持有方
+		return ""
+	}
+	// 无明确 MASTER 时，若恰有一侧新鲜上报 BACKUP+running 且对端无新鲜非 MASTER 状态，按 2 节点健康推断对端持有
+	for i, m := range g.Members {
+		rt := runtimes[m.NodeName]
+		if rt == nil {
+			continue
+		}
+		peerName := g.Members[1-i].NodeName
+		if _, peerHasFresh := runtimes[peerName]; peerHasFresh {
+			// 对端也有新鲜状态但未报 MASTER/VIP（如双方均 BACKUP 或 FAULT），不盲猜
+			continue
+		}
+		if strings.EqualFold(rt.State, "BACKUP") && rt.KeepalivedRunning {
+			return peerName
+		}
+	}
+	if len(runtimes) > 0 {
+		return ""
+	}
+	return vipHolderName(g, localFallback)
+}
+
 // ---------- 内部 ----------
+
+func groupHasNode(g *Group, nodeName string) bool {
+	if g == nil || nodeName == "" {
+		return false
+	}
+	for _, m := range g.Members {
+		if m.NodeName == nodeName {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) shouldWriteLocal(g *Group) bool {
+	return h.localNodeName == "" || groupHasNode(g, h.localNodeName)
+}
+
+func (h *Handler) collectMemberStatuses(ctx context.Context, groups []Group) map[string]NodeRuntimeStatus {
+	now := h.now().UTC()
+	memberSet := map[string]bool{}
+	memberNames := make([]string, 0, len(groups)*2)
+	for i := range groups {
+		for _, m := range groups[i].Members {
+			if m.NodeName != "" && !memberSet[m.NodeName] {
+				memberSet[m.NodeName] = true
+				memberNames = append(memberNames, m.NodeName)
+			}
+		}
+	}
+
+	out := map[string]NodeRuntimeStatus{}
+	if h.statusProvider != nil && len(memberNames) > 0 {
+		remoteStatuses, err := h.statusProvider.GetNodeHaVipStatuses(ctx, memberNames)
+		if err != nil {
+			slog.Warn("获取远端节点 HA 运行状态失败（降级为本机状态）", "error", err)
+		} else {
+			for nodeName, ns := range remoteStatuses {
+				if !memberSet[nodeName] {
+					continue
+				}
+				ns.NodeName = nodeName
+				if ns.Source == "" {
+					ns.Source = "remote"
+				}
+				if len(ns.Status) > 0 {
+					var tmp any
+					if err := json.Unmarshal(ns.Status, &tmp); err != nil {
+						slog.Warn("远端节点 ha_vip_status JSON 非法，忽略", "node", nodeName, "error", err)
+						ns.Status = nil
+					}
+				}
+				ns.Fresh = len(ns.Status) > 0 && ns.UpdatedAt != nil && now.Sub(*ns.UpdatedAt) <= vipStatusFreshCutoff
+				out[nodeName] = ns
+			}
+		}
+	}
+
+	// 合并本机 sidecar 状态文件（仅当该节点属于请求组集合时纳入，且仅在更年轻/缺失时覆盖）
+	localRaw, localMod := readHaVipStatusWithMeta(h.dir())
+	if len(localRaw) > 0 && localMod != nil {
+		var rt haVipRuntime
+		_ = json.Unmarshal(localRaw, &rt)
+		localNode := strings.TrimSpace(rt.Node)
+		if localNode == "" {
+			localNode = h.localNodeName
+		}
+		if localNode != "" && memberSet[localNode] {
+			localFresh := now.Sub(*localMod) <= vipStatusFreshCutoff
+			existing, hasExisting := out[localNode]
+			if !hasExisting || existing.UpdatedAt == nil || localMod.After(*existing.UpdatedAt) || (localFresh && !existing.Fresh) {
+				out[localNode] = NodeRuntimeStatus{
+					NodeName:  localNode,
+					Status:    localRaw,
+					UpdatedAt: localMod,
+					Fresh:     localFresh,
+					Source:    "local",
+				}
+			}
+		}
+	}
+	return out
+}
+
+func isGroupSplitBrain(g *Group, statuses map[string]NodeRuntimeStatus) bool {
+	masters := 0
+	for _, m := range g.Members {
+		ns, ok := statuses[m.NodeName]
+		if !ok || !ns.Fresh || len(ns.Status) == 0 {
+			continue
+		}
+		var rt haVipRuntime
+		if err := json.Unmarshal(ns.Status, &rt); err != nil {
+			continue
+		}
+		if rt.Group != "" && rt.Group != g.Name {
+			continue
+		}
+		if isMasterOrHoldingVIP(&rt) {
+			masters++
+		}
+	}
+	return masters >= 2
+}
 
 // validate 校验并归一化输入（成员节点存在性经 NodeLister），并解析成员
 // 节点名入 Group.Members[].NodeName（下发 member.node 的数据源）。
@@ -417,27 +724,241 @@ func (h *Handler) resolveAuth(plain string) (string, error) {
 	return h.enc.Encrypt(plain)
 }
 
-// pushSidecar 构造并写 ha-vip.json（认证串取库内密文解密；解密失败显式报错）。
-func (h *Handler) pushSidecar(ctx context.Context, g *Group) error {
+// buildSidecarPayload 构造并序列化 ha-vip.json 字节（认证串取库内密文解密；解密失败显式报错）。
+func (h *Handler) buildSidecarPayload(ctx context.Context, g *Group) ([]byte, error) {
 	plain := ""
 	if g.HasAuthPass {
 		if h.enc == nil {
-			return fmt.Errorf("组配置了 VRRP 认证串，但未装配加密服务，无法下发")
+			return nil, fmt.Errorf("组配置了 VRRP 认证串，但未装配加密服务，无法下发")
 		}
 		cipher, err := h.storeAuthCiphertext(ctx, g.ID)
 		if err != nil {
-			return fmt.Errorf("读取认证串密文: %w", err)
+			return nil, fmt.Errorf("读取认证串密文: %w", err)
 		}
 		plain, err = h.enc.Decrypt(cipher)
 		if err != nil {
-			return fmt.Errorf("认证串解密失败: %w", err)
+			return nil, fmt.Errorf("认证串解密失败: %w", err)
 		}
 	}
 	var peers []string
 	if g.Unicast {
 		peers = g.UnicastPeers
 	}
-	return writeHaVipJSON(h.dir(), buildHaVipFile(g, plain, peers, h.now()))
+	return marshalHaVipFile(buildHaVipFile(g, plain, peers, h.now()))
+}
+
+// syncSidecarPush 下发 ha-vip.json 到本机（若本机属该组或单机模式）及远端成员（若已装配 RemoteSyncer）。
+// 若 prev 非空且成员发生变更，同步向被移出成员发出收回删除，防止旧节点残留 VIP。
+func (h *Handler) syncSidecarPush(ctx context.Context, g *Group, prev *Group) ([]SyncResult, error) {
+	payload, err := h.buildSidecarPayload(ctx, g)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]SyncResult, 0, len(g.Members)+1)
+
+	if h.shouldWriteLocal(g) {
+		if err := writeHaVipBytes(h.dir(), payload); err != nil {
+			h.recordEvent(ctx, HaEvent{
+				GroupID:   g.ID,
+				GroupName: g.Name,
+				NodeName:  h.localNodeName,
+				EventType: EventTypeSyncFailed,
+				Detail: map[string]any{
+					"scope": "local",
+					"op":    "push",
+					"error": err.Error(),
+				},
+				OccurredAt: h.now().UTC(),
+			})
+			return nil, err
+		}
+		results = append(results, SyncResult{
+			NodeName: h.localNodeName,
+			Scope:    "local",
+			Status:   "SUCCESS",
+		})
+	} else if prev != nil && h.localNodeName != "" && groupHasNode(prev, h.localNodeName) {
+		// 本机原本在该组、本次更新被移出组：删除本机 ha-vip.json 收回 VIP
+		if err := deleteHaVipJSON(h.dir()); err != nil {
+			return nil, err
+		}
+		results = append(results, SyncResult{
+			NodeName: h.localNodeName,
+			Scope:    "local",
+			Status:   "SUCCESS",
+		})
+	}
+
+	if h.remoteSyncer != nil {
+		newSet := map[string]bool{}
+		for _, m := range g.Members {
+			if m.NodeName == "" {
+				continue
+			}
+			newSet[m.NodeName] = true
+			if m.NodeName == h.localNodeName {
+				continue
+			}
+			if err := h.remoteSyncer.PushHaVip(ctx, m.NodeName, payload); err != nil {
+				slog.Warn("推送远端节点 ha-vip.json 失败", "group", g.Name, "node", m.NodeName, "error", err)
+				results = append(results, SyncResult{
+					NodeName: m.NodeName,
+					Scope:    "remote",
+					Status:   "FAILED",
+					Error:    err.Error(),
+				})
+				h.recordEvent(ctx, HaEvent{
+					GroupID:   g.ID,
+					GroupName: g.Name,
+					NodeName:  m.NodeName,
+					EventType: EventTypeSyncFailed,
+					Detail: map[string]any{
+						"scope": "remote",
+						"op":    "push",
+						"error": err.Error(),
+					},
+					OccurredAt: h.now().UTC(),
+				})
+				continue
+			}
+			results = append(results, SyncResult{
+				NodeName: m.NodeName,
+				Scope:    "remote",
+				Status:   "SUCCESS",
+			})
+		}
+
+		// 若本次更新移除了旧成员，通知被移除远端节点收回 ha-vip.json
+		if prev != nil {
+			for _, om := range prev.Members {
+				if om.NodeName == "" || om.NodeName == h.localNodeName || newSet[om.NodeName] {
+					continue
+				}
+				if err := h.remoteSyncer.DeleteHaVip(ctx, om.NodeName); err != nil {
+					slog.Warn("收回已移出成员的远端 ha-vip.json 失败", "group", g.Name, "node", om.NodeName, "error", err)
+					results = append(results, SyncResult{
+						NodeName: om.NodeName,
+						Scope:    "remote",
+						Status:   "FAILED",
+						Error:    err.Error(),
+					})
+					h.recordEvent(ctx, HaEvent{
+						GroupID:   g.ID,
+						GroupName: g.Name,
+						NodeName:  om.NodeName,
+						EventType: EventTypeSyncFailed,
+						Detail: map[string]any{
+							"scope": "remote",
+							"op":    "delete_removed_member",
+							"error": err.Error(),
+						},
+						OccurredAt: h.now().UTC(),
+					})
+					continue
+				}
+				results = append(results, SyncResult{
+					NodeName: om.NodeName,
+					Scope:    "remote",
+					Status:   "SUCCESS",
+				})
+			}
+		}
+	}
+	return results, nil
+}
+
+// syncSidecarDelete 删除组时收回本机（按成员归属防误删）与远端成员的 ha-vip.json。
+func (h *Handler) syncSidecarDelete(ctx context.Context, g *Group) ([]SyncResult, error) {
+	results := make([]SyncResult, 0, len(g.Members)+1)
+
+	shouldDeleteLocal, err := h.shouldDeleteLocal(ctx, g)
+	if err != nil {
+		return nil, err
+	}
+	if shouldDeleteLocal {
+		if err := deleteHaVipJSON(h.dir()); err != nil {
+			h.recordEvent(ctx, HaEvent{
+				GroupID:   g.ID,
+				GroupName: g.Name,
+				NodeName:  h.localNodeName,
+				EventType: EventTypeSyncFailed,
+				Detail: map[string]any{
+					"scope": "local",
+					"op":    "delete",
+					"error": err.Error(),
+				},
+				OccurredAt: h.now().UTC(),
+			})
+			return nil, err
+		}
+		results = append(results, SyncResult{
+			NodeName: h.localNodeName,
+			Scope:    "local",
+			Status:   "SUCCESS",
+		})
+	}
+
+	if h.remoteSyncer != nil {
+		for _, m := range g.Members {
+			if m.NodeName == "" || m.NodeName == h.localNodeName {
+				continue
+			}
+			if err := h.remoteSyncer.DeleteHaVip(ctx, m.NodeName); err != nil {
+				slog.Warn("删除远端节点 ha-vip.json 失败", "group", g.Name, "node", m.NodeName, "error", err)
+				results = append(results, SyncResult{
+					NodeName: m.NodeName,
+					Scope:    "remote",
+					Status:   "FAILED",
+					Error:    err.Error(),
+				})
+				h.recordEvent(ctx, HaEvent{
+					GroupID:   g.ID,
+					GroupName: g.Name,
+					NodeName:  m.NodeName,
+					EventType: EventTypeSyncFailed,
+					Detail: map[string]any{
+						"scope": "remote",
+						"op":    "delete",
+						"error": err.Error(),
+					},
+					OccurredAt: h.now().UTC(),
+				})
+				continue
+			}
+			results = append(results, SyncResult{
+				NodeName: m.NodeName,
+				Scope:    "remote",
+				Status:   "SUCCESS",
+			})
+		}
+	}
+	return results, nil
+}
+
+// shouldDeleteLocal 仅当本机属于待删组（或未设置本机节点名且本机文件归属该组/无其他存活组）时删除本机 ha-vip.json。
+func (h *Handler) shouldDeleteLocal(ctx context.Context, g *Group) (bool, error) {
+	if h.localNodeName != "" {
+		return groupHasNode(g, h.localNodeName), nil
+	}
+	if localGroup := readLocalHaVipGroupName(h.dir()); localGroup != "" {
+		return localGroup == g.Name, nil
+	}
+	groups, err := h.store.List(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, other := range groups {
+		if other.ID != g.ID {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (h *Handler) recordEvent(ctx context.Context, ev HaEvent) {
+	if err := h.store.RecordEvent(ctx, ev); err != nil {
+		slog.Error("record ha event failed", "group", ev.GroupName, "event_type", ev.EventType, "error", err)
+	}
 }
 
 // storeAuthCiphertext 取库内认证串密文（Repository 契约外能力，经类型断言）。
@@ -460,6 +981,8 @@ func (h *Handler) writeStoreError(w http.ResponseWriter, r *http.Request, err er
 		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "配置已被他人修改，请刷新后重试")
 	case errors.Is(err, ErrNameConflict):
 		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "组名已存在")
+	case errors.Is(err, ErrNodeAlreadyInGroup):
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "所选成员节点已归属其他主备组，单个节点同一时间仅可加入一个主备组")
 	default:
 		response.InternalError(w, r, err)
 	}

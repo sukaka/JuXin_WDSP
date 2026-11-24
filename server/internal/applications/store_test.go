@@ -177,3 +177,18 @@ func TestUpdateDomainValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultUpstreamHealthStatus(t *testing.T) {
+	if got := defaultUpstreamHealthStatus("ACTIVE", false); got != UpstreamHealthDisabled {
+		t.Errorf("health_check_enabled=false => %q, want %q", got, UpstreamHealthDisabled)
+	}
+	if got := defaultUpstreamHealthStatus("DISABLED", false); got != UpstreamHealthDisabled {
+		t.Errorf("disabled + health_check_enabled=false => %q, want %q", got, UpstreamHealthDisabled)
+	}
+	if got := defaultUpstreamHealthStatus("ACTIVE", true); got != UpstreamHealthUnknown {
+		t.Errorf("active + health_check_enabled=true => %q, want %q", got, UpstreamHealthUnknown)
+	}
+	if got := defaultUpstreamHealthStatus("DISABLED", true); got != UpstreamHealthUnknown {
+		t.Errorf("disabled + health_check_enabled=true => %q, want %q", got, UpstreamHealthUnknown)
+	}
+}

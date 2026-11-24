@@ -25,6 +25,7 @@ import RecordDetailDrawer from '../../../components/RecordDetailDrawer'
 import SmartTable from '../../../components/SmartTable'
 import useBatchDelete from '../../../hooks/useBatchDelete'
 import { useAuthStore } from '../../../stores/auth'
+import { formatDateTime } from '../../../utils/format'
 import { UPSTREAM_ERROR_CODE_LABELS } from '../../../utils/i18nLabels'
 import { hasPermission } from '../../../utils/permission'
 import type { UpstreamItem, UpstreamTestResult } from '../../../types'
@@ -138,6 +139,126 @@ function TestResultView({ result }: { result: UpstreamTestResult }) {
         <Descriptions.Item label="响应耗时">{result.response_time_ms} ms</Descriptions.Item>
       </Descriptions>
     </div>
+  )
+}
+
+function UpstreamHealthCell({ record }: { record: UpstreamItem }) {
+  if (!record.health_check_enabled || record.health_status === 'DISABLED') {
+    return <Tag>未启用</Tag>
+  }
+  if (record.status !== 'ACTIVE') {
+    return (
+      <Tooltip title="源站已停用，暂停健康探测">
+        <Tag>未知</Tag>
+      </Tooltip>
+    )
+  }
+
+  const normalized = (record.health_status || 'UNKNOWN').toUpperCase()
+  const hasLatency =
+    typeof record.last_response_time_ms === 'number' &&
+    Number.isFinite(record.last_response_time_ms)
+  const hasStatus =
+    typeof record.last_response_status === 'number' &&
+    record.last_response_status > 0
+  const checkTime = record.last_health_check_at
+    ? formatDateTime(record.last_health_check_at)
+    : ''
+
+  if (normalized === 'HEALTHY' || normalized === 'UP') {
+    const tooltipLines: string[] = []
+    if (hasStatus) tooltipLines.push(`HTTP ${record.last_response_status}`)
+    if (hasLatency) tooltipLines.push(`探测耗时 ${record.last_response_time_ms} ms`)
+    if (record.consecutive_successes && record.consecutive_successes > 0) {
+      tooltipLines.push(`连续正常 ${record.consecutive_successes} 次`)
+    }
+    if (checkTime) tooltipLines.push(`最近探测：${checkTime}`)
+
+    return (
+      <Tooltip title={tooltipLines.length > 0 ? tooltipLines.join(' · ') : '最近一次健康探测通过'}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <Space size={6} wrap={false}>
+            <Tag color="green" style={{ marginInlineEnd: 0 }}>
+              正常
+            </Tag>
+            {hasLatency && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {record.last_response_time_ms} ms
+              </Typography.Text>
+            )}
+          </Space>
+        </div>
+      </Tooltip>
+    )
+  }
+
+  if (normalized === 'UNHEALTHY' || normalized === 'DOWN') {
+    const errorCode = record.last_health_error_code || ''
+    const errorLabel = errorCode ? (UPSTREAM_ERROR_CODE_LABELS[errorCode] ?? errorCode) : ''
+    const summaryParts: string[] = []
+    if (errorCode === 'UNEXPECTED_STATUS' && hasStatus) {
+      summaryParts.push(`HTTP ${record.last_response_status}`)
+    } else if (errorLabel) {
+      summaryParts.push(errorLabel)
+    } else if (record.last_health_error) {
+      summaryParts.push(record.last_health_error)
+    }
+    if (hasLatency && (record.last_response_time_ms as number) > 0) {
+      summaryParts.push(`${record.last_response_time_ms} ms`)
+    }
+    const summaryText = summaryParts.join(' · ')
+
+    const tooltipLines: string[] = []
+    if (errorLabel && record.last_health_error && record.last_health_error !== errorLabel) {
+      tooltipLines.push(`${errorLabel}：${record.last_health_error}`)
+    } else if (record.last_health_error) {
+      tooltipLines.push(record.last_health_error)
+    } else if (errorLabel) {
+      tooltipLines.push(errorLabel)
+    }
+    if (hasStatus) tooltipLines.push(`HTTP ${record.last_response_status}`)
+    if (hasLatency) tooltipLines.push(`探测耗时 ${record.last_response_time_ms} ms`)
+    if (record.consecutive_failures && record.consecutive_failures > 0) {
+      tooltipLines.push(`连续失败 ${record.consecutive_failures} 次`)
+    }
+    if (checkTime) tooltipLines.push(`最近探测：${checkTime}`)
+
+    return (
+      <Tooltip title={tooltipLines.length > 0 ? tooltipLines.join(' · ') : '最近一次健康探测失败'}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+          <Space size={6} wrap={false}>
+            <Tag color="red" style={{ marginInlineEnd: 0 }}>
+              异常
+            </Tag>
+            {summaryText && (
+              <Typography.Text
+                type="danger"
+                style={{
+                  fontSize: 12,
+                  maxWidth: 160,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {summaryText}
+              </Typography.Text>
+            )}
+          </Space>
+        </div>
+      </Tooltip>
+    )
+  }
+
+  return (
+    <Tooltip title="已启用健康检查，等待下一轮探测结果">
+      <Space size={6} wrap={false}>
+        <Tag style={{ marginInlineEnd: 0 }}>未知</Tag>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          待探测
+        </Typography.Text>
+      </Space>
+    </Tooltip>
   )
 }
 
@@ -319,6 +440,13 @@ export default function UpstreamsTab({
       dataIndex: 'health_check_enabled',
       width: 100,
       render: (v: boolean, r) => (v ? <Tag color="blue">{r.health_check_path}</Tag> : <Tag>关闭</Tag>),
+    },
+    {
+      title: '健康状态',
+      key: 'health_status',
+      dataIndex: 'health_status',
+      width: 210,
+      render: (_, record) => <UpstreamHealthCell record={record} />,
     },
     {
       title: '状态',

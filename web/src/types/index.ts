@@ -237,10 +237,21 @@ export interface ApplicationItem {
   current_version_id?: string | null
   last_publish_at?: string | null
   last_publish_result: string
+  /** 主活动域名（按 is_primary 优先、最早创建次之；无活动域名时为空串） */
+  primary_domain?: string
   domain_count: number
   upstream_count: number
   /** API 准入模式（docs/API_ADMISSION_CONTROL_DESIGN.md §3.1；缺省按 OFF 处理） */
   api_admission_mode?: ApiAdmissionMode
+  /** 自动 SSL 站点开关与运行态摘要 */
+  auto_ssl_enabled?: boolean
+  auto_ssl_challenge_type?: string
+  auto_ssl_renew_before_days?: number | null
+  auto_ssl_last_status?: string
+  auto_ssl_last_error?: string
+  auto_ssl_fail_count?: number
+  auto_ssl_next_retry_at?: string | null
+  auto_ssl_last_attempt_at?: string | null
   created_at: string
   updated_at: string
   version: number
@@ -319,6 +330,9 @@ export interface DomainItem {
   updated_at: string
 }
 
+/** 源站实时健康状态 */
+export type UpstreamHealthStatus = 'HEALTHY' | 'UNHEALTHY' | 'UNKNOWN' | 'DISABLED'
+
 /** 源站 */
 export interface UpstreamItem {
   id: string
@@ -345,6 +359,22 @@ export interface UpstreamItem {
   created_at: string
   updated_at: string
   version: number
+  /** 实时健康状态（只读，来自最近一次健康探测记录） */
+  health_status?: UpstreamHealthStatus | string
+  /** 最近一次健康探测时间 */
+  last_health_check_at?: string | null
+  /** 最近一次健康探测返回的 HTTP 状态码 */
+  last_response_status?: number | null
+  /** 最近一次健康探测耗时（毫秒） */
+  last_response_time_ms?: number | null
+  /** 最近一次健康探测失败错误码 */
+  last_health_error_code?: string
+  /** 最近一次健康探测失败详情 */
+  last_health_error?: string
+  /** 连续健康次数 */
+  consecutive_successes?: number
+  /** 连续失败次数 */
+  consecutive_failures?: number
 }
 
 /** 源站连通性测试结果（HTTP 200 返回，成败看 error_code） */
@@ -362,7 +392,27 @@ export interface UpstreamTestResult {
 
 /** 证书状态 */
 export type CertificateStatus =
-  'VALID' | 'EXPIRING' | 'EXPIRED' | 'INVALID' | 'KEY_MISMATCH'
+  'VALID' | 'EXPIRING' | 'EXPIRED' | 'INVALID' | 'KEY_MISMATCH' | 'REPLACED'
+
+export type CertificateManagedBy = 'MANUAL' | 'ACME'
+export type AcmeProvider = 'LETSENCRYPT' | 'LETSENCRYPT_STAGING' | 'CUSTOM'
+export type AcmeKeyType = 'EC256' | 'EC384' | 'RSA2048'
+export type AcmeTriggerType =
+  | 'AUTO_INIT'
+  | 'AUTO_RENEW'
+  | 'AUTO_DOMAIN_SYNC'
+  | 'MANUAL_ISSUE'
+  | 'MANUAL_RENEW'
+export type AcmeOrderStatus =
+  | 'PENDING'
+  | 'PREPARING'
+  | 'VALIDATING'
+  | 'FINALIZING'
+  | 'ISSUED'
+  | 'PUBLISHING'
+  | 'SUCCEEDED'
+  | 'PUBLISH_FAILED'
+  | 'FAILED'
 
 /** HTTPS 证书列表项 */
 export interface CertificateItem {
@@ -382,6 +432,14 @@ export interface CertificateItem {
   san_domains: string[]
   status: CertificateStatus
   usage_count: number
+  managed_by?: CertificateManagedBy
+  acme_provider?: string
+  acme_directory_url?: string
+  auto_renew?: boolean
+  renew_before_days?: number
+  replaces_certificate_id?: string | null
+  superseded_by?: string | null
+  last_renewed_at?: string | null
   created_at: string
   updated_at: string
   version: number
@@ -390,6 +448,84 @@ export interface CertificateItem {
 /** 证书详情（含绑定应用 ID 列表，不含私钥） */
 export interface CertificateDetail extends CertificateItem {
   application_ids: string[]
+}
+
+/** 全局 ACME 自动证书配置（不含 EAB HMAC 明文） */
+export interface AcmeConfig {
+  enabled: boolean
+  provider: AcmeProvider
+  directory_url: string
+  effective_directory_url: string
+  custom_directory_allowlist: string
+  email: string
+  tos_agreed: boolean
+  eab_kid: string
+  eab_hmac_configured: boolean
+  key_type: AcmeKeyType
+  renew_before_days: number
+  auto_publish: boolean
+  updated_at?: string
+  version: number
+}
+
+export interface AcmeTestResult {
+  reachable: boolean
+  directory_url: string
+  latency_ms: number
+  authz_url?: string
+  order_url?: string
+  external_account_required: boolean
+  message: string
+}
+
+export interface AcmeOrderItem {
+  id: string
+  application_id: string
+  app_code?: string
+  app_name?: string
+  trigger_type: AcmeTriggerType
+  provider: string
+  directory_url: string
+  challenge_type: string
+  domains: string[]
+  status: AcmeOrderStatus
+  certificate_id?: string | null
+  previous_certificate_id?: string | null
+  publish_task_id?: string | null
+  error_code: string
+  error_message: string
+  request_id: string
+  started_at?: string | null
+  finished_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AppAutoSslWarning {
+  code: string
+  level: 'error' | 'warning' | 'info'
+  message: string
+}
+
+export interface AppAutoSslStatus {
+  application_id: string
+  enabled: boolean
+  challenge_type: string
+  renew_before_days: number | null
+  effective_renew_before_days: number
+  global_acme_enabled: boolean
+  global_provider: string
+  auto_publish: boolean
+  https_domains: string[]
+  last_status: string
+  last_error: string
+  fail_count: number
+  next_retry_at?: string | null
+  last_attempt_at?: string | null
+  has_active_order: boolean
+  latest_order?: AcmeOrderItem | null
+  ready: boolean
+  warnings: AppAutoSslWarning[]
 }
 
 /** 业务摘要（preview 响应中为对象；version/diff 中为同结构的 JSON 字符串） */
@@ -2358,8 +2494,10 @@ export interface NetworkConfigStatus {
 export interface NetworkConfigData {
   desired?: Partial<NetworkDesiredConfig> | null
   status?: NetworkConfigStatus | null
-  /** 本网关默认节点名（可选；非默认节点仅支持只读查看） */
+  /** 本网关默认节点名（可选；非默认节点未启用远端协同时仅支持只读查看） */
   default_node?: string
+  /** 当前查询节点是否可编辑并下发（本机默认节点或已启用 hasyncd 协同代理的远端节点） */
+  remote_editable?: boolean
 }
 
 /** 网络工具诊断动作（POST /network-tools/jobs 的 action 取值） */
@@ -2424,6 +2562,8 @@ export interface HaGroup {
   advert_int_ms: number
   unicast: boolean
   unicast_peers: string[]
+  /** Keepalived track_interface 监控的关联接口列表 */
+  track_interfaces?: string[]
   has_auth_pass: boolean
   members: HaGroupMember[]
   version: number
@@ -2442,6 +2582,7 @@ export interface HaGroupUpsert {
   advert_int_ms: number
   unicast: boolean
   unicast_peers: string[]
+  track_interfaces?: string[]
   auth_pass?: string
   members: { node_id: string; priority: number }[]
   version?: number
@@ -2470,16 +2611,52 @@ export interface HaVipStatus {
   events?: HaVipEvent[]
 }
 
+/** 单节点汇聚后的 HA VIP 运行状态快照（server/internal/hagroups.NodeRuntimeStatus） */
+export interface HaNodeRuntimeStatus {
+  node_name: string
+  status?: HaVipStatus | null
+  updated_at?: string | null
+  fresh: boolean
+  /** "local" | "remote" */
+  source?: string
+}
+
+/** 单节点边车配置同步结果（server/internal/hagroups.SyncResult） */
+export interface HaSyncResult {
+  node_name: string
+  /** "local" | "remote" */
+  scope: string
+  /** "SUCCESS" | "FAILED" */
+  status: string
+  error?: string
+}
+
+/** 主备高可用持久化历史事件（GET /ha/events；server/internal/hagroups.HaEvent） */
+export interface HaEvent {
+  id: number
+  group_id?: string
+  group_name: string
+  node_name: string
+  /** FAILBACK | SYNC_FAILED | SPLIT_BRAIN | VIP_TRANSITION | LINK_PAIR_CHANGE */
+  event_type: string
+  detail: Record<string, unknown>
+  occurred_at: string
+}
+
 /** 主备组列表响应 */
 export interface HaGroupListData {
   items?: HaGroup[]
   status?: HaVipStatus | null
+  node_statuses?: Record<string, HaNodeRuntimeStatus>
+  split_brain?: boolean
 }
 
 /** 主备组详情响应 */
 export interface HaGroupDetailData {
   group?: HaGroup
   status?: HaVipStatus | null
+  node_statuses?: Record<string, HaNodeRuntimeStatus>
+  split_brain?: boolean
 }
 
 /** 系统告警 */
@@ -2693,11 +2870,58 @@ export interface UpgradePrecheckResult {
   items?: UpgradePrecheckItem[] | null
 }
 
+/** 升级集群模式（LOCAL 单机 / HA_ROLLING 主备先备后主滚动升级） */
+export type UpgradeClusterMode = 'LOCAL' | 'HA_ROLLING'
+
+/** HA 集群滚动升级逐节点执行明细（server/internal/upgrades.NodeExecution） */
+export interface UpgradeNodeExecution {
+  id: string
+  job_id: string
+  node_id?: string | null
+  node_name: string
+  role: 'STANDBY' | 'PRIMARY' | string
+  seq: number
+  status: 'PENDING' | 'TRANSFERRING' | 'APPLYING' | 'VERIFYING' | 'SUCCESS' | 'FAILED' | 'SKIPPED' | string
+  from_version: string
+  to_version: string
+  error_code: string
+  error_message: string
+  started_at?: string | null
+  finished_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** HA 集群滚动升级节点视图项（GET /upgrades/nodes items 元素） */
+export interface UpgradeClusterNode {
+  node_id: string
+  node_name: string
+  role: 'PRIMARY' | 'STANDBY' | string
+  sync_agent_addr: string
+  sync_enabled: boolean
+  reported_version: string
+  version_aligned: boolean
+  reachable: boolean
+  caddy_reachable: boolean
+  hostctl_ready: boolean
+  upgrade_ready: boolean
+  error?: string
+}
+
+/** HA 集群滚动升级节点总览（GET /upgrades/nodes） */
+export interface UpgradeClusterNodesResult {
+  items: UpgradeClusterNode[]
+  current_version: string
+  split_brain: boolean
+  cluster_ready: boolean
+}
+
 /** 升级任务 */
 export interface UpgradeJobItem {
   id: string
   package_id: string | null
   status: string
+  cluster_mode?: UpgradeClusterMode | string
   precheck?: unknown
   backup_job_id?: string | null
   requested_by?: string | null
@@ -2709,6 +2933,7 @@ export interface UpgradeJobItem {
   failure_code?: string
   failure_message?: string
   request_id?: string
+  node_executions?: UpgradeNodeExecution[]
 }
 
 /** 交付检查结果项 */

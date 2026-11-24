@@ -92,6 +92,7 @@ export const ALERT_TYPE_META: Record<string, { color: string; label: string }> =
   SOURCE_UNHEALTHY: { color: 'volcano', label: '源站不健康' },
   CERTIFICATE_EXPIRING: { color: 'gold', label: '证书即将到期' },
   CERTIFICATE_EXPIRED: { color: 'red', label: '证书已过期' },
+  CERTIFICATE_AUTO_RENEW_FAILED: { color: 'red', label: '自动申请/续约证书失败' },
   CONFIG_PUBLISH_FAILED: { color: 'volcano', label: '配置发布失败' },
   CONFIG_HASH_MISMATCH: { color: 'orange', label: '配置哈希不一致' },
   DISK_SPACE_LOW: { color: 'orange', label: '磁盘空间不足' },

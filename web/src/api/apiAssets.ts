@@ -338,7 +338,7 @@ export const apiEndpointsApi = {
           : {}),
       },
     }),
-  /** 批量启动接口学习（单次最多 100 个；已在学习中的接口自动跳过） */
+  /** 批量启动接口学习（按勾选 IDs，单次最多 100 个；已在学习中的接口自动跳过） */
   learningStartBatch: (ids: string[], sampleTarget?: number) =>
     request<{
       started: number
@@ -346,12 +346,45 @@ export const apiEndpointsApi = {
       skipped: number
       skipped_ids: string[]
       failed: { id: string; reason: string }[]
+      matched_total?: number
+      truncated?: boolean
       sample_target: number
       message: string
     }>('/api-security/endpoints/learning/start', {
       method: 'POST',
       body: {
         ids,
+        ...(sampleTarget !== undefined ? { sample_target: sampleTarget } : {}),
+      },
+    }),
+  /** 按当前筛选条件跨页批量启动接口学习（单次最多处理 2000 个；自动跳过学习中/非活跃/未显式筛选的已完成接口） */
+  learningStartFiltered: (
+    filter: {
+      asset_status?: string
+      learning_status?: string
+      keyword?: string
+      application_id?: string
+      unassigned?: boolean
+      directory_path?: string
+      business_type?: string
+    },
+    sampleTarget?: number,
+  ) =>
+    request<{
+      started: number
+      started_ids: string[]
+      skipped: number
+      skipped_ids: string[]
+      failed: { id: string; reason: string }[]
+      matched_total?: number
+      truncated?: boolean
+      sample_target: number
+      message: string
+    }>('/api-security/endpoints/learning/start', {
+      method: 'POST',
+      body: {
+        apply_to_filtered: true,
+        filter,
         ...(sampleTarget !== undefined ? { sample_target: sampleTarget } : {}),
       },
     }),

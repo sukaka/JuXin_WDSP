@@ -91,8 +91,10 @@ paths:
       tags: [api-security]
       summary: 导出 API 接口资产清单（CSV）
       description: >-
-        按当前筛选条件导出 API 接口资产清单。筛选参数与分页列表一致，服务端分页拉取，
-        单次最多 10000 行；CSV 字段已做公式注入转义。共享导出限流。
+        按当前筛选条件导出 API 接口资产清单（UTF-8 含 BOM）。筛选参数与分页列表一致，服务端分页拉取，
+        单次最多 10000 行；CSV 中文表头：所属站点,站点域名,目录路径,请求方法,路径模板,原始路径示例,接口键,
+        协议类型,是否 API,置信度,资产状态,学习状态,业务标签,资产价值,命中次数,首次发现时间,最近访问时间,确认时间,僵尸态起点
+        （协议类型、是否 API、资产状态、学习状态、业务标签与资产价值已映射为中文，全字符串列防公式注入）。共享导出限流。
         权限：`api_asset.export`；成功导出记录操作审计。
       parameters:
         - name: format
@@ -328,8 +330,10 @@ paths:
       tags: [api-security]
       summary: 批量启动接口学习
       description: >-
-        批量为选中的 API 接口启动模型学习任务（单次最多 100 个），可选 `sample_target`（10~100000，缺省 100）；
-        已在学习中（RUNNING）的接口自动跳过并计入 `skipped_ids`，不存在的接口计入 `failed`。写操作审计。
+        批量为 API 接口启动模型学习任务，支持两种模式（二选一，不可同时指定）：
+        1) 指定 `ids`（单次最多 100 个，已在学习中自动跳过）；
+        2) 指定 `apply_to_filtered: true` + 可选 `filter`（按当前筛选条件跨页批量处理，单次最多处理 2000 个，
+        自动跳过学习中、非活跃资产及未显式筛选的已完成接口）。可选 `sample_target`（10~100000，缺省 100）。写操作审计。
         权限：`api_learning.start`
       requestBody:
         required: true
@@ -6331,22 +6335,20 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
 
-  # ==================== 网关节点版本校验（apinodes，多节点遥测） ====================
+  # ==================== 网关节点管理与版本校验（apinodes，全产品形态可用） ====================
   /api-security/nodes:
     get:
       operationId: apiSecNodeList
       tags: [api-security]
-      summary: 网关节点列表（状态+版本+同步登记/结果+一致性标记）
+      summary: 网关节点列表（状态+版本+协同代理/同步结果+一致性标记）
       description: >-
-        W12 多节点版本校验 v1 + W18-SYNC 配置面同步登记：列出 api_gateway_nodes 节点视图
-        （SweepOnce 按 api_runtime_events.gateway_node 增量聚合，绝对值覆盖幂等；
-        W17-HB 起节点活性/策略版本另有网关心跳写入方，取新不回退），
+        全产品形态（纯 WAF 与 WDSP）可用：列出 api_gateway_nodes 节点视图
+        （包含事件遥测、网关心跳与 hasyncd 15s 遥测汇聚维护的活性/策略版本/系统版本/HA与网络状态快照），
         逐项 version_consistent 标记该节点策略版本是否与活跃多数派一致
         （null = 未参与判定：SILENT 离线或未上报版本）；响应总体 consistent/evaluated_nodes
-        与 /nodes/consistency 同一判定口径。节点行另带出配置面同步登记与结果列
-        （admin_addr/sync_enabled/last_sync_*，迁移 000074；登记编辑走 PATCH /nodes/{id}）。
-        状态词表：ACTIVE（5 分钟内有事件）/STALE（5 分钟~1 小时）/SILENT（超 1 小时）。
-        权限：`api_runtime.read`
+        与 /nodes/consistency 同一判定口径。节点行带出 admin_addr、sync_agent_addr、has_sync_secret
+        （密钥密文永不回显）、reported_version、ha_vip_status、network_status、sync_enabled 与 last_sync_*。
+        权限：`api_runtime.read` 或 `ha.read`
       responses:
         '200':
           description: 节点列表与总体一致性标记
@@ -6355,6 +6357,32 @@ paths:
               schema: { $ref: '#/components/schemas/ApiSecNodeListResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: apiSecNodeCreate
+      tags: [api-security]
+      summary: 手动预登记网关节点
+      description: >-
+        在纯 WAF 与 WDSP 全产品形态下手动预登记网关节点（支持预先配置 admin_addr、sync_agent_addr、
+        sync_secret 与 sync_enabled，解除备节点尚未产出流量前无法加入主备组与同步扇出的限制）。
+        sync_agent_addr 强制校验仅允许内网 http(s)://host:port（拒绝公网/云元数据/链路本地）；
+        sync_secret 要求至少 32 字节 hex（≥64 位十六进制字符），加密落库永不回显；node_name 冲突返回 409。
+        写操作审计。权限：`api_policy.publish` 或 `ha.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecNodeCreateRequest' }
+      responses:
+        '201':
+          description: 创建成功，返回节点视图行
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecGatewayNode' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/InternalError' }
 
   /api-security/nodes/consistency:
@@ -6367,7 +6395,7 @@ paths:
         「所有节点版本是否一致」：参与判定节点（非 SILENT 且已上报版本）版本去重 ≤ 1 即为一致；
         参与节点为 0 时无版本数据可比，consistent 如实为 true 且 evaluated_nodes=0；
         未上报版本（空串）的活跃节点单列一组但不参与判定；SILENT 离线节点不参与判定、
-        如实列入 silent_nodes。权限：`api_runtime.read`
+        如实列入 silent_nodes。权限：`api_runtime.read` 或 `ha.read`
       responses:
         '200':
           description: 版本一致性报告
@@ -6382,18 +6410,12 @@ paths:
     patch:
       operationId: apiSecNodeSyncRegistrationUpdate
       tags: [api-security]
-      summary: 节点同步登记编辑（admin_addr / sync_enabled）
+      summary: 节点同步登记编辑（admin_addr / sync_agent_addr / sync_secret / sync_enabled）
       description: >-
-        W18-SYNC §200 配置面主动同步 v2 登记入口：编辑节点 Caddy Admin 通道标识与扇出开关。
-        admin_addr 支持 unix socket 绝对路径 / unix:///path / http(s)://host[:port]
-        （仅内网管理面地址：回环/私网/链路本地单播，主机名逐一解析校验；拒绝 userinfo、
-        非根路径、查询与片段；超过 255 字符拒绝），空串 = 清除登记；
-        sync_enabled 控制该节点是否参与发布扇出（默认关闭，登记后须显式开启）。
-        两字段均可选但至少提供一项，均未提供返回 400；地址非法返回 400；节点不存在返回 404。
-        登记后主节点发布成功时将同一份最终配置扇出到全部登记次要节点（/load + 规范化哈希比对），
-        逐节点回填 last_sync_*，次要节点失败不阻断主发布（落库并产系统告警）。
-        写操作审计（api_security / update / api_gateway_node，风险中）。
-        权限：`api_policy.publish`
+        编辑网关节点的 Caddy Admin 地址、hasyncd 协同代理地址/密钥与扇出开关（四字段均可选，至少提供一项，
+        均未提供返回 400）。admin_addr 与 sync_agent_addr 均执行严格内网 SSRF 校验；sync_secret 采用指针语义
+        （省略或 null = 保持不变；空串 "" = 清除已有密钥；非空须为 ≥64 位合法 hex 密钥，加密落库永不回显）。
+        节点不存在返回 404。写操作审计。权限：`api_policy.publish` 或 `ha.manage`
       parameters:
         - name: id
           in: path
@@ -6411,6 +6433,59 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiSecGatewayNode' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: apiSecNodeDelete
+      tags: [api-security]
+      summary: 删除离网网关节点
+      description: >-
+        删除指定网关节点登记记录；若该节点仍被任一主备高可用组（ha_group_members）引用则拒绝并返回 409。
+        写操作审计。权限：`api_policy.publish` 或 `ha.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 节点行 ID
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/nodes/{id}/test:
+    post:
+      operationId: apiSecNodeTestConnection
+      tags: [api-security]
+      summary: 探测网关节点协同代理或管理通道连通性
+      description: >-
+        按节点配置执行连通性探测：若配置了 sync_agent_addr 则通过 HMAC 认证探测 hasyncd GET /v1/health
+        （返回延迟、远端版本及 caddy_reachable/hostctl_ready/upgrade_ready）；否则若配置了 admin_addr
+        则探测 Caddy Admin Ping；二者皆未配置时返回 ok=false、channel=none。
+        权限：`api_policy.publish` 或 `ha.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 节点行 ID
+      responses:
+        '200':
+          description: 连通性探测结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecNodeTestResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -8388,16 +8463,32 @@ components:
           items: { $ref: '#/components/schemas/ApiSecConfirmFailedItem' }
           description: 联动启动学习失败明细
 
+    ApiSecLearningBatchFilter:
+      type: object
+      properties:
+        asset_status: { type: string, description: 资产状态过滤（DISCOVERED/CONFIRMED 等） }
+        learning_status: { type: string, description: 学习状态过滤（NOT_STARTED/LEARNING/PAUSED/LEARNED） }
+        keyword: { type: string, description: 路径关键字过滤 }
+        application_id: { type: string, format: uuid, description: 站点（应用）ID 过滤 }
+        unassigned: { type: boolean, description: 为 true 时仅筛选未归属接口 }
+        directory_path: { type: string, description: 目录前缀过滤 }
+        business_type: { type: string, description: 业务类型过滤 }
+
     ApiSecLearningStartBatchRequest:
       type: object
-      required: [ids]
       properties:
         ids:
           type: array
           items: { type: string, format: uuid }
           minItems: 1
           maxItems: 100
-          description: 待启动学习的接口 ID 列表（单次最多 100 个）
+          description: 待启动学习的接口 ID 列表（单次最多 100 个；与 apply_to_filtered 二选一）
+        apply_to_filtered:
+          type: boolean
+          description: 为 true 时按 filter 跨页批量启动全部命中接口（单次上限 2000 个）
+        filter:
+          $ref: '#/components/schemas/ApiSecLearningBatchFilter'
+          description: apply_to_filtered=true 时的筛选条件（可选，缺省表示全部活跃未学习接口）
         sample_target:
           type: integer
           minimum: 10
@@ -8406,14 +8497,14 @@ components:
 
     ApiSecLearningStartBatchResponse:
       type: object
-      required: [started, started_ids, skipped, skipped_ids, failed, sample_target, message]
+      required: [started, started_ids, skipped, skipped_ids, failed, matched_total, truncated, sample_target, message]
       properties:
         started: { type: integer, description: 成功启动学习的接口数量 }
         started_ids:
           type: array
           items: { type: string, format: uuid }
           description: 成功启动学习的接口 ID 列表
-        skipped: { type: integer, description: 自动跳过的接口数量（已在学习中） }
+        skipped: { type: integer, description: 自动跳过的接口数量（学习中/已完成/非活跃资产） }
         skipped_ids:
           type: array
           items: { type: string, format: uuid }
@@ -8422,6 +8513,8 @@ components:
           type: array
           items: { $ref: '#/components/schemas/ApiSecConfirmFailedItem' }
           description: 启动失败明细（如接口不存在）
+        matched_total: { type: integer, format: int64, description: 本次命中的接口总数 }
+        truncated: { type: boolean, description: 筛选命中数是否超过单次上限（2000）被截断 }
         sample_target: { type: integer, description: 本次批量启动生效的样本目标 }
         message: { type: string, description: 操作结果汇总提示 }
 
@@ -12482,25 +12575,48 @@ components:
           type: array
           items: { $ref: '#/components/schemas/ApiSecPostureTargetHighRisk' }
 
-    # ---------- 网关节点版本校验（apinodes，W12 + W18-SYNC 同步登记） ----------
+    # ---------- 网关节点管理与版本校验（apinodes，W12 + W18-SYNC + 000236 协同代理扩展） ----------
     ApiSecGatewayNode:
       type: object
-      description: 网关节点视图行（api_gateway_nodes；事件遥测聚合 + 心跳活性维护，000074 叠加配置面同步登记与结果列，非节点注册协议）
-      required: [id, node_name, first_seen_at, last_seen_at, last_policy_version, last_model_version, event_count, status, admin_addr, sync_enabled, last_sync_at, last_sync_result, last_sync_error, last_sync_version_id, version_consistent, created_at, updated_at]
+      description: 网关节点视图行（api_gateway_nodes；事件遥测 + 心跳 + hasyncd 遥测汇聚 + 同步登记与结果）
+      required: [id, node_name, first_seen_at, last_seen_at, last_policy_version, last_model_version, event_count, status, admin_addr, sync_agent_addr, has_sync_secret, reported_version, sync_enabled, last_sync_at, last_sync_result, last_sync_error, last_sync_version_id, version_consistent, created_at, updated_at]
       properties:
         id: { type: string, format: uuid, description: 节点行 ID }
-        node_name: { type: string, description: 节点名（事件 gateway_node 字段） }
-        first_seen_at: { type: string, format: date-time, description: 首次观测时间 }
-        last_seen_at: { type: string, format: date-time, description: 最近活性时间（业务事件与心跳取新；状态判定基准） }
-        last_policy_version: { type: string, description: 策略版本（心跳上报优先，否则最新业务事件版本；空串 = 旧版网关未上报） }
+        node_name: { type: string, description: 节点名（GATEWAY_NODE_NAME / 事件 gateway_node） }
+        first_seen_at: { type: string, format: date-time, description: 首次观测或登记时间 }
+        last_seen_at: { type: string, format: date-time, description: 最近活性时间（业务事件、心跳与 hasyncd 遥测取新） }
+        last_policy_version: { type: string, description: 策略版本（空串 = 未上报） }
         last_model_version: { type: string, description: 最新业务事件模型版本（空串 = 未上报） }
         event_count: { type: integer, format: int64, description: 业务事件总数（心跳不计数） }
         status:
           type: string
           enum: [ACTIVE, STALE, SILENT]
           description: 节点状态（ACTIVE 5 分钟内 / STALE 5 分钟~1 小时 / SILENT 超 1 小时）
-        admin_addr: { type: string, description: 节点 Caddy Admin 通道标识（空串 = 未登记，不参与扇出） }
-        sync_enabled: { type: boolean, description: 是否参与发布扇出 }
+        admin_addr: { type: string, description: 节点 Caddy Admin 通道标识（空串 = 未登记） }
+        sync_agent_addr: { type: string, description: 节点 hasyncd 协同代理地址（内网 http(s)://host:port；空串 = 未配置） }
+        has_sync_secret: { type: boolean, description: 是否已配置 hasyncd HMAC 共享密钥（密钥密文永不回显） }
+        reported_version: { type: string, description: 节点协同代理上报的当前系统版本（空串 = 未知） }
+        ha_vip_status:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: 节点最新汇聚的 ha-vip-status.json 状态快照（null = 未上报）
+        ha_vip_status_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 节点最新 ha_vip_status 采集时间（null = 未上报）
+        network_status:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: 节点最新汇聚的 network-status.json 状态快照（null = 未上报）
+        network_status_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 节点最新 network_status 采集时间（null = 未上报）
+        sync_enabled: { type: boolean, description: 是否参与发布扇出与跨节点同步 }
         last_sync_at:
           type: string
           format: date-time
@@ -12523,20 +12639,55 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
+    ApiSecNodeCreateRequest:
+      type: object
+      description: 手动预登记网关节点请求体（POST /api-security/nodes）
+      required: [node_name]
+      properties:
+        node_name: { type: string, maxLength: 128, description: 节点名（须唯一，匹配网关 GATEWAY_NODE_NAME） }
+        admin_addr: { type: string, maxLength: 255, description: 可选，Caddy Admin 内网通道地址 }
+        sync_agent_addr: { type: string, maxLength: 255, description: 可选，hasyncd 协同代理内网地址（http(s)://host:port） }
+        sync_secret: { type: string, description: 可选，hasyncd HMAC 共享密钥（≥64 位十六进制字符，加密落库） }
+        sync_enabled: { type: boolean, description: 是否启用发布扇出与同步（默认 false） }
+
     ApiSecNodeSyncUpdateRequest:
       type: object
-      description: 节点同步登记编辑入参（PATCH /nodes/{id}；两字段均可选，至少提供一项，均未提供返回 400）
+      description: 节点同步登记编辑入参（PATCH /nodes/{id}；四字段均可选，至少提供一项，均未提供返回 400）
       properties:
         admin_addr:
           type: string
           maxLength: 255
           description: >-
             节点 Caddy Admin 通道标识：unix socket 绝对路径 / unix:///path / http(s)://host[:port]
-            （仅内网管理面地址，主机名逐一解析校验；拒绝 userinfo/非根路径/查询/片段）；
-            空串 = 清除登记
+            （仅内网管理面地址）；空串 = 清除登记
+        sync_agent_addr:
+          type: string
+          maxLength: 255
+          description: 节点 hasyncd 协同代理内网地址（http(s)://host:port）；空串 = 清除登记
+        sync_secret:
+          type: string
+          nullable: true
+          description: hasyncd HMAC 共享密钥（省略/null = 不变更；空串 "" = 清除已有密钥；非空须为 ≥64 位 hex，加密落库）
         sync_enabled:
           type: boolean
-          description: 是否参与发布扇出（默认 false，登记 admin_addr 后须显式开启）
+          description: 是否参与发布扇出与同步
+
+    ApiSecNodeTestResponse:
+      type: object
+      description: 节点连通性探测结果（POST /api-security/nodes/{id}/test）
+      required: [ok, channel, latency_ms]
+      properties:
+        ok: { type: boolean, description: 探测是否成功 }
+        channel:
+          type: string
+          enum: [hasyncd, caddy_admin, none]
+          description: 实际探测使用的通道类型
+        latency_ms: { type: integer, format: int64, description: 探测耗时（毫秒） }
+        version: { type: string, description: hasyncd 返回的节点系统版本（hasyncd 通道有效） }
+        caddy_reachable: { type: boolean, description: 节点本机 Caddy Admin 是否可达（hasyncd 通道有效） }
+        hostctl_ready: { type: boolean, description: 节点宿主机 hostctl 通道是否就绪（hasyncd 通道有效） }
+        upgrade_ready: { type: boolean, description: 节点宿主机升级执行器是否就绪（hasyncd 通道有效） }
+        error: { type: string, description: 探测失败时的错误说明（成功时省略） }
 
     ApiSecNodeListResponse:
       type: object

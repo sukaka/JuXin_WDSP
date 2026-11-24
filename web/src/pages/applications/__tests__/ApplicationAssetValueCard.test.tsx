@@ -29,13 +29,13 @@ function response(status: number, data: unknown): Response {
   )
 }
 
-function renderCard() {
+function renderCard(embedded?: boolean) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
   return render(
     <QueryClientProvider client={queryClient}>
-      <ApplicationAssetValueCard applicationId="app-1" />
+      <ApplicationAssetValueCard applicationId="app-1" embedded={embedded} />
     </QueryClientProvider>,
   )
 }
@@ -187,5 +187,54 @@ describe('ApplicationAssetValueCard', () => {
     expect(
       await screen.findByText('score storage unavailable'),
     ).toBeInTheDocument()
+  })
+
+  it('embedded 模式下不包裹外层 Card 但保留说明、指标、等级行与中文维度表', async () => {
+    setPermissions(['api_asset.read'])
+    const fetchMock = vi.fn().mockResolvedValue(
+      response(200, {
+        application_id: 'app-1',
+        level: 'HIGH',
+        average_score: 14.5,
+        max_score: 20,
+        max_total: 26,
+        endpoint_count: 3,
+        scored_count: 2,
+        unscored_count: 1,
+        level_distribution: { HIGH: 1, MEDIUM: 1 },
+        dimensions: [{ name: 'data_sensitivity', average_score: 2.5, max: 3 }],
+        generated_at: '2026-11-15T04:00:00Z',
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const { container } = renderCard(true)
+    const average = await screen.findByText('平均得分')
+    expect(average.closest('.ant-statistic')).toHaveTextContent('14.50')
+    expect(container.querySelector('.ant-card')).toBeNull()
+    expect(
+      screen.queryByText('API 资产价值（按接口评分聚合）'),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByText(/聚合该应用非忽略接口的已有评分/),
+    ).toBeInTheDocument()
+    expect(screen.getByText('综合等级')).toBeInTheDocument()
+    expect(screen.getByText('等级分布')).toBeInTheDocument()
+    expect(screen.getByText('数据敏感度')).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/api-security/applications/app-1/asset-value',
+      expect.objectContaining({ method: 'GET' }),
+    )
+  })
+
+  it('embedded 模式下无权限同样不查询且不包裹 Card', () => {
+    setPermissions([])
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const { container } = renderCard(true)
+    expect(container.querySelector('.ant-card')).toBeNull()
+    expect(
+      screen.getByText('缺少「API 资产查看」权限，无法查看应用资产价值'),
+    ).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

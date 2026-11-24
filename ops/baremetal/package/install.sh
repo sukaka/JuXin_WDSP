@@ -26,7 +26,8 @@ ENV_FILE="${R}/env"
 PG_LD="${R}/bin/pg/syslib:${R}/bin/pg/lib/postgresql/16/lib"
 PG_OSSL="${R}/bin/pg/syslib/ossl-modules"
 PG_BIN="${R}/bin/pg/lib/postgresql/16/bin"
-UNIT_LIST="jiuzhang-postgres jiuzhang-valkey jiuzhang-gateway jiuzhang-api jiuzhang-web jiuzhang-netmgrd jiuzhang-mirrorcap jiuzhang-tproxyd jiuzhang-logrotator"
+UNIT_LIST="jiuzhang-postgres jiuzhang-valkey jiuzhang-gateway jiuzhang-api jiuzhang-web jiuzhang-netmgrd jiuzhang-mirrorcap jiuzhang-tproxyd jiuzhang-havipd jiuzhang-logrotator"
+OPTIONAL_UNIT_LIST="jiuzhang-hasyncd"
 LINK_LIST_FILE="${R}/data/runtime/host-compat-links.list"
 
 log_info() { printf '[INFO]  %s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
@@ -93,6 +94,9 @@ for cmd in ip ping traceroute tcpdump iptables; do
     log_warn "netmgrd 依赖命令 ${cmd} 缺失（网络诊断/多网口/透明串接管理将受限）：dnf install -y ${pkg}"
   fi
 done
+if ! command -v keepalived >/dev/null 2>&1; then
+  log_warn "havipd 依赖命令 keepalived 缺失（主备 VIP 漂移功能将受限）：dnf install -y keepalived"
+fi
 
 # ---------- 2. 运行账户 ----------
 log_info "==> [2/16] 运行账户 ${RUN_USER}"
@@ -184,17 +188,21 @@ NODE_NAME="$(env_get GATEWAY_NODE_NAME)"; NODE_NAME="${NODE_NAME:-gateway-bareme
 log_info "==> [5/16] 数据目录树"
 mkdir -p "${R}/data/pgdata" "${R}/data/valkey" \
   "${R}/data/caddy/config" "${R}/data/caddy/data" "${R}/data/caddy-console" \
-  "${R}/data/runtime" "${R}/data/logs/caddy" "${R}/data/run/caddy/sidecars" \
+  "${R}/data/runtime" "${R}/data/runtime/hostctl" \
+  "${R}/data/runtime/upgrade-packages" "${R}/data/runtime/upgrade-executor/jobs" "${R}/data/runtime/upgrade-executor/results" \
+  "${R}/data/logs/caddy" "${R}/data/run/caddy/sidecars" "${R}/data/run/caddy/sidecars/keepalived" \
   "${R}/data/run/pg" "${R}/certificates" "${R}/backups"
 chown -R "${RUN_USER}:${RUN_USER}" "${R}/data" "${R}/certificates"
 chown root:root "${R}/backups"
 chmod 0750 "${R}/data"
 chmod 0700 "${R}/backups"
 chmod 0700 "${R}/data/pgdata" "${R}/data/caddy" "${R}/data/caddy-console" "${R}/certificates"
-chmod 0750 "${R}/data/valkey" "${R}/data/runtime" "${R}/data/logs" "${R}/data/logs/caddy" "${R}/data/run" "${R}/data/run/caddy" "${R}/data/run/pg"
-# sidecars：api（jiuzhang）写 network.json，netmgrd（root + SupplementaryGroups=jiuzhang、无 CAP_DAC_OVERRIDE）
-# 经组 1000 读写 sidecars 与 sidecars/diag，不开放 other 权限。
-chmod 0770 "${R}/data/run/caddy/sidecars"
+chmod 0750 "${R}/data/valkey" "${R}/data/runtime" "${R}/data/runtime/hostctl" \
+  "${R}/data/runtime/upgrade-packages" "${R}/data/runtime/upgrade-executor" \
+  "${R}/data/logs" "${R}/data/logs/caddy" "${R}/data/run" "${R}/data/run/caddy" "${R}/data/run/pg"
+# sidecars：api（jiuzhang）写 network.json / ha-vip.json，netmgrd / havipd（root + SupplementaryGroups=jiuzhang、
+# 无 CAP_DAC_OVERRIDE）经组 1000 读写 sidecars、sidecars/diag 与 sidecars/keepalived，不开放 other 权限。
+chmod 0770 "${R}/data/run/caddy/sidecars" "${R}/data/run/caddy/sidecars/keepalived"
 if [[ -d "${R}/data/run/caddy/sidecars/diag" ]]; then
   chmod 0770 "${R}/data/run/caddy/sidecars/diag"
 fi
@@ -357,7 +365,7 @@ chmod 0644 "${LINK_LIST_FILE}"
 # ---------- 12. systemd 单元与 tmpfiles ----------
 log_info "==> [12/16] systemd 单元"
 mkdir -p /etc/systemd/system /etc/tmpfiles.d
-for unit in ${UNIT_LIST}; do
+for unit in ${UNIT_LIST} ${OPTIONAL_UNIT_LIST}; do
   sed -e "s|__ROOT__|${R}|g" -e "s|__USER__|${RUN_USER}|g" -e "s|__NODE_NAME__|${NODE_NAME}|g" \
       "${R}/systemd/${unit}.service" > "/etc/systemd/system/${unit}.service"
   chmod 644 "/etc/systemd/system/${unit}.service"
@@ -387,6 +395,12 @@ start_services() {
     log_info "  systemctl enable --now ${unit}"
     systemctl enable --now "${unit}"
   done
+  if [[ -f "${R}/data/runtime/hasync.secret" ]]; then
+    log_info "  systemctl enable --now jiuzhang-hasyncd（检测到 ${R}/data/runtime/hasync.secret）"
+    systemctl enable --now jiuzhang-hasyncd
+  else
+    log_info "  可选单元 jiuzhang-hasyncd 默认保持禁用（单机部署无需启用；HA 双机部署配置 ${R}/data/runtime/hasync.secret 后执行 systemctl enable --now jiuzhang-hasyncd）"
+  fi
 }
 
 # ---------- 14. 健康等待 ----------

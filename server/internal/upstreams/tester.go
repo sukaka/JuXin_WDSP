@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,9 +31,12 @@ type TestInput struct {
 	Scheme          string
 	Host            string
 	Port            int
+	Method          string
 	HealthCheckPath string
 	TLSServerName   string
 	TLSVerify       bool
+	// Timeout 单次探测超时（<=0 时采用默认值 8s，合法范围夹紧至 1s~30s）
+	Timeout time.Duration
 	// AllowPrivate 是否允许私网/内网源站（受控允许列表，默认false）
 	AllowPrivate bool
 }
@@ -54,11 +58,20 @@ type TestResult struct {
 func TestConnectivity(ctx context.Context, in TestInput) *TestResult {
 	result := &TestResult{}
 
-	// 1. 协议校验
+	// 1. 协议与方法校验
 	scheme := strings.ToLower(in.Scheme)
 	if scheme != "http" && scheme != "https" {
 		result.ErrorCode = "INVALID_SCHEME"
 		result.ErrorMessage = "仅支持 HTTP 和 HTTPS 协议"
+		return result
+	}
+	method := strings.ToUpper(strings.TrimSpace(in.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	if method != http.MethodGet && method != http.MethodHead {
+		result.ErrorCode = "INVALID_METHOD"
+		result.ErrorMessage = "健康检查方法仅支持 GET 和 HEAD"
 		return result
 	}
 	// 2. 主机校验
@@ -113,7 +126,7 @@ func TestConnectivity(ctx context.Context, in TestInput) *TestResult {
 	}
 	url := fmt.Sprintf("%s://%s%s", scheme, net.JoinHostPort(in.Host, fmt.Sprintf("%d", in.Port)), path)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		result.ErrorCode = "REQUEST_BUILD_FAILED"
 		result.ErrorMessage = "构造请求失败"
@@ -172,15 +185,32 @@ func isAlwaysDeniedUpstreamAddr(a netip.Addr) bool {
 
 // buildSafeClient 构建使用预校验 IP 的安全 HTTP 客户端。
 func buildSafeClient(in TestInput, addrs []netip.Addr) *http.Client {
+	reqTimeout := httpTimeout
+	if in.Timeout > 0 {
+		reqTimeout = in.Timeout
+		if reqTimeout < time.Second {
+			reqTimeout = time.Second
+		} else if reqTimeout > 30*time.Second {
+			reqTimeout = 30 * time.Second
+		}
+	}
+	dTimeout := dialTimeout
+	if reqTimeout < dTimeout {
+		dTimeout = reqTimeout
+	}
+	tTimeout := tlsTimeout
+	if reqTimeout < tTimeout {
+		tTimeout = reqTimeout
+	}
 	dialer := &net.Dialer{
-		Timeout:   dialTimeout,
+		Timeout:   dTimeout,
 		KeepAlive: 0,
 	}
 	transport := &http.Transport{
 		DisableKeepAlives:   true,
 		MaxIdleConns:        0,
 		IdleConnTimeout:     30 * time.Second,
-		TLSHandshakeTimeout: tlsTimeout,
+		TLSHandshakeTimeout: tTimeout,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			// 强制使用已校验的 IP 地址（防 DNS 重绑定）
 			_, port, err := net.SplitHostPort(addr)
@@ -215,7 +245,7 @@ func buildSafeClient(in TestInput, addrs []netip.Addr) *http.Client {
 	}
 	return &http.Client{
 		Transport: transport,
-		Timeout:   httpTimeout,
+		Timeout:   reqTimeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= maxRedirects {
 				return http.ErrUseLastResponse // 不跟随跳转
@@ -255,7 +285,10 @@ func sanitizeErrorMessage(err error) string {
 
 // CheckExpectedStatus 判断响应状态码是否符合期望。
 func CheckExpectedStatus(actual int, expectedCodes string) bool {
-	if expectedCodes == "" {
+	if actual <= 0 {
+		return false
+	}
+	if strings.TrimSpace(expectedCodes) == "" {
 		expectedCodes = "200"
 	}
 	for _, part := range strings.Split(expectedCodes, ",") {
@@ -264,15 +297,23 @@ func CheckExpectedStatus(actual int, expectedCodes string) bool {
 			continue
 		}
 		// 支持 "200"、"2xx"、"200-299"
-		if strings.HasSuffix(part, "xx") && len(part) == 3 {
-			prefix := int(part[0] - '0')
+		lower := strings.ToLower(part)
+		if strings.HasSuffix(lower, "xx") && len(lower) == 3 && lower[0] >= '1' && lower[0] <= '5' {
+			prefix := int(lower[0] - '0')
 			if actual >= prefix*100 && actual < (prefix+1)*100 {
 				return true
 			}
 			continue
 		}
-		var code int
-		if _, err := fmt.Sscanf(part, "%d", &code); err == nil && actual == code {
+		if loStr, hiStr, hasRange := strings.Cut(part, "-"); hasRange {
+			lo, err1 := strconv.Atoi(strings.TrimSpace(loStr))
+			hi, err2 := strconv.Atoi(strings.TrimSpace(hiStr))
+			if err1 == nil && err2 == nil && lo >= 100 && hi <= 599 && lo <= hi && actual >= lo && actual <= hi {
+				return true
+			}
+			continue
+		}
+		if code, err := strconv.Atoi(part); err == nil && code >= 100 && code <= 599 && actual == code {
 			return true
 		}
 	}

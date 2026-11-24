@@ -223,6 +223,10 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   split: '拆分',
   bind: '绑定',
   unbind: '解绑',
+  acme_config_update: '更新自动证书配置',
+  auto_ssl_update: '更新站点自动 SSL',
+  acme_issue: '自动申请证书',
+  acme_renew: '自动续约证书',
   allow: '放行',
   ALLOW: '放行',
   block: '阻断',
@@ -412,9 +416,10 @@ export function formatEnvironment(env?: string): string {
 
 /* ==================== 错误码 / 发布失败码 / 网关决策原因码 ==================== */
 
-/** 源站连通性测试错误码（server/internal/upstreams/tester.go 全量 11 项） */
+/** 源站连通性测试与健康探测错误码（server/internal/upstreams/tester.go 与 runtimehealth） */
 export const UPSTREAM_ERROR_CODE_LABELS: Record<string, string> = {
   INVALID_SCHEME: '协议非法',
+  INVALID_METHOD: '探测方法非法',
   INVALID_HOST: '主机地址非法',
   INVALID_PORT: '端口非法',
   SSRF_BLOCKED: 'SSRF 防护拦截',
@@ -425,6 +430,7 @@ export const UPSTREAM_ERROR_CODE_LABELS: Record<string, string> = {
   TLS_CERTIFICATE_ERROR: 'TLS 证书校验失败',
   TLS_HANDSHAKE_FAILED: 'TLS 握手失败',
   CONNECTION_FAILED: '连接失败',
+  UNEXPECTED_STATUS: '状态码不符合期望',
 }
 
 /** 配置发布/回滚失败码（server/internal/gatewayconfig） */

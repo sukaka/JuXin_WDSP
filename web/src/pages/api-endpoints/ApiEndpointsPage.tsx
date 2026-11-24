@@ -103,8 +103,10 @@ export default function ApiEndpointsPage() {
   const [confirmSampleTarget, setConfirmSampleTarget] = useState<number | null>(
     100,
   )
-  /** 批量启动学习弹窗 */
-  const [batchLearnOpen, setBatchLearnOpen] = useState(false)
+  /** 批量启动学习弹窗：selected=已勾选 IDs（≤100），filtered=当前筛选条件跨页全部（≤2000） */
+  const [batchLearnMode, setBatchLearnMode] = useState<
+    'selected' | 'filtered' | null
+  >(null)
   const [batchSampleTarget, setBatchSampleTarget] = useState<number | null>(100)
   /** 合并弹窗：mergeSource 为保留方（主接口），mergeTargetId 为待并入接口（并入后删除） */
   const [mergeSource, setMergeSource] = useState<ApiEndpointItem | null>(null)
@@ -242,26 +244,40 @@ export default function ApiEndpointsPage() {
   })
 
   const learningStartBatchMut = useMutation({
-    mutationFn: ({
-      ids,
-      sampleTarget,
-    }: {
-      ids: string[]
-      sampleTarget?: number
-    }) => apiEndpointsApi.learningStartBatch(ids, sampleTarget),
+    mutationFn: (
+      vars:
+        | { mode: 'selected'; ids: string[]; sampleTarget?: number }
+        | {
+            mode: 'filtered'
+            filter: {
+              asset_status?: string
+              learning_status?: string
+              keyword?: string
+              application_id?: string
+              unassigned?: boolean
+              directory_path?: string
+            }
+            sampleTarget?: number
+          },
+    ) =>
+      vars.mode === 'filtered'
+        ? apiEndpointsApi.learningStartFiltered(vars.filter, vars.sampleTarget)
+        : apiEndpointsApi.learningStartBatch(vars.ids, vars.sampleTarget),
     onSuccess: (r) => {
-      if (r.failed && r.failed.length > 0) {
+      if ((r.failed && r.failed.length > 0) || r.truncated) {
         message.warning(
-          r.message || `已启动 ${r.started} 个，${r.failed.length} 个失败`,
+          r.message || `已启动 ${r.started} 个，${r.failed?.length ?? 0} 个失败`,
         )
       } else if (r.started === 0 && r.skipped > 0) {
         message.info(
           r.message || `所选 ${r.skipped} 个接口均已在学习中，已自动跳过`,
         )
+      } else if (r.started === 0) {
+        message.info(r.message || '当前筛选条件下无可启动学习的接口')
       } else {
         message.success(r.message || `已批量启动 ${r.started} 个接口学习`)
       }
-      setBatchLearnOpen(false)
+      setBatchLearnMode(null)
       clearSelection()
       void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
       void qc.invalidateQueries({ queryKey: ['api-learning'] })
@@ -453,11 +469,16 @@ export default function ApiEndpointsPage() {
   const openBatchLearn = () => {
     if (selectedCount === 0) return
     setBatchSampleTarget(learningOptionsQuery.data?.default_sample_target ?? 100)
-    setBatchLearnOpen(true)
+    setBatchLearnMode('selected')
+  }
+
+  const openFilteredBatchLearn = () => {
+    setBatchSampleTarget(learningOptionsQuery.data?.default_sample_target ?? 100)
+    setBatchLearnMode('filtered')
   }
 
   const handleBatchLearnOk = () => {
-    if (selectedCount === 0) return
+    if (!batchLearnMode) return
     if (
       typeof batchSampleTarget !== 'number' ||
       !Number.isInteger(batchSampleTarget) ||
@@ -467,7 +488,32 @@ export default function ApiEndpointsPage() {
       message.warning('样本目标需为 10~100000 之间的整数')
       return
     }
+    if (batchLearnMode === 'filtered') {
+      learningStartBatchMut.mutate({
+        mode: 'filtered',
+        filter: {
+          ...(assetStatus ? { asset_status: assetStatus } : {}),
+          ...(learningStatus ? { learning_status: learningStatus } : {}),
+          ...(keyword ? { keyword } : {}),
+          ...(siteFilter.applicationId
+            ? { application_id: siteFilter.applicationId }
+            : {}),
+          ...(siteFilter.unassigned ? { unassigned: true } : {}),
+          ...(directoryPath ? { directory_path: directoryPath } : {}),
+        },
+        sampleTarget: batchSampleTarget,
+      })
+      return
+    }
+    if (selectedCount === 0) return
+    if (selectedCount > 100) {
+      message.warning(
+        `单次勾选最多启动 100 个接口，当前已选 ${selectedCount} 个，请缩减勾选项或改用「全部启动学习」`,
+      )
+      return
+    }
     learningStartBatchMut.mutate({
+      mode: 'selected',
       ids: [...selectedIds],
       sampleTarget: batchSampleTarget,
     })
@@ -923,6 +969,14 @@ export default function ApiEndpointsPage() {
                 清理静态/非API噪声
               </Button>
             ) : null}
+            {canLearnStart ? (
+              <Button
+                disabled={(listQuery.data?.total ?? 0) === 0}
+                onClick={openFilteredBatchLearn}
+              >
+                全部启动学习
+              </Button>
+            ) : null}
             {canExport ? (
               <ExportDropdown
                 label="导出清单"
@@ -963,9 +1017,23 @@ export default function ApiEndpointsPage() {
               }}
               wrap
             >
-              <Typography.Text>
-                已选择 <Typography.Text strong>{selectedCount}</Typography.Text> 个接口
-              </Typography.Text>
+              <Space size={8} wrap>
+                <Typography.Text>
+                  已选择 <Typography.Text strong>{selectedCount}</Typography.Text>{' '}
+                  个接口
+                </Typography.Text>
+                {canLearnStart &&
+                (listQuery.data?.total ?? 0) > selectedCount ? (
+                  <Button
+                    type="link"
+                    size="small"
+                    style={{ padding: 0 }}
+                    onClick={openFilteredBatchLearn}
+                  >
+                    按当前筛选全部启动学习（共 {listQuery.data?.total ?? 0} 个）
+                  </Button>
+                ) : null}
+              </Space>
               <Space>
                 {canConfirm ? (
                   <Button
@@ -1096,9 +1164,13 @@ export default function ApiEndpointsPage() {
       </Modal>
 
       <Modal
-        title="批量启动学习"
-        open={batchLearnOpen}
-        onCancel={() => setBatchLearnOpen(false)}
+        title={
+          batchLearnMode === 'filtered'
+            ? '按筛选条件批量启动学习'
+            : '批量启动学习'
+        }
+        open={batchLearnMode !== null}
+        onCancel={() => setBatchLearnMode(null)}
         onOk={handleBatchLearnOk}
         okText="启动学习"
         okButtonProps={{ loading: learningStartBatchMut.isPending }}
@@ -1106,10 +1178,50 @@ export default function ApiEndpointsPage() {
         destroyOnHidden
       >
         <Space orientation="vertical" size={10} style={{ width: '100%' }}>
-          <Typography.Text>
-            确定为已勾选的 <Typography.Text strong>{selectedCount}</Typography.Text>{' '}
-            个接口启动模型学习吗？
-          </Typography.Text>
+          {batchLearnMode === 'filtered' ? (
+            <>
+              <Typography.Text>
+                当前筛选条件共命中{' '}
+                <Typography.Text strong>
+                  {listQuery.data?.total ?? 0}
+                </Typography.Text>{' '}
+                个接口，确定跨页全部启动模型学习吗？
+              </Typography.Text>
+              <Space size={4} wrap>
+                {currentSiteName !== undefined ? (
+                  <Tag>站点：{currentSiteName}</Tag>
+                ) : null}
+                {directoryPath ? <Tag>目录：{directoryPath}</Tag> : null}
+                {assetStatus ? (
+                  <Tag>
+                    资产状态：
+                    {ENDPOINT_STATUS_META[assetStatus]?.label ?? assetStatus}
+                  </Tag>
+                ) : null}
+                {learningStatus ? (
+                  <Tag>
+                    学习状态：
+                    {API_LEARNING_STATUS_META[learningStatus]?.label ??
+                      learningStatus}
+                  </Tag>
+                ) : null}
+                {keyword ? <Tag>关键字：{keyword}</Tag> : null}
+                {currentSiteName === undefined &&
+                !directoryPath &&
+                !assetStatus &&
+                !learningStatus &&
+                !keyword ? (
+                  <Tag>范围：全部站点接口</Tag>
+                ) : null}
+              </Space>
+            </>
+          ) : (
+            <Typography.Text>
+              确定为已勾选的{' '}
+              <Typography.Text strong>{selectedCount}</Typography.Text>{' '}
+              个接口启动模型学习吗？
+            </Typography.Text>
+          )}
           <span>
             样本目标：
             <InputNumber
@@ -1123,7 +1235,9 @@ export default function ApiEndpointsPage() {
             />
           </span>
           <Typography.Text type="secondary">
-            已在学习中的接口将自动跳过；有效样本达到目标后自动完成学习并生成模型候选（候选仍需人工审核确认后才生效）。
+            {batchLearnMode === 'filtered'
+              ? '将自动跳过学习中、已完成（未显式筛选「已完成」时）及已忽略/已下线/僵尸状态的接口，单次上限 2000 个；有效样本达到目标后自动生成模型候选（仍需人工审核确认后才生效）。'
+              : '已在学习中的接口将自动跳过；有效样本达到目标后自动完成学习并生成模型候选（候选仍需人工审核确认后才生效）。'}
           </Typography.Text>
         </Space>
       </Modal>

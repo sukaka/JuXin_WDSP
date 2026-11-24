@@ -467,3 +467,183 @@ func TestH16DiskWritesRedactSecretsAndUse0600(t *testing.T) {
 		t.Error("malformed failed candidate leaked raw content")
 	}
 }
+
+// TestRedactAndReinjectLoadPEMAndMultiKeySTEK 验证 Caddy load_pem 私钥脱敏、重注入（含纯 WAF 形态
+// 无需 guard provider）与多键 STEK 脱敏/重注入全链路。
+func TestRedactAndReinjectLoadPEMAndMultiKeySTEK(t *testing.T) {
+	certID1 := uuid.New()
+	certID2 := uuid.New()
+	const (
+		certPEM1   = "-----BEGIN CERTIFICATE-----\nCERT-1\n-----END CERTIFICATE-----\n"
+		chainPEM1  = "-----BEGIN CERTIFICATE-----\nCHAIN-1\n-----END CERTIFICATE-----\n"
+		oldKeyPEM1 = "-----BEGIN PRIVATE KEY-----\nOLD-SECRET-KEY-1\n-----END PRIVATE KEY-----\n"
+		newKeyPEM1 = "-----BEGIN PRIVATE KEY-----\nLIVE-SECRET-KEY-1\n-----END PRIVATE KEY-----\n"
+		certPEM2   = "-----BEGIN CERTIFICATE-----\nCERT-2\n-----END CERTIFICATE-----\n"
+		oldKeyPEM2 = "-----BEGIN PRIVATE KEY-----\nOLD-SECRET-KEY-2\n-----END PRIVATE KEY-----\n"
+		newKeyPEM2 = "-----BEGIN PRIVATE KEY-----\nLIVE-SECRET-KEY-2\n-----END PRIVATE KEY-----\n"
+		oldSTEK1   = "1111111111111111111111111111111111111111111111111111111111111111"
+		oldSTEK2   = "2222222222222222222222222222222222222222222222222222222222222222"
+		newSTEK1   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		newSTEK2   = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+
+	app1 := httpsOnlyApp("tls-a", certID1.String(), "", "a.tls.local")
+	app1.CertPEM, app1.ChainPEM, app1.KeyPEM = certPEM1, chainPEM1, oldKeyPEM1
+	app2 := httpsOnlyApp("tls-b", certID2.String(), "", "b.tls.local")
+	app2.CertPEM, app2.KeyPEM = certPEM2, oldKeyPEM2
+
+	oldGuard := secretTestGuardConfig("old")
+	oldGuard.TLSSessionTicketKey = oldSTEK1
+	oldGuard.TLSSessionTicketKeys = []string{oldSTEK1, oldSTEK2}
+
+	gen, err := Generate(GenerateInput{
+		Apps:        []AppData{app1, app2},
+		AdminSocket: "unix//var/run/caddy/admin.sock",
+		Guard:       oldGuard,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	redacted, err := RedactConfigSecrets(gen.JSON)
+	if err != nil {
+		t.Fatalf("RedactConfigSecrets: %v", err)
+	}
+	// 私钥与双 STEK 均不得以明文留在脱敏产物中
+	for _, secret := range []string{oldKeyPEM1, oldKeyPEM2, "OLD-SECRET-KEY-1", "OLD-SECRET-KEY-2", oldSTEK1, oldSTEK2} {
+		if strings.Contains(redacted, secret) {
+			t.Errorf("redacted config leaked secret %q", secret)
+		}
+	}
+	// 证书公钥与 tags 必须保留供审计和重注入定位
+	for _, keep := range []string{"CERT-1", "CHAIN-1", "CERT-2", certID1.String(), certID2.String(), `"keys_hex":["***","***"]`} {
+		if !strings.Contains(redacted, keep) {
+			t.Errorf("redacted config missing %q", keep)
+		}
+	}
+	// 幂等
+	if again, err := RedactConfigSecrets(redacted); err != nil || again != redacted {
+		t.Fatalf("RedactConfigSecrets not idempotent: err=%v", err)
+	}
+
+	// 重注入：同时恢复 guard 密钥、双 STEK 密钥及两个证书私钥
+	newGuard := secretTestGuardConfig("new")
+	newGuard.TLSSessionTicketKey = newSTEK1
+	newGuard.TLSSessionTicketKeys = []string{newSTEK1, newSTEK2}
+	keyMap := map[uuid.UUID]string{
+		certID1: newKeyPEM1,
+		certID2: newKeyPEM2,
+	}
+	p := &Publisher{
+		guard: &fakeGuardProvider{buildCfg: newGuard},
+		certKeyLoader: func(_ context.Context, id uuid.UUID) (string, error) {
+			k, ok := keyMap[id]
+			if !ok {
+				return "", errors.New("certificate not found")
+			}
+			return k, nil
+		},
+	}
+	reinjected, err := p.reinjectConfigSecrets(context.Background(), redacted)
+	if err != nil {
+		t.Fatalf("reinjectConfigSecrets: %v", err)
+	}
+	for _, want := range []string{"LIVE-SECRET-KEY-1", "LIVE-SECRET-KEY-2", newSTEK1, newSTEK2, "CERT-1", "CHAIN-1"} {
+		if !strings.Contains(reinjected, want) {
+			t.Errorf("reinjected config missing %q", want)
+		}
+	}
+	if strings.Contains(reinjected, `"***"`) {
+		t.Errorf("reinjected config still contains placeholder: %s", reinjected)
+	}
+
+	// 纯 WAF 形态（仅有 load_pem，无 guard 处理器）：不要求装配 guard provider，仍能重注入私钥
+	wafOnly, err := Generate(GenerateInput{
+		Apps:        []AppData{app1},
+		AdminSocket: "unix//var/run/caddy/admin.sock",
+	})
+	if err != nil {
+		t.Fatalf("Generate waf-only: %v", err)
+	}
+	wafRedacted, err := RedactConfigSecrets(wafOnly.JSON)
+	if err != nil {
+		t.Fatalf("RedactConfigSecrets waf-only: %v", err)
+	}
+	pWaf := &Publisher{
+		certKeyLoader: func(_ context.Context, id uuid.UUID) (string, error) {
+			if id == certID1 {
+				return newKeyPEM1, nil
+			}
+			return "", errors.New("not found")
+		},
+	}
+	wafReinjected, err := pWaf.reinjectConfigSecrets(context.Background(), wafRedacted)
+	if err != nil {
+		t.Fatalf("waf-only load_pem reinject failed: %v", err)
+	}
+	if !strings.Contains(wafReinjected, "LIVE-SECRET-KEY-1") || strings.Contains(wafReinjected, `"***"`) {
+		t.Fatalf("waf-only reinjected invalid: %s", wafReinjected)
+	}
+}
+
+// TestReinjectLoadPEMFailClosed 验证 load_pem 证书缺失、未配证书仓储、非法 tags、解密失败均 fail-closed。
+func TestReinjectLoadPEMFailClosed(t *testing.T) {
+	certID := uuid.New()
+	app := httpsOnlyApp("tls-a", certID.String(), "", "a.tls.local")
+	app.CertPEM = "-----BEGIN CERTIFICATE-----\nCERT\n-----END CERTIFICATE-----\n"
+	app.KeyPEM = "-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----\n"
+	gen, err := Generate(GenerateInput{
+		Apps:        []AppData{app},
+		AdminSocket: "unix//var/run/caddy/admin.sock",
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	redacted, err := RedactConfigSecrets(gen.JSON)
+	if err != nil {
+		t.Fatalf("RedactConfigSecrets: %v", err)
+	}
+
+	t.Run("未装配证书仓储", func(t *testing.T) {
+		p := &Publisher{}
+		if _, err := p.reinjectConfigSecrets(context.Background(), redacted); err == nil || !strings.Contains(err.Error(), "未装配证书仓储") {
+			t.Fatalf("err = %v, want clear Chinese missing cert store error", err)
+		}
+	})
+	t.Run("证书已删除或解密失败", func(t *testing.T) {
+		p := &Publisher{
+			certKeyLoader: func(context.Context, uuid.UUID) (string, error) {
+				return "", errors.New("certificate not found")
+			},
+		}
+		if _, err := p.reinjectConfigSecrets(context.Background(), redacted); err == nil || !strings.Contains(err.Error(), certID.String()) {
+			t.Fatalf("err = %v, want clear error naming certID", err)
+		}
+	})
+	t.Run("证书私钥为空或脱敏占位", func(t *testing.T) {
+		p := &Publisher{
+			certKeyLoader: func(context.Context, uuid.UUID) (string, error) { return "***", nil },
+		}
+		if _, err := p.reinjectConfigSecrets(context.Background(), redacted); err == nil || !strings.Contains(err.Error(), "为空或仍为脱敏占位") {
+			t.Fatalf("err = %v, want empty/redacted key rejection", err)
+		}
+	})
+	t.Run("缺少 tags", func(t *testing.T) {
+		bad := `{"apps":{"tls":{"certificates":{"load_pem":[{"certificate":"PEM","key":"***"}]}}}}`
+		p := &Publisher{
+			certKeyLoader: func(context.Context, uuid.UUID) (string, error) { return "LIVE-KEY", nil },
+		}
+		if _, err := p.reinjectConfigSecrets(context.Background(), bad); err == nil || !strings.Contains(err.Error(), "缺少证书标识") {
+			t.Fatalf("err = %v, want missing tags error", err)
+		}
+	})
+	t.Run("非 UUID tag", func(t *testing.T) {
+		bad := `{"apps":{"tls":{"certificates":{"load_pem":[{"certificate":"PEM","key":"***","tags":["not-a-uuid"]}]}}}}`
+		p := &Publisher{
+			certKeyLoader: func(context.Context, uuid.UUID) (string, error) { return "LIVE-KEY", nil },
+		}
+		if _, err := p.reinjectConfigSecrets(context.Background(), bad); err == nil || !strings.Contains(err.Error(), "不是合法 UUID") {
+			t.Fatalf("err = %v, want invalid UUID tag error", err)
+		}
+	})
+}

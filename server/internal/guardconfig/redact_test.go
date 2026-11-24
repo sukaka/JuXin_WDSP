@@ -36,14 +36,22 @@ func TestRedactGuardConfigStripsPassword(t *testing.T) {
 	}
 }
 
-// TestRedactGuardConfigStripsTicketKey tls_session_ticket_key 为票据密钥明文，快照脱敏（同一纪律）。
+// TestRedactGuardConfigStripsTicketKey tls_session_ticket_key / tls_session_ticket_keys 为票据密钥明文，快照脱敏（同一纪律）。
 func TestRedactGuardConfigStripsTicketKey(t *testing.T) {
-	cfg := &gatewayconfig.GuardConfig{TLSSessionTicketKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+	const k1 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const k2 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	cfg := &gatewayconfig.GuardConfig{
+		TLSSessionTicketKey:  k1,
+		TLSSessionTicketKeys: []string{k1, k2},
+	}
 	cp := RedactGuardConfig(cfg)
 	if cp.TLSSessionTicketKey != "***" {
 		t.Fatalf("票据键未脱敏: %q", cp.TLSSessionTicketKey)
 	}
-	if cfg.TLSSessionTicketKey == "***" {
+	if len(cp.TLSSessionTicketKeys) != 2 || cp.TLSSessionTicketKeys[0] != "***" || cp.TLSSessionTicketKeys[1] != "***" {
+		t.Fatalf("票据多键未脱敏: %v", cp.TLSSessionTicketKeys)
+	}
+	if cfg.TLSSessionTicketKey != k1 || cfg.TLSSessionTicketKeys[0] != k1 || cfg.TLSSessionTicketKeys[1] != k2 {
 		t.Fatal("原配置被改写")
 	}
 }

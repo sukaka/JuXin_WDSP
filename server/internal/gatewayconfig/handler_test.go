@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
@@ -88,4 +90,126 @@ func TestVersionItemIncludesValidationResult(t *testing.T) {
 			t.Fatalf("serialized validation_result mismatch for %q: %+v", vr, env.Data.Items)
 		}
 	}
+}
+
+func TestRetryNodeSyncHandler(t *testing.T) {
+	fakeB := &fakeCaddyAdmin{}
+	srvB := httptest.NewServer(fakeB.handler())
+	defer srvB.Close()
+	fakeC := &fakeCaddyAdmin{}
+	srvC := httptest.NewServer(fakeC.handler())
+	defer srvC.Close()
+
+	versionID := uuid.New()
+	unpublishedID := uuid.New()
+	primaryID := uuid.New()
+	nodeBID := uuid.New()
+	nodeCID := uuid.New()
+
+	baseStore := &fakeNodeSyncStore{targets: []SyncTarget{
+		{NodeID: primaryID, NodeName: "gw-a", AdminAddr: "/var/run/caddy/admin.sock"},
+		{NodeID: nodeBID, NodeName: "gw-b", AdminAddr: srvB.URL},
+		{NodeID: nodeCID, NodeName: "gw-c", AdminAddr: srvC.URL},
+	}}
+	store := &failedTargetNodeSyncStore{
+		fakeNodeSyncStore: baseStore,
+		failedTargets:     []SyncTarget{{NodeID: nodeBID, NodeName: "gw-b", AdminAddr: srvB.URL}},
+	}
+	pub := &Publisher{
+		caddy: NewCaddyClient("/var/run/caddy/admin.sock"),
+		loadVersionFn: func(_ context.Context, id uuid.UUID) (*ConfigVersion, error) {
+			switch id {
+			case versionID:
+				return &ConfigVersion{ID: versionID, ConfigurationJSON: fanoutTestConfig, PublishResult: TaskSuccess}, nil
+			case unpublishedID:
+				return &ConfigVersion{ID: unpublishedID, ConfigurationJSON: fanoutTestConfig, PublishResult: TaskFailed}, nil
+			default:
+				return nil, ErrVersionNotFound
+			}
+		},
+	}
+	pub.SetLocalNodeName("gw-a")
+	pub.SetNodeSyncStore(store)
+	h := NewHandler(pub, nil, nil)
+
+	doReq := func(pathID, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/gateway/publish/versions/"+pathID+"/retry-sync", strings.NewReader(body))
+		req.SetPathValue("id", pathID)
+		req = req.WithContext(authz.WithPrincipal(req.Context(), &authz.Principal{UserID: uuid.New(), Username: "admin"}))
+		rec := httptest.NewRecorder()
+		h.RetryNodeSync(rec, req)
+		return rec
+	}
+
+	t.Run("invalid version id returns 400", func(t *testing.T) {
+		if rec := doReq("not-a-uuid", ""); rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+	t.Run("invalid json body returns 400", func(t *testing.T) {
+		if rec := doReq(versionID.String(), "{bad"); rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+	t.Run("invalid node_id returns 400", func(t *testing.T) {
+		if rec := doReq(versionID.String(), `{"node_id":"bad"}`); rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+	t.Run("missing version returns 404", func(t *testing.T) {
+		if rec := doReq(uuid.NewString(), ""); rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
+		}
+	})
+	t.Run("unpublished version returns 400", func(t *testing.T) {
+		if rec := doReq(unpublishedID.String(), ""); rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+	t.Run("missing target node returns 404", func(t *testing.T) {
+		if rec := doReq(versionID.String(), `{"node_id":"`+uuid.NewString()+`"}`); rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
+		}
+	})
+	t.Run("local primary target returns 400", func(t *testing.T) {
+		if rec := doReq(versionID.String(), `{"node_id":"`+primaryID.String()+`"}`); rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+	t.Run("empty body retries failed targets for version", func(t *testing.T) {
+		rec := doReq(versionID.String(), "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var env struct {
+			Data NodeSyncRetryResult `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if env.Data.VersionID != versionID || env.Data.Attempted != 1 || env.Data.Succeeded != 1 || env.Data.Failed != 0 {
+			t.Fatalf("retry result = %+v", env.Data)
+		}
+		if len(fakeB.loadCalls()) != 1 || len(fakeC.loadCalls()) != 0 {
+			t.Fatalf("loads: B=%d C=%d, want 1/0", len(fakeB.loadCalls()), len(fakeC.loadCalls()))
+		}
+	})
+	t.Run("targeted node_id retries only specified node", func(t *testing.T) {
+		rec := doReq(versionID.String(), `{"node_id":"`+nodeCID.String()+`"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var env struct {
+			Data NodeSyncRetryResult `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if env.Data.NodeID != nodeCID.String() || env.Data.Attempted != 1 || env.Data.Succeeded != 1 {
+			t.Fatalf("targeted retry result = %+v", env.Data)
+		}
+		if len(fakeC.loadCalls()) != 1 {
+			t.Fatalf("gw-c loads = %d, want 1", len(fakeC.loadCalls()))
+		}
+	})
 }

@@ -53,6 +53,7 @@ for cmd in docker systemctl jq python3 curl flock install sha256sum realpath tim
 done
 [[ -f "$COMPOSE_FILE" && -f "$ENV_FILE" ]] || { printf '%s\n' 'compose 或 env 文件不存在' >&2; exit 1; }
 [[ -x "$SCRIPT_DIR/upgrade-executor.sh" ]] || { printf '%s\n' 'upgrade-executor.sh 不存在或不可执行' >&2; exit 1; }
+[[ -f "$SCRIPT_DIR/image-delta.py" ]] || { printf '%s\n' 'image-delta.py 不存在' >&2; exit 1; }
 COMPOSE_FILE="$(realpath "$COMPOSE_FILE")"
 ENV_FILE="$(realpath "$ENV_FILE")"
 [[ -z "$PATCH_FILE" || -f "$PATCH_FILE" ]] || { printf '补丁不存在: %s\n' "$PATCH_FILE" >&2; exit 1; }
@@ -66,6 +67,7 @@ runtime_dir="$(docker inspect "$api_container" --format '{{range .Mounts}}{{if e
 
 install -d -m 0755 /usr/local/libexec /etc/jiuzhang
 install -m 0755 "$SCRIPT_DIR/upgrade-executor.sh" /usr/local/libexec/jiuzhang-upgrade-executor
+install -m 0755 "$SCRIPT_DIR/image-delta.py" /usr/local/libexec/jiuzhang-image-delta.py
 # 校验并初始化宿主机 root 专用状态目录（与 uid 1000 可写共享目录严格隔离，防止符号链接/compose 片段注入）
 python3 - "$HOST_STATE_DIR" <<'PY'
 import os, pathlib, stat, sys

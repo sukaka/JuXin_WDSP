@@ -303,3 +303,163 @@ func TestConfirmBatchAutoStartLearning(t *testing.T) {
 		t.Fatalf("bad sample_target status=%d, want 400", rr.Code)
 	}
 }
+
+func TestLearningStartBatchApplyToFilteredCrossPage(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	appA := uuid.New()
+	appB := uuid.New()
+
+	// 在站点 A 下创建 125 个未开始接口（超过单页 100 上限），验证跨页扫描不漏项
+	for i := 0; i < 125; i++ {
+		if _, err := store.UpsertDiscovery(ctx, DiscoveryInput{
+			ApplicationID: &appA,
+			Method:        "GET",
+			PathTemplate:  "/api/v1/items/" + uuid.NewString(),
+			Confidence:    0.9,
+			IsAPI:         true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 站点 A 下混入：1 个学习中、1 个已完成、1 个已忽略、1 个已下线
+	epRunning, _ := store.UpsertDiscovery(ctx, DiscoveryInput{ApplicationID: &appA, Method: "POST", PathTemplate: "/api/v1/running", Confidence: 0.9, IsAPI: true})
+	_, _ = store.StartLearning(ctx, epRunning.ID, 50, nil)
+	epLearned, _ := store.UpsertDiscovery(ctx, DiscoveryInput{ApplicationID: &appA, Method: "POST", PathTemplate: "/api/v1/learned", Confidence: 0.9, IsAPI: true})
+	_ = store.SetLearningStatus(ctx, epLearned.ID, "LEARNED")
+	epIgnored, _ := store.UpsertDiscovery(ctx, DiscoveryInput{ApplicationID: &appA, Method: "POST", PathTemplate: "/api/v1/ignored", Confidence: 0.9, IsAPI: true})
+	_, _ = store.SetAssetStatus(ctx, epIgnored.ID, "IGNORED", "tester")
+	epDeprecated, _ := store.UpsertDiscovery(ctx, DiscoveryInput{ApplicationID: &appA, Method: "POST", PathTemplate: "/api/v1/deprecated", Confidence: 0.9, IsAPI: true})
+	_, _ = store.Deprecate(ctx, epDeprecated.ID, "tester")
+	// 站点 B 下 1 个接口：不应受站点 A 筛选影响
+	epOtherSite, _ := store.UpsertDiscovery(ctx, DiscoveryInput{ApplicationID: &appB, Method: "GET", PathTemplate: "/api/v1/other", Confidence: 0.9, IsAPI: true})
+
+	mux := newTestMux(NewHandler(store, nil))
+
+	// 1. 按站点 A 全部启动学习：125 个应全部启动，4 个（学习中/已完成/已忽略/已下线）自动跳过，站点 B 不受影响
+	rr := doJSON(t, mux, http.MethodPost, "/api/v1/api-security/endpoints/learning/start", map[string]any{
+		"apply_to_filtered": true,
+		"filter": map[string]any{
+			"application_id": appA.String(),
+		},
+		"sample_target": 120,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	data := decodeData(t, rr)
+	if int(data["matched_total"].(float64)) != 129 {
+		t.Fatalf("matched_total=%v, want 129", data["matched_total"])
+	}
+	if int(data["started"].(float64)) != 125 {
+		t.Fatalf("started=%v, want 125 body=%s", data["started"], rr.Body.String())
+	}
+	if int(data["skipped"].(float64)) != 4 {
+		t.Fatalf("skipped=%v, want 4", data["skipped"])
+	}
+	if data["truncated"] != false {
+		t.Fatalf("truncated=%v, want false", data["truncated"])
+	}
+	gotOther, _ := store.GetByID(ctx, epOtherSite.ID)
+	if gotOther.LearningStatus != "NOT_STARTED" {
+		t.Fatalf("other site endpoint should stay NOT_STARTED, got %s", gotOther.LearningStatus)
+	}
+	gotLearned, _ := store.GetByID(ctx, epLearned.ID)
+	if gotLearned.LearningStatus != "LEARNED" {
+		t.Fatalf("learned endpoint should be skipped when not filtering LEARNED, got %s", gotLearned.LearningStatus)
+	}
+	gotIgnored, _ := store.GetByID(ctx, epIgnored.ID)
+	if gotIgnored.LearningStatus != "NOT_STARTED" {
+		t.Fatalf("ignored endpoint should be skipped, got %s", gotIgnored.LearningStatus)
+	}
+
+	// 2. 显式筛选 learning_status=LEARNED 时允许重新学习该已完成接口
+	rr = doJSON(t, mux, http.MethodPost, "/api/v1/api-security/endpoints/learning/start", map[string]any{
+		"apply_to_filtered": true,
+		"filter": map[string]any{
+			"application_id":  appA.String(),
+			"learning_status": "LEARNED",
+		},
+	})
+	data = decodeData(t, rr)
+	if int(data["started"].(float64)) != 1 || int(data["skipped"].(float64)) != 0 {
+		t.Fatalf("explicit LEARNED filter should restart learned endpoint, got %v", data)
+	}
+
+	// 3. 筛选 learning_status=NOT_STARTED 跨页启动（站点 B 扩充至 110 个验证状态变更不引起翻页漏项）
+	for i := 0; i < 109; i++ {
+		_, _ = store.UpsertDiscovery(ctx, DiscoveryInput{
+			ApplicationID: &appB,
+			Method:        "GET",
+			PathTemplate:  "/b/v1/" + uuid.NewString(),
+			Confidence:    0.9,
+			IsAPI:         true,
+		})
+	}
+	rr = doJSON(t, mux, http.MethodPost, "/api/v1/api-security/endpoints/learning/start", map[string]any{
+		"apply_to_filtered": true,
+		"filter": map[string]any{
+			"application_id":  appB.String(),
+			"learning_status": "NOT_STARTED",
+		},
+	})
+	data = decodeData(t, rr)
+	if int(data["started"].(float64)) != 110 {
+		t.Fatalf("cross-page NOT_STARTED filter started=%v, want 110", data["started"])
+	}
+}
+
+func TestLearningStartBatchApplyToFilteredValidationAndPermission(t *testing.T) {
+	store := NewMemStore()
+	h := NewHandler(store, nil)
+	mux := newTestMux(h)
+
+	// ids 与 apply_to_filtered 同时指定 → 400
+	rr := doJSON(t, mux, http.MethodPost, "/api/v1/api-security/endpoints/learning/start", map[string]any{
+		"ids":               []string{uuid.New().String()},
+		"apply_to_filtered": true,
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("both ids and apply_to_filtered status=%d, want 400", rr.Code)
+	}
+
+	// 非法 application_id → 400
+	rr = doJSON(t, mux, http.MethodPost, "/api/v1/api-security/endpoints/learning/start", map[string]any{
+		"apply_to_filtered": true,
+		"filter":            map[string]any{"application_id": "not-a-uuid"},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("bad application_id status=%d, want 400", rr.Code)
+	}
+
+	// 非法 business_type → 400
+	rr = doJSON(t, mux, http.MethodPost, "/api/v1/api-security/endpoints/learning/start", map[string]any{
+		"apply_to_filtered": true,
+		"filter":            map[string]any{"business_type": "UNKNOWN_TYPE"},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("bad business_type status=%d, want 400", rr.Code)
+	}
+
+	// 空命中 → 200 且 started=0
+	rr = doJSON(t, mux, http.MethodPost, "/api/v1/api-security/endpoints/learning/start", map[string]any{
+		"apply_to_filtered": true,
+		"filter":            map[string]any{"keyword": "/never-exists"},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("empty match status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	data := decodeData(t, rr)
+	if int(data["matched_total"].(float64)) != 0 || int(data["started"].(float64)) != 0 {
+		t.Fatalf("empty match data=%v", data)
+	}
+
+	// 无 api_learning.start 权限 → 403
+	muxNoPerm := muxWithPerms(h, "api_asset.read")
+	rr = doJSON(t, muxNoPerm, http.MethodPost, "/api/v1/api-security/endpoints/learning/start", map[string]any{
+		"apply_to_filtered": true,
+	})
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("no perm status=%d, want 403", rr.Code)
+	}
+}

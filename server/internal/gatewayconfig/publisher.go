@@ -2,10 +2,12 @@ package gatewayconfig
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/applications"
 	"github.com/jiuzhang-waf/server/internal/cache"
 	"github.com/jiuzhang-waf/server/internal/certificates"
+	"github.com/jiuzhang-waf/server/internal/nodeinterfaces"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -170,9 +173,22 @@ const (
 
 // SyncTarget 是一个登记参与扇出的次要网关节点。
 type SyncTarget struct {
-	NodeID    uuid.UUID
-	NodeName  string
-	AdminAddr string // Caddy Admin 通道标识（unix socket 路径或 http(s)://host[:port]）
+	NodeID        uuid.UUID
+	NodeName      string
+	AdminAddr     string // Caddy Admin 通道标识（unix socket 路径或 http(s)://host[:port]）
+	SyncAgentAddr string // 可选：节点协同代理 hasyncd 地址（http(s)://host:port），优先于直连 AdminAddr
+}
+
+// NodeAgentSyncer 是跨节点协同代理（hasyncd）的可选同步挂钩（由 Phase 3 server/internal/nodesync 实现）。
+// 当节点配置了 SyncAgentAddr 且注入该挂钩时，Publisher 优先通过安全协同代理完成：
+//   - 代理加载 Caddy 配置并读取规范化业务配置哈希（与 CanonicalBusinessConfigHash 同口径）；
+//   - 远端原子同步边车文件（tproxyd.json / mirrorcap.json）；
+//   - 远端提交宿主机防火墙公网监听端口放行指令（firewall_ensure）。
+// 未注入（nil）或节点未配置 SyncAgentAddr 时，自动保持/回退到直连 AdminAddr 路径。
+type NodeAgentSyncer interface {
+	SyncCaddyConfig(ctx context.Context, target SyncTarget, configJSON string) (loadedBusinessHash string, err error)
+	SyncSidecarFile(ctx context.Context, target SyncTarget, name string, payload []byte) error
+	SyncFirewallPorts(ctx context.Context, target SyncTarget, ports []int, requestedBy uuid.UUID, requestID string) error
 }
 
 // NodeSyncStore 多节点同步目标查询与结果回填接口（由 apinodes.Store 实现；
@@ -226,9 +242,15 @@ type Publisher struct {
 	tproxyTargetTLS     string
 	tproxyPassthrough   func(ctx context.Context) (string, error)
 	// W18-SYNC 多节点扇出（§200）：nodeSync 提供登记次要节点与结果回填；
-	// syncAlerter 为失败告警出口。均为 nil 时退化为单网关发布（既有行为）。
-	nodeSync    NodeSyncStore
-	syncAlerter SyncAlerter
+	// syncAlerter 为失败告警出口；localNodeName 用于扇出时自动跳过本机主节点；
+	// nodeAgentSyncer 为可选的 hasyncd 协同代理同步挂钩（Phase 3 接线）。
+	nodeSync        NodeSyncStore
+	syncAlerter     SyncAlerter
+	localNodeName   string
+	nodeAgentSyncer NodeAgentSyncer
+	// certKeyLoader / loadVersionFn 仅测试注入覆盖，生产路径分别走 p.certs.GetDecryptedKey / p.getVersion。
+	certKeyLoader func(ctx context.Context, certID uuid.UUID) (string, error)
+	loadVersionFn func(ctx context.Context, id uuid.UUID) (*ConfigVersion, error)
 	// licenseState 授权状态视图（装配层注入 license 内存状态，发布时实时读取无 IO）：
 	// 无效授权 → 强制纯透传（Guard=nil、全部应用 BYPASS）；有效且配额 max_qps>0 →
 	// Guard 注入 LicenseMaxQPS。nil 视为授权有效（未装配授权时发布行为与历史一致）。
@@ -251,6 +273,8 @@ type Publisher struct {
 	// firewallEnsurer 在候选配置加载前提交实际监听端口的防火墙放行指令；
 	// nil 保持未接入宿主通道环境的既有发布行为。
 	firewallEnsurer FirewallEnsurer
+	// acmeHTTP01Provider 返回是否应在 :80 注入 ACME HTTP-01 挑战路由（nil=未启用）。
+	acmeHTTP01Provider func(ctx context.Context) (*ACMEHTTP01Config, error)
 }
 
 type gatewayConfigLoader interface {
@@ -356,6 +380,17 @@ func (p *Publisher) SetSyncAlerter(a SyncAlerter) {
 	p.syncAlerter = a
 }
 
+// SetLocalNodeName 注入本机主网关节点名；多节点扇出时自动跳过本机主节点，
+// 避免主发布已加载本机后又经由次要节点清单重复 /load。
+func (p *Publisher) SetLocalNodeName(name string) {
+	p.localNodeName = strings.TrimSpace(name)
+}
+
+// SetNodeAgentSyncer 注入跨节点协同代理（hasyncd）同步挂钩（可选，nil 时走直连 AdminAddr）。
+func (p *Publisher) SetNodeAgentSyncer(s NodeAgentSyncer) {
+	p.nodeAgentSyncer = s
+}
+
 // SetLicenseStateProvider 注入授权状态视图（离线授权门控；nil 视为授权有效）。
 // 语义见 applyLicenseState；视图由装配层闭包读取 license 内存状态，发布路径无额外 IO。
 func (p *Publisher) SetLicenseStateProvider(fn func(ctx context.Context) (valid bool, maxQPS int64)) {
@@ -374,6 +409,41 @@ func (p *Publisher) SetLicensePublishAllowedProvider(fn func(ctx context.Context
 func (p *Publisher) SetSmokeProbe(dialAddr string, client *http.Client) {
 	p.smokeDialAddr = dialAddr
 	p.smokeClient = client
+}
+
+// SetACMEHTTP01Provider 注入 ACME HTTP-01 网关挑战路由配置提供者（nil 表示不注入）。
+func (p *Publisher) SetACMEHTTP01Provider(fn func(ctx context.Context) (*ACMEHTTP01Config, error)) {
+	p.acmeHTTP01Provider = fn
+}
+
+// DataDir 返回发布器数据目录路径（ACME 本地挑战目录与证书目录同源）。
+func (p *Publisher) DataDir() string {
+	return p.dataDir
+}
+
+// HasActiveACMEHTTP01Route 检查网关当前运行配置是否已包含 jiuzhang_acme_http01 挑战路由。
+func (p *Publisher) HasActiveACMEHTTP01Route(ctx context.Context) (bool, error) {
+	current, err := p.caddy.GetCurrentConfig(ctx)
+	if err != nil {
+		return false, err
+	}
+	return strings.Contains(current, `"jiuzhang_acme_http01"`), nil
+}
+
+func (p *Publisher) loadACMEHTTP01Config(ctx context.Context, guardCfg *GuardConfig) (*ACMEHTTP01Config, error) {
+	if p.acmeHTTP01Provider == nil {
+		return nil, nil
+	}
+	cfg, err := p.acmeHTTP01Provider(ctx)
+	if err != nil || cfg == nil || !cfg.Enabled {
+		return cfg, err
+	}
+	cp := *cfg
+	if cp.Valkey == nil && guardCfg != nil && guardCfg.Valkey != nil {
+		v := *guardCfg.Valkey
+		cp.Valkey = &v
+	}
+	return &cp, nil
 }
 
 const publishLockKey = "jiuzhang:gateway:publish_lock"
@@ -721,6 +791,12 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		return
 	}
 
+	acmeHTTP01Cfg, acmeErr := p.loadACMEHTTP01Config(ctx, guardCfg)
+	if acmeErr != nil {
+		p.finishTask(ctx, taskID, TaskFailed, "ACME_HTTP01_CONFIG_FAILED", acmeErr.Error(), nil)
+		return
+	}
+
 	// 步骤2：生成候选配置
 	p.updateTaskStep(ctx, taskID, TaskGenerating, "生成候选配置", 25)
 	gen, err := Generate(GenerateInput{
@@ -732,6 +808,7 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		GatewayTracing:         p.gatewayTracing,
 		TransparentHTTPListen:  p.effectiveTproxyTarget(),
 		TransparentHTTPSListen: p.effectiveTproxyTargetTLS(),
+		ACMEHTTP01:             acmeHTTP01Cfg,
 	})
 	if err != nil {
 		p.finishTask(ctx, taskID, TaskFailed, "GENERATE_FAILED", err.Error(), nil)
@@ -949,9 +1026,11 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	}
 	p.writeMirrorcapSidecarConfig(ctx, mirrorcapApps)
 	p.writeTproxydSidecarConfig(ctx, appsData)
-	// W18-SYNC §200：主节点全链路成功后，同一份最终配置扇出到登记次要节点
+	// W18-SYNC §200：主节点全链路成功后，将远端防火墙端口放行、最终配置及边车配置扇出到登记次要节点
 	// （逐节点回填 last_sync_*；次要节点失败不阻断主发布——记录并告警）。
+	p.syncRemoteFirewallPorts(ctx, firewallPorts, in.RequestedBy, in.RequestID)
 	p.SyncConfigToNodes(ctx, gen.JSON, version.ID)
+	p.syncRemoteSidecars(ctx, mirrorcapApps, appsData, nil)
 	successMsg := "发布成功"
 	if smoke != nil {
 		successMsg += "；" + smoke.summary()
@@ -1045,13 +1124,14 @@ func (p *Publisher) syncConfigToNodes(ctx context.Context, configJSON string, ve
 
 // syncConfigToTargets 将同一份已验证配置同步到给定节点集合。
 // 目标集合由调用方决定：正常发布使用全部启用节点，版本恢复可使用持久化失败筛选。
+// 本机主节点（与 localNodeName 同名或指向主 Caddy Unix Socket）自动跳过，避免重复 /load。
 func (p *Publisher) syncConfigToTargets(ctx context.Context, configJSON string, versionID uuid.UUID, targets []SyncTarget) nodeSyncOutcome {
 	var outcome nodeSyncOutcome
 	if err := ctx.Err(); err != nil {
 		outcome.contextErr = err
 		return outcome
 	}
-	wantHash, err := CanonicalConfigHash(configJSON)
+	wantHash, err := CanonicalBusinessConfigHash(configJSON)
 	if err != nil {
 		slog.Error("hash fanout config failed", "version", versionID, "error", err)
 		outcome.hashErr = err
@@ -1062,14 +1142,18 @@ func (p *Publisher) syncConfigToTargets(ctx context.Context, configJSON string, 
 			outcome.contextErr = err
 			break
 		}
+		if p.isLocalPrimaryTarget(t) {
+			slog.Info("skip local primary gateway node in secondary fanout", "node", t.NodeName, "admin_addr", t.AdminAddr, "version", versionID)
+			continue
+		}
 		outcome.attempted++
-		result, errMsg := syncConfigToNode(ctx, t, configJSON, wantHash)
+		result, errMsg := p.syncConfigToNode(ctx, t, configJSON, wantHash)
 		// 节点管理通道的瞬时 5xx/连接中断不应立即把一次发布标记为永久失败。
 		// 只重试一次，并仅保留最终结果，避免重复写入同步状态和重复告警；配置原文
 		// 始终来自本次已验证快照，恢复入口仍可继续处理最终失败节点。
 		if result == NodeSyncFailed && isRetryableNodeSyncError(errMsg) {
 			if err := waitNodeSyncRetry(ctx); err == nil {
-				result, errMsg = syncConfigToNode(ctx, t, configJSON, wantHash)
+				result, errMsg = p.syncConfigToNode(ctx, t, configJSON, wantHash)
 			}
 		}
 		if result == NodeSyncSuccess {
@@ -1091,6 +1175,40 @@ func (p *Publisher) syncConfigToTargets(ctx context.Context, configJSON string, 
 		}
 	}
 	return outcome
+}
+
+// normalizeUnixSocketPath 规范化 Unix Socket 路径表示（兼容裸路径、unix// 与 unix:// 前缀）。
+func normalizeUnixSocketPath(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(s, "unix://"):
+		s = strings.TrimPrefix(s, "unix://")
+	case strings.HasPrefix(s, "unix/"):
+		s = strings.TrimPrefix(s, "unix/")
+	}
+	if !strings.HasPrefix(s, "/") {
+		return ""
+	}
+	return path.Clean(s)
+}
+
+// isLocalPrimaryTarget 判定同步目标是否为当前管理面直连的本机主网关节点：
+// 节点名匹配 localNodeName（非空时）或 AdminAddr 解析到与主 Caddy 完全相同的 Unix Socket 路径。
+func (p *Publisher) isLocalPrimaryTarget(t SyncTarget) bool {
+	if p.localNodeName != "" && strings.TrimSpace(t.NodeName) == p.localNodeName {
+		return true
+	}
+	if p.caddy != nil {
+		localSock := normalizeUnixSocketPath(p.caddy.SocketPath())
+		targetSock := normalizeUnixSocketPath(t.AdminAddr)
+		if localSock != "" && targetSock != "" && localSock == targetSock {
+			return true
+		}
+	}
+	return false
 }
 
 func waitNodeSyncRetry(ctx context.Context) error {
@@ -1116,17 +1234,70 @@ func isRetryableNodeSyncError(errMsg string) bool {
 		strings.Contains(msg, "eof")
 }
 
-// syncConfigToNode 推送配置到单节点并验证哈希一致性，返回（结果词表，错误摘要）。
-func syncConfigToNode(ctx context.Context, t SyncTarget, configJSON, wantHash string) (string, string) {
+// prepareTargetConfigJSON 为目标节点准备待推送配置副本：
+//   - Unix Socket 目标与主节点同构，直接推送原 configJSON；
+//   - HTTP(S) TCP 目标先通过 GET /config/admin 读取次要节点当前 admin 段并回填到副本的 root["admin"]，
+//     若无法安全保留目标节点的非 Unix admin.listen 则 fail-closed 报错，绝不把主节点 unix socket
+//     admin.listen 推送给跨机 HTTP(S) 次要节点导致失联。
+func prepareTargetConfigJSON(ctx context.Context, client *CaddyClient, target SyncTarget, configJSON string) (string, error) {
+	if !client.IsHTTP() {
+		return configJSON, nil
+	}
+	targetAdmin, err := client.GetAdminConfig(ctx)
+	if err != nil {
+		return "", fmt.Errorf("读取次要节点 %s 当前 admin 配置失败（拒绝覆盖管理监听）: %w", target.NodeName, err)
+	}
+	if disabled, _ := targetAdmin["disabled"].(bool); disabled {
+		return "", fmt.Errorf("次要节点 %s 当前 admin 配置为 disabled，无法安全保留管理监听", target.NodeName)
+	}
+	listen, _ := targetAdmin["listen"].(string)
+	listen = strings.TrimSpace(listen)
+	if listen == "" || strings.HasPrefix(listen, "unix/") || strings.HasPrefix(listen, "unix://") {
+		return "", fmt.Errorf("次要节点 %s 当前 admin.listen (%q) 无效，拒绝以主节点配置覆盖管理通道", target.NodeName, listen)
+	}
+	root, err := parseConfigJSON(configJSON)
+	if err != nil {
+		return "", fmt.Errorf("解析待同步配置失败: %w", err)
+	}
+	root["admin"] = targetAdmin
+	out, err := marshalDeterministic(root)
+	if err != nil {
+		return "", fmt.Errorf("重序列化次要节点配置失败: %w", err)
+	}
+	return string(out), nil
+}
+
+// syncConfigToNode 推送配置到单节点并验证业务配置哈希一致性，返回（结果词表，错误摘要）。
+// 目标配置了 SyncAgentAddr 且注入了 NodeAgentSyncer 时优先经由 hasyncd 代理加载；
+// 否则平滑回退到直连 AdminAddr（HTTP(S) 目标自动保留目标 admin 段）。
+func (p *Publisher) syncConfigToNode(ctx context.Context, t SyncTarget, configJSON, wantHash string) (string, string) {
+	if p.nodeAgentSyncer != nil && strings.TrimSpace(t.SyncAgentAddr) != "" {
+		loadedHash, err := p.nodeAgentSyncer.SyncCaddyConfig(ctx, t, configJSON)
+		if err != nil {
+			return NodeSyncFailed, sanitizeCaddyError(err)
+		}
+		if strings.TrimSpace(loadedHash) == "" {
+			return NodeSyncFailed, "读取节点配置哈希失败: 协同代理未返回有效哈希"
+		}
+		if loadedHash != wantHash {
+			return NodeSyncHashMismatch,
+				fmt.Sprintf("同步内容与节点实际加载配置不一致（hash %.12s != %.12s）", wantHash, loadedHash)
+		}
+		return NodeSyncSuccess, ""
+	}
 	// 推送前再校验登记地址（登记接口已校验，此处防御 DB 直改等绕过路径）
 	client, err := NewCaddyClientForAdminAddr(t.AdminAddr)
 	if err != nil {
 		return NodeSyncFailed, "管理通道地址非法: " + err.Error()
 	}
-	if err := client.LoadConfig(ctx, configJSON); err != nil {
+	targetConfigJSON, err := prepareTargetConfigJSON(ctx, client, t, configJSON)
+	if err != nil {
 		return NodeSyncFailed, sanitizeCaddyError(err)
 	}
-	loadedHash, err := client.GetConfigHash(ctx)
+	if err := client.LoadConfig(ctx, targetConfigJSON); err != nil {
+		return NodeSyncFailed, sanitizeCaddyError(err)
+	}
+	loadedHash, err := client.GetBusinessConfigHash(ctx)
 	if err != nil {
 		return NodeSyncFailed, "读取节点配置哈希失败: " + sanitizeCaddyError(err)
 	}
@@ -1135,6 +1306,194 @@ func syncConfigToNode(ctx context.Context, t SyncTarget, configJSON, wantHash st
 			fmt.Sprintf("同步内容与节点实际加载配置不一致（hash %.12s != %.12s）", wantHash, loadedHash)
 	}
 	return NodeSyncSuccess, ""
+}
+
+// syncRemoteFirewallPorts 将公网监听端口放行指令同步到所有接入 hasyncd 的远端次要节点（附加步骤，失败仅告警）。
+func (p *Publisher) syncRemoteFirewallPorts(ctx context.Context, ports []int, requestedBy uuid.UUID, requestID string) {
+	if p.nodeAgentSyncer == nil || p.nodeSync == nil || len(ports) == 0 {
+		return
+	}
+	targets, err := p.nodeSync.ListSyncTargets(ctx)
+	if err != nil {
+		slog.Warn("list sync targets for remote firewall ensure failed", "error", err)
+		return
+	}
+	p.syncRemoteFirewallPortsToTargets(ctx, targets, ports, requestedBy, requestID)
+}
+
+func (p *Publisher) syncRemoteFirewallPortsToTargets(ctx context.Context, targets []SyncTarget, ports []int, requestedBy uuid.UUID, requestID string) {
+	if p.nodeAgentSyncer == nil || len(ports) == 0 {
+		return
+	}
+	for _, t := range targets {
+		if p.isLocalPrimaryTarget(t) || strings.TrimSpace(t.SyncAgentAddr) == "" {
+			continue
+		}
+		if err := p.nodeAgentSyncer.SyncFirewallPorts(ctx, t, ports, requestedBy, requestID); err != nil {
+			slog.Warn("sync remote firewall ports failed", "node", t.NodeName, "ports", ports, "error", err)
+		}
+	}
+}
+
+// buildMirrorcapSidecarForNode 按目标节点自身的网口角色与透明网桥成员口生成 mirrorcap.json 结构体。
+func (p *Publisher) buildMirrorcapSidecarForNode(ctx context.Context, nodeName string, apps []AppData) MirrorcapSidecar {
+	var interfaces, trafficIfaces []string
+	if p.mirrorIfaces != nil {
+		ifs, err := p.mirrorIfaces.ListMirrorInterfaces(ctx, nodeName)
+		if err != nil {
+			slog.Warn("list mirror interfaces for remote sidecar failed", "node", nodeName, "error", err)
+		} else {
+			interfaces = ifs
+		}
+		tifs, err := p.mirrorIfaces.ListInterfacesByRole(ctx, nodeName, nodeinterfaces.RoleTraffic)
+		if err != nil {
+			slog.Warn("list traffic interfaces for remote sidecar failed", "node", nodeName, "error", err)
+		} else {
+			trafficIfaces = tifs
+		}
+	}
+	if p.bridgePorts != nil && hasAppMode(apps, applications.DeployModeTransparent) {
+		bports, err := p.bridgePorts.ListBridgePorts(ctx, nodeName)
+		if err != nil {
+			slog.Warn("list bridge ports for remote transparent site discovery failed", "node", nodeName, "error", err)
+		} else {
+			trafficIfaces = append(trafficIfaces, bports...)
+		}
+	}
+	discovery := buildMirrorcapDiscovery(apps, interfaces, trafficIfaces)
+	if p.sidecarDiscoveryLog != "" {
+		discovery.Log = p.sidecarDiscoveryLog
+	}
+	mc := buildMirrorcapSidecar(apps, nodeName, interfaces, discovery)
+	if p.sidecarEventsLog != "" {
+		mc.EventsLog = p.sidecarEventsLog
+	}
+	if p.sidecarAuditLog != "" {
+		mc.AuditLog = p.sidecarAuditLog
+	}
+	return mc
+}
+
+// syncRemoteSidecars 将 mirrorcap.json（按节点自身网口角色生成）与 tproxyd.json 推送至接入 hasyncd 的远端次要节点。
+// 边车同步属附加步骤，单节点失败只记日志，不回滚已加载的 Caddy 配置。
+func (p *Publisher) syncRemoteSidecars(ctx context.Context, mirrorcapApps, tproxyApps []AppData, tproxyOverride *TproxydSidecar) {
+	if p.nodeAgentSyncer == nil || p.nodeSync == nil {
+		return
+	}
+	targets, err := p.nodeSync.ListSyncTargets(ctx)
+	if err != nil {
+		slog.Warn("list sync targets for remote sidecar sync failed", "error", err)
+		return
+	}
+	var tpPayload []byte
+	if tproxyOverride != nil {
+		tpPayload, err = json.MarshalIndent(tproxyOverride, "", "  ")
+		if err != nil {
+			slog.Warn("marshal override tproxyd sidecar for remote sync failed", "error", err)
+		}
+	} else if tproxyApps != nil {
+		sc, serr := p.buildTproxydSidecarFor(ctx, tproxyApps)
+		if serr != nil {
+			sc = buildTproxydSidecarWithOptions(
+				tproxyApps,
+				p.effectiveTproxyListen(),
+				p.effectiveTproxyTarget(),
+				p.effectiveTproxyTargetTLS(),
+				nil,
+			)
+		}
+		tpPayload, err = json.MarshalIndent(sc, "", "  ")
+		if err != nil {
+			slog.Warn("marshal tproxyd sidecar for remote sync failed", "error", err)
+		}
+	}
+	for _, t := range targets {
+		if p.isLocalPrimaryTarget(t) || strings.TrimSpace(t.SyncAgentAddr) == "" {
+			continue
+		}
+		if mirrorcapApps != nil {
+			mc := p.buildMirrorcapSidecarForNode(ctx, t.NodeName, mirrorcapApps)
+			mcPayload, merr := json.MarshalIndent(mc, "", "  ")
+			if merr != nil {
+				slog.Warn("marshal mirrorcap sidecar for remote sync failed", "node", t.NodeName, "error", merr)
+			} else if serr := p.nodeAgentSyncer.SyncSidecarFile(ctx, t, "mirrorcap.json", mcPayload); serr != nil {
+				slog.Warn("sync remote mirrorcap.json failed", "node", t.NodeName, "error", serr)
+			}
+		}
+		if len(tpPayload) > 0 {
+			if serr := p.nodeAgentSyncer.SyncSidecarFile(ctx, t, "tproxyd.json", tpPayload); serr != nil {
+				slog.Warn("sync remote tproxyd.json failed", "node", t.NodeName, "error", serr)
+			}
+		}
+	}
+}
+
+// syncRemoteSidecarsAfterRollback 在回滚完成后同步刷新远端 hasyncd 节点的 mirrorcap.json 与 tproxyd.json。
+func (p *Publisher) syncRemoteSidecarsAfterRollback(ctx context.Context, version *ConfigVersion) {
+	if p.nodeAgentSyncer == nil || p.nodeSync == nil {
+		return
+	}
+	var liveApps []AppData
+	if p.apps != nil {
+		if appsData, _, err := p.buildSnapshot(ctx, nil); err == nil {
+			licenseValid := true
+			if p.licenseState != nil {
+				licenseValid, _ = p.licenseState(ctx)
+			}
+			if !licenseValid {
+				for i := range appsData {
+					appsData[i].ProtectionMode = applications.ModeBypass
+				}
+			}
+			liveApps = appsData
+		} else {
+			slog.Warn("load live apps snapshot for remote rollback sidecars failed", "error", err)
+		}
+	}
+	var tpOverride *TproxydSidecar
+	if version != nil {
+		if sc, ok := extractTproxydFromSnapshot(version.BusinessSnapshot); ok {
+			if strings.TrimSpace(sc.Listen) == "" {
+				sc.Listen = p.effectiveTproxyListen()
+			}
+			if strings.TrimSpace(sc.Target) == "" {
+				sc.Target = p.effectiveTproxyTarget()
+			}
+			if strings.TrimSpace(sc.TargetTLS) == "" {
+				sc.TargetTLS = p.effectiveTproxyTargetTLS()
+			}
+			if sc.Ports == nil {
+				sc.Ports = []int{}
+			}
+			if sc.ProtectHosts == nil {
+				sc.ProtectHosts = []string{}
+			}
+			if sc.PassthroughAllowlist == nil {
+				sc.PassthroughAllowlist = []string{}
+			}
+			tpOverride = &sc
+		} else {
+			hasTransparentServer := strings.Contains(version.ConfigurationJSON, `"srv_transparent_http"`) ||
+				strings.Contains(version.ConfigurationJSON, `"srv_transparent_https"`)
+			if !hasTransparentServer {
+				allowlist, _ := p.loadTproxyPassthroughAllowlist(ctx)
+				if allowlist == nil {
+					allowlist = []string{}
+				}
+				disabled := TproxydSidecar{
+					Enabled:              false,
+					Listen:               p.effectiveTproxyListen(),
+					Target:               p.effectiveTproxyTarget(),
+					Ports:                []int{},
+					TargetTLS:            p.effectiveTproxyTargetTLS(),
+					ProtectHosts:         []string{},
+					PassthroughAllowlist: allowlist,
+				}
+				tpOverride = &disabled
+			}
+		}
+	}
+	p.syncRemoteSidecars(ctx, liveApps, liveApps, tpOverride)
 }
 
 // notifyNodeSyncFailure 次要节点同步失败告警（alerter 未接线时仅记日志，不静默）。
@@ -1281,39 +1640,67 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 				return nil, nil, fmt.Errorf("应用 %s 查询证书失败: %w", app.Code, err)
 			}
 			if cert == nil {
-				return nil, nil, fmt.Errorf("应用 %s 启用 HTTPS 但未绑定证书", app.Code)
+				if app.AutoSSLEnabled {
+					// 开启自动 SSL 且首次证书尚未签发：放行 :80 与 ACME HTTP-01 挑战路由，
+					// 暂缓 :443 与 308 跳转，待证书签发绑定后再自动发布上线。
+					ad.PendingAutoSSL = true
+				} else {
+					return nil, nil, fmt.Errorf("应用 %s 启用 HTTPS 但未绑定证书", app.Code)
+				}
+			} else {
+				// 读取证书链与解密私钥供 Caddy load_pem 内存加载（跨节点无需共享磁盘文件），
+				// 同时保留本地落盘以兼容既有排障/文件依赖。
+				certFile, certPEM, chainPEM, keyPEM, err := p.prepareCertMaterial(ctx, cert)
+				if err != nil {
+					return nil, nil, fmt.Errorf("应用 %s 证书准备失败: %w", app.Code, err)
+				}
+				ad.HasCert = true
+				ad.CertID = cert.ID.String()
+				ad.CertFileName = certFile
+				ad.CertPEM = certPEM
+				ad.ChainPEM = chainPEM
+				ad.KeyPEM = keyPEM
 			}
-			// 写入证书文件到数据目录（发布时解密）
-			certFile, err := p.writeCertFiles(ctx, cert)
-			if err != nil {
-				return nil, nil, fmt.Errorf("应用 %s 证书文件准备失败: %w", app.Code, err)
-			}
-			ad.HasCert = true
-			ad.CertID = cert.ID.String()
-			ad.CertFileName = certFile
 		}
 		appsData = append(appsData, ad)
-		snapshot["apps"] = append(snapshot["apps"].([]map[string]interface{}), map[string]interface{}{
+		appSnap := map[string]interface{}{
 			"code": app.Code, "mode": app.ProtectionMode,
 			"deployment_mode": app.DeploymentMode,
 			"domains":         len(domains), "upstreams": len(upstreams),
-		})
+		}
+		if ad.PendingAutoSSL {
+			appSnap["cert_pending_auto_ssl"] = true
+		}
+		snapshot["apps"] = append(snapshot["apps"].([]map[string]interface{}), appSnap)
 	}
 	return appsData, snapshot, nil
 }
 
+// prepareCertMaterial 读取证书链与解密私钥，并同步写入数据目录（权限 0600，保留本地兼容）。
+func (p *Publisher) prepareCertMaterial(ctx context.Context, cert *certificates.Certificate) (certFile, certPEM, chainPEM, keyPEM string, err error) {
+	certPEM, chainPEM, err = p.certs.GetCertPEM(ctx, cert.ID)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	keyPEM, err = p.certs.GetDecryptedKey(ctx, cert.ID)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	if strings.TrimSpace(certPEM) == "" || strings.TrimSpace(keyPEM) == "" {
+		return "", "", "", "", fmt.Errorf("证书 %s 缺少有效的证书或私钥 PEM 内容", cert.ID)
+	}
+	fullCertPEM := mergeCertChainPEM(certPEM, chainPEM)
+	certFile, err = WriteCertificateFiles(p.dataDir, cert.ID.String(), fullCertPEM, keyPEM)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	return certFile, certPEM, chainPEM, keyPEM, nil
+}
+
 // writeCertFiles 将证书与私钥写入数据目录（权限0600）。
 func (p *Publisher) writeCertFiles(ctx context.Context, cert *certificates.Certificate) (string, error) {
-	certPEM, chainPEM, err := p.certs.GetCertPEM(ctx, cert.ID)
-	if err != nil {
-		return "", err
-	}
-	keyPEM, err := p.certs.GetDecryptedKey(ctx, cert.ID)
-	if err != nil {
-		return "", err
-	}
-	_ = chainPEM // 链可并入 cert 文件
-	return WriteCertificateFiles(p.dataDir, cert.ID.String(), certPEM, keyPEM)
+	certFile, _, _, _, err := p.prepareCertMaterial(ctx, cert)
+	return certFile, err
 }
 
 // verifyPublish 发布后验证（Caddy 可用 + 配置已加载 + 内容与发布一致）。
@@ -1477,10 +1864,15 @@ func (p *Publisher) Rollback(ctx context.Context, in RollbackInput) (*PublishTas
 	if err := p.restoreSidecarsAfterRollback(context.Background(), version); err != nil {
 		slog.Warn("refresh sidecar configs after rollback failed", "version", in.VersionID, "error", err)
 	}
+	// 回滚同样同步远端节点公网端口放行（先放行后加载）与边车配置。
+	if rbPorts, ok := extractPublicTCPPortsFromConfig(rollbackJSON); ok && len(rbPorts) > 0 {
+		p.syncRemoteFirewallPorts(context.Background(), rbPorts, in.RequestedBy, in.RequestID)
+	}
 	// 显式回退也必须把已验证的恢复配置扇出到次要节点；否则主节点已切回旧版本，
 	// 次要节点仍可能继续提供被回退的版本。扇出沿用发布成功后的逐节点记录/告警语义，
 	// 且使用独立上下文，避免回退请求取消后丢失节点水位更新。
 	syncOutcome := p.syncConfigToNodes(context.Background(), rollbackJSON, in.VersionID)
+	p.syncRemoteSidecarsAfterRollback(context.Background(), version)
 	if code, message, incomplete := syncOutcome.rollbackFailure(in.VersionID); incomplete {
 		p.finishTask(ctx, task.ID, TaskFailed, code, message, &in.VersionID)
 		return p.GetTask(ctx, task.ID)

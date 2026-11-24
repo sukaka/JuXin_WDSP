@@ -156,6 +156,11 @@ func (s *Service) waitExecutorResult(ctx context.Context, id uuid.UUID) (*Execut
 	}
 }
 
+type versionPersister interface {
+	GetPackage(ctx context.Context, id uuid.UUID) (*Package, error)
+	SetCurrentVersion(ctx context.Context, version string) error
+}
+
 func (s *Service) processExecutorResult(ctx context.Context, result *ExecutorResult) error {
 	s.resultMu.Lock()
 	defer s.resultMu.Unlock()
@@ -198,10 +203,28 @@ func (s *Service) processExecutorResult(ctx context.Context, result *ExecutorRes
 		stepErr := fmt.Errorf("升级后验证失败：%w", err)
 		return s.rollbackExecutorFailure(ctx, repo, id, job.RequestedBy, stepErr, "升级后验证失败")
 	}
-	return repo.MarkFinished(ctx, id, StatusSuccess)
+	if job.PackageID != nil {
+		if vp, ok := repo.(versionPersister); ok {
+			pkg, err := vp.GetPackage(ctx, *job.PackageID)
+			if err != nil {
+				return fmt.Errorf("升级后读取目标版本失败: %w", err)
+			}
+			if pkg != nil && strings.TrimSpace(pkg.VersionTo) != "" {
+				if err := vp.SetCurrentVersion(ctx, strings.TrimSpace(pkg.VersionTo)); err != nil {
+					return fmt.Errorf("持久化当前系统版本失败: %w", err)
+				}
+			}
+		}
+	}
+	if err := repo.MarkFinished(ctx, id, StatusSuccess); err != nil {
+		return err
+	}
+	s.markPrimaryNodeTerminal(ctx, id, NodeStatusSuccess, "", "")
+	return nil
 }
 
 func (s *Service) rollbackExecutorFailure(ctx context.Context, repo resultStore, id uuid.UUID, requestedBy *uuid.UUID, stepErr error, stageDesc string) error {
+	s.markPrimaryNodeTerminal(context.Background(), id, NodeStatusFailed, FailApply, stepErr.Error())
 	if rbErr := s.runRollback(ctx, id, requestedBy); rbErr != nil {
 		combined := fmt.Errorf("%v；自动回滚失败：%w", stepErr, rbErr)
 		if dbErr := repo.MarkFailed(context.Background(), id, FailRollback, combined); dbErr != nil {
@@ -283,6 +306,7 @@ func (s *Service) reconcileExpiredApplying(ctx context.Context) {
 			continue
 		}
 		slog.Warn("stranded applying upgrade job closed", "id", job.ID, "code", FailExecutorTimeout)
+		s.markPrimaryNodeTerminal(ctx, job.ID, NodeStatusFailed, FailExecutorTimeout, closeErr.Error())
 		s.recordStrandedAudit(ctx, job)
 		backups.NotifyAlert(s.alertFn, "UPGRADE_FAILED", "UPGRADE", "升级执行器超时，滞留任务已终结",
 			"升级任务 "+job.ID.String()+" 等待宿主机执行器结果超期（含 API 重启前等待），已按中断标记失败（EXECUTOR_TIMEOUT）；不自动重跑，请人工核查后处置")

@@ -2,6 +2,7 @@
 package apinodes
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,11 +38,75 @@ type Node struct {
 	LastSyncResult    string     `json:"last_sync_result"`     // SUCCESS/FAILED/HASH_MISMATCH；空串 = 从未同步
 	LastSyncError     string     `json:"last_sync_error"`      // 最近失败原因（截断）；空串 = 无错误
 	LastSyncVersionID *uuid.UUID `json:"last_sync_version_id"` // 最近同步尝试的配置版本；nil = 从未同步
+	// HA Phase 3 协同代理与遥测汇聚字段（000236；sync_secret 永不回显，仅返回 has_sync_secret）：
+	SyncAgentAddr   string          `json:"sync_agent_addr"`   // hasyncd 协同代理地址；空串 = 未配置
+	HasSyncSecret   bool            `json:"has_sync_secret"`   // 是否已配置 hasyncd 共享密钥
+	ReportedVersion string          `json:"reported_version"`  // hasyncd 上报的系统版本
+	HaVipStatus     json.RawMessage `json:"ha_vip_status"`     // 节点汇聚的 ha-vip-status.json 快照
+	HaVipStatusAt   *time.Time      `json:"ha_vip_status_at"`  // ha_vip_status 最近采集时间
+	NetworkStatus   json.RawMessage `json:"network_status"`    // 节点汇聚的 network-status.json 快照
+	NetworkStatusAt *time.Time      `json:"network_status_at"` // network_status 最近采集时间
 	// VersionConsistent 该节点策略版本是否与活跃多数派一致（读接口读出时计算，
 	// 不落库）；nil = 未参与判定（SILENT 离线或未上报版本）。
 	VersionConsistent *bool     `json:"version_consistent"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+// CreateNodeInput 管理员手动登记新网关节点的持久化入参（SyncSecretCiphertext 已由上层加密）。
+type CreateNodeInput struct {
+	NodeName             string
+	AdminAddr            string
+	SyncAgentAddr        string
+	SyncSecretCiphertext string
+	SyncEnabled          bool
+}
+
+// SyncRegistrationUpdate 节点同步登记更新参数（SyncSecretCiphertext nil = 保持不变，*"" = 清除，非空 = 替换密文）。
+type SyncRegistrationUpdate struct {
+	AdminAddr            string
+	SyncAgentAddr        string
+	SyncSecretCiphertext *string
+	SyncEnabled          bool
+}
+
+// NodeSyncCredentials 节点协同代理凭据与状态快照（内部服务使用，绝不直接序列化返回前端）。
+type NodeSyncCredentials struct {
+	NodeID               uuid.UUID
+	NodeName             string
+	AdminAddr            string
+	SyncAgentAddr        string
+	SyncSecretCiphertext string `json:"-"`
+	SyncEnabled          bool
+	ReportedVersion      string
+	HaVipStatus          json.RawMessage
+	HaVipStatusAt        *time.Time
+	NetworkStatus        json.RawMessage
+	NetworkStatusAt      *time.Time
+}
+
+// NodeTelemetryUpdate 节点协同遥测周期拉取（GET /v1/status）回填参数。
+type NodeTelemetryUpdate struct {
+	NodeName        string
+	LastSeenAt      time.Time
+	PolicyVersion   string
+	ReportedVersion string
+	HaVipStatus     json.RawMessage
+	HaVipStatusAt   *time.Time
+	NetworkStatus   json.RawMessage
+	NetworkStatusAt *time.Time
+}
+
+// NodeTestResult 节点连通性探测结果（POST /api/v1/api-security/nodes/{id}/test）。
+type NodeTestResult struct {
+	OK             bool   `json:"ok"`
+	Channel        string `json:"channel"` // "hasyncd" | "caddy_admin" | "none"
+	LatencyMs      int64  `json:"latency_ms"`
+	Version        string `json:"version,omitempty"`
+	CaddyReachable *bool  `json:"caddy_reachable,omitempty"`
+	HostctlReady   *bool  `json:"hostctl_ready,omitempty"`
+	UpgradeReady   *bool  `json:"upgrade_ready,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // NodeAggregate 单节点聚合结果（api_runtime_events 按 gateway_node 分组）。

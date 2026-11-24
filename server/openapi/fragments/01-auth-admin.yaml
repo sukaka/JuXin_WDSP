@@ -956,10 +956,10 @@ paths:
       tags: [login-logs]
       summary: 导出登录日志（CSV）
       description: >-
-        按筛选条件导出登录日志 CSV（UTF-8，最多 10000 条），
+        按筛选条件导出登录日志 CSV（UTF-8 含 BOM，防公式注入，最多 10000 条），
         响应头 Content-Disposition: attachment; filename="login-logs.csv"。
         权限：login_logs.export。导出接口按来源 IP 限流 5 次/分钟，超限返回 429。
-        CSV 列：occurred_at,username,source_ip,event_type,result,failure_code,request_id。
+        CSV 中文表头：发生时间,用户名,来源 IP,事件类型,结果,失败原因,请求 ID（事件类型、结果与失败原因已映射为中文）。
       parameters:
         - name: username
           in: query
@@ -1110,10 +1110,10 @@ paths:
       tags: [audits]
       summary: 导出操作审计（CSV）
       description: >-
-        按筛选条件导出审计记录 CSV（UTF-8，最多 10000 条），
+        按筛选条件导出审计记录 CSV（UTF-8 含 BOM，防公式注入，最多 10000 条），
         响应头 Content-Disposition: attachment; filename="operation-audits.csv"。
         权限：audits.export。导出接口按来源 IP 限流 5 次/分钟，超限返回 429。
-        CSV 列：occurred_at,username,source_ip,module,action,object_type,object_id,result,risk_level,request_id。
+        CSV 中文表头：操作时间,操作人,来源 IP,模块,操作,对象类型,对象标识,结果,风险等级,请求 ID（模块、操作、对象类型、结果与风险等级已映射为中文）。
       parameters:
         - name: username
           in: query

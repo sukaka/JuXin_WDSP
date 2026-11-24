@@ -18,13 +18,14 @@ import (
 	"time"
 )
 
-// CaddyClient 通过 Unix Socket 与 Caddy Admin API 通信。
+// CaddyClient 通过 Unix Socket 或内网 HTTP(S) 与 Caddy Admin API 通信。
 type CaddyClient struct {
 	socketPath string
 	// baseURL 请求基址（unix socket 目标为 http://localhost 占位；
 	// http(s) 目标为登记的管理面地址，见 NewCaddyClientForAdminAddr）
-	baseURL    string
-	httpClient *http.Client
+	baseURL      string
+	isHTTPTarget bool
+	httpClient   *http.Client
 }
 
 // NewCaddyClient 创建 Caddy Admin 客户端。
@@ -50,6 +51,11 @@ func NewCaddyClient(socketPath string) *CaddyClient {
 // SocketPath 返回 Socket 路径。
 func (c *CaddyClient) SocketPath() string {
 	return c.socketPath
+}
+
+// IsHTTP 返回该客户端是否指向 HTTP(S) TCP 管理通道（而非本地 Unix Socket）。
+func (c *CaddyClient) IsHTTP() bool {
+	return c.isHTTPTarget
 }
 
 // ErrAdminAddrDenied 节点管理通道地址非法（格式错误或非内网管理面地址）。
@@ -266,7 +272,8 @@ func NewCaddyClientForAdminAddr(addr string) (*CaddyClient, error) {
 		},
 	}
 	return &CaddyClient{
-		baseURL: base,
+		baseURL:      base,
+		isHTTPTarget: true,
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   30 * time.Second,
@@ -355,6 +362,36 @@ func (c *CaddyClient) GetCurrentConfig(ctx context.Context) (string, error) {
 	return string(body), nil
 }
 
+// GetAdminConfig 获取当前生效的 admin 配置段（GET /config/admin）。
+// 用于跨机 HTTP(S) 扇出前读取次要节点自身的 admin.listen，防止推送主节点的 unix socket 配置
+// 覆盖次要节点的 TCP 管理监听导致节点永久失联。远端返回非 200、非对象或空/null 均报错（fail-closed）。
+func (c *CaddyClient) GetAdminConfig(ctx context.Context) (map[string]interface{}, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/config/admin", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get admin config failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("get admin config response body failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get admin config failed (status %d): %s", resp.StatusCode, truncateString(string(body), 200))
+	}
+	var admin map[string]interface{}
+	if err := json.Unmarshal(body, &admin); err != nil {
+		return nil, fmt.Errorf("decode admin config failed: %w", err)
+	}
+	if len(admin) == 0 {
+		return nil, fmt.Errorf("admin config is empty")
+	}
+	return admin, nil
+}
+
 // GetRuntimeSnapshot reads metrics from the admin-only gateway runtime endpoint.
 func (c *CaddyClient) GetRuntimeSnapshot(ctx context.Context) (*GatewayRuntimeSnapshot, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/jiuzhang/runtime", nil)
@@ -419,6 +456,16 @@ func (c *CaddyClient) GetConfigHash(ctx context.Context) (string, error) {
 	return CanonicalConfigHash(cfg)
 }
 
+// GetBusinessConfigHash 获取当前生效业务配置（剔除顶层 admin 段）的规范化哈希。
+// 跨节点扇出验证使用本方法，确保各节点保留各自 admin.listen 时仍严格校验业务配置语义一致。
+func (c *CaddyClient) GetBusinessConfigHash(ctx context.Context) (string, error) {
+	cfg, err := c.GetCurrentConfig(ctx)
+	if err != nil {
+		return "", err
+	}
+	return CanonicalBusinessConfigHash(cfg)
+}
+
 // CanonicalConfigHash 规范化 JSON 的 sha256 hex：先解析再重新序列化（map 键排序、
 // 空白归一），用于「发布内容 vs 网关实际加载配置」的生效比对（P0-21）。
 func CanonicalConfigHash(configJSON string) (string, error) {
@@ -429,6 +476,25 @@ func CanonicalConfigHash(configJSON string) (string, error) {
 	raw, err := json.Marshal(v)
 	if err != nil {
 		return "", fmt.Errorf("canonicalize config json: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// CanonicalBusinessConfigHash 计算剔除顶层 "admin" 键后的规范化 JSON SHA-256 hex。
+// 跨节点配置一致性比对忽略各节点独立的 admin.listen，仅严格验证业务配置（apps、logging 等）逐字节等价。
+func CanonicalBusinessConfigHash(configJSON string) (string, error) {
+	var root map[string]interface{}
+	if err := json.Unmarshal([]byte(configJSON), &root); err != nil {
+		return "", fmt.Errorf("parse config json: %w", err)
+	}
+	if root == nil {
+		return "", fmt.Errorf("parse config json: expected JSON object")
+	}
+	delete(root, "admin")
+	raw, err := json.Marshal(root)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize business config json: %w", err)
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil

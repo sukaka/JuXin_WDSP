@@ -26,6 +26,7 @@ file=system/hostctl-exec.sh
 file=system/firewall-ensure.sh
 file=system/pcap_capture_control.py
 file=upgrade/apply.sh
+file=upgrade/image-delta.py
 file=upgrade/install-executor.sh
 file=upgrade/rollback.sh
 file=upgrade/upgrade-executor.sh

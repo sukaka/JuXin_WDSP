@@ -422,7 +422,8 @@ func (p *Prechecker) Gather(ctx context.Context, pkg *Package) Facts {
 	return f
 }
 
-// currentSystemVersion 读 system_settings 的 system:current_version，缺省回退常量。
+// currentSystemVersion 读 system_settings 的 system:current_version，缺省回退常量；
+// 若已通过宿主机完整包升级到更新的 API 二进制，取两者中更高的语义化版本避免陈旧库值阻断后续升级。
 func (p *Prechecker) currentSystemVersion(ctx context.Context) string {
 	if p.currentVersion != "" {
 		return p.currentVersion
@@ -434,10 +435,19 @@ WHERE setting_group = 'system' AND setting_key = 'current_version'`).Scan(&raw)
 	if err == nil {
 		var v string
 		if json.Unmarshal(raw, &v) == nil && v != "" {
-			return v
+			return resolveEffectiveSystemVersion(v, CurrentVersion)
 		}
 	}
 	return CurrentVersion
+}
+
+func resolveEffectiveSystemVersion(dbVersion, binaryVersion string) string {
+	dv, derr := ParseVersion(dbVersion)
+	bv, berr := ParseVersion(binaryVersion)
+	if derr == nil && berr == nil && bv.Compare(dv) > 0 {
+		return binaryVersion
+	}
+	return dbVersion
 }
 
 // activeTasks 汇总进行中的发布/备份/恢复/报告任务。

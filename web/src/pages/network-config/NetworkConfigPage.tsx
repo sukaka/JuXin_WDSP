@@ -148,7 +148,9 @@ export default function NetworkConfigPage() {
   // 服务端返回本网关默认节点名；缺省时回落首个上报节点（兼容旧版接口）
   const defaultNode = configQuery.data?.default_node?.trim() || nodes[0]?.node_name || ''
   const isNonDefaultNode = Boolean(currentNode && defaultNode && currentNode !== defaultNode)
-  const canEditCurrentNode = canUpdate && !isNonDefaultNode
+  const remoteEditable = configQuery.data?.remote_editable === true
+  const isReadOnlyRemoteNode = isNonDefaultNode && !remoteEditable
+  const canEditCurrentNode = canUpdate && !isReadOnlyRemoteNode
   const hasSuppressedLinkPair = useMemo(
     () => (status?.link_pairs ?? []).some((lp) => lp.state === 'SUPPRESSED'),
     [status],
@@ -279,7 +281,11 @@ export default function NetworkConfigPage() {
   const saveMutation = useMutation({
     mutationFn: () => networkConfigApi.save(desired, currentNode),
     onSuccess: () => {
-      message.success('网络配置已保存')
+      message.success(
+        isNonDefaultNode && remoteEditable
+          ? `网络配置已保存并下发至远端节点「${currentNode}」`
+          : '网络配置已保存',
+      )
       setEdit(null)
       void queryClient.invalidateQueries({ queryKey: ['network-config'] })
     },
@@ -292,11 +298,15 @@ export default function NetworkConfigPage() {
   const confirmSave = () => {
     if (!canEditCurrentNode) return
     const isResetSuppressed = !dirty && hasSuppressedLinkPair
+    const targetDesc =
+      isNonDefaultNode && remoteEditable
+        ? `将通过节点协同代理（hasyncd）下发到远端节点「${currentNode}」立即执行`
+        : `下发到节点「${currentNode}」立即执行`
     modal.confirm({
       title: '高风险操作确认',
       content: isResetSuppressed
-        ? `当前存在处于抑制态（SUPPRESSED）的端口联动网桥，重新保存将刷新配置时间戳并下发到节点「${currentNode}」立即执行（网桥 ${desired.bridges.length} 个、静态路由 ${desired.routes.length} 条、内核三层转发${desired.ip_forward ? '开启' : '关闭'}），以复位端口联动抑制态。确定重新下发吗？`
-        : `保存将把当前期望配置（网桥 ${desired.bridges.length} 个、静态路由 ${desired.routes.length} 条、内核三层转发${desired.ip_forward ? '开启' : '关闭'}）下发到节点「${currentNode}」立即执行，错误配置可能导致业务流量中断。确定保存吗？`,
+        ? `当前存在处于抑制态（SUPPRESSED）的端口联动网桥，重新保存将刷新配置时间戳并${targetDesc}（网桥 ${desired.bridges.length} 个、静态路由 ${desired.routes.length} 条、内核三层转发${desired.ip_forward ? '开启' : '关闭'}），以复位端口联动抑制态。确定重新下发吗？`
+        : `保存将把当前期望配置（网桥 ${desired.bridges.length} 个、静态路由 ${desired.routes.length} 条、内核三层转发${desired.ip_forward ? '开启' : '关闭'}）${targetDesc}，错误配置可能导致业务流量中断。确定保存吗？`,
       okText: '确认保存',
       cancelText: '取消',
       okButtonProps: { danger: true },
@@ -564,13 +574,13 @@ export default function NetworkConfigPage() {
             onRefresh={() => Promise.all([configQuery.refetch(), interfacesQuery.refetch()])}
           />
         </Space>
-        {isNonDefaultNode && (
+        {isReadOnlyRemoteNode && (
           <Alert
             style={{ marginTop: 12 }}
             type="info"
             showIcon
             message={`当前节点「${currentNode}」仅支持只读查看`}
-            description={`网络配置依赖本机网关边车共享卷下发，当前版本仅支持编辑并下发本网关节点「${defaultNode}」的配置。`}
+            description={`该远端节点尚未配置或启用节点协同代理（hasyncd），暂不支持远程编辑下发；请先在节点管理页配置协同代理地址并启用同步，或切换回本网关节点「${defaultNode}」。`}
             action={
               nodes.some((n) => n.node_name === defaultNode) ? (
                 <Button size="small" type="link" onClick={() => switchNode(defaultNode)}>
@@ -578,6 +588,15 @@ export default function NetworkConfigPage() {
                 </Button>
               ) : undefined
             }
+          />
+        )}
+        {isNonDefaultNode && remoteEditable && (
+          <Alert
+            style={{ marginTop: 12 }}
+            type="info"
+            showIcon
+            message={`正在编辑远端节点「${currentNode}」的网络配置`}
+            description="该节点已启用节点协同代理（hasyncd），保存后将自动推送 network.json 至远端节点生效，并在此页汇聚展示其执行状态与端口联动明细。"
           />
         )}
         <Alert
@@ -701,14 +720,28 @@ export default function NetworkConfigPage() {
       )}
 
       {!configQuery.isError && (
-        <Card title="执行状态">
+        <Card
+          title={
+            <Space size={8}>
+              <span>执行状态</span>
+              {isNonDefaultNode && status != null && <Tag color="blue">远端汇聚</Tag>}
+            </Space>
+          }
+        >
           {status == null ? (
-            isNonDefaultNode ? (
+            isReadOnlyRemoteNode ? (
               <Alert
                 type="info"
                 showIcon
                 message="非本网关节点暂不支持通过本地边车卷读取执行状态"
-                description={`当前执行状态仅采集本网关节点「${defaultNode}」的本地边车状态文件（network-status.json）。`}
+                description={`当前执行状态仅采集本网关节点「${defaultNode}」的本地边车状态文件（network-status.json）；如需远程汇聚状态，请先为该节点配置协同代理（hasyncd）。`}
+              />
+            ) : isNonDefaultNode && remoteEditable ? (
+              <Alert
+                type="info"
+                showIcon
+                message="远端节点尚未上报网络执行状态"
+                description="请确认该远端节点的 hasyncd 协同代理与 netmgrd 边车正常运行，遥测周期汇聚后将在此展示。"
               />
             ) : (
               <Alert type="info" showIcon message="节点尚未上报执行状态" />

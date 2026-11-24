@@ -91,3 +91,49 @@ func TestC06HandlerIgnoresClientAllowPrivate(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckExpectedStatus(t *testing.T) {
+	cases := []struct {
+		name     string
+		actual   int
+		expected string
+		want     bool
+	}{
+		{"空期望默认200匹配", 200, "", true},
+		{"空期望默认200不匹配", 204, "", false},
+		{"单状态码匹配", 301, "200,301", true},
+		{"通配2xx匹配", 204, "2xx", true},
+		{"通配大写2XX匹配", 201, "2XX", true},
+		{"通配不匹配", 404, "2xx", false},
+		{"范围匹配下界", 200, "200-299", true},
+		{"范围匹配中间", 204, "200-299", true},
+		{"范围匹配上界", 299, "200-299", true},
+		{"范围不匹配下界外", 199, "200-299", false},
+		{"范围不匹配上界外", 300, "200-299", false},
+		{"混合规则匹配", 301, "200-204, 301, 4xx", true},
+		{"倒置范围拒绝", 250, "300-200", false},
+		{"非法范围拒绝", 200, "200-abc", false},
+		{"实际状态码0拒绝", 0, "200-299", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CheckExpectedStatus(tc.actual, tc.expected); got != tc.want {
+				t.Errorf("CheckExpectedStatus(%d, %q) = %v, want %v", tc.actual, tc.expected, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInvalidMethodRejected(t *testing.T) {
+	for _, method := range []string{"POST", "DELETE", "PUT", "TRACE"} {
+		res := TestConnectivity(context.Background(), TestInput{
+			Scheme: "http",
+			Host:   "93.184.216.34",
+			Port:   80,
+			Method: method,
+		})
+		if res.ErrorCode != "INVALID_METHOD" {
+			t.Errorf("method %q error_code=%q, want INVALID_METHOD", method, res.ErrorCode)
+		}
+	}
+}

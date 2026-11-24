@@ -91,6 +91,8 @@ fi
 [[ -f "$REPO_ROOT/gateway/images/netmgrd/Dockerfile" ]] || die '缺少 netmgrd Dockerfile'
 [[ -f "$REPO_ROOT/gateway/images/mirrorcap/Dockerfile" ]] || die '缺少 mirrorcap Dockerfile'
 [[ -f "$REPO_ROOT/gateway/images/tproxyd/Dockerfile" ]] || die '缺少 tproxyd Dockerfile'
+[[ -f "$REPO_ROOT/gateway/images/havipd/Dockerfile" ]] || die '缺少 havipd Dockerfile'
+[[ -f "$REPO_ROOT/gateway/images/hasyncd/Dockerfile" ]] || die '缺少 hasyncd Dockerfile'
 [[ -f "$REPO_ROOT/gateway/images/pcapd/Dockerfile" ]] || die '缺少 pcapd Dockerfile'
 [[ -f "$REPO_ROOT/gateway/images/logrotator/Dockerfile" ]] || die '缺少 logrotator Dockerfile'
 [[ -f "$REPO_ROOT/deployment/containerops/Dockerfile" ]] || die '缺少 containerops Dockerfile'
@@ -323,11 +325,11 @@ verify_delivery() {
   jq -e --arg version "$VERSION" --arg delivery_mode "$expected_delivery_mode" \
     --argjson expected_signed "$expected_signed" \
     '.edition == "wdsp" and .version == $version and .arch == "amd64" and
-     .delivery_mode == $delivery_mode and .signed == $expected_signed and (.images | length) == 13 and
+     .delivery_mode == $delivery_mode and .signed == $expected_signed and (.images | length) == 15 and
      any(.files[]; .path == "agents/wdsp-agent")' "$payload_dir/manifest.json" >/dev/null \
     || die '基础离线包 manifest 的版本、架构、交付模式、签名、镜像或 Agent 清单不完整'
 
-  local compose_member compose_json
+  local compose_member compose_json compose_hasync_json
   compose_member="$(awk '/\/docker-compose\.yml$/{print; exit}' "$archive_listing")"
   [[ -n "$compose_member" ]] || die '基础离线包缺少 docker-compose.yml'
   tar -xOf "$offline_file" "$compose_member" > "$payload_dir/docker-compose.yml" \
@@ -337,7 +339,8 @@ verify_delivery() {
       docker compose -f "$payload_dir/docker-compose.yml" --env-file /dev/null config --format json
   )" || die '基础离线包 docker-compose.yml 无法渲染'
   jq -e '
-    .services.gateway as $gateway | .services.netmgrd as $netmgrd | .services.mirrorcap as $mirrorcap | .services.tproxyd as $tproxyd |
+    (.services | has("hasyncd") | not) and
+    .services.gateway as $gateway | .services.netmgrd as $netmgrd | .services.mirrorcap as $mirrorcap | .services.tproxyd as $tproxyd | .services.havipd as $havipd |
     ($gateway.user == "0:0") and
     ($gateway.entrypoint == ["/usr/local/bin/wdsp-gateway-bind"]) and
     ($gateway.environment.HOME == "/var/lib/caddy") and
@@ -357,10 +360,29 @@ verify_delivery() {
     ($tproxyd.read_only == true) and
     ($tproxyd.cap_drop == ["ALL"]) and
     (($tproxyd.cap_add // []) | length == 0) and
-    (($tproxyd.security_opt // []) | index("no-new-privileges:true") != null)
+    (($tproxyd.security_opt // []) | index("no-new-privileges:true") != null) and
+    ($havipd.network_mode == "service:gateway") and
+    ((($havipd.group_add // []) | map(tostring) | index("1000")) != null) and
+    ($havipd.read_only == true) and
+    ($havipd.cap_drop == ["ALL"]) and
+    (($havipd.cap_add | sort) == (["NET_ADMIN", "NET_BROADCAST", "NET_RAW"] | sort)) and
+    (($havipd.security_opt // []) | index("no-new-privileges:true") != null)
   ' <<<"$compose_json" >/dev/null \
-    || die '最终 .run 的 gateway 低端口入口、最小 capability、netmgrd、mirrorcap 或 tproxyd 约束不符合交付基线'
-  required_images=(jiuzhang-server jiuzhang-web jiuzhang-gateway jiuzhang-netmgrd jiuzhang-mirrorcap jiuzhang-tproxyd jiuzhang-logrotator jiuzhang-containerops jiuzhang-pcapd postgres valkey clickhouse opentelemetry-collector-contrib)
+    || die '最终 .run 的 gateway 低端口入口、最小 capability、netmgrd、mirrorcap、tproxyd 或 havipd 约束不符合交付基线'
+  compose_hasync_json="$(
+    POSTGRES_PASSWORD=verify-only VALKEY_PASSWORD=verify-only JIUZHANG_MASTER_KEY=verify-only \
+      docker compose -f "$payload_dir/docker-compose.yml" --profile ha-sync --env-file /dev/null config --format json
+  )" || die '基础离线包 docker-compose.yml（ha-sync profile）无法渲染'
+  jq -e '
+    .services.hasyncd as $hasyncd |
+    ($hasyncd.user == "1000:1000") and
+    ($hasyncd.read_only == true) and
+    ($hasyncd.cap_drop == ["ALL"]) and
+    (($hasyncd.cap_add // []) | length == 0) and
+    (($hasyncd.security_opt // []) | index("no-new-privileges:true") != null)
+  ' <<<"$compose_hasync_json" >/dev/null \
+    || die '最终 .run 的 hasyncd 安全约束不符合交付基线'
+  required_images=(jiuzhang-server jiuzhang-web jiuzhang-gateway jiuzhang-netmgrd jiuzhang-mirrorcap jiuzhang-tproxyd jiuzhang-havipd jiuzhang-hasyncd jiuzhang-logrotator jiuzhang-containerops jiuzhang-pcapd postgres valkey clickhouse opentelemetry-collector-contrib)
   for image_name in "${required_images[@]}"; do
     grep -q "/images/${image_name}\.tar$" "$archive_listing" \
       || die "基础离线包缺少运行镜像：$image_name"
@@ -368,7 +390,7 @@ verify_delivery() {
   if grep -Eq '(^|/)(test|tests|__tests__|docs)(/|$)' "$archive_listing"; then
     die '基础离线包混入测试目录或产品文档目录'
   fi
-  log_info "最终验收通过：${verification_scope}、哈希、13 个运行镜像（含默认空转的 mirrorcap/tproxyd 与默认不启动的 pcapd）、Agent、${#packaged_rpms[@]} 个 RPM、内容扫描均有效"
+  log_info "最终验收通过：${verification_scope}、哈希、15 个运行镜像（含默认空转的 mirrorcap/tproxyd/havipd 与默认不启动的 hasyncd/pcapd）、Agent、${#packaged_rpms[@]} 个 RPM、内容扫描均有效"
   log_warn 'RPM 依赖闭包仍须在干净的目标 x86-64 测试机完成离线安装验收'
 }
 
@@ -409,6 +431,8 @@ build_image 'jiuzhang-gateway' 'gateway/Dockerfile' 'gateway'
 build_image 'jiuzhang-netmgrd' 'gateway/images/netmgrd/Dockerfile' 'gateway'
 build_image 'jiuzhang-mirrorcap' 'gateway/images/mirrorcap/Dockerfile' 'gateway'
 build_image 'jiuzhang-tproxyd' 'gateway/images/tproxyd/Dockerfile' 'gateway'
+build_image 'jiuzhang-havipd' 'gateway/images/havipd/Dockerfile' 'gateway'
+build_image 'jiuzhang-hasyncd' 'gateway/images/hasyncd/Dockerfile' 'gateway'
 build_image 'jiuzhang-pcapd' 'gateway/images/pcapd/Dockerfile' 'gateway'
 build_image 'jiuzhang-logrotator' 'gateway/images/logrotator/Dockerfile' 'gateway/images/logrotator'
 build_image 'jiuzhang-containerops' 'deployment/containerops/Dockerfile' '.'

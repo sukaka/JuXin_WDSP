@@ -83,6 +83,14 @@ const (
 	DeployRollbackFailed = "ROLLBACK_FAILED"
 )
 
+// 源站健康状态（只读运行态摘要，来自 upstream_health_records 最新探测记录）
+const (
+	UpstreamHealthHealthy   = "HEALTHY"
+	UpstreamHealthUnhealthy = "UNHEALTHY"
+	UpstreamHealthUnknown   = "UNKNOWN"
+	UpstreamHealthDisabled  = "DISABLED"
+)
+
 // Application 是Web应用。
 type Application struct {
 	ID                uuid.UUID  `json:"id"`
@@ -107,6 +115,15 @@ type Application struct {
 	// AuthzLeaseSeconds per-app 授权快照租约秒数（NG-AZ-02 D5；nil=不启用租约约束，
 	// 配置夹紧 15~300——发布链编译进 handler api_authz_lease_seconds 与快照 lease_seconds）
 	AuthzLeaseSeconds *int `json:"authz_lease_seconds"`
+	// AutoSSL 自动申请/续约 SSL 证书配置与运行态摘要（迁移 000238）
+	AutoSSLEnabled         bool       `json:"auto_ssl_enabled"`
+	AutoSSLChallengeType   string     `json:"auto_ssl_challenge_type"`
+	AutoSSLRenewBeforeDays *int       `json:"auto_ssl_renew_before_days"`
+	AutoSSLLastStatus      string     `json:"auto_ssl_last_status"`
+	AutoSSLLastError       string     `json:"auto_ssl_last_error"`
+	AutoSSLFailCount       int        `json:"auto_ssl_fail_count"`
+	AutoSSLNextRetryAt     *time.Time `json:"auto_ssl_next_retry_at"`
+	AutoSSLLastAttemptAt   *time.Time `json:"auto_ssl_last_attempt_at"`
 }
 
 // Domain 是应用域名。
@@ -154,6 +171,15 @@ type Upstream struct {
 	CreatedAt                  time.Time  `json:"created_at"`
 	UpdatedAt                  time.Time  `json:"updated_at"`
 	Version                    int        `json:"version"`
+	// 运行态健康探测摘要（来自 upstream_health_records 最新一条记录，只读展示）
+	HealthStatus         string     `json:"health_status"`
+	LastHealthCheckAt    *time.Time `json:"last_health_check_at"`
+	LastResponseStatus   *int       `json:"last_response_status"`
+	LastResponseTimeMs   *int       `json:"last_response_time_ms"`
+	LastHealthErrorCode  string     `json:"last_health_error_code"`
+	LastHealthError      string     `json:"last_health_error"`
+	ConsecutiveSuccesses int        `json:"consecutive_successes"`
+	ConsecutiveFailures  int        `json:"consecutive_failures"`
 }
 
 // Store 是应用仓储。
@@ -175,13 +201,17 @@ func (s *Store) DB() *pgxpool.Pool {
 
 const appColumns = `id, code, name, description, business_owner, technical_owner, status,
 protection_mode, api_admission_mode, deployment_mode, deployment_status, health_status, current_version_id, last_publish_at,
-last_publish_result, created_by, created_at, updated_at, version, authz_lease_seconds`
+last_publish_result, created_by, created_at, updated_at, version, authz_lease_seconds,
+auto_ssl_enabled, auto_ssl_challenge_type, auto_ssl_renew_before_days, auto_ssl_last_status,
+auto_ssl_last_error, auto_ssl_fail_count, auto_ssl_next_retry_at, auto_ssl_last_attempt_at`
 
 func (s *Store) scanApp(row pgx.Row) (*Application, error) {
 	var a Application
 	err := row.Scan(&a.ID, &a.Code, &a.Name, &a.Description, &a.BusinessOwner, &a.TechnicalOwner,
 		&a.Status, &a.ProtectionMode, &a.APIAdmissionMode, &a.DeploymentMode, &a.DeploymentStatus, &a.HealthStatus, &a.CurrentVersionID,
-		&a.LastPublishAt, &a.LastPublishResult, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.Version, &a.AuthzLeaseSeconds)
+		&a.LastPublishAt, &a.LastPublishResult, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.Version, &a.AuthzLeaseSeconds,
+		&a.AutoSSLEnabled, &a.AutoSSLChallengeType, &a.AutoSSLRenewBeforeDays, &a.AutoSSLLastStatus,
+		&a.AutoSSLLastError, &a.AutoSSLFailCount, &a.AutoSSLNextRetryAt, &a.AutoSSLLastAttemptAt)
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +309,10 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Application, int64, e
 	args := []interface{}{}
 	argIdx := 1
 	if f.Keyword != "" {
-		where += fmt.Sprintf(" AND (code ILIKE $%d OR name ILIKE $%d)", argIdx, argIdx)
+		where += fmt.Sprintf(
+			" AND (code ILIKE $%d OR name ILIKE $%d OR EXISTS (SELECT 1 FROM application_domains ad WHERE ad.application_id = applications.id AND (ad.hostname ILIKE $%d OR ad.normalized_hostname ILIKE $%d)))",
+			argIdx, argIdx, argIdx, argIdx,
+		)
 		args = append(args, "%"+f.Keyword+"%")
 		argIdx++
 	}
@@ -312,13 +345,11 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Application, int64, e
 	defer rows.Close()
 	var out []Application
 	for rows.Next() {
-		var a Application
-		if err := rows.Scan(&a.ID, &a.Code, &a.Name, &a.Description, &a.BusinessOwner, &a.TechnicalOwner,
-			&a.Status, &a.ProtectionMode, &a.APIAdmissionMode, &a.DeploymentMode, &a.DeploymentStatus, &a.HealthStatus, &a.CurrentVersionID,
-			&a.LastPublishAt, &a.LastPublishResult, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.Version, &a.AuthzLeaseSeconds); err != nil {
+		a, err := s.scanApp(rows)
+		if err != nil {
 			return nil, 0, err
 		}
-		out = append(out, a)
+		out = append(out, *a)
 	}
 	return out, total, rows.Err()
 }
@@ -402,6 +433,100 @@ func (s *Store) SoftDelete(ctx context.Context, id uuid.UUID) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// UpdateAutoSSLConfig 更新站点级自动 SSL 开关与策略配置。
+func (s *Store) UpdateAutoSSLConfig(ctx context.Context, appID uuid.UUID, enabled bool, challengeType string, renewBeforeDays *int) error {
+	if challengeType == "" {
+		challengeType = "HTTP01"
+	}
+	if challengeType != "HTTP01" {
+		return fmt.Errorf("当前仅支持 HTTP01 验证方式")
+	}
+	if renewBeforeDays != nil && (*renewBeforeDays < 7 || *renewBeforeDays > 60) {
+		return fmt.Errorf("提前续约天数须在 7 至 60 天之间")
+	}
+	res, err := s.db.Exec(ctx, `
+UPDATE applications
+SET auto_ssl_enabled = $1,
+    auto_ssl_challenge_type = $2,
+    auto_ssl_renew_before_days = $3,
+    auto_ssl_next_retry_at = CASE WHEN $1 THEN NULL ELSE auto_ssl_next_retry_at END,
+    auto_ssl_fail_count = CASE WHEN $1 THEN 0 ELSE auto_ssl_fail_count END,
+    updated_at = now(),
+    version = version + 1
+WHERE id = $4 AND deleted_at IS NULL`,
+		enabled, challengeType, renewBeforeDays, appID)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateAutoSSLRuntimeState 更新站点级自动 SSL 运行态摘要与失败退避时间。
+func (s *Store) UpdateAutoSSLRuntimeState(ctx context.Context, appID uuid.UUID, lastStatus, lastError string, failCount int, nextRetryAt, lastAttemptAt *time.Time) error {
+	if len(lastError) > 1000 {
+		lastError = lastError[:1000]
+	}
+	res, err := s.db.Exec(ctx, `
+UPDATE applications
+SET auto_ssl_last_status = $1,
+    auto_ssl_last_error = $2,
+    auto_ssl_fail_count = $3,
+    auto_ssl_next_retry_at = $4,
+    auto_ssl_last_attempt_at = $5,
+    updated_at = now()
+WHERE id = $6 AND deleted_at IS NULL`,
+		lastStatus, lastError, failCount, nextRetryAt, lastAttemptAt, appID)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListAutoSSLCandidates 返回全部已启用且开启自动 SSL 的非镜像站点。
+func (s *Store) ListAutoSSLCandidates(ctx context.Context) ([]Application, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT `+appColumns+`
+FROM applications
+WHERE deleted_at IS NULL
+  AND status = $1
+  AND auto_ssl_enabled = TRUE
+  AND deployment_mode <> $2
+ORDER BY created_at ASC`, StatusActive, DeployModeMirror)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Application
+	for rows.Next() {
+		a, err := s.scanApp(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
+// HasAnyAutoSSLEnabled 判断是否存在任一活动且开启自动 SSL 的非镜像站点。
+func (s *Store) HasAnyAutoSSLEnabled(ctx context.Context) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+SELECT EXISTS (
+  SELECT 1 FROM applications
+  WHERE deleted_at IS NULL
+    AND status = $1
+    AND auto_ssl_enabled = TRUE
+    AND deployment_mode <> $2
+)`, StatusActive, DeployModeMirror).Scan(&exists)
+	return exists, err
 }
 
 // ---------- 域名 ----------
@@ -577,7 +702,86 @@ func (s *Store) CountActiveDomains(ctx context.Context, appID uuid.UUID) (int, e
 	return n, err
 }
 
+// PrimaryDomainsByAppIDs 批量查询每个应用的主活动域名（优先 is_primary，其次最早创建）。
+func (s *Store) PrimaryDomainsByAppIDs(ctx context.Context, appIDs []uuid.UUID) (map[uuid.UUID]string, error) {
+	out := make(map[uuid.UUID]string, len(appIDs))
+	if len(appIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT DISTINCT ON (application_id) application_id, normalized_hostname
+FROM application_domains
+WHERE application_id = ANY($1) AND status = 'ACTIVE'
+ORDER BY application_id, is_primary DESC, created_at ASC`, appIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var appID uuid.UUID
+		var host string
+		if err := rows.Scan(&appID, &host); err != nil {
+			return nil, err
+		}
+		out[appID] = host
+	}
+	return out, rows.Err()
+}
+
 // ---------- 源站 ----------
+
+func defaultUpstreamHealthStatus(status string, healthCheckEnabled bool) string {
+	if !healthCheckEnabled {
+		return UpstreamHealthDisabled
+	}
+	if status != "ACTIVE" {
+		return UpstreamHealthUnknown
+	}
+	return UpstreamHealthUnknown
+}
+
+const upstreamSelectWithHealth = `
+SELECT u.id, u.application_id, u.name, u.scheme, u.host, u.normalized_host, u.port, u.weight, u.priority, u.status,
+  u.health_check_enabled, u.health_check_path, u.health_check_method, u.health_check_interval_seconds,
+  u.health_check_timeout_seconds, u.expected_status_codes, u.connect_timeout_ms, u.response_header_timeout_ms,
+  u.tls_server_name, u.tls_verify, u.max_retries, u.created_at, u.updated_at, u.version,
+  CASE
+    WHEN NOT u.health_check_enabled THEN 'DISABLED'
+    WHEN u.status <> 'ACTIVE' THEN 'UNKNOWN'
+    WHEN h.status IN ('UP', 'HEALTHY') THEN 'HEALTHY'
+    WHEN h.status IN ('DOWN', 'UNHEALTHY') THEN 'UNHEALTHY'
+    ELSE 'UNKNOWN'
+  END AS health_status,
+  h.checked_at,
+  h.response_status,
+  h.response_time_ms,
+  COALESCE(h.error_code, ''),
+  COALESCE(h.error_message, ''),
+  COALESCE(h.consecutive_successes, 0),
+  COALESCE(h.consecutive_failures, 0)
+FROM upstreams u
+LEFT JOIN LATERAL (
+  SELECT status, checked_at, response_status, response_time_ms,
+         error_code, error_message, consecutive_successes, consecutive_failures
+  FROM upstream_health_records
+  WHERE upstream_id = u.id
+  ORDER BY checked_at DESC
+  LIMIT 1
+) h ON u.health_check_enabled AND u.status = 'ACTIVE'`
+
+func scanUpstreamWithHealth(scan func(dest ...any) error) (Upstream, error) {
+	var u Upstream
+	err := scan(
+		&u.ID, &u.ApplicationID, &u.Name, &u.Scheme, &u.Host, &u.NormalizedHost,
+		&u.Port, &u.Weight, &u.Priority, &u.Status, &u.HealthCheckEnabled, &u.HealthCheckPath,
+		&u.HealthCheckMethod, &u.HealthCheckIntervalSeconds, &u.HealthCheckTimeoutSeconds,
+		&u.ExpectedStatusCodes, &u.ConnectTimeoutMs, &u.ResponseHeaderTimeoutMs, &u.TLSServerName,
+		&u.TLSVerify, &u.MaxRetries, &u.CreatedAt, &u.UpdatedAt, &u.Version,
+		&u.HealthStatus, &u.LastHealthCheckAt, &u.LastResponseStatus, &u.LastResponseTimeMs,
+		&u.LastHealthErrorCode, &u.LastHealthError, &u.ConsecutiveSuccesses, &u.ConsecutiveFailures,
+	)
+	return u, err
+}
 
 // AddUpstream 添加源站。
 func (s *Store) AddUpstream(ctx context.Context, u *Upstream) error {
@@ -609,29 +813,24 @@ RETURNING id, created_at, updated_at, version`,
 		u.HealthCheckTimeoutSeconds, u.ExpectedStatusCodes, u.ConnectTimeoutMs, u.ResponseHeaderTimeoutMs,
 		u.TLSServerName, u.TLSVerify, u.MaxRetries, u.CreatedBy,
 	).Scan(&u.ID, &u.CreatedAt, &u.UpdatedAt, &u.Version)
+	if err == nil {
+		u.HealthStatus = defaultUpstreamHealthStatus(u.Status, u.HealthCheckEnabled)
+	}
 	return err
 }
 
-// ListUpstreams 查询应用源站。
+// ListUpstreams 查询应用源站（附带最新一次健康探测摘要）。
 func (s *Store) ListUpstreams(ctx context.Context, appID uuid.UUID) ([]Upstream, error) {
-	rows, err := s.db.Query(ctx, `
-SELECT id, application_id, name, scheme, host, normalized_host, port, weight, priority, status,
-  health_check_enabled, health_check_path, health_check_method, health_check_interval_seconds,
-  health_check_timeout_seconds, expected_status_codes, connect_timeout_ms, response_header_timeout_ms,
-  tls_server_name, tls_verify, max_retries, created_at, updated_at, version
-FROM upstreams WHERE application_id = $1 AND deleted_at IS NULL ORDER BY priority DESC, weight DESC, created_at ASC`, appID)
+	rows, err := s.db.Query(ctx,
+		upstreamSelectWithHealth+` WHERE u.application_id = $1 AND u.deleted_at IS NULL ORDER BY u.priority DESC, u.weight DESC, u.created_at ASC`, appID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Upstream
 	for rows.Next() {
-		var u Upstream
-		if err := rows.Scan(&u.ID, &u.ApplicationID, &u.Name, &u.Scheme, &u.Host, &u.NormalizedHost,
-			&u.Port, &u.Weight, &u.Priority, &u.Status, &u.HealthCheckEnabled, &u.HealthCheckPath,
-			&u.HealthCheckMethod, &u.HealthCheckIntervalSeconds, &u.HealthCheckTimeoutSeconds,
-			&u.ExpectedStatusCodes, &u.ConnectTimeoutMs, &u.ResponseHeaderTimeoutMs, &u.TLSServerName,
-			&u.TLSVerify, &u.MaxRetries, &u.CreatedAt, &u.UpdatedAt, &u.Version); err != nil {
+		u, err := scanUpstreamWithHealth(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -639,20 +838,11 @@ FROM upstreams WHERE application_id = $1 AND deleted_at IS NULL ORDER BY priorit
 	return out, rows.Err()
 }
 
-// GetUpstream 查询源站。
+// GetUpstream 查询源站（附带最新一次健康探测摘要）。
 func (s *Store) GetUpstream(ctx context.Context, id uuid.UUID) (*Upstream, error) {
-	row := s.db.QueryRow(ctx, `
-SELECT id, application_id, name, scheme, host, normalized_host, port, weight, priority, status,
-  health_check_enabled, health_check_path, health_check_method, health_check_interval_seconds,
-  health_check_timeout_seconds, expected_status_codes, connect_timeout_ms, response_header_timeout_ms,
-  tls_server_name, tls_verify, max_retries, created_at, updated_at, version
-FROM upstreams WHERE id = $1 AND deleted_at IS NULL`, id)
-	var u Upstream
-	err := row.Scan(&u.ID, &u.ApplicationID, &u.Name, &u.Scheme, &u.Host, &u.NormalizedHost,
-		&u.Port, &u.Weight, &u.Priority, &u.Status, &u.HealthCheckEnabled, &u.HealthCheckPath,
-		&u.HealthCheckMethod, &u.HealthCheckIntervalSeconds, &u.HealthCheckTimeoutSeconds,
-		&u.ExpectedStatusCodes, &u.ConnectTimeoutMs, &u.ResponseHeaderTimeoutMs, &u.TLSServerName,
-		&u.TLSVerify, &u.MaxRetries, &u.CreatedAt, &u.UpdatedAt, &u.Version)
+	row := s.db.QueryRow(ctx,
+		upstreamSelectWithHealth+` WHERE u.id = $1 AND u.deleted_at IS NULL`, id)
+	u, err := scanUpstreamWithHealth(row.Scan)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -696,6 +886,16 @@ WHERE id=$20 AND version=$21 AND deleted_at IS NULL`,
 		return ErrNotFound
 	}
 	u.Version++
+	if !u.HealthCheckEnabled || u.Status != "ACTIVE" {
+		u.HealthStatus = defaultUpstreamHealthStatus(u.Status, u.HealthCheckEnabled)
+		u.LastHealthCheckAt = nil
+		u.LastResponseStatus = nil
+		u.LastResponseTimeMs = nil
+		u.LastHealthErrorCode = ""
+		u.LastHealthError = ""
+		u.ConsecutiveSuccesses = 0
+		u.ConsecutiveFailures = 0
+	}
 	return nil
 }
 

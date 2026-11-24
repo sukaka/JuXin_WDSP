@@ -4,9 +4,9 @@
 // 轮询（默认 15s，与 netmgrd 同一约定）感知变化。
 //
 // 失败语义（注释即契约）：
-//   - 文件不存在 → 等待下发（STOPPED；曾生效后被删除 = 发布方收回，停止本组件
-//     管理的 keepalived 释放 VIP——VIP 残留比停机更危险，此处与 netmgrd「不拆除」
-//     纪律刻意不同，见 design §8 keepalived 停机即释放 VIP 的语义）；
+//   - 文件不存在 → 等待下发（STOPPED；曾生效后被删除或重启发现残留 pidfile =
+//     发布方收回，停止本组件管理的 keepalived 释放 VIP——VIP 残留比停机更危险，
+//     此处与 netmgrd「不拆除」纪律刻意不同，见 design §8 keepalived 停机即释放 VIP 的语义）；
 //   - 解析/校验失败 → 整份配置拒绝，保留上一份生效配置（last-good），显式
 //     告警并写 status，不做任何部分应用。
 package havipd
@@ -38,13 +38,16 @@ const (
 	// ConfigEnabled / ConfigDisabled 配置启停取值（与运行态 StateDisabled 区分）。
 	ConfigEnabled  = "ENABLED"
 	ConfigDisabled = "DISABLED"
+
+	maxTrackInterfaces = 16
 )
 
-// 配置名/节点名/接口名白名单（仅安全字符集，杜绝路径/参数注入面）。
+// 配置名/节点名/接口名/认证串白名单（仅安全字符集，与管理面 hagroups 完全一致，杜绝配置/参数注入面）。
 var (
 	groupNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	nodeNameRE  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	ifNameRE    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$`)
+	authPassRE  = regexp.MustCompile(`^[A-Za-z0-9._:@+-]{1,8}$`)
 )
 
 // MemberSpec 主备组成员（恰 2 个；priority 大者倾向 MASTER）。
@@ -57,16 +60,16 @@ type MemberSpec struct {
 type VRRPSpec struct {
 	// VRID 虚拟路由 ID（1-255；同一二层域内唯一）。
 	VRID int `json:"vrid"`
-	// VIPs 虚拟 IP 列表（CIDR；至少 1 个）。
+	// VIPs 虚拟 IP 列表（IPv4 CIDR；至少 1 个）。
 	VIPs []string `json:"vips"`
 	// Iface VIP 承载网卡（校验：不得为桥成员口——本组件无法枚举网桥，
 	// 该红线由发布端校验，本组件仅做名称合法性校验）。
 	Iface string `json:"iface"`
 	// Preempt 是否允许抢占（false = nopreempt：主恢复后不自动回切，默认 false）。
 	Preempt bool `json:"preempt"`
-	// AdvertIntMs VRRP 通告间隔毫秒（0 取默认 1000；合法区间 [200,10000]）。
+	// AdvertIntMs VRRP 通告间隔毫秒（0 取默认 1000；合法区间 [1000,10000] 且为 1000 整数倍）。
 	AdvertIntMs int `json:"advert_int_ms"`
-	// AuthPass VRRPv2 认证串（可选；keepalived 上限 8 字符；敏感——文件 0600、禁日志）。
+	// AuthPass VRRPv2 认证串（可选；keepalived 上限 8 字符，仅允许安全字符集；敏感——禁日志）。
 	AuthPass string `json:"auth_pass,omitempty"`
 	// UnicastPeers 单播 VRRP 对端地址（可选；非空 = 单播模式，云上禁组播环境用）。
 	UnicastPeers []string `json:"unicast_peers,omitempty"`
@@ -147,8 +150,9 @@ func (c *Config) normalize() error {
 	}
 	for i, vip := range v.VIPs {
 		vip = strings.TrimSpace(vip)
-		if _, _, err := net.ParseCIDR(vip); err != nil {
-			return fmt.Errorf("vrrp.vips[%d] 非法（需 CIDR）: %q", i, vip)
+		ip, _, err := net.ParseCIDR(vip)
+		if err != nil || ip.To4() == nil {
+			return fmt.Errorf("vrrp.vips[%d] 非法（需 IPv4 CIDR）: %q", i, vip)
 		}
 		// 保持原始 CIDR 不归一化：VIP 是主机地址（192.168.31.100/24），
 		// 归一到网络地址（192.168.31.0/24）会导致漂移判定与 keepalived 上址全错。
@@ -160,17 +164,16 @@ func (c *Config) normalize() error {
 	}
 	if v.AdvertIntMs == 0 {
 		v.AdvertIntMs = 1000
-	} else if v.AdvertIntMs < 200 || v.AdvertIntMs > 10000 {
-		return fmt.Errorf("vrrp.advert_int_ms 越界（200~10000）: %d", v.AdvertIntMs)
+	} else if v.AdvertIntMs < 1000 || v.AdvertIntMs > 10000 || v.AdvertIntMs%1000 != 0 {
+		return fmt.Errorf("vrrp.advert_int_ms 非法（需 1000~10000 且为 1000 的整数倍）: %d", v.AdvertIntMs)
 	}
-	if len(v.AuthPass) > 8 {
-		return fmt.Errorf("vrrp.auth_pass 超长（VRRPv2 上限 8 字符）")
-	}
-	// 仅允许可打印非空白 ASCII：换行等控制字符可注入 keepalived 配置行
-	// （auth_pass 原样写入生成配置，见 keepalived.go renderConfig）。
-	for _, r := range v.AuthPass {
-		if r < 0x21 || r > 0x7e {
-			return fmt.Errorf("vrrp.auth_pass 含非法字符（仅允许可打印非空白 ASCII）")
+	if v.AuthPass != "" {
+		if len(v.AuthPass) > 8 {
+			return fmt.Errorf("vrrp.auth_pass 超长（VRRPv2 上限 8 字符）")
+		}
+		// 严格字符白名单，杜绝空格、控制字符及 {} # ! " ' \ 注入 keepalived 配置语法。
+		if !authPassRE.MatchString(v.AuthPass) {
+			return fmt.Errorf("vrrp.auth_pass 含非法字符（仅允许 1~8 位字母、数字及 . _ : @ + -）")
 		}
 	}
 	for i, p := range v.UnicastPeers {
@@ -180,6 +183,9 @@ func (c *Config) normalize() error {
 		}
 		v.UnicastPeers[i] = p
 	}
+	if len(v.TrackInterfaces) > maxTrackInterfaces {
+		return fmt.Errorf("vrrp.track_interfaces 数量超出上限（%d）", maxTrackInterfaces)
+	}
 	if len(v.TrackInterfaces) > 0 {
 		seenTrack := map[string]bool{}
 		tracks := make([]string, 0, len(v.TrackInterfaces))
@@ -187,6 +193,9 @@ func (c *Config) normalize() error {
 			tif = strings.TrimSpace(tif)
 			if !ifNameRE.MatchString(tif) {
 				return fmt.Errorf("vrrp.track_interfaces[%d] 接口名非法: %q", i, tif)
+			}
+			if tif == v.Iface {
+				return fmt.Errorf("vrrp.track_interfaces[%d] 不得与承载网卡 iface(%s) 相同", i, v.Iface)
 			}
 			if seenTrack[tif] {
 				continue

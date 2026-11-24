@@ -71,6 +71,9 @@ func WriteStatusAtomic(path string, st Status) error {
 		return fmt.Errorf("序列化状态: %w", err)
 	}
 	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o770); err != nil {
+		return fmt.Errorf("创建状态文件目录 %s: %w", dir, err)
+	}
 	tmp, err := os.CreateTemp(dir, ".ha-vip-status-*.tmp")
 	if err != nil {
 		return fmt.Errorf("创建状态临时文件（目录 %s 需可写）: %w", dir, err)

@@ -73,15 +73,17 @@ func applyGatewayRuntimeSettings(cfg *gatewayconfig.GuardConfig, kv map[string]s
 		case "identity_salt":
 			cfg.IdentitySalt = v
 		case "tls_session_ticket_key":
-			// TLS 会话票据密钥（HA §7.2）：32 字节 hex（64 位十六进制字符），
-			// 非法取值中止发布，不静默降级（与组内其他键同一纪律）
-			if len(v) != 64 {
-				return fmt.Errorf("gateway_runtime.tls_session_ticket_key 需 32 字节 hex（64 位字符），当前 %d 位", len(v))
+			// TLS 会话票据密钥（HA §7.2）：支持 1~2 个逗号分隔的 32 字节 hex（64 位十六进制字符）；
+			// 首键加密新票据，次键用于平滑轮换期间解密旧票据。
+			// 非法取值中止发布，不静默降级（与组内其他键同一纪律）。
+			keys, err := parseTLSSessionTicketKeys(v)
+			if err != nil {
+				return err
 			}
-			if _, err := hex.DecodeString(v); err != nil {
-				return fmt.Errorf("gateway_runtime.tls_session_ticket_key 非合法 hex: %v", err)
+			if len(keys) > 0 {
+				cfg.TLSSessionTicketKeys = keys
+				cfg.TLSSessionTicketKey = keys[0]
 			}
-			cfg.TLSSessionTicketKey = strings.ToLower(v)
 		case "behavior_store_ttl_seconds":
 			n, err := parseNonNegativeInt("behavior_store_ttl_seconds", v)
 			if err != nil {
@@ -275,6 +277,45 @@ func applyGatewayRuntimeSettings(cfg *gatewayconfig.GuardConfig, kv map[string]s
 		cfg.APIFileWatermark = wm
 	}
 	return nil
+}
+
+// parseTLSSessionTicketKeys 解析逗号分隔的 1~2 个 TLS 会话票据密钥（每项 32 字节 hex / 64 字符）。
+// 全项为脱敏占位符 "***" 时视同取不到返回 (nil, nil)；超 2 键、空项、重复键、长度错误或非 hex 均拒绝。
+func parseTLSSessionTicketKeys(v string) ([]string, error) {
+	parts := strings.Split(v, ",")
+	if len(parts) > 2 {
+		return nil, fmt.Errorf("gateway_runtime.tls_session_ticket_key 最多支持 2 个密钥（逗号分隔），当前 %d 个", len(parts))
+	}
+	allRedacted := true
+	for _, p := range parts {
+		if strings.TrimSpace(p) != redactPlaceholder {
+			allRedacted = false
+			break
+		}
+	}
+	if allRedacted {
+		return nil, nil
+	}
+	keys := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for i, rawPart := range parts {
+		k := strings.ToLower(strings.TrimSpace(rawPart))
+		if k == "" {
+			return nil, fmt.Errorf("gateway_runtime.tls_session_ticket_key 包含空密钥项（请勿包含多余逗号）")
+		}
+		if len(k) != 64 {
+			return nil, fmt.Errorf("gateway_runtime.tls_session_ticket_key 第 %d 个密钥需 32 字节 hex（64 位字符），当前 %d 位", i+1, len(k))
+		}
+		if _, err := hex.DecodeString(k); err != nil {
+			return nil, fmt.Errorf("gateway_runtime.tls_session_ticket_key 第 %d 个密钥非合法 hex: %v", i+1, err)
+		}
+		if _, dup := seen[k]; dup {
+			return nil, fmt.Errorf("gateway_runtime.tls_session_ticket_key 不允许重复密钥")
+		}
+		seen[k] = struct{}{}
+		keys = append(keys, k)
+	}
+	return keys, nil
 }
 
 // parseNonNegativeInt 解析非负整数设置（非法取值如实报错）。

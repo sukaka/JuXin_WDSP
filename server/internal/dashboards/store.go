@@ -107,13 +107,15 @@ SELECT count(*) FROM security_events WHERE disposition_status = 'UNPROCESSED' AN
 	if err := s.db.QueryRow(ctx, `
 SELECT
   count(*) FILTER (WHERE status = 'ACTIVE'),
-  count(*) FILTER (WHERE status = 'ERROR' OR health_status IN ('UNHEALTHY', 'DOWN'))
+  count(*) FILTER (WHERE status = 'ERROR' OR health_status IN ('UNHEALTHY', 'DOWN', 'DEGRADED'))
 FROM applications WHERE deleted_at IS NULL`).Scan(&out.ProtectedApps, &out.AbnormalApps); err != nil {
 		return nil, fmt.Errorf("applications: %w", err)
 	}
 	if err := s.db.QueryRow(ctx, `
 SELECT count(*) FROM upstreams u
-WHERE u.deleted_at IS NULL AND u.status = 'ACTIVE'
+JOIN applications a ON a.id = u.application_id
+WHERE u.deleted_at IS NULL AND u.status = 'ACTIVE' AND u.health_check_enabled = TRUE
+  AND a.deleted_at IS NULL AND a.status = 'ACTIVE' AND a.deployment_mode <> 'MIRROR'
   AND (SELECT h.status FROM upstream_health_records h
        WHERE h.upstream_id = u.id ORDER BY h.checked_at DESC LIMIT 1) NOT IN ('HEALTHY', 'UP')`).Scan(&out.AbnormalUpstreams); err != nil {
 		return nil, fmt.Errorf("upstreams: %w", err)

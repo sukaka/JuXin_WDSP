@@ -62,15 +62,42 @@ const (
 type PackageArtifactVerifier func(path string, pkg *Package) error
 
 type packageManifest struct {
-	Product             string         `json:"product"`
-	Version             string         `json:"version"`
-	Arch                string         `json:"arch"`
-	Files               []manifestFile `json:"files"`
-	FilesManifestSHA256 string         `json:"files_manifest_sha256"`
+	Product             string          `json:"product"`
+	PackageType         string          `json:"package_type,omitempty"`
+	Version             string          `json:"version"`
+	Arch                string          `json:"arch"`
+	Components          []string        `json:"components,omitempty"`
+	Images              []manifestImage `json:"images,omitempty"`
+	Files               []manifestFile  `json:"files"`
+	FilesManifestSHA256 string          `json:"files_manifest_sha256"`
 	// 执行器协议字段（新包必有）：登记版本号与目标迁移号的包内来源。
 	VersionFrom         string `json:"version_from,omitempty"`
 	VersionTo           string `json:"version_to,omitempty"`
 	TargetSchemaVersion int    `json:"target_schema_version,omitempty"`
+}
+
+type manifestImage struct {
+	Component        string   `json:"component"`
+	Service          string   `json:"service"`
+	Image            string   `json:"image"`
+	Tar              string   `json:"tar"`
+	DeliveryMode     string   `json:"delivery_mode,omitempty"`
+	BaseLayers       []string `json:"base_layers,omitempty"`
+	DiffIDs          []string `json:"diff_ids,omitempty"`
+	RuntimeSanitized bool     `json:"runtime_sanitized,omitempty"`
+}
+
+func isValidLayerDiffID(s string) bool {
+	if !strings.HasPrefix(s, "sha256:") || len(s) != len("sha256:")+64 {
+		return false
+	}
+	for i := len("sha256:"); i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 type manifestFile struct {
@@ -362,8 +389,34 @@ func verifyPackageArchiveReader(reader io.Reader, pkg *Package) ([]byte, []byte,
 	if manifest.Version != pkg.VersionTo {
 		return nil, nil, fmt.Errorf("manifest 版本与升级目标不一致: %s", manifest.Version)
 	}
+	if manifest.VersionFrom != "" && pkg.VersionFrom != "" && manifest.VersionFrom != pkg.VersionFrom {
+		return nil, nil, fmt.Errorf("manifest 起始版本与升级登记不一致: %s != %s", manifest.VersionFrom, pkg.VersionFrom)
+	}
 	if manifest.Arch != runtime.GOARCH {
 		return nil, nil, fmt.Errorf("manifest 架构与当前服务不一致: %s != %s", manifest.Arch, runtime.GOARCH)
+	}
+	if manifest.PackageType == "upgrade" && len(manifest.Images) > 0 {
+		for _, img := range manifest.Images {
+			mode := img.DeliveryMode
+			if mode != "" && mode != "full" && mode != "layer-delta" {
+				return nil, nil, fmt.Errorf("manifest 镜像交付模式无效: %s (%s)", img.Component, mode)
+			}
+			if mode == "layer-delta" {
+				if len(img.BaseLayers) == 0 {
+					return nil, nil, fmt.Errorf("layer-delta 升级包组件 %s 缺少 base_layers 声明", img.Component)
+				}
+				for _, layer := range img.BaseLayers {
+					if !isValidLayerDiffID(layer) {
+						return nil, nil, fmt.Errorf("layer-delta 升级包组件 %s 含非法 base_layers 摘要: %s", img.Component, layer)
+					}
+				}
+			}
+			for _, did := range img.DiffIDs {
+				if !isValidLayerDiffID(did) {
+					return nil, nil, fmt.Errorf("manifest 镜像组件 %s 含非法 diff_id 摘要: %s", img.Component, did)
+				}
+			}
+		}
 	}
 	if len(manifest.Files) == 0 || len(manifest.Files) > maxArtifactManifestFiles {
 		return nil, nil, errors.New("manifest 文件清单为空或超出数量上限")

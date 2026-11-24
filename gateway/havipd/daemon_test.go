@@ -1,5 +1,5 @@
 // havipd 测试：契约校验、keepalived 配置生成、监督器全生命周期
-// （应用/重载/收回/DISABLED/非本节点/启动失败）、状态推导与漂移事件。
+// （应用/重载/收回/DISABLED/非本节点/启动失败/重启孤儿清理）、状态推导与漂移事件。
 package havipd
 
 import (
@@ -108,7 +108,7 @@ func newTestSupervisor(t *testing.T, fr *fakeRunner, fp *fakeProc) (*Supervisor,
 
 func writeCfg(t *testing.T, dir, content string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, "ha-vip.json"), []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "ha-vip.json"), []byte(content), 0o640); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -157,6 +157,15 @@ func TestConfigValidation(t *testing.T) {
 		{"合法 DISABLED", func(s string) string {
 			return strings.Replace(s, `"ENABLED"`, `"DISABLED"`, 1)
 		}, ""},
+		{"合法特殊安全认证串", func(s string) string {
+			return strings.Replace(s, `"v1psecr8"`, `"aZ0._:@+"`, 1)
+		}, ""},
+		{"合法 advert 0 回落 1000", func(s string) string {
+			return strings.Replace(s, `"advert_int_ms":1000`, `"advert_int_ms":0`, 1)
+		}, ""},
+		{"合法 advert 10000", func(s string) string {
+			return strings.Replace(s, `"advert_int_ms":1000`, `"advert_int_ms":10000`, 1)
+		}, ""},
 		{"组名非法", func(s string) string {
 			return strings.Replace(s, `"ha-main"`, `"bad name!"`, 1)
 		}, "组名非法"},
@@ -177,30 +186,51 @@ func TestConfigValidation(t *testing.T) {
 		}, "至少 1 个"},
 		{"vip 非 CIDR", func(s string) string {
 			return strings.Replace(s, `"192.168.31.100/24"`, `"192.168.31.100"`, 1)
-		}, "需 CIDR"},
-		{"advert 越界", func(s string) string {
-			return strings.Replace(s, `"advert_int_ms":1000`, `"advert_int_ms":10`, 1)
-		}, "advert_int_ms 越界"},
+		}, "IPv4 CIDR"},
+		{"vip IPv6 拒绝", func(s string) string {
+			return strings.Replace(s, `"192.168.31.100/24"`, `"fd00::1/64"`, 1)
+		}, "IPv4 CIDR"},
+		{"advert 小于 1000", func(s string) string {
+			return strings.Replace(s, `"advert_int_ms":1000`, `"advert_int_ms":500`, 1)
+		}, "advert_int_ms 非法"},
+		{"advert 非整秒", func(s string) string {
+			return strings.Replace(s, `"advert_int_ms":1000`, `"advert_int_ms":1500`, 1)
+		}, "advert_int_ms 非法"},
+		{"advert 超过 10000", func(s string) string {
+			return strings.Replace(s, `"advert_int_ms":1000`, `"advert_int_ms":11000`, 1)
+		}, "advert_int_ms 非法"},
 		{"认证串超长", func(s string) string {
 			return strings.Replace(s, `"v1psecr8"`, `"123456789"`, 1)
 		}, "上限 8 字符"},
 		{"认证串含换行（注入配置行）", func(s string) string {
 			return strings.Replace(s, `"v1psecr8"`, `"abcd\npx"`, 1)
-		}, "可打印非空白 ASCII"},
+		}, "auth_pass 含非法字符"},
 		{"认证串含空格", func(s string) string {
 			return strings.Replace(s, `"v1psecr8"`, `"ab cd"`, 1)
-		}, "可打印非空白 ASCII"},
+		}, "auth_pass 含非法字符"},
+		{"认证串含大括号", func(s string) string {
+			return strings.Replace(s, `"v1psecr8"`, `"ab{cd}"`, 1)
+		}, "auth_pass 含非法字符"},
+		{"认证串含井号", func(s string) string {
+			return strings.Replace(s, `"v1psecr8"`, `"ab#cd"`, 1)
+		}, "auth_pass 含非法字符"},
+		{"认证串含感叹号", func(s string) string {
+			return strings.Replace(s, `"v1psecr8"`, `"ab!cd"`, 1)
+		}, "auth_pass 含非法字符"},
+		{"认证串含反斜杠", func(s string) string {
+			return strings.Replace(s, `"v1psecr8"`, `"ab\\cd"`, 1)
+		}, "auth_pass 含非法字符"},
 		{"认证串含制表符", func(s string) string {
 			return strings.Replace(s, `"v1psecr8"`, `"ab\tcd"`, 1)
-		}, "可打印非空白 ASCII"},
+		}, "auth_pass 含非法字符"},
 		{"认证串含非 ASCII", func(s string) string {
 			return strings.Replace(s, `"v1psecr8"`, `"密码ab"`, 1)
-		}, "可打印非空白 ASCII"},
+		}, "auth_pass 含非法字符"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := filepath.Join(dir, "c.json")
-			if err := os.WriteFile(p, []byte(tc.mutate(validConfigJSON("ENABLED"))), 0o600); err != nil {
+			if err := os.WriteFile(p, []byte(tc.mutate(validConfigJSON("ENABLED"))), 0o640); err != nil {
 				t.Fatal(err)
 			}
 			_, err := LoadConfig(p)
@@ -221,16 +251,17 @@ func TestConfigValidation(t *testing.T) {
 
 func TestRenderConfig(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "c.json")
-	if err := os.WriteFile(p, []byte(validConfigJSON("ENABLED")), 0o600); err != nil {
+	if err := os.WriteFile(p, []byte(validConfigJSON("ENABLED")), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadConfig(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	self, _ := cfg.selfMember("gw-a")
-	out := renderConfig(cfg, self, "192.168.31.61")
+	selfA, _ := cfg.selfMember("gw-a")
+	outA := renderConfig(cfg, selfA, "192.168.31.61")
 	for _, want := range []string{
+		"router_id JZ_HA_ha-main_gw-a",
 		"vrrp_instance ha-main {",
 		"  interface eth0",
 		"  virtual_router_id 51",
@@ -241,19 +272,22 @@ func TestRenderConfig(t *testing.T) {
 		"    192.168.31.62", // 对端（自身地址被过滤）
 		"    192.168.31.100/24 dev eth0",
 	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("生成配置缺 %q:\n%s", want, out)
+		if !strings.Contains(outA, want) {
+			t.Fatalf("生成配置缺 %q:\n%s", want, outA)
 		}
 	}
-	if strings.Contains(out, "    192.168.31.61\n") {
-		t.Fatalf("自身地址不应写入 unicast_peer:\n%s", out)
+	if strings.Contains(outA, "    192.168.31.61\n") {
+		t.Fatalf("自身地址不应写入 unicast_peer:\n%s", outA)
 	}
-	// 组名消毒
-	if !strings.Contains(out, "router_id JZ_HA_ha-main") {
-		t.Fatalf("router_id 未生成:\n%s", out)
+	if strings.Contains(outA, "track_interface") {
+		t.Fatalf("未配置 track_interfaces 时不应输出 track_interface 块:\n%s", outA)
 	}
-	if strings.Contains(out, "track_interface") {
-		t.Fatalf("未配置 track_interfaces 时不应输出 track_interface 块:\n%s", out)
+
+	// 双节点 router_id 必须不同
+	selfB, _ := cfg.selfMember("gw-b")
+	outB := renderConfig(cfg, selfB, "192.168.31.62")
+	if !strings.Contains(outB, "router_id JZ_HA_ha-main_gw-b") {
+		t.Fatalf("备节点 router_id 应包含本节点名:\n%s", outB)
 	}
 }
 
@@ -263,7 +297,7 @@ func TestRenderConfigAndValidationTrackInterfaces(t *testing.T) {
 		`"iface":"eth0",`,
 		`"iface":"eth0","track_interfaces":["eth2"," eth3 ","eth2"],`, 1)
 	p := filepath.Join(dir, "track.json")
-	if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
+	if err := os.WriteFile(p, []byte(raw), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadConfig(p)
@@ -285,11 +319,23 @@ func TestRenderConfigAndValidationTrackInterfaces(t *testing.T) {
 		`"iface":"eth0",`,
 		`"iface":"eth0","track_interfaces":["eth2\n  priority 255"],`, 1)
 	badPath := filepath.Join(dir, "bad-track.json")
-	if err := os.WriteFile(badPath, []byte(bad), 0o600); err != nil {
+	if err := os.WriteFile(badPath, []byte(bad), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadConfig(badPath); err == nil || !strings.Contains(err.Error(), "track_interfaces") {
 		t.Fatalf("非法 track_interfaces 应报错, got %v", err)
+	}
+
+	// 与承载口 iface 相同必须拒绝
+	same := strings.Replace(validConfigJSON("ENABLED"),
+		`"iface":"eth0",`,
+		`"iface":"eth0","track_interfaces":["eth0"],`, 1)
+	samePath := filepath.Join(dir, "same-track.json")
+	if err := os.WriteFile(samePath, []byte(same), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(samePath); err == nil || !strings.Contains(err.Error(), "不得与承载网卡") {
+		t.Fatalf("与 iface 相同的 track_interfaces 应报错, got %v", err)
 	}
 }
 
@@ -307,7 +353,7 @@ func TestSupervisorApplyStartReloadStop(t *testing.T) {
 		t.Fatalf("无配置应 STOPPED: %s", sv.state)
 	}
 
-	// 下发 ENABLED：生成配置 + 启动 keepalived
+	// 下发 ENABLED：生成配置 + 启动 keepalived（携带 -r vrrp pidfile 兼容 read_only 容器）
 	writeCfg(t, dir, validConfigJSON("ENABLED"))
 	sv.configTick()
 	confRaw, err := os.ReadFile(pathsFor(sv.WorkDir, "ha-main").Conf)
@@ -320,8 +366,9 @@ func TestSupervisorApplyStartReloadStop(t *testing.T) {
 	if fi, _ := os.Stat(pathsFor(sv.WorkDir, "ha-main").Conf); fi.Mode().Perm() != 0o600 {
 		t.Fatalf("含认证串配置必须 0600: %v", fi.Mode())
 	}
-	if len(fr.cmds) == 0 || !strings.HasPrefix(fr.cmds[len(fr.cmds)-1], "keepalived -f ") {
-		t.Fatalf("应发起 keepalived 启动: %v", fr.cmds)
+	lastCmd := fr.cmds[len(fr.cmds)-1]
+	if !strings.HasPrefix(lastCmd, "keepalived -f ") || !strings.Contains(lastCmd, "-r "+pathsFor(sv.WorkDir, "ha-main").VrrpPidFile) {
+		t.Fatalf("应发起 keepalived 启动并指定 -r vrrp pidfile: %v", fr.cmds)
 	}
 
 	// 模拟实例运行后：指纹不变重复 tick 不重载
@@ -425,6 +472,84 @@ func TestSupervisorConfigRemovedReleasesVIP(t *testing.T) {
 	}
 	if !foundTERM {
 		t.Fatalf("收回应停止实例: %v", fp.signals)
+	}
+}
+
+// 重启后孤儿清理回归：havipd 重启（s.cfg == nil）且 ha-vip.json 不存在时，必须扫描
+// WorkDir/*.pid，校验 /proc/<pid>/comm == "keepalived"，停止孤儿实例并清理所有过期 pidfile，
+// 同时绝不误杀 PID 复用的非 keepalived 进程。
+func TestSupervisorOrphanCleanupAfterRestart(t *testing.T) {
+	origInterval, origTerm, origKill := stopPollInterval, stopTermMaxPolls, stopKillMaxPolls
+	stopPollInterval = time.Millisecond
+	stopTermMaxPolls = 2
+	stopKillMaxPolls = 2
+	origComm := procCommMatchesFn
+	t.Cleanup(func() {
+		stopPollInterval = origInterval
+		stopTermMaxPolls = origTerm
+		stopKillMaxPolls = origKill
+		procCommMatchesFn = origComm
+	})
+
+	fr := &fakeRunner{addrDump: addrDump("192.168.31.61")}
+	fp := &fakeProc{
+		alive: map[int]bool{
+			8001: true,  // 孤儿 keepalived 主进程（响应 TERM）
+			8002: true,  // 孤儿 keepalived vrrp 子进程
+			8003: true,  // PID 被非 keepalived 进程复用（绝不能发信号）
+			8004: false, // 已死亡的 stale pidfile
+		},
+	}
+	procCommMatchesFn = func(pid int, want string) bool {
+		if pid == 8003 {
+			return false // 模拟 comm != "keepalived"
+		}
+		return want == "keepalived"
+	}
+
+	sv, _ := newTestSupervisor(t, fr, fp)
+	defer sv.CloseWithoutStop()
+	if err := os.MkdirAll(sv.WorkDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite := func(name, content string) string {
+		p := filepath.Join(sv.WorkDir, name)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	mainPid := mustWrite("ha-orphan.pid", "8001\n")
+	vrrpPid := mustWrite("ha-orphan.vrrp.pid", "8002\n")
+	reusedPid := mustWrite("ha-reused.pid", "8003\n")
+	deadPid := mustWrite("ha-dead.pid", "8004\n")
+	corruptPid := mustWrite("ha-corrupt.pid", "not-a-pid\n")
+
+	// 重启后首次 configTick（s.cfg == nil 且 ha-vip.json 不存在）
+	sv.configTick()
+
+	// 1. 应先停主进程 8001 再停子进程 8002
+	wantSigs := []string{
+		fmt.Sprintf("8001:%v", syscall.SIGTERM),
+		fmt.Sprintf("8002:%v", syscall.SIGTERM),
+	}
+	if strings.Join(fp.signals, ",") != strings.Join(wantSigs, ",") {
+		t.Fatalf("信号序列不符: got=%v want=%v", fp.signals, wantSigs)
+	}
+	// 2. PID 8003（非 keepalived）必须仍存活、未收到任何信号
+	if !fp.alive[8003] {
+		t.Fatal("PID 复用的非 keepalived 进程绝不能被终止")
+	}
+	// 3. 全部已处理/过期/损坏 pidfile 均已清理
+	for _, p := range []string{mainPid, vrrpPid, reusedPid, deadPid, corruptPid} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("pidfile 应被清理: %s (err=%v)", p, err)
+		}
+	}
+	// 4. 状态写回 STOPPED
+	st := readStatus(t, sv.StatusPath)
+	if st.State != StateStopped || !strings.Contains(st.Message, "配置收回") {
+		t.Fatalf("孤儿清理后状态应为 STOPPED: %+v", st)
 	}
 }
 

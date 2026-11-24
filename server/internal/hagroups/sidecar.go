@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -28,7 +29,7 @@ type memberFile struct {
 }
 
 // haVipFile ha-vip.json 内容契约（havipd 消费；auth_pass 明文仅落该文件——
-// 共享卷 0600 权限由部署保证，与 keepalived 配置同敏感度）。
+// 共享卷 0640 权限保证同组 1000 的 havipd 无 CAP_DAC_OVERRIDE 可读，other 无任何权限）。
 type haVipFile struct {
 	Group     string       `json:"group"`
 	State     string       `json:"state"`
@@ -38,13 +39,14 @@ type haVipFile struct {
 }
 
 type vrrpFile struct {
-	VRID         int      `json:"vrid"`
-	VIPs         []string `json:"vips"`
-	Iface        string   `json:"iface"`
-	Preempt      bool     `json:"preempt"`
-	AdvertIntMs  int      `json:"advert_int_ms"`
-	AuthPass     string   `json:"auth_pass,omitempty"`
-	UnicastPeers []string `json:"unicast_peers,omitempty"`
+	VRID            int      `json:"vrid"`
+	VIPs            []string `json:"vips"`
+	Iface           string   `json:"iface"`
+	Preempt         bool     `json:"preempt"`
+	AdvertIntMs     int      `json:"advert_int_ms"`
+	AuthPass        string   `json:"auth_pass,omitempty"`
+	UnicastPeers    []string `json:"unicast_peers,omitempty"`
+	TrackInterfaces []string `json:"track_interfaces,omitempty"`
 }
 
 // buildHaVipFile 由组配置构造下发文件内容。
@@ -55,36 +57,57 @@ func buildHaVipFile(g *Group, authPass string, unicastPeers []string, now time.T
 	for _, m := range g.Members {
 		members = append(members, memberFile{Node: m.NodeName, Priority: m.Priority})
 	}
+	vips := g.VIPs
+	if vips == nil {
+		vips = []string{}
+	}
+	var tracks []string
+	if len(g.TrackInterfaces) > 0 {
+		tracks = append([]string(nil), g.TrackInterfaces...)
+	}
 	return haVipFile{
 		Group:   g.Name,
 		State:   g.State,
 		Members: members,
 		VRRP: vrrpFile{
-			VRID:         g.VRID,
-			VIPs:         g.VIPs,
-			Iface:        g.Iface,
-			Preempt:      g.Preempt,
-			AdvertIntMs:  g.AdvertIntMs,
-			AuthPass:     authPass,
-			UnicastPeers: unicastPeers,
+			VRID:            g.VRID,
+			VIPs:            vips,
+			Iface:           g.Iface,
+			Preempt:         g.Preempt,
+			AdvertIntMs:     g.AdvertIntMs,
+			AuthPass:        authPass,
+			UnicastPeers:    unicastPeers,
+			TrackInterfaces: tracks,
 		},
 		UpdatedAt: now.UTC().Format(time.RFC3339),
 	}
 }
 
-// writeHaVipJSON 原子写 ha-vip.json（0600：含 VRRP 认证串明文；目录保持 0770 供同组边车使用）。
+func marshalHaVipFile(f haVipFile) ([]byte, error) {
+	buf, err := json.Marshal(f)
+	if err != nil {
+		return nil, fmt.Errorf("序列化边车配置失败: %w", err)
+	}
+	return append(buf, '\n'), nil
+}
+
+// writeHaVipJSON 原子写 ha-vip.json（0640：同组 1000 的 havipd 无 CAP_DAC_OVERRIDE 可读，
+// other 无访问权限；目录保持 0770 供同组边车使用）。
 func writeHaVipJSON(dir string, f haVipFile) error {
+	buf, err := marshalHaVipFile(f)
+	if err != nil {
+		return err
+	}
+	return writeHaVipBytes(dir, buf)
+}
+
+func writeHaVipBytes(dir string, buf []byte) error {
 	if err := os.MkdirAll(dir, 0o770); err != nil {
 		return fmt.Errorf("创建边车配置目录失败: %w", err)
 	}
 	if err := os.Chmod(dir, 0o770); err != nil {
 		return fmt.Errorf("设置边车配置目录权限失败: %w", err)
 	}
-	buf, err := json.Marshal(f)
-	if err != nil {
-		return fmt.Errorf("序列化边车配置失败: %w", err)
-	}
-	buf = append(buf, '\n')
 	path := filepath.Join(dir, haVipFileName)
 	tmp, err := os.CreateTemp(dir, "."+haVipFileName+".*")
 	if err != nil {
@@ -96,7 +119,7 @@ func writeHaVipJSON(dir string, f haVipFile) error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("写入边车配置临时文件失败: %w", err)
 	}
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(0o640); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("设置边车配置权限失败: %w", err)
@@ -121,27 +144,61 @@ func deleteHaVipJSON(dir string) error {
 	return nil
 }
 
+// readLocalHaVipGroupName 读取本机 ha-vip.json 中的组名（文件不存在或解析失败返回空串）。
+func readLocalHaVipGroupName(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, haVipFileName))
+	if err != nil {
+		return ""
+	}
+	var f struct {
+		Group string `json:"group"`
+	}
+	if err := json.Unmarshal(data, &f); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(f.Group)
+}
+
 // readHaVipStatus 只读透传 havipd 状态（文件不存在/解析失败返回 nil）。
 func readHaVipStatus(dir string) json.RawMessage {
-	data, err := os.ReadFile(filepath.Join(dir, haVipStatusFileName))
+	raw, _ := readHaVipStatusWithMeta(dir)
+	return raw
+}
+
+// readHaVipStatusWithMeta 读取本机 ha-vip-status.json 原文及文件修改时间（UTC）。
+func readHaVipStatusWithMeta(dir string) (json.RawMessage, *time.Time) {
+	path := filepath.Join(dir, haVipStatusFileName)
+	fi, err := os.Stat(path)
 	if err != nil {
-		return nil
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil
 	}
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {
 		slog.Warn("ha-vip-status.json 解析失败（按无状态透传）", "error", err)
-		return nil
+		return nil, nil
 	}
-	return json.RawMessage(data)
+	mt := fi.ModTime().UTC()
+	return json.RawMessage(data), &mt
 }
 
-// haVipRuntime ha-vip-status.json 中回切判定所需字段的镜像（havipd 回写契约；
-// 仅本节点卷——双节点状态汇聚待采集通道，见设计 §15 M2 边界）。
+// haVipRuntime ha-vip-status.json 中回切判定与脑裂检测所需字段的镜像（havipd 回写契约）。
 type haVipRuntime struct {
+	Group             string   `json:"group"`
 	Node              string   `json:"node"`
 	State             string   `json:"state"`
 	KeepalivedRunning bool     `json:"keepalived_running"`
 	VIPsPresent       []string `json:"vips_present"`
+}
+
+func isMasterOrHoldingVIP(st *haVipRuntime) bool {
+	if st == nil {
+		return false
+	}
+	return strings.EqualFold(st.State, "MASTER") || len(st.VIPsPresent) > 0
 }
 
 // vipStatusFreshCutoff 状态新鲜度上限：havipd 每秒刷新状态，超过该时长未刷新

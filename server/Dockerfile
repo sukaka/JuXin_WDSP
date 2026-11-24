@@ -50,9 +50,8 @@ FROM alpine:3.24${ALPINE_IMAGE_DIGEST:+@$ALPINE_IMAGE_DIGEST}
 RUN addgroup -g 1000 -S jiuzhang && adduser -u 1000 -S -G jiuzhang jiuzhang \
     && mkdir -p /app/migrations /app/runtime/certificates && chown -R jiuzhang:jiuzhang /app
 
-COPY --from=builder /out/jiuzhang-api /usr/local/bin/jiuzhang-api
-COPY --chown=jiuzhang:jiuzhang server/migrations/ /app/migrations/
-# 报告 PDF 字体等资源（阶段6）
+# 极少变动的大体积离线资产前置（报告 PDF 字体与离线 GeoIP 库），
+# 保证跨版本层 diff_id 稳定，供 Web 差量升级包（layer-delta）直接复用
 COPY --chown=jiuzhang:jiuzhang server/assets/fonts/*.otf server/assets/fonts/*.ttf /app/assets/fonts/
 # 统一离线 GeoIP 数据资产（ip2region_v4.xdb + DB-IP IPv6 城市库 + 国家回退库；
 # 运行时可在 runtime/geoip/ 放置新版 ip2region 或官方 DB-IP Lite .mmdb 覆盖）
@@ -61,6 +60,9 @@ COPY --chown=jiuzhang:jiuzhang server/assets/geoip/ip2region_v4.xdb web/public/a
 # 生产编排如挂载 ./gateway/rules:/etc/caddy/rules:ro 并配置 WAF_CRS_DIR 则优先使用挂载目录，
 # 旧编排仅升级镜像时可直接回退读取镜像内 /app/gateway/rules）
 COPY --chown=jiuzhang:jiuzhang gateway/rules/ /app/gateway/rules/
+COPY --chown=jiuzhang:jiuzhang server/migrations/ /app/migrations/
+# 高频变动的后端二进制置顶层，差量升级仅需传输变动层
+COPY --from=builder /out/jiuzhang-api /usr/local/bin/jiuzhang-api
 
 USER jiuzhang
 WORKDIR /app

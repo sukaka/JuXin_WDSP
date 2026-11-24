@@ -176,4 +176,48 @@ describe('SmartTable', () => {
     )
     expect(screen.queryByRole('button', { name: '刷新列表' })).not.toBeInTheDocument()
   })
+
+  it('defaultHiddenKeys 首次默认隐藏指定列，列设置勾选后显示，重置恢复默认隐藏', async () => {
+    const { unmount } = render(
+      <SmartTable<Row>
+        rowKey="id"
+        columns={columns}
+        dataSource={data}
+        pagination={false}
+        storageKey="t-default-hidden"
+        defaultHiddenKeys={['status']}
+      />,
+    )
+    const table = document.querySelector('table')!
+    expect(within(table).getByText('名称')).toBeInTheDocument()
+    expect(within(table).queryByText('状态')).not.toBeInTheDocument()
+
+    // 在列设置中勾选显示，并持久化
+    fireEvent.click(screen.getByRole('button', { name: /列设置/ }))
+    const box = (await screen.findByText('重置列宽与显隐')).parentElement!.parentElement as HTMLElement
+    fireEvent.click(within(box).getByLabelText('状态'))
+    expect(within(table).getByText('状态')).toBeInTheDocument()
+    expect(JSON.parse(localStorage.getItem('smart-table:t-default-hidden')!).h).toEqual([])
+
+    // 重新挂载后仍保持用户勾选显示
+    unmount()
+    render(
+      <SmartTable<Row>
+        rowKey="id"
+        columns={columns}
+        dataSource={data}
+        pagination={false}
+        storageKey="t-default-hidden"
+        defaultHiddenKeys={['status']}
+      />,
+    )
+    const remountedTable = document.querySelector('table')!
+    expect(within(remountedTable).getByText('状态')).toBeInTheDocument()
+
+    // 点击重置后恢复 defaultHiddenKeys
+    fireEvent.click(screen.getByRole('button', { name: /列设置/ }))
+    fireEvent.click(await screen.findByText('重置列宽与显隐'))
+    expect(within(remountedTable).queryByText('状态')).not.toBeInTheDocument()
+    expect(JSON.parse(localStorage.getItem('smart-table:t-default-hidden')!).h).toEqual(['status'])
+  })
 })

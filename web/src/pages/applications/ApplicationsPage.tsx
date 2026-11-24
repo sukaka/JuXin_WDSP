@@ -6,6 +6,7 @@ import {
   App as AntdApp,
   Button,
   Card,
+  Collapse,
   Dropdown,
   Form,
   Input,
@@ -13,6 +14,7 @@ import {
   Select,
   Space,
   Tag,
+  Typography,
 } from 'antd'
 import type { MenuProps } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -28,6 +30,7 @@ import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import {
+  APP_HEALTH_META,
   APP_STATUS_META,
   DEPLOYMENT_MODE_META,
   DEPLOYMENT_STATUS_META,
@@ -258,13 +261,64 @@ export default function ApplicationsPage() {
   }
 
   const columns: ColumnsType<ApplicationItem> = [
-    { title: '应用编码', dataIndex: 'code', width: 140 },
     {
-      title: '名称',
+      title: '应用',
       dataIndex: 'name',
-      width: 180,
+      key: 'name',
+      width: 240,
       render: (v: string, record) => (
-        <Link to={`/applications/${record.id}`}>{v}</Link>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+          <Link
+            to={`/applications/${record.id}`}
+            style={{
+              fontWeight: 500,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {v}
+          </Link>
+          {record.primary_domain ? (
+            <span
+              style={{
+                fontSize: 12,
+                color: 'rgba(0, 0, 0, 0.45)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                minWidth: 0,
+              }}
+            >
+              <span
+                title={record.primary_domain}
+                style={{
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {record.primary_domain}
+              </span>
+              {record.domain_count > 1 && (
+                <Tag
+                  style={{
+                    marginInlineEnd: 0,
+                    fontSize: 11,
+                    lineHeight: '16px',
+                    paddingInline: 4,
+                  }}
+                >
+                  +{record.domain_count - 1}
+                </Tag>
+              )}
+            </span>
+          ) : (
+            <span style={{ fontSize: 12, color: 'rgba(0, 0, 0, 0.35)' }}>
+              {record.domain_count > 0 ? `${record.domain_count} 个域名` : '未配置域名'}
+            </span>
+          )}
+        </div>
       ),
     },
     {
@@ -301,14 +355,12 @@ export default function ApplicationsPage() {
       title: '健康状态',
       dataIndex: 'health_status',
       width: 100,
-      render: (v: string) =>
-        v === 'HEALTHY' ? (
-          <Tag color="green">健康</Tag>
-        ) : v === 'UNHEALTHY' ? (
-          <Tag color="red">异常</Tag>
-        ) : (
-          <Tag>未知</Tag>
-        ),
+      render: (v: string) => (
+        <StatusTag
+          value={v && APP_HEALTH_META[v] ? v : 'UNKNOWN'}
+          map={APP_HEALTH_META}
+        />
+      ),
     },
     {
       title: '部署状态',
@@ -316,6 +368,17 @@ export default function ApplicationsPage() {
       width: 110,
       render: (v: string) => (
         <StatusTag value={v} map={DEPLOYMENT_STATUS_META} />
+      ),
+    },
+    {
+      title: '应用标识',
+      dataIndex: 'code',
+      key: 'code',
+      width: 170,
+      render: (v: string) => (
+        <Typography.Text code copyable>
+          {v}
+        </Typography.Text>
       ),
     },
     {
@@ -445,9 +508,9 @@ export default function ApplicationsPage() {
     >
       <Space style={{ marginBottom: 16 }} wrap>
         <Input.Search
-          placeholder="搜索编码或名称"
+          placeholder="搜索名称、域名或标识"
           allowClear
-          style={{ width: 240 }}
+          style={{ width: 250 }}
           key={filters.keyword ?? ''}
           defaultValue={filters.keyword}
           onSearch={(v) => {
@@ -505,7 +568,8 @@ export default function ApplicationsPage() {
         />
       ) : (
         <SmartTable<ApplicationItem>
-          storageKey="applications"
+          storageKey="applications-v2"
+          defaultHiddenKeys={['code']}
           rowKey="id"
           rowSelection={rowSelection}
           loading={listQuery.isLoading}
@@ -544,31 +608,17 @@ export default function ApplicationsPage() {
             protection_mode: 'OBSERVE',
             deployment_mode: 'REVERSE_PROXY',
           }}
-          onFinish={(values) =>
+          onFinish={(values) => {
+            const trimmedCode = values.code?.trim()
+            const payload: CreateApplicationBody = {
+              ...values,
+              code: trimmedCode || undefined,
+            }
             submitWithBypassConfirm(values.protection_mode, () =>
-              createMutation.mutate(values),
+              createMutation.mutate(payload),
             )
-          }
+          }}
         >
-          <Form.Item
-            name="code"
-            label="应用编码"
-            rules={[
-              { required: true, message: '请输入应用编码' },
-              {
-                validator: (_, v: string) => {
-                  if (!v) return Promise.resolve()
-                  const err = validateCode(v)
-                  return err
-                    ? Promise.reject(new Error(err))
-                    : Promise.resolve()
-                },
-              },
-            ]}
-            extra="创建后不可修改，用于标识应用（如 portal-web）"
-          >
-            <Input placeholder="小写字母、数字、短横线" autoComplete="off" />
-          </Form.Item>
           <Form.Item
             name="name"
             label="应用名称"
@@ -577,7 +627,7 @@ export default function ApplicationsPage() {
               { max: 128, message: '不超过 128 个字符' },
             ]}
           >
-            <Input placeholder="应用显示名称" />
+            <Input placeholder="应用显示名称，如：官网、开放平台" />
           </Form.Item>
           <Form.Item name="description" label="描述">
             <Input.TextArea rows={2} placeholder="应用用途说明（可选）" />
@@ -612,6 +662,41 @@ export default function ApplicationsPage() {
                 message="镜像旁路模式无法阻断流量，即使选择「防护」也仅以观察模式输出告警；选择「关闭」或「透传」将停用该应用的镜像检测。"
               />
             )}
+          <Collapse
+            ghost
+            size="small"
+            items={[
+              {
+                key: 'advanced',
+                label: '高级选项（自定义应用标识）',
+                children: (
+                  <Form.Item
+                    name="code"
+                    label="应用标识"
+                    rules={[
+                      {
+                        validator: (_, v: string | undefined) => {
+                          const trimmed = v?.trim()
+                          if (!trimmed) return Promise.resolve()
+                          const err = validateCode(trimmed)
+                          return err
+                            ? Promise.reject(new Error(err))
+                            : Promise.resolve()
+                        },
+                      },
+                    ]}
+                    extra="可选，创建后不可修改；留空将由系统自动生成，用于日志检索、API 集成与 CSV 导入导出"
+                    style={{ marginBottom: 0 }}
+                  >
+                    <Input
+                      placeholder="留空自动生成（如 app-7k2m9x4p）"
+                      autoComplete="off"
+                    />
+                  </Form.Item>
+                ),
+              },
+            ]}
+          />
         </Form>
       </Modal>
 

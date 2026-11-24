@@ -15,25 +15,28 @@ import (
 
 // keepalivedPaths 本组件管理的文件布局（dir 一般为 /var/run/caddy/sidecars/keepalived）。
 type keepalivedPaths struct {
-	Conf    string // keepalived 配置（0600，含认证串）
-	PidFile string // 实例 pidfile
+	Conf        string // keepalived 配置（0600，含认证串）
+	PidFile     string // 主进程 pidfile
+	VrrpPidFile string // VRRP 子进程 pidfile（read_only 容器下避免写只读 /run/vrrp.pid）
 }
 
 func pathsFor(dir, group string) keepalivedPaths {
 	return keepalivedPaths{
-		Conf:    filepath.Join(dir, group+".conf"),
-		PidFile: filepath.Join(dir, group+".pid"),
+		Conf:        filepath.Join(dir, group+".conf"),
+		PidFile:     filepath.Join(dir, group+".pid"),
+		VrrpPidFile: filepath.Join(dir, group+".vrrp.pid"),
 	}
 }
 
 // renderConfig 生成 keepalived 配置文本。
-// self 为本机成员条目（优先级）；advert 秒为 keepalived advert_int 单位（其仅支持秒）。
+// self 为本机成员条目（节点名与优先级）；advert 秒为 keepalived advert_int 单位（其仅支持秒）。
+// router_id 按组名+节点名生成（JZ_HA_<group>_<node>），确保双机节点具备不同的 router_id。
 // unicast 模式：非空 peers 时生成 unicast_peer 块（unicast_src_ip 由调用方探测本机
 // 在 VIP 承载口上的首个 IPv4 地址填入；探测不到时省略该行，keepalived 自动选源）。
 func renderConfig(cfg Config, self MemberSpec, selfSrcIP string) string {
 	var b strings.Builder
 	b.WriteString("global_defs {\n")
-	fmt.Fprintf(&b, "  router_id JZ_HA_%s\n", sanitizeRouterID(cfg.Group))
+	fmt.Fprintf(&b, "  router_id JZ_HA_%s_%s\n", sanitizeRouterID(cfg.Group), sanitizeRouterID(self.Node))
 	b.WriteString("}\n\n")
 	fmt.Fprintf(&b, "vrrp_instance %s {\n", cfg.Group)
 	b.WriteString("  state BACKUP\n") // 初始态均为 BACKUP，由选举决定 MASTER（防双主抢始态）
@@ -77,9 +80,9 @@ func renderConfig(cfg Config, self MemberSpec, selfSrcIP string) string {
 }
 
 // sanitizeRouterID router_id 仅保留字母数字/下划线/连字符（keepalived 标识符安全集）。
-func sanitizeRouterID(group string) string {
+func sanitizeRouterID(s string) string {
 	var b strings.Builder
-	for _, r := range group {
+	for _, r := range s {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
 			b.WriteRune(r)

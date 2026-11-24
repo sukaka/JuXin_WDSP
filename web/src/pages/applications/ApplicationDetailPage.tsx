@@ -9,8 +9,8 @@ import {
   Space,
   Spin,
   Tabs,
-  Tag,
   Tooltip,
+  Typography,
 } from 'antd'
 import { ArrowLeftOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
@@ -22,6 +22,7 @@ import { useBreadcrumbObjectName } from '../../stores/breadcrumb'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import {
+  APP_HEALTH_META,
   APP_STATUS_META,
   DEPLOYMENT_MODE_META,
   DEPLOYMENT_STATUS_META,
@@ -150,7 +151,11 @@ export default function ApplicationDetailPage() {
         }
       >
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small">
-          <Descriptions.Item label="应用编码">{app.code}</Descriptions.Item>
+          <Descriptions.Item label="应用标识">
+            <Typography.Text code copyable>
+              {app.code}
+            </Typography.Text>
+          </Descriptions.Item>
           <Descriptions.Item label="业务负责人">
             {app.business_owner || '-'}
           </Descriptions.Item>
@@ -161,13 +166,14 @@ export default function ApplicationDetailPage() {
             {app.description || '-'}
           </Descriptions.Item>
           <Descriptions.Item label="健康状态">
-            {app.health_status === 'HEALTHY' ? (
-              <Tag color="green">健康</Tag>
-            ) : app.health_status === 'UNHEALTHY' ? (
-              <Tag color="red">异常</Tag>
-            ) : (
-              <Tag>未知</Tag>
-            )}
+            <StatusTag
+              value={
+                app.health_status && APP_HEALTH_META[app.health_status]
+                  ? app.health_status
+                  : 'UNKNOWN'
+              }
+              map={APP_HEALTH_META}
+            />
           </Descriptions.Item>
           <Descriptions.Item label="最后发布时间">
             {formatDateTime(app.last_publish_at)}
@@ -180,8 +186,6 @@ export default function ApplicationDetailPage() {
           </Descriptions.Item>
         </Descriptions>
       </Card>
-
-      <ApplicationAssetValueCard applicationId={app.id} />
 
       {isMirror && (
         <Alert
@@ -260,6 +264,21 @@ export default function ApplicationDetailPage() {
                         type="info"
                         showIcon
                         message="当前应用未启用 HTTPS 域名，无需绑定证书"
+                      />
+                    ),
+                  },
+                ]
+              : []),
+            // API 资产价值（按接口评分聚合）：无 api_asset.read 权限不露入口，避免跨模块请求触发 403
+            ...(hasPermission(permissions, 'api_asset.read')
+              ? [
+                  {
+                    key: 'asset-value',
+                    label: 'API 资产价值',
+                    children: (
+                      <ApplicationAssetValueCard
+                        applicationId={app.id}
+                        embedded
                       />
                     ),
                   },

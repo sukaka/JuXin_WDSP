@@ -30,9 +30,14 @@ const LEVEL_META: Record<string, { color: string; label: string }> = {
 
 interface Props {
   applicationId: string
+  /** 嵌入页签等已有外层容器时为 true，省去外层 Card 避免嵌套边框与留白 */
+  embedded?: boolean
 }
 
-export default function ApplicationAssetValueCard({ applicationId }: Props) {
+export default function ApplicationAssetValueCard({
+  applicationId,
+  embedded = false,
+}: Props) {
   const permissions = useAuthStore((state) => state.user?.permissions)
   const canRead = hasPermission(permissions, 'api_asset.read')
   const query = useQuery({
@@ -66,8 +71,8 @@ export default function ApplicationAssetValueCard({ applicationId }: Props) {
     },
   ]
 
-  return (
-    <Card title="API 资产价值（按接口评分聚合）">
+  const content = (
+    <>
       <Typography.Paragraph type="secondary">
         聚合该应用非忽略接口的已有评分，反映资产价值而非漏洞风险；未评分接口不计入平均分。
       </Typography.Paragraph>
@@ -160,6 +165,12 @@ export default function ApplicationAssetValueCard({ applicationId }: Props) {
           ) : null}
         </>
       )}
-    </Card>
+    </>
   )
+
+  if (embedded) {
+    return <div>{content}</div>
+  }
+
+  return <Card title="API 资产价值（按接口评分聚合）">{content}</Card>
 }

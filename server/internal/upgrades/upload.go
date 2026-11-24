@@ -177,6 +177,7 @@ func (h *Handler) UploadPackage(w http.ResponseWriter, r *http.Request) {
 		formVersionTo   string
 		formManifest    string
 		scheduledAtText string
+		clusterModeText string
 		formBytesRead   int64
 
 		hasFile    bool
@@ -242,6 +243,8 @@ func (h *Handler) UploadPackage(w http.ResponseWriter, r *http.Request) {
 				formManifest = val
 			case "scheduled_at":
 				scheduledAtText = val
+			case "cluster_mode":
+				clusterModeText = val
 			}
 			continue
 		}
@@ -323,6 +326,12 @@ func (h *Handler) UploadPackage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		scheduledAt = &t
+	}
+
+	clusterMode, modeErr := NormalizeClusterMode(clusterModeText)
+	if modeErr != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, modeErr.Error())
+		return
 	}
 
 	// 包内 manifest 解析（不替代信任边界验签；不可解析时按旧格式处理，
@@ -488,9 +497,9 @@ func (h *Handler) UploadPackage(w http.ResponseWriter, r *http.Request) {
 	var execErr error
 	if scheduledAt != nil {
 		action = "schedule"
-		job, execErr = h.autoSchedule(r, p, pkg, *scheduledAt)
+		job, execErr = h.autoSchedule(r, p, pkg, *scheduledAt, clusterMode)
 	} else {
-		job, execErr = h.autoExecute(r, p, pkg)
+		job, execErr = h.autoExecute(r, p, pkg, clusterMode)
 	}
 	if execErr != nil {
 		slog.Error("auto create upgrade execution failed",
@@ -569,17 +578,27 @@ func readExistingSignature(sidecar string) ([]byte, error) {
 }
 
 // autoExecute 通过升级服务创建执行（与 Execute 接口同一入口）。
-func (h *Handler) autoExecute(r *http.Request, p *authz.Principal, pkg *Package) (*Job, error) {
+func (h *Handler) autoExecute(r *http.Request, p *authz.Principal, pkg *Package, clusterMode string) (*Job, error) {
 	if h.executor == nil {
 		return nil, errors.New("升级执行服务未配置")
+	}
+	if clusterMode != ClusterModeLocal {
+		if me, ok := h.executor.(upgradeModeExecutor); ok {
+			return me.ExecuteWithMode(r.Context(), pkg.ID, p.UserID, response.RequestIDFrom(r), clusterMode)
+		}
 	}
 	return h.executor.Execute(r.Context(), pkg.ID, p.UserID, response.RequestIDFrom(r))
 }
 
 // autoSchedule 通过升级服务创建定时执行（SCHEDULED，到点由调度器自动开始）。
-func (h *Handler) autoSchedule(r *http.Request, p *authz.Principal, pkg *Package, scheduledAt time.Time) (*Job, error) {
+func (h *Handler) autoSchedule(r *http.Request, p *authz.Principal, pkg *Package, scheduledAt time.Time, clusterMode string) (*Job, error) {
 	if h.executor == nil {
 		return nil, errors.New("升级执行服务未配置")
+	}
+	if clusterMode != ClusterModeLocal {
+		if me, ok := h.executor.(upgradeModeExecutor); ok {
+			return me.ScheduleWithMode(r.Context(), pkg.ID, p.UserID, response.RequestIDFrom(r), scheduledAt, clusterMode)
+		}
 	}
 	return h.executor.Schedule(r.Context(), pkg.ID, p.UserID, response.RequestIDFrom(r), scheduledAt)
 }

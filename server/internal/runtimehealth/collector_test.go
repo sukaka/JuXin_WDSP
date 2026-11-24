@@ -3,8 +3,12 @@ package runtimehealth
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/upstreams"
 )
 
 // TestOverallStatus 整体状态取最差：DOWN > DEGRADED > UNKNOWN > UP。
@@ -192,4 +196,112 @@ func TestMetricFloat(t *testing.T) {
 	if _, ok := metricFloat(m, "missing"); ok {
 		t.Error("缺失键不应可提取")
 	}
+}
+
+func TestEvaluateUpstreamProbe(t *testing.T) {
+	id := uuid.New()
+	target := upstreamProbeTarget{id: id, expected: "200-299"}
+
+	// 1. 正常命中期望范围
+	rec, ok := evaluateUpstreamProbe(target, &upstreams.TestResult{
+		HTTPStatus:     204,
+		ResponseTimeMs: 18,
+	})
+	if !ok || rec.status != StatusUp || rec.errorCode != "" || rec.responseStatus != 204 || rec.responseTimeMs != 18 {
+		t.Fatalf("期望 UP，got ok=%v rec=%+v", ok, rec)
+	}
+
+	// 2. 状态码不符自动填充 UNEXPECTED_STATUS 及可读错误说明
+	rec, ok = evaluateUpstreamProbe(target, &upstreams.TestResult{
+		HTTPStatus:     502,
+		ResponseTimeMs: 32,
+	})
+	if ok || rec.status != StatusDown || rec.errorCode != "UNEXPECTED_STATUS" || !strings.Contains(rec.errorMessage, "502") || !strings.Contains(rec.errorMessage, "200-299") {
+		t.Fatalf("期望 UNEXPECTED_STATUS，got ok=%v rec=%+v", ok, rec)
+	}
+
+	// 3. 网络/TLS 错误原样透传错误码
+	rec, ok = evaluateUpstreamProbe(target, &upstreams.TestResult{
+		ResponseTimeMs: 3001,
+		ErrorCode:      "TIMEOUT",
+		ErrorMessage:   "context deadline exceeded",
+	})
+	if ok || rec.status != StatusDown || rec.errorCode != "TIMEOUT" {
+		t.Fatalf("期望 TIMEOUT，got ok=%v rec=%+v", ok, rec)
+	}
+
+	// 4. nil 响应防御
+	rec, ok = evaluateUpstreamProbe(target, nil)
+	if ok || rec.status != StatusDown || rec.errorCode != "CONNECTION_FAILED" {
+		t.Fatalf("nil 响应应判 CONNECTION_FAILED，got ok=%v rec=%+v", ok, rec)
+	}
+}
+
+func TestAggregateAppHealthStatuses(t *testing.T) {
+	appHealthy := uuid.New()
+	appDegraded := uuid.New()
+	appUnhealthy := uuid.New()
+
+	targets := []upstreamProbeTarget{
+		{id: uuid.New(), applicationID: appHealthy},
+		{id: uuid.New(), applicationID: appHealthy},
+		{id: uuid.New(), applicationID: appDegraded},
+		{id: uuid.New(), applicationID: appDegraded},
+		{id: uuid.New(), applicationID: appUnhealthy},
+	}
+	records := []upstreamHealthRecord{
+		{status: StatusUp},
+		{status: StatusUp},
+		{status: StatusUp},
+		{status: StatusDown},
+		{status: StatusDown},
+	}
+
+	got := aggregateAppHealthStatuses(targets, records)
+	if got[appHealthy] != AppHealthHealthy {
+		t.Errorf("appHealthy = %q, want %q", got[appHealthy], AppHealthHealthy)
+	}
+	if got[appDegraded] != AppHealthDegraded {
+		t.Errorf("appDegraded = %q, want %q", got[appDegraded], AppHealthDegraded)
+	}
+	if got[appUnhealthy] != AppHealthUnhealthy {
+		t.Errorf("appUnhealthy = %q, want %q", got[appUnhealthy], AppHealthUnhealthy)
+	}
+	if st := aggregateAppHealthStatus(0, 0); st != AppHealthUnknown {
+		t.Errorf("zero checked = %q, want %q", st, AppHealthUnknown)
+	}
+}
+
+func TestProbeHelpersAndTrigger(t *testing.T) {
+	if got := probeMethodFor("head"); got != "HEAD" {
+		t.Errorf("probeMethodFor(head) = %q, want HEAD", got)
+	}
+	if got := probeMethodFor("POST"); got != "GET" {
+		t.Errorf("probeMethodFor(POST) = %q, want GET", got)
+	}
+	if got := probeTimeoutFor(0, 3*time.Second); got != 3*time.Second {
+		t.Errorf("probeTimeoutFor(0, 3s) = %v, want 3s", got)
+	}
+	if got := probeTimeoutFor(60, 3*time.Second); got != maxUpstreamProbeTimeout {
+		t.Errorf("probeTimeoutFor(60, 3s) = %v, want %v", got, maxUpstreamProbeTimeout)
+	}
+
+	c := NewCollector(nil, Options{})
+	if !c.allowPrivateUpstreams() {
+		t.Error("默认应允许探测已落库的 RFC1918 内网源站")
+	}
+	deny := false
+	cDeny := NewCollector(nil, Options{AllowPrivateUpstreams: &deny})
+	if cDeny.allowPrivateUpstreams() {
+		t.Error("显式 AllowPrivateUpstreams=false 时不应允许私网探测")
+	}
+
+	// 非阻塞连续触发不会卡死，且缓冲上限合并为 1
+	c.TriggerUpstreamProbe()
+	c.TriggerUpstreamProbe()
+	if len(c.upstreamTrigger) != 1 {
+		t.Errorf("upstreamTrigger len = %d, want 1", len(c.upstreamTrigger))
+	}
+	var nilCollector *Collector
+	nilCollector.TriggerUpstreamProbe() // 不 panic
 }

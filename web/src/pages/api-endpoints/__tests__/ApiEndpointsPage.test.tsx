@@ -863,6 +863,7 @@ describe('ApiEndpointsPage', () => {
     fireEvent.click(checkboxes[1])
     expect(await screen.findByRole('button', { name: /批量确认/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /批量启动学习/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /全部启动学习/ })).not.toBeInTheDocument()
 
     // 打开确认弹窗，不展示自动启动学习复选框，确认时不传 auto_start_learning
     fireEvent.click(screen.getByRole('button', { name: /批量确认/ }))
@@ -1024,6 +1025,83 @@ describe('ApiEndpointsPage', () => {
     expect(confirmBodies[1]).toEqual({
       ids: ['e1'],
       auto_start_learning: false,
+    })
+  })
+
+  it('按当前筛选条件跨页全部启动学习（apply_to_filtered: true）', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read', 'api_learning.start']),
+      csrfToken: null,
+      initialized: true,
+    })
+    const filteredStartBodies: Record<string, unknown>[] = []
+    ;(fetch as Mock).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api-security/endpoints/site-summary')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: siteSummaryData }))
+      }
+      if (url.includes('/api-security/endpoints/directory-tree')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: directoryTreeData }))
+      }
+      if (url.endsWith('/api-security/endpoints/learning/start') && init?.method === 'POST') {
+        filteredStartBodies.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: {
+              started: 120,
+              started_ids: [],
+              skipped: 5,
+              skipped_ids: [],
+              failed: [],
+              matched_total: 125,
+              truncated: false,
+              sample_target: 180,
+              message: '已批量启动 120 个接口学习，跳过 5 个（学习中/已完成/非活跃）',
+            },
+          }),
+        )
+      }
+      return Promise.resolve(
+        jsonResponse(200, {
+          code: 'SUCCESS',
+          message: 'ok',
+          data: { ...listData, total: 125 },
+        }),
+      )
+    })
+
+    renderPage()
+    // 筛选站点 B，等待列表加载完成，再验证勾选切换与工具栏「全部启动学习」
+    fireEvent.click(await screen.findByText('站点B'))
+    await screen.findByText('站点：站点B')
+    await screen.findByText('/v1/users/{id}')
+
+    // 勾选 1 条时，勾选条应提示可一键切换为全部筛选结果（共 125 个）
+    const checkboxes = screen.getAllByRole('checkbox')
+    fireEvent.click(checkboxes[1])
+    expect(
+      await screen.findByRole('button', { name: /按当前筛选全部启动学习（共 125 个）/ }),
+    ).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /^全部启动学习$/ }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/按筛选条件批量启动学习/)).toBeInTheDocument()
+    expect(within(dialog).getByText('125')).toBeInTheDocument()
+    expect(within(dialog).getByText('站点：站点B')).toBeInTheDocument()
+
+    const spin = within(dialog).getByRole('spinbutton')
+    fireEvent.change(spin, { target: { value: '180' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /启动学习/ }))
+
+    await waitFor(() => {
+      expect(filteredStartBodies).toHaveLength(1)
+    })
+    expect(filteredStartBodies[0]).toEqual({
+      apply_to_filtered: true,
+      filter: { application_id: 'app-2' },
+      sample_target: 180,
     })
   })
 })

@@ -1,6 +1,7 @@
 import { request } from './client'
+import type { HaVipStatus, NetworkConfigStatus } from '../types'
 
-/* ==================== 节点版本校验（server/internal/apinodes）：节点列表 + 策略版本一致性 ==================== */
+/* ==================== 节点版本校验与跨节点协同管理（server/internal/apinodes） ==================== */
 
 /** 节点状态词表（按最近事件距当前时刻的时长判定） */
 export type ApiNodeStatus = 'ACTIVE' | 'STALE' | 'SILENT'
@@ -23,6 +24,18 @@ export interface ApiNode {
   admin_addr: string
   /** 是否参与发布扇出 */
   sync_enabled: boolean
+  /** 节点 hasyncd 协同代理地址（内网 http(s)://host:port）；空串 = 未配置 */
+  sync_agent_addr?: string
+  /** 是否已配置 hasyncd HMAC 同步密钥（密文落库，永不回显明文） */
+  has_sync_secret?: boolean
+  /** 节点上报的当前系统版本；空串 = 未知 */
+  reported_version?: string
+  /** 节点最新汇聚的 ha-vip-status.json 快照 */
+  ha_vip_status?: HaVipStatus | null
+  ha_vip_status_at?: string | null
+  /** 节点最新汇聚的 network-status.json 快照 */
+  network_status?: NetworkConfigStatus | null
+  network_status_at?: string | null
   /** 最近同步尝试时间；null = 从未同步 */
   last_sync_at: string | null
   /** SUCCESS/FAILED/HASH_MISMATCH；空串 = 从未同步 */
@@ -67,8 +80,47 @@ export interface ApiNodeConsistency {
   generated_at: string
 }
 
+/** 新增/预注册网关节点请求体（POST /api-security/nodes） */
+export interface CreateApiNodeBody {
+  node_name: string
+  admin_addr?: string
+  sync_agent_addr?: string
+  sync_secret?: string
+  sync_enabled?: boolean
+}
+
+/** 更新网关节点同步配置请求体（PATCH /api-security/nodes/{id}；sync_secret：省略=不变更，''=清除） */
+export interface UpdateApiNodeBody {
+  admin_addr?: string
+  sync_agent_addr?: string
+  sync_secret?: string
+  sync_enabled?: boolean
+}
+
+/** 节点连通性探测响应（POST /api-security/nodes/{id}/test） */
+export interface ApiNodeTestResult {
+  ok: boolean
+  channel: 'hasyncd' | 'caddy_admin' | 'none' | string
+  latency_ms: number
+  version?: string
+  caddy_reachable?: boolean
+  hostctl_ready?: boolean
+  upgrade_ready?: boolean
+  error?: string
+}
+
+/** 配置版本次要节点重试同步响应（POST /config-versions/{id}/retry-sync） */
+export interface NodeSyncRetryResult {
+  version_id: string
+  node_id?: string
+  attempted: number
+  succeeded: number
+  failed: number
+  record_failures: number
+}
+
 export const apiNodesApi = {
-  /** 节点列表（状态+版本+逐项一致性标记+总体标记） */
+  /** 节点列表（状态+版本+同步登记/结果+逐项一致性标记+总体标记） */
   list: async () => {
     const data = await request<ApiNodeListResult>('/api-security/nodes')
     return { ...data, items: data.items ?? [] }
@@ -78,4 +130,22 @@ export const apiNodesApi = {
     const data = await request<ApiNodeConsistency>('/api-security/nodes/consistency')
     return { ...data, groups: data.groups ?? [], silent_nodes: data.silent_nodes ?? [] }
   },
+  /** 手动登记/预注册网关节点 */
+  create: (body: CreateApiNodeBody) =>
+    request<ApiNode>('/api-security/nodes', { method: 'POST', body }),
+  /** 编辑节点同步登记配置 */
+  update: (id: string, body: UpdateApiNodeBody) =>
+    request<ApiNode>(`/api-security/nodes/${id}`, { method: 'PATCH', body }),
+  /** 删除离网节点（被 HA 组引用时服务端返回 409） */
+  remove: (id: string) =>
+    request<{ message?: string }>(`/api-security/nodes/${id}`, { method: 'DELETE' }),
+  /** 探测节点 hasyncd 或 Caddy Admin 连通性 */
+  testConnection: (id: string) =>
+    request<ApiNodeTestResult>(`/api-security/nodes/${id}/test`, { method: 'POST' }),
+  /** 对已发布配置版本重试节点同步（可选 nodeId 定向单节点重试） */
+  retrySync: (versionId: string, nodeId?: string) =>
+    request<NodeSyncRetryResult>(`/config-versions/${versionId}/retry-sync`, {
+      method: 'POST',
+      body: nodeId ? { node_id: nodeId } : {},
+    }),
 }

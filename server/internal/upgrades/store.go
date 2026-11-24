@@ -32,6 +32,7 @@ type Job struct {
 	ID             uuid.UUID       `json:"id"`
 	PackageID      *uuid.UUID      `json:"package_id"`
 	Status         string          `json:"status"`
+	ClusterMode    string          `json:"cluster_mode"`
 	Precheck       json.RawMessage `json:"precheck"`
 	BackupJobID    *uuid.UUID      `json:"backup_job_id"`
 	RequestedBy    *uuid.UUID      `json:"requested_by"`
@@ -42,6 +43,26 @@ type Job struct {
 	FailureCode    string          `json:"failure_code"`
 	FailureMessage string          `json:"failure_message"`
 	RequestID      string          `json:"request_id"`
+	NodeExecutions []NodeExecution `json:"node_executions,omitempty"`
+}
+
+// NodeExecution 记录 HA 集群滚动升级下逐节点的执行明细（对应迁移 000237 upgrade_node_executions）。
+type NodeExecution struct {
+	ID           uuid.UUID  `json:"id"`
+	JobID        uuid.UUID  `json:"job_id"`
+	NodeID       *uuid.UUID `json:"node_id,omitempty"`
+	NodeName     string     `json:"node_name"`
+	Role         string     `json:"role"`
+	Seq          int        `json:"seq"`
+	Status       string     `json:"status"`
+	FromVersion  string     `json:"from_version"`
+	ToVersion    string     `json:"to_version"`
+	ErrorCode    string     `json:"error_code"`
+	ErrorMessage string     `json:"error_message"`
+	StartedAt    *time.Time `json:"started_at"`
+	FinishedAt   *time.Time `json:"finished_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 // Store 升级仓储。
@@ -148,7 +169,7 @@ func (s *Store) ListPackages(ctx context.Context, status string, page, pageSize 
 
 // ---------- 升级任务 ----------
 
-const jobColumns = `id, package_id, status, precheck, backup_job_id, requested_by, requested_at,
+const jobColumns = `id, package_id, status, cluster_mode, precheck, backup_job_id, requested_by, requested_at,
 scheduled_at, started_at, finished_at, failure_code, failure_message, request_id`
 
 // upgradeJobLockKey 串行化活动升级任务的检查与创建，避免两个请求同时通过预检。
@@ -156,7 +177,7 @@ const upgradeJobLockKey int64 = 0x4a5a574146555047
 
 func scanJob(row pgx.Row) (*Job, error) {
 	var j Job
-	err := row.Scan(&j.ID, &j.PackageID, &j.Status, &j.Precheck, &j.BackupJobID,
+	err := row.Scan(&j.ID, &j.PackageID, &j.Status, &j.ClusterMode, &j.Precheck, &j.BackupJobID,
 		&j.RequestedBy, &j.RequestedAt, &j.ScheduledAt, &j.StartedAt, &j.FinishedAt,
 		&j.FailureCode, &j.FailureMessage, &j.RequestID)
 	if err != nil {
@@ -165,22 +186,43 @@ func scanJob(row pgx.Row) (*Job, error) {
 		}
 		return nil, err
 	}
+	if j.ClusterMode == "" {
+		j.ClusterMode = ClusterModeLocal
+	}
 	return &j, nil
 }
 
-// CreateJobIfNoActive 在同一事务中检查并创建升级任务。
+// CreateJobIfNoActive 在同一事务中检查并创建升级任务（默认 LOCAL 模式）。
 func (s *Store) CreateJobIfNoActive(ctx context.Context, packageID uuid.UUID, requestedBy *uuid.UUID, requestID string) (*Job, error) {
-	return s.createJobIfNoActive(ctx, packageID, requestedBy, requestID, StatusPending, nil)
+	return s.createJobIfNoActive(ctx, packageID, requestedBy, requestID, StatusPending, nil, ClusterModeLocal)
+}
+
+// CreateJobWithModeIfNoActive 在同一事务中检查并创建指定集群模式的升级任务。
+func (s *Store) CreateJobWithModeIfNoActive(ctx context.Context, packageID uuid.UUID, requestedBy *uuid.UUID, requestID, clusterMode string) (*Job, error) {
+	mode, err := NormalizeClusterMode(clusterMode)
+	if err != nil {
+		return nil, err
+	}
+	return s.createJobIfNoActive(ctx, packageID, requestedBy, requestID, StatusPending, nil, mode)
 }
 
 // CreateScheduledJobIfNoActive 在同一事务中检查并创建定时升级任务（SCHEDULED），
 // 到点由调度器 promote 为 PENDING 后进入正常执行流程。
 // SCHEDULED 视为活动任务（占用执行槽位，阻止其他任务创建）；CANCELLED 为终态。
 func (s *Store) CreateScheduledJobIfNoActive(ctx context.Context, packageID uuid.UUID, requestedBy *uuid.UUID, requestID string, scheduledAt time.Time) (*Job, error) {
-	return s.createJobIfNoActive(ctx, packageID, requestedBy, requestID, StatusScheduled, &scheduledAt)
+	return s.createJobIfNoActive(ctx, packageID, requestedBy, requestID, StatusScheduled, &scheduledAt, ClusterModeLocal)
 }
 
-func (s *Store) createJobIfNoActive(ctx context.Context, packageID uuid.UUID, requestedBy *uuid.UUID, requestID, status string, scheduledAt *time.Time) (*Job, error) {
+// CreateScheduledJobWithModeIfNoActive 在同一事务中检查并创建指定集群模式的定时升级任务。
+func (s *Store) CreateScheduledJobWithModeIfNoActive(ctx context.Context, packageID uuid.UUID, requestedBy *uuid.UUID, requestID string, scheduledAt time.Time, clusterMode string) (*Job, error) {
+	mode, err := NormalizeClusterMode(clusterMode)
+	if err != nil {
+		return nil, err
+	}
+	return s.createJobIfNoActive(ctx, packageID, requestedBy, requestID, StatusScheduled, &scheduledAt, mode)
+}
+
+func (s *Store) createJobIfNoActive(ctx context.Context, packageID uuid.UUID, requestedBy *uuid.UUID, requestID, status string, scheduledAt *time.Time, clusterMode string) (*Job, error) {
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, err
@@ -201,9 +243,9 @@ WHERE status NOT IN ($1, $2, $3, $4))`, StatusSuccess, StatusFailed, StatusRolle
 	}
 
 	job, err := scanJob(tx.QueryRow(ctx, `
-INSERT INTO upgrade_jobs (package_id, status, scheduled_at, requested_by, request_id)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING `+jobColumns, packageID, status, scheduledAt, requestedBy, requestID))
+INSERT INTO upgrade_jobs (package_id, status, cluster_mode, scheduled_at, requested_by, request_id)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING `+jobColumns, packageID, status, clusterMode, scheduledAt, requestedBy, requestID))
 	if err != nil {
 		return nil, err
 	}
@@ -213,12 +255,12 @@ RETURNING `+jobColumns, packageID, status, scheduledAt, requestedBy, requestID))
 	return job, nil
 }
 
-// CreateJob 创建 PENDING 升级任务。
+// CreateJob 创建 PENDING 升级任务（默认 LOCAL 模式）。
 func (s *Store) CreateJob(ctx context.Context, packageID uuid.UUID, requestedBy *uuid.UUID, requestID string) (*Job, error) {
 	row := s.db.QueryRow(ctx, `
-INSERT INTO upgrade_jobs (package_id, status, requested_by, request_id)
-VALUES ($1, $2, $3, $4)
-RETURNING `+jobColumns, packageID, StatusPending, requestedBy, requestID)
+INSERT INTO upgrade_jobs (package_id, status, cluster_mode, requested_by, request_id)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING `+jobColumns, packageID, StatusPending, ClusterModeLocal, requestedBy, requestID)
 	return scanJob(row)
 }
 
@@ -255,13 +297,11 @@ func (s *Store) ListJobs(ctx context.Context, status string, page, pageSize int)
 	defer rows.Close()
 	var out []Job
 	for rows.Next() {
-		var j Job
-		if err := rows.Scan(&j.ID, &j.PackageID, &j.Status, &j.Precheck, &j.BackupJobID,
-			&j.RequestedBy, &j.RequestedAt, &j.ScheduledAt, &j.StartedAt, &j.FinishedAt,
-			&j.FailureCode, &j.FailureMessage, &j.RequestID); err != nil {
+		j, err := scanJob(rows)
+		if err != nil {
 			return nil, 0, err
 		}
-		out = append(out, j)
+		out = append(out, *j)
 	}
 	return out, total, rows.Err()
 }
@@ -286,13 +326,11 @@ ORDER BY scheduled_at`, StatusScheduled, now)
 	defer rows.Close()
 	var out []Job
 	for rows.Next() {
-		var j Job
-		if err := rows.Scan(&j.ID, &j.PackageID, &j.Status, &j.Precheck, &j.BackupJobID,
-			&j.RequestedBy, &j.RequestedAt, &j.ScheduledAt, &j.StartedAt, &j.FinishedAt,
-			&j.FailureCode, &j.FailureMessage, &j.RequestID); err != nil {
+		j, err := scanJob(rows)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, j)
+		out = append(out, *j)
 	}
 	return out, rows.Err()
 }
@@ -380,6 +418,25 @@ WHERE id = $1`, id, status)
 	return err
 }
 
+// SetCurrentVersion 持久化当前系统生效版本到 system_settings（system:current_version）。
+// 非 API 组件的精确 from → to 差量升级不会替换 api 二进制，必须落库以保证下一次预检版本连续。
+func (s *Store) SetCurrentVersion(ctx context.Context, version string) error {
+	if _, err := ParseVersion(version); err != nil {
+		return fmt.Errorf("无效的系统版本号: %w", err)
+	}
+	encoded, err := json.Marshal(version)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `
+INSERT INTO system_settings (setting_group, setting_key, setting_value, value_type, description)
+VALUES ('system', 'current_version', $1::jsonb, 'string', '当前已生效的系统版本号')
+ON CONFLICT (setting_group, setting_key)
+DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = now(), version = system_settings.version + 1`,
+		encoded)
+	return err
+}
+
 // ---------- 执行器等待截止（APPLYING 持久化 deadline，F7 兜底清扫） ----------
 
 // SetExecutorDeadline 持久化执行器等待截止时刻（进入 APPLYING 时写入）。
@@ -400,13 +457,11 @@ ORDER BY requested_at`, StatusApplying, wait.Seconds(), cutoff)
 	defer rows.Close()
 	var out []Job
 	for rows.Next() {
-		var j Job
-		if err := rows.Scan(&j.ID, &j.PackageID, &j.Status, &j.Precheck, &j.BackupJobID,
-			&j.RequestedBy, &j.RequestedAt, &j.ScheduledAt, &j.StartedAt, &j.FinishedAt,
-			&j.FailureCode, &j.FailureMessage, &j.RequestID); err != nil {
+		j, err := scanJob(rows)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, j)
+		out = append(out, *j)
 	}
 	return out, rows.Err()
 }
@@ -424,4 +479,164 @@ WHERE id = $1 AND status = $5`, id, StatusFailed, code, failMsg(err), from)
 		return fmt.Errorf("%w: job not in status %s", ErrInvalidStatus, from)
 	}
 	return nil
+}
+
+// ---------- 逐节点滚动升级执行明细（upgrade_node_executions，迁移 000237） ----------
+
+const nodeExecutionColumns = `id, job_id, node_id, node_name, role, seq, status,
+from_version, to_version, error_code, error_message, started_at, finished_at, created_at, updated_at`
+
+func scanNodeExecution(row pgx.Row) (*NodeExecution, error) {
+	var e NodeExecution
+	err := row.Scan(&e.ID, &e.JobID, &e.NodeID, &e.NodeName, &e.Role, &e.Seq, &e.Status,
+		&e.FromVersion, &e.ToVersion, &e.ErrorCode, &e.ErrorMessage, &e.StartedAt,
+		&e.FinishedAt, &e.CreatedAt, &e.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &e, nil
+}
+
+// CreateNodeExecutions 在事务内批量写入逐节点执行计划（seq 升序），返回已落库记录（含生成 ID）。
+func (s *Store) CreateNodeExecutions(ctx context.Context, execs []NodeExecution) ([]NodeExecution, error) {
+	if len(execs) == 0 {
+		return []NodeExecution{}, nil
+	}
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	out := make([]NodeExecution, 0, len(execs))
+	for _, e := range execs {
+		status := e.Status
+		if status == "" {
+			status = NodeStatusPending
+		}
+		created, err := scanNodeExecution(tx.QueryRow(ctx, `
+INSERT INTO upgrade_node_executions (job_id, node_id, node_name, role, seq, status, from_version, to_version, error_code, error_message)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING `+nodeExecutionColumns,
+			e.JobID, e.NodeID, e.NodeName, e.Role, e.Seq, status, e.FromVersion, e.ToVersion, e.ErrorCode, e.ErrorMessage))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *created)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListNodeExecutions 按 seq 升序查询指定升级任务的全部节点执行明细。
+func (s *Store) ListNodeExecutions(ctx context.Context, jobID uuid.UUID) ([]NodeExecution, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+nodeExecutionColumns+`
+FROM upgrade_node_executions WHERE job_id = $1 ORDER BY seq ASC, created_at ASC`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]NodeExecution, 0)
+	for rows.Next() {
+		item, err := scanNodeExecution(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *item)
+	}
+	return out, rows.Err()
+}
+
+// ListNodeExecutionsByJobIDs 批量查询多任务的节点执行明细（供任务列表高效装配）。
+func (s *Store) ListNodeExecutionsByJobIDs(ctx context.Context, jobIDs []uuid.UUID) (map[uuid.UUID][]NodeExecution, error) {
+	out := make(map[uuid.UUID][]NodeExecution)
+	if len(jobIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `SELECT `+nodeExecutionColumns+`
+FROM upgrade_node_executions WHERE job_id = ANY($1) ORDER BY job_id, seq ASC, created_at ASC`, jobIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		item, err := scanNodeExecution(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[item.JobID] = append(out[item.JobID], *item)
+	}
+	return out, rows.Err()
+}
+
+// GetNodeExecution 按任务 ID 与节点 ID 查询单节点执行明细。
+func (s *Store) GetNodeExecution(ctx context.Context, jobID, nodeID uuid.UUID) (*NodeExecution, error) {
+	row := s.db.QueryRow(ctx, `SELECT `+nodeExecutionColumns+`
+FROM upgrade_node_executions WHERE job_id = $1 AND node_id = $2 ORDER BY seq ASC LIMIT 1`, jobID, nodeID)
+	return scanNodeExecution(row)
+}
+
+// UpdateNodeExecutionStatus 更新单节点执行状态与错误信息。
+func (s *Store) UpdateNodeExecutionStatus(ctx context.Context, id uuid.UUID, status, errorCode, errorMessage string, setStarted, setFinished bool) error {
+	tag, err := s.db.Exec(ctx, `
+UPDATE upgrade_node_executions
+SET status = $2,
+    error_code = $3,
+    error_message = $4,
+    started_at = CASE WHEN $5 THEN COALESCE(started_at, now()) ELSE started_at END,
+    finished_at = CASE WHEN $6 THEN now() ELSE finished_at END,
+    updated_at = now()
+WHERE id = $1`, id, status, errorCode, truncate(errorMessage, 500), setStarted, setFinished)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ResetNodeExecutionForRetry 将指定失败/跳过节点重置为新的执行起点（清除旧错误与结束时间）。
+func (s *Store) ResetNodeExecutionForRetry(ctx context.Context, id uuid.UUID, initialStatus string) error {
+	if initialStatus == "" {
+		initialStatus = NodeStatusTransferring
+	}
+	tag, err := s.db.Exec(ctx, `
+UPDATE upgrade_node_executions
+SET status = $2,
+    error_code = '',
+    error_message = '',
+    started_at = now(),
+    finished_at = NULL,
+    updated_at = now()
+WHERE id = $1 AND role = $3 AND status IN ($4, $5)`,
+		id, initialStatus, NodeRoleStandby, NodeStatusFailed, NodeStatusSkipped)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: 仅 FAILED 或 SKIPPED 状态的备节点支持重试", ErrInvalidStatus)
+	}
+	return nil
+}
+
+// MarkPrimaryNodeExecution 将任务关联的 PRIMARY 节点记录同步为终态（供宿主机结果处理与重启后对账使用）。
+func (s *Store) MarkPrimaryNodeExecution(ctx context.Context, jobID uuid.UUID, status, errorCode, errorMessage string) error {
+	_, err := s.db.Exec(ctx, `
+UPDATE upgrade_node_executions
+SET status = $2,
+    error_code = $3,
+    error_message = $4,
+    started_at = COALESCE(started_at, now()),
+    finished_at = CASE WHEN $2 IN ($5, $6, $7) THEN now() ELSE finished_at END,
+    updated_at = now()
+WHERE job_id = $1 AND role = $8`,
+		jobID, status, errorCode, truncate(errorMessage, 500),
+		NodeStatusSuccess, NodeStatusFailed, NodeStatusSkipped, NodeRolePrimary)
+	return err
 }

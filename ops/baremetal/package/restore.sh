@@ -25,8 +25,8 @@ PG_OSSL="${R}/bin/pg/syslib/ossl-modules"
 PG_BIN="${R}/bin/pg/lib/postgresql/16/bin"
 RUN_USER="jiuzhang"
 SKIP_SYSTEMD="${JZ_SKIP_SYSTEMD:-0}"
-UNIT_START_ORDER="jiuzhang-postgres jiuzhang-valkey jiuzhang-gateway jiuzhang-api jiuzhang-web jiuzhang-netmgrd jiuzhang-mirrorcap jiuzhang-tproxyd jiuzhang-logrotator"
-UNIT_STOP_ORDER="jiuzhang-web jiuzhang-api jiuzhang-netmgrd jiuzhang-mirrorcap jiuzhang-tproxyd jiuzhang-logrotator jiuzhang-gateway jiuzhang-valkey"
+UNIT_START_ORDER="jiuzhang-postgres jiuzhang-valkey jiuzhang-gateway jiuzhang-api jiuzhang-web jiuzhang-netmgrd jiuzhang-mirrorcap jiuzhang-tproxyd jiuzhang-havipd jiuzhang-logrotator"
+UNIT_STOP_ORDER="jiuzhang-web jiuzhang-api jiuzhang-netmgrd jiuzhang-mirrorcap jiuzhang-tproxyd jiuzhang-havipd jiuzhang-hasyncd jiuzhang-logrotator jiuzhang-gateway jiuzhang-valkey"
 
 ARCHIVE=""
 ASSUME_YES=0
@@ -256,6 +256,9 @@ chmod 0770 "${R}/data/run/caddy/sidecars" 2>/dev/null || true
 if [[ -d "${R}/data/run/caddy/sidecars/diag" ]]; then
   chmod 0770 "${R}/data/run/caddy/sidecars/diag" 2>/dev/null || true
 fi
+if [[ -d "${R}/data/run/caddy/sidecars/keepalived" ]]; then
+  chmod 0770 "${R}/data/run/caddy/sidecars/keepalived" 2>/dev/null || true
+fi
 
 # ---------- 7. 起服务与健康等待 ----------
 wait_for() {
@@ -288,6 +291,9 @@ else
   for unit in ${UNIT_START_ORDER}; do
     systemctl start "${unit}" || die "启动 ${unit} 失败：journalctl -u ${unit} --since '5 min ago'"
   done
+  if [[ -f "${R}/data/runtime/hasync.secret" ]] || systemctl is-enabled --quiet jiuzhang-hasyncd 2>/dev/null; then
+    systemctl start jiuzhang-hasyncd || die "启动 jiuzhang-hasyncd 失败：journalctl -u jiuzhang-hasyncd --since '5 min ago'"
+  fi
   failed=0
   wait_for "PostgreSQL" check_pg || failed=1
   wait_for "Valkey" check_valkey || failed=1

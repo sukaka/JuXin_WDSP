@@ -11,8 +11,9 @@ const (
 	TypeEventCollectorLag    = "EVENT_COLLECTOR_LAG"
 	TypeParseFailureRateHigh = "EVENT_PARSE_FAILURE_RATE_HIGH"
 	TypeSourceUnhealthy      = "SOURCE_UNHEALTHY"
-	TypeCertificateExpiring  = "CERTIFICATE_EXPIRING"
-	TypeCertificateExpired   = "CERTIFICATE_EXPIRED"
+	TypeCertificateExpiring        = "CERTIFICATE_EXPIRING"
+	TypeCertificateExpired         = "CERTIFICATE_EXPIRED"
+	TypeCertificateAutoRenewFailed = "CERTIFICATE_AUTO_RENEW_FAILED"
 	TypeConfigPublishFailed  = "CONFIG_PUBLISH_FAILED"
 	TypeConfigHashMismatch   = "CONFIG_HASH_MISMATCH"
 	TypeDiskSpaceLow         = "DISK_SPACE_LOW"
@@ -53,9 +54,10 @@ const (
 	TypeLicenseExpiringSoon  = "LICENSE_EXPIRING_SOON"  // 授权临期（剩余 ≤ 7 天）
 	TypeLicenseQuotaExceeded = "LICENSE_QUOTA_EXCEEDED" // 授权配额超限（API 端点新发现拒绝落库）
 
-	// 主备高可用与网络执行告警（M4；hastatus 清扫器周期读边车状态文件触发，
+	// 主备高可用与网络执行告警（M4；hastatus 清扫器周期读边车状态文件与多节点汇聚状态触发，
 	// 见 internal/hastatus/sweeper.go）。
 	TypeHAVIPFault         = "HA_VIP_FAULT"         // 主备 VIP 异常（keepalived 不存活/实例 FAULT/havipd 停止）
+	TypeHASplitBrain       = "HA_SPLIT_BRAIN"       // 主备双主脑裂（同组多节点同时 MASTER 或同时持有相同 VIP）
 	TypeNetworkApplyFailed = "NETWORK_APPLY_FAILED" // 网络配置（网桥/路由）执行失败
 	TypeLinkPairDown       = "LINK_PAIR_DOWN"       // 端口联动已触发（链路故障，配对口已联动 down）
 	TypeLinkPairSuppressed = "LINK_PAIR_SUPPRESSED" // 端口联动频率超限进入抑制态
@@ -138,8 +140,9 @@ var severityRules = map[string]string{
 	TypeEventCollectorLag:        SeverityMedium,
 	TypeParseFailureRateHigh:     SeverityMedium,
 	TypeSourceUnhealthy:          SeverityMedium,
-	TypeCertificateExpiring:      SeverityLow, // ≤30 天；≤7 天升 MEDIUM
-	TypeCertificateExpired:       SeverityHigh,
+	TypeCertificateExpiring:        SeverityLow, // ≤30 天；≤7 天升 MEDIUM
+	TypeCertificateExpired:         SeverityHigh,
+	TypeCertificateAutoRenewFailed: SeverityHigh,
 	TypeConfigPublishFailed:      SeverityHigh,
 	TypeConfigHashMismatch:       SeverityMedium,
 	TypeDiskSpaceLow:             SeverityHigh,
@@ -165,6 +168,7 @@ var severityRules = map[string]string{
 	TypeLicenseExpiringSoon:      SeverityHigh,
 	TypeLicenseQuotaExceeded:     SeverityHigh,
 	TypeHAVIPFault:               SeverityHigh,
+	TypeHASplitBrain:             SeverityCritical,
 	TypeNetworkApplyFailed:       SeverityHigh,
 	TypeLinkPairDown:             SeverityMedium,
 	TypeLinkPairSuppressed:       SeverityHigh,

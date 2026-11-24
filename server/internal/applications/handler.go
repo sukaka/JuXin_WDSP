@@ -2,11 +2,14 @@ package applications
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/audits"
@@ -29,9 +32,17 @@ type Handler struct {
 	// countApps 应用计数（默认 store.Count；单测注入 fake——Store 为 PG 具体实现无法伪造，
 	// 与 license handler 的 auditRecorder 同一测试纪律）
 	countApps func(ctx context.Context) (int64, error)
+	// createApp 持久化新应用（默认 store.Create；单测注入 fake 验证自动标识与冲突重试）
+	createApp func(ctx context.Context, a *Application) error
+	// generateCode 自动生成应用标识（默认 generateAppCode；单测可注入固定序列验证冲突重试）
+	generateCode func() (string, error)
 	// admissionCoverage API 准入覆盖率快照读取（apisecurity.Store.AdmissionCoverage 闭包注入；
 	// 切入 PROTECT 时把覆盖率快照记入审计 details，设计 §5.1/§8；nil 时不附加快照）
 	admissionCoverage func(ctx context.Context, appID uuid.UUID) (any, error)
+	// onUpstreamChanged 源站或应用启停变更回调（非阻塞触发后台源站健康探测，nil 时忽略）
+	onUpstreamChanged func()
+	// onDomainsChanged 域名新增/更新回调（非阻塞唤醒自动 SSL 域名覆盖检查，nil 时忽略）
+	onDomainsChanged func(appID uuid.UUID)
 }
 
 // CertBinder 是证书绑定接口（由 certificates.Store 实现）。
@@ -42,7 +53,14 @@ type CertBinder interface {
 
 // NewHandler 创建应用管理处理器。
 func NewHandler(store *Store, au *audits.Service, binder CertBinder) *Handler {
-	return &Handler{store: store, audits: au, certBinder: binder, countApps: store.Count}
+	return &Handler{
+		store:        store,
+		audits:       au,
+		certBinder:   binder,
+		countApps:    store.Count,
+		createApp:    store.Create,
+		generateCode: generateAppCode,
+	}
 }
 
 // SetMaxApplicationsProvider 注入授权应用数量配额（0=不限制）。
@@ -55,6 +73,30 @@ func (h *Handler) SetMaxApplicationsProvider(fn func(ctx context.Context) int64)
 func (h *Handler) SetAdmissionCoverageProvider(fn func(ctx context.Context, appID uuid.UUID) (any, error)) *Handler {
 	h.admissionCoverage = fn
 	return h
+}
+
+// SetOnUpstreamChanged 注入源站/应用状态变更后的即时健康探测触发器（须为非阻塞回调）。
+func (h *Handler) SetOnUpstreamChanged(fn func()) *Handler {
+	h.onUpstreamChanged = fn
+	return h
+}
+
+// SetOnDomainsChanged 注入域名变更回调（非阻塞唤醒自动 SSL 检查）。
+func (h *Handler) SetOnDomainsChanged(fn func(appID uuid.UUID)) *Handler {
+	h.onDomainsChanged = fn
+	return h
+}
+
+func (h *Handler) notifyUpstreamChanged() {
+	if h.onUpstreamChanged != nil {
+		h.onUpstreamChanged()
+	}
+}
+
+func (h *Handler) notifyDomainsChanged(appID uuid.UUID) {
+	if h.onDomainsChanged != nil {
+		h.onDomainsChanged(appID)
+	}
 }
 
 // ---------- 应用 ----------
@@ -74,11 +116,20 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
+	appIDs := make([]uuid.UUID, 0, len(list))
+	for _, a := range list {
+		appIDs = append(appIDs, a.ID)
+	}
+	primaryDomains, err := h.store.PrimaryDomainsByAppIDs(r.Context(), appIDs)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
 	items := make([]map[string]interface{}, 0, len(list))
 	for _, a := range list {
 		domainCount, _ := h.store.CountActiveDomains(r.Context(), a.ID)
 		upstreamCount, _ := h.store.CountActiveUpstreams(r.Context(), a.ID)
-		items = append(items, appItem(&a, domainCount, upstreamCount))
+		items = append(items, appItem(&a, domainCount, upstreamCount, primaryDomains[a.ID]))
 	}
 	response.Page(w, r, items, total, f.Page, f.PageSize)
 }
@@ -95,7 +146,29 @@ type createAppRequest struct {
 	DeploymentMode   string `json:"deployment_mode"`
 }
 
-// Create 创建应用。
+const (
+	autoAppCodeAlphabet   = "0123456789abcdefghijklmnopqrstuvwxyz"
+	autoAppCodeSuffixLen  = 8
+	maxAutoAppCodeRetries = 5
+)
+
+// generateAppCode 生成符合 ValidateAppCode 规范的自动应用标识（形如 app-7k2m9x4p）。
+func generateAppCode() (string, error) {
+	var b strings.Builder
+	b.Grow(4 + autoAppCodeSuffixLen)
+	b.WriteString("app-")
+	alphabetLen := big.NewInt(int64(len(autoAppCodeAlphabet)))
+	for i := 0; i < autoAppCodeSuffixLen; i++ {
+		n, err := rand.Int(rand.Reader, alphabetLen)
+		if err != nil {
+			return "", fmt.Errorf("generate application code: %w", err)
+		}
+		b.WriteByte(autoAppCodeAlphabet[n.Int64()])
+	}
+	return b.String(), nil
+}
+
+// Create 创建应用。code 留空时由服务端自动生成唯一标识，显式传入时按原规则校验。
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	var req createAppRequest
@@ -103,8 +176,15 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
 		return
 	}
-	if err := validation.ValidateAppCode(req.Code); err != nil {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+	autoCode := req.Code == ""
+	if !autoCode {
+		if err := validation.ValidateAppCode(req.Code); err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+			return
+		}
+	}
+	if req.Name == "" || len(req.Name) > 128 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "应用名称不能为空且不超过128字符")
 		return
 	}
 	if req.APIAdmissionMode != "" && !validAPIAdmissionMode(req.APIAdmissionMode) {
@@ -133,23 +213,58 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if count >= quota {
-				h.recordQuotaDeniedAudit(r, p, req.Code, quota)
+				auditObj := req.Code
+				if auditObj == "" {
+					auditObj = req.Name
+				}
+				h.recordQuotaDeniedAudit(r, p, auditObj, quota)
 				response.Error(w, r, http.StatusForbidden, license.CodeLicenseQuotaExceeded,
 					fmt.Sprintf("应用数量已达授权配额上限（%d），请联系厂家扩容", quota))
 				return
 			}
 		}
 	}
-	if err := h.store.Create(r.Context(), a); err != nil {
-		if errors.Is(err, ErrCodeExists) {
+	createFn := h.createApp
+	if createFn == nil {
+		createFn = h.store.Create
+	}
+	codeGen := h.generateCode
+	if codeGen == nil {
+		codeGen = generateAppCode
+	}
+	attempts := 1
+	if autoCode {
+		attempts = maxAutoAppCodeRetries
+	}
+	var createErr error
+	for i := 0; i < attempts; i++ {
+		if autoCode {
+			code, genErr := codeGen()
+			if genErr != nil {
+				response.InternalError(w, r, genErr)
+				return
+			}
+			a.Code = code
+		}
+		createErr = createFn(r.Context(), a)
+		if !autoCode || !errors.Is(createErr, ErrCodeExists) {
+			break
+		}
+	}
+	if createErr != nil {
+		if errors.Is(createErr, ErrCodeExists) {
+			if autoCode {
+				response.InternalError(w, r, fmt.Errorf("自动生成应用标识重试 %d 次后仍冲突: %w", maxAutoAppCodeRetries, createErr))
+				return
+			}
 			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "应用编码已存在")
 			return
 		}
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, createErr.Error())
 		return
 	}
 	h.recordAudit(r, p, "applications", "create", "application", a.ID.String(), a.Code, "", appSummary(a), audits.ResultSuccess, audits.RiskMedium)
-	response.JSON(w, r, http.StatusOK, appItem(a, 0, 0))
+	response.JSON(w, r, http.StatusOK, appItem(a, 0, 0, ""))
 }
 
 // Get 应用详情。
@@ -168,7 +283,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	upstreamCount, _ := h.store.CountActiveUpstreams(r.Context(), id)
 	domains, _ := h.store.ListDomains(r.Context(), id)
 	upstreams, _ := h.store.ListUpstreams(r.Context(), id)
-	item := appItem(a, domainCount, upstreamCount)
+	item := appItem(a, domainCount, upstreamCount, primaryActiveDomain(domains))
 	item["domains"] = domains
 	item["upstreams"] = upstreams
 	response.JSON(w, r, http.StatusOK, item)
@@ -263,6 +378,9 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
+	if req.DeploymentMode != "" {
+		h.notifyUpstreamChanged()
+	}
 	risk := audits.RiskLow
 	if req.ProtectionMode != "" || req.APIAdmissionMode != "" || req.DeploymentMode != "" {
 		risk = audits.RiskHigh
@@ -277,7 +395,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.recordAudit(r, p, "applications", "update", "application", id.String(), a.Code, before, after, audits.ResultSuccess, risk)
-	response.JSON(w, r, http.StatusOK, appItem(a, 0, 0))
+	response.JSON(w, r, http.StatusOK, appItem(a, 0, 0, ""))
 }
 
 // Enable 启用应用。
@@ -306,6 +424,7 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, status, acti
 		response.InternalError(w, r, err)
 		return
 	}
+	h.notifyUpstreamChanged()
 	h.recordAudit(r, p, "applications", action, "application", id.String(), a.Code, "status="+a.Status, "status="+status, audits.ResultSuccess, audits.RiskMedium)
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "操作成功"})
 }
@@ -352,11 +471,14 @@ func (h *Handler) Copy(w http.ResponseWriter, r *http.Request) {
 	}
 	// 复制域名
 	domains, _ := h.store.ListDomains(r.Context(), id)
+	var copiedDomains []Domain
 	for _, d := range domains {
 		nd := d
 		nd.ApplicationID = newApp.ID
 		nd.ID = uuid.Nil
-		_ = h.store.AddDomain(r.Context(), &nd)
+		if err := h.store.AddDomain(r.Context(), &nd); err == nil {
+			copiedDomains = append(copiedDomains, nd)
+		}
 	}
 	// 复制源站
 	upstreams, _ := h.store.ListUpstreams(r.Context(), id)
@@ -368,7 +490,7 @@ func (h *Handler) Copy(w http.ResponseWriter, r *http.Request) {
 		_ = h.store.AddUpstream(r.Context(), &nu)
 	}
 	h.recordAudit(r, p, "applications", "copy", "application", newApp.ID.String(), newApp.Code, appSummary(src), appSummary(newApp), audits.ResultSuccess, audits.RiskLow)
-	response.JSON(w, r, http.StatusOK, appItem(newApp, len(domains), len(upstreams)))
+	response.JSON(w, r, http.StatusOK, appItem(newApp, len(copiedDomains), len(upstreams), primaryActiveDomain(copiedDomains)))
 }
 
 // Delete 删除应用（逻辑删除，需先下线）。
@@ -461,6 +583,9 @@ func (h *Handler) AddDomain(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
+	if d.HTTPSEnabled {
+		h.notifyDomainsChanged(appID)
+	}
 	h.recordAudit(r, p, "applications", "add_domain", "domain", d.ID.String(), d.Hostname, "", domainSummary(d), audits.ResultSuccess, audits.RiskMedium)
 	response.JSON(w, r, http.StatusOK, d)
 }
@@ -498,6 +623,9 @@ func (h *Handler) UpdateDomain(w http.ResponseWriter, r *http.Request) {
 		}
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
+	}
+	if d.HTTPSEnabled {
+		h.notifyDomainsChanged(d.ApplicationID)
 	}
 	h.recordAudit(r, p, "applications", "update_domain", "domain", d.ID.String(), d.Hostname, before, domainSummary(d), audits.ResultSuccess, audits.RiskMedium)
 	response.JSON(w, r, http.StatusOK, d)
@@ -584,6 +712,7 @@ func (h *Handler) AddUpstream(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
+	h.notifyUpstreamChanged()
 	h.recordAudit(r, p, "upstreams", "create", "upstream", u.ID.String(), u.Name, "", upstreamSummary(u), audits.ResultSuccess, audits.RiskMedium)
 	response.JSON(w, r, http.StatusOK, u)
 }
@@ -616,6 +745,7 @@ func (h *Handler) UpdateUpstream(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
+	h.notifyUpstreamChanged()
 	risk := audits.RiskLow
 	if req.Weight != nil {
 		risk = audits.RiskMedium
@@ -650,6 +780,7 @@ func (h *Handler) setUpstreamStatus(w http.ResponseWriter, r *http.Request, stat
 		response.InternalError(w, r, err)
 		return
 	}
+	h.notifyUpstreamChanged()
 	h.recordAudit(r, p, "upstreams", action, "upstream", id.String(), u.Name, "status="+u.Status, "status="+status, audits.ResultSuccess, audits.RiskLow)
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "操作成功"})
 }
@@ -671,6 +802,7 @@ func (h *Handler) DeleteUpstream(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
+	h.notifyUpstreamChanged()
 	h.recordAudit(r, p, "upstreams", "delete", "upstream", id.String(), u.Name, upstreamSummary(u), "", audits.ResultSuccess, audits.RiskMedium)
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "源站已删除"})
 }
@@ -856,7 +988,23 @@ func (h *Handler) recordQuotaDeniedAudit(r *http.Request, p *authz.Principal, co
 	})
 }
 
-func appItem(a *Application, domainCount, upstreamCount int) map[string]interface{} {
+// primaryActiveDomain 从按 is_primary DESC, created_at ASC 排序的域名列表中提取主活动域名。
+func primaryActiveDomain(domains []Domain) string {
+	for _, d := range domains {
+		if d.Status != "ACTIVE" {
+			continue
+		}
+		if d.NormalizedHostname != "" {
+			return d.NormalizedHostname
+		}
+		if d.Hostname != "" {
+			return d.Hostname
+		}
+	}
+	return ""
+}
+
+func appItem(a *Application, domainCount, upstreamCount int, primaryDomain string) map[string]interface{} {
 	return map[string]interface{}{
 		"id": a.ID, "code": a.Code, "name": a.Name, "description": a.Description,
 		"business_owner": a.BusinessOwner, "technical_owner": a.TechnicalOwner,
@@ -868,6 +1016,16 @@ func appItem(a *Application, domainCount, upstreamCount int) map[string]interfac
 		"last_publish_result": a.LastPublishResult,
 		// NG-AZ-02 D5：授权快照租约秒数（nil=不启用）
 		"authz_lease_seconds": a.AuthzLeaseSeconds,
+		// Auto-SSL 站点级摘要
+		"auto_ssl_enabled":           a.AutoSSLEnabled,
+		"auto_ssl_challenge_type":    a.AutoSSLChallengeType,
+		"auto_ssl_renew_before_days": a.AutoSSLRenewBeforeDays,
+		"auto_ssl_last_status":       a.AutoSSLLastStatus,
+		"auto_ssl_last_error":        a.AutoSSLLastError,
+		"auto_ssl_fail_count":        a.AutoSSLFailCount,
+		"auto_ssl_next_retry_at":     a.AutoSSLNextRetryAt,
+		"auto_ssl_last_attempt_at":   a.AutoSSLLastAttemptAt,
+		"primary_domain":             primaryDomain,
 		"domain_count":        domainCount, "upstream_count": upstreamCount,
 		"created_at": a.CreatedAt, "updated_at": a.UpdatedAt, "version": a.Version,
 	}

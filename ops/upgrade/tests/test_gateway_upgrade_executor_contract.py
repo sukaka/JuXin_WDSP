@@ -683,19 +683,20 @@ printf 'RESULT=%s MESSAGE=%s\n' "$result" "$CURRENT_MESSAGE"
 
         # 2) New service with privileged, pid:host, ipc:host, root bind mount, or unauthorized cap_add
         bad_new_configs = [
-            ("privileged", {"image": image_for("netmgrd", "1.4.0"), "privileged": True}),
-            ("pid_host", {"image": image_for("netmgrd", "1.4.0"), "pid": "host"}),
-            ("ipc_host", {"image": image_for("netmgrd", "1.4.0"), "ipc": "host"}),
-            ("root_bind", {"image": image_for("netmgrd", "1.4.0"), "volumes": [{"type": "bind", "source": "/", "target": "/host"}]}),
-            ("docker_sock", {"image": image_for("netmgrd", "1.4.0"), "volumes": [{"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock"}]}),
-            ("bad_cap", {"image": image_for("netmgrd", "1.4.0"), "cap_add": ["SYS_ADMIN"]}),
+            ("privileged", {"image": image_for("netmgrd", "1.4.0"), "privileged": True}, "privileged"),
+            ("pid_host", {"image": image_for("netmgrd", "1.4.0"), "pid": "host"}, "命名空间"),
+            ("ipc_host", {"image": image_for("netmgrd", "1.4.0"), "ipc": "host"}, "命名空间"),
+            ("root_bind", {"image": image_for("netmgrd", "1.4.0"), "volumes": [{"type": "bind", "source": "/", "target": "/host"}]}, "宿主机根路径"),
+            ("docker_sock", {"image": image_for("netmgrd", "1.4.0"), "volumes": [{"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock"}]}, "敏感路径"),
+            ("bad_cap", {"image": image_for("netmgrd", "1.4.0"), "cap_add": ["SYS_ADMIN"]}, "SYS_ADMIN"),
         ]
-        for label, svc_def in bad_new_configs:
+        for label, svc_def, expected_msg in bad_new_configs:
             with self.subTest(label=label):
                 after = json.loads(json.dumps(base_compose))
                 after["services"]["netmgrd"] = svc_def
                 out = run_fragment_case(after)
                 self.assertIn("RESULT=1", out, f"{label} should be rejected: {out}")
+                self.assertIn(expected_msg, out, f"{label} expected security rejection '{expected_msg}', got: {out}")
 
         # 3) Clean netmgrd definition with only NET_RAW/NET_ADMIN and named volume must be accepted
         good_after = json.loads(json.dumps(base_compose))
@@ -712,6 +713,98 @@ printf 'RESULT=%s MESSAGE=%s\n' "$result" "$CURRENT_MESSAGE"
         out = run_fragment_case(good_after)
         # Note: on non-root macOS `install -o root -g root` fails with permission denied, which proves it passed ALL security checks!
         self.assertTrue("RESULT=0" in out or "安装 compose 片段失败" in out, out)
+
+        # 4) havipd fragment security checks: reject SYS_ADMIN, accept NET_ADMIN/NET_RAW/NET_BROADCAST
+        def run_component_fragment_case(component, after_compose):
+            package = self.make_upgrade_pack(
+                (component,),
+                extra_files={"compose/upgrade-services.yml": f"services:\n  {component}: {{}}\n"},
+            )
+            compose_file = self.base / "compose.json"
+            after_file = self.base / "compose-after.json"
+            compose_file.write_text(json.dumps(base_compose), encoding="utf-8")
+            after_file.write_text(json.dumps(after_compose), encoding="utf-8")
+            calls = self.base / "calls.log"
+            if calls.exists():
+                calls.unlink()
+            env = dict(
+                os.environ,
+                PACKAGE_ROOT=str(package),
+                COMPOSE_JSON_FILE=str(compose_file),
+                AFTER_JSON_FILE=str(after_file),
+                COMPOSE_FILE=str(self.base / "docker-compose.yml"),
+                ENV_FILE=str(self.base / "executor.env"),
+                OVERRIDES_DIR=str(self.overrides),
+                STATE_DIR=str(self.state),
+                TEST_PUBKEY_FILE=str(self.sign_pub),
+                CALLS=str(calls),
+                GATEWAY_TARGET=image_for("gateway", "1.4.0"),
+                GATEWAY_ENTRYPOINT=json.dumps([NEW_ENTRYPOINT], separators=(",", ":")),
+            )
+            override_docker = r'''
+docker() {
+  printf 'docker %s\n' "$*" >>"$CALLS"
+  if [[ "${1:-}" == compose ]]; then
+    if [[ "$*" == *"upgrade-services.yml"* ]]; then
+      cat "$AFTER_JSON_FILE"
+    else
+      cat "$COMPOSE_JSON_FILE"
+    fi
+    return 0
+  fi
+  if [[ "${1:-}" == load ]]; then cat >/dev/null; return 0; fi
+  if [[ "${1:-}" == image && "${2:-}" == inspect ]]; then
+    if [[ "${5:-}" == '{{.Id}}' ]]; then printf 'sha256:old-img\n'; fi
+    return 0
+  fi
+  case "${1:-}" in tag|rmi) return 0 ;; *) return 1 ;; esac
+}
+'''
+            script = "\n".join((MOCKS, override_docker, SHA256_FILE, ROLLBACK_IMAGES, RUNTIME_PATCH, UPGRADE_PACK)) + r'''
+if process_upgrade_pack "$PACKAGE_ROOT" "$PACKAGE_ROOT/manifest.json" 1.3.0 1.4.0; then
+  result=0
+else
+  result=$?
+fi
+printf 'RESULT=%s MESSAGE=%s\n' "$result" "$CURRENT_MESSAGE"
+'''
+            res = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, timeout=15)
+            self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+            return res.stdout
+
+        bad_havipd = json.loads(json.dumps(base_compose))
+        bad_havipd["services"]["havipd"] = {
+            "image": image_for("havipd", "1.4.0"),
+            "cap_add": ["NET_ADMIN", "SYS_ADMIN"],
+        }
+        out = run_component_fragment_case("havipd", bad_havipd)
+        self.assertIn("RESULT=1", out)
+        self.assertIn("SYS_ADMIN", out)
+
+        good_havipd = json.loads(json.dumps(base_compose))
+        good_havipd["services"]["havipd"] = {
+            "image": image_for("havipd", "1.4.0"),
+            "network_mode": "service:gateway",
+            "group_add": ["1000"],
+            "read_only": True,
+            "cap_drop": ["ALL"],
+            "cap_add": ["NET_ADMIN", "NET_RAW", "NET_BROADCAST"],
+            "volumes": [{"type": "volume", "source": "gateway-admin", "target": "/var/run/caddy"}],
+        }
+        for p in self.overrides.glob("*.yml"):
+            p.unlink()
+        out = run_component_fragment_case("havipd", good_havipd)
+        self.assertTrue("RESULT=0" in out or "安装 compose 片段失败" in out, out)
+
+        # 5) hasyncd fragment security checks: must reject ANY capability
+        bad_hasyncd = json.loads(json.dumps(base_compose))
+        bad_hasyncd["services"]["hasyncd"] = {
+            "image": image_for("hasyncd", "1.4.0"),
+            "cap_add": ["NET_ADMIN"],
+        }
+        out = run_component_fragment_case("hasyncd", bad_hasyncd)
+        self.assertIn("RESULT=1", out)
+        self.assertIn("NET_ADMIN", out)
 
     def test_upgrade_executor_preserves_and_heals_api_clickhouse_networks(self):
         state_file = self.base / "net-state.json"

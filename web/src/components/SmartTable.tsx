@@ -26,18 +26,19 @@ interface Persisted {
   h: string[]
 }
 
-function loadPersisted(storageKey?: string): Persisted {
-  if (!storageKey) return { w: {}, h: [] }
+function loadPersisted(storageKey?: string, defaultHiddenKeys?: string[]): Persisted {
+  const defaultHidden = defaultHiddenKeys ? [...defaultHiddenKeys] : []
+  if (!storageKey) return { w: {}, h: defaultHidden }
   try {
     const raw = localStorage.getItem('smart-table:' + storageKey)
-    if (!raw) return { w: {}, h: [] }
+    if (!raw) return { w: {}, h: defaultHidden }
     const parsed = JSON.parse(raw) as Partial<Persisted>
     return {
       w: typeof parsed.w === 'object' && parsed.w !== null ? parsed.w : {},
-      h: Array.isArray(parsed.h) ? parsed.h.filter((x) => typeof x === 'string') : [],
+      h: Array.isArray(parsed.h) ? parsed.h.filter((x) => typeof x === 'string') : defaultHidden,
     }
   } catch {
-    return { w: {}, h: [] }
+    return { w: {}, h: defaultHidden }
   }
 }
 
@@ -101,6 +102,8 @@ export interface SmartTableProps<T extends object> extends Omit<TableProps<T>, '
   components?: TableProps<T>['components']
   /** 持久化键（smart-table:<key>）；不传则仅会话内有效 */
   storageKey?: string
+  /** 首次访问（尚无本地持久化记录）与重置时默认隐藏的列 key 列表 */
+  defaultHiddenKeys?: string[]
   /** 自定义刷新回调；未传时默认刷新当前页活跃查询 */
   onRefresh?: () => void | Promise<unknown>
   /** 仅刷新指定 queryKey 前缀（未传 onRefresh 时生效） */
@@ -138,6 +141,7 @@ export default function SmartTable<T extends object>(props: SmartTableProps<T>) 
   const {
     columns = [],
     storageKey,
+    defaultHiddenKeys,
     components,
     onRefresh,
     refreshQueryKeys,
@@ -148,7 +152,7 @@ export default function SmartTable<T extends object>(props: SmartTableProps<T>) 
   } = props
   const isTableLoading =
     typeof rest.loading === 'boolean' ? rest.loading : Boolean(rest.loading?.spinning)
-  const [persisted] = useState<Persisted>(() => loadPersisted(storageKey))
+  const [persisted] = useState<Persisted>(() => loadPersisted(storageKey, defaultHiddenKeys))
   const [widths, setWidths] = useState<Record<string, number>>(persisted.w)
   const [hidden, setHidden] = useState<string[]>(persisted.h)
 
@@ -171,9 +175,10 @@ export default function SmartTable<T extends object>(props: SmartTableProps<T>) 
   }
 
   const resetAll = () => {
+    const defaultHidden = defaultHiddenKeys ? [...defaultHiddenKeys] : []
     setWidths({})
-    setHidden([])
-    persist({}, [])
+    setHidden(defaultHidden)
+    persist({}, defaultHidden)
   }
 
   const mergedColumns = useMemo(() => {

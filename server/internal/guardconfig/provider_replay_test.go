@@ -58,6 +58,7 @@ func snapshotWithRuntimeSecrets() *gatewayconfig.GuardConfig {
 		BehaviorStoreTTLSeconds:    720,
 		IdentitySalt:               redactPlaceholder,
 		TLSSessionTicketKey:        redactPlaceholder, // 快照脱敏占位：不清零会被发布致 Caddy /load 拒绝
+		TLSSessionTicketKeys:       []string{redactPlaceholder, redactPlaceholder},
 		CredentialIPSpreadLimit:    5,
 		CredentialConcurrencyLimit: 10,
 		APIWriteRatePerMinute:      120,
@@ -84,7 +85,7 @@ func TestReplayRuntimeSecretsSettingsDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.BehaviorStore != "" || cfg.BehaviorStoreTTLSeconds != 0 || cfg.IdentitySalt != "" ||
-		cfg.TLSSessionTicketKey != "" || cfg.CredentialIPSpreadLimit != 0 || cfg.CredentialConcurrencyLimit != 0 ||
+		cfg.TLSSessionTicketKey != "" || len(cfg.TLSSessionTicketKeys) != 0 || cfg.CredentialIPSpreadLimit != 0 || cfg.CredentialConcurrencyLimit != 0 ||
 		cfg.APIWriteRatePerMinute != 0 || cfg.APIResponseFailPolicy != "" || cfg.APIResponseCaptureMaxBytes != 0 ||
 		cfg.APILLMAllowedModels != nil || cfg.APIFileWatermark != nil ||
 		cfg.APIGRPCMaxFrameBytes != 0 || cfg.APIGRPCAllowCompression {
@@ -98,12 +99,13 @@ func TestReplayRuntimeSecretsSettingsDeleted(t *testing.T) {
 // TestReplayRuntimeSecretsReinject 当前设置存在：清零后按当前值重放（含此前遗漏的
 // tls_session_ticket_key/api_response_fail_policy/api_response_capture_max_bytes）。
 func TestReplayRuntimeSecretsReinject(t *testing.T) {
-	const ticketKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const ticketKey1 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const ticketKey2 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	p := &Provider{
 		runtimeSettingsLoader: func(ctx context.Context) (map[string]string, error) {
 			return map[string]string{
 				"behavior_store":                 "memory",
-				"tls_session_ticket_key":         ticketKey,
+				"tls_session_ticket_key":         ticketKey1 + "," + ticketKey2,
 				"api_response_fail_policy":       "FAIL_OPEN",
 				"api_response_capture_max_bytes": "2048",
 			}, nil
@@ -115,7 +117,8 @@ func TestReplayRuntimeSecretsReinject(t *testing.T) {
 	if err := p.replayRuntimeSecrets(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.BehaviorStore != "memory" || cfg.TLSSessionTicketKey != ticketKey ||
+	if cfg.BehaviorStore != "memory" || cfg.TLSSessionTicketKey != ticketKey1 ||
+		len(cfg.TLSSessionTicketKeys) != 2 || cfg.TLSSessionTicketKeys[0] != ticketKey1 || cfg.TLSSessionTicketKeys[1] != ticketKey2 ||
 		cfg.APIResponseFailPolicy != "FAIL_OPEN" || cfg.APIResponseCaptureMaxBytes != 2048 {
 		t.Fatalf("当前设置未重放: %+v", cfg)
 	}
@@ -144,7 +147,7 @@ func TestReplayRuntimeSecretsRedactPlaceholderValue(t *testing.T) {
 	if err := p.replayRuntimeSecrets(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.TLSSessionTicketKey != "" || cfg.IdentitySalt != "" {
+	if cfg.TLSSessionTicketKey != "" || len(cfg.TLSSessionTicketKeys) != 0 || cfg.IdentitySalt != "" {
 		t.Fatalf("脱敏占位符不得写入: %+v", cfg)
 	}
 }

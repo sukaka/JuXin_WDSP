@@ -29,12 +29,12 @@ CURRENT_MESSAGE=""
 compose() {{
   [[ "$SCENARIO" != compose-error ]] || return 1
   [[ "$*" == "config --format json" ]] || return 1
-  printf '%s\\n' '{{"services":{{"netmgrd":{{"image":"image-netmgrd"}}}}}}'
+  printf '%s\\n' '{{"services":{{"netmgrd":{{"image":"image-netmgrd"}},"havipd":{{"image":"image-havipd"}}}}}}'
 }}
 docker() {{
   [[ "$1 $2" == "image inspect" ]] || return 1
   [[ "$SCENARIO" != inspect-error ]] || return 1
-  printf 'sha256:netmgrd-old\\n'
+  printf 'sha256:%s-old\\n' "${{3#image-}}"
 }}
 include_netmgrd() {{
   local stable old
@@ -54,6 +54,23 @@ printf 'RESULT=%s SERVICES=%s IMAGES=%s IDS=%s MESSAGE=%s\\n' \
         self.assertIn("SERVICES=gateway netmgrd", output)
         self.assertIn("IMAGES=image-gateway image-netmgrd", output)
         self.assertIn("IDS=sha256:gateway-old sha256:netmgrd-old", output)
+
+    def test_gateway_only_upgrade_co_recreates_netmgrd_and_havipd(self):
+        output = self.run_include(["gateway"], ["api", "gateway", "netmgrd", "havipd"])
+        self.assertIn("RESULT=0", output)
+        self.assertIn("SERVICES=gateway netmgrd havipd", output)
+        self.assertIn("IMAGES=image-gateway image-netmgrd image-havipd", output)
+        self.assertIn("IDS=sha256:gateway-old sha256:netmgrd-old sha256:havipd-old", output)
+
+        # Already upgrading havipd must not duplicate it
+        output_dedup = self.run_include(["gateway", "havipd"], ["api", "gateway", "netmgrd", "havipd"])
+        self.assertIn("RESULT=0", output_dedup)
+        self.assertIn("SERVICES=gateway havipd netmgrd", output_dedup)
+
+        # Fail-closed when havipd inspect fails
+        output_err = self.run_include(["gateway"], ["gateway", "havipd"], "inspect-error")
+        self.assertIn("RESULT=1", output_err)
+        self.assertIn("havipd", output_err.split("MESSAGE=", 1)[1])
 
     def test_no_duplicate_and_no_unrelated_service_changes(self):
         output = self.run_include(["gateway", "netmgrd"], ["gateway", "netmgrd"])

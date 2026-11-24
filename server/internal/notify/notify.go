@@ -93,7 +93,7 @@ type Category struct {
 var categories = []Category{
 	{Code: "infrastructure", Name: "基础设施", AlertTypes: []string{
 		"GATEWAY_DOWN", "MANAGEMENT_API_DOWN", "DATABASE_UNAVAILABLE", "VALKEY_UNAVAILABLE",
-		"HA_VIP_FAULT", "NETWORK_APPLY_FAILED", "LINK_PAIR_DOWN", "LINK_PAIR_SUPPRESSED"}},
+		"HA_VIP_FAULT", "HA_SPLIT_BRAIN", "NETWORK_APPLY_FAILED", "LINK_PAIR_DOWN", "LINK_PAIR_SUPPRESSED"}},
 	{Code: "storage", Name: "存储容量", AlertTypes: []string{
 		"DISK_SPACE_LOW", "DATABASE_CAPACITY_HIGH"}},
 	{Code: "certificate", Name: "证书", AlertTypes: []string{
@@ -151,6 +151,7 @@ var alertTypeNames = map[string]string{
 	"DATABASE_UNAVAILABLE":          "数据库不可用",
 	"VALKEY_UNAVAILABLE":            "Valkey不可用",
 	"HA_VIP_FAULT":                  "主备VIP异常",
+	"HA_SPLIT_BRAIN":                "主备双主脑裂",
 	"NETWORK_APPLY_FAILED":          "网络配置执行失败",
 	"LINK_PAIR_DOWN":                "端口联动触发",
 	"LINK_PAIR_SUPPRESSED":          "端口联动抑制",

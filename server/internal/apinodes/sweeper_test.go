@@ -141,15 +141,17 @@ type upsertCall struct {
 }
 
 type fakeNodeStore struct {
-	aggs        []NodeAggregate
-	aggErr      error
-	nodes       []Node
-	listErr     error
-	upserts     []upsertCall
-	heartbeats  []apiruntime.Heartbeat
-	statusUpd   map[string]string
-	updateErr   error
-	syncResults []syncResultCall
+	aggs          []NodeAggregate
+	aggErr        error
+	nodes         []Node
+	secrets       map[uuid.UUID]string // stored encrypted ciphertexts (never exposed on Node)
+	inHAGroup     map[uuid.UUID]bool
+	listErr       error
+	upserts       []upsertCall
+	heartbeats    []apiruntime.Heartbeat
+	statusUpd     map[string]string
+	updateErr     error
+	syncResults   []syncResultCall
 }
 
 func (f *fakeNodeStore) AggregateEvents(context.Context) ([]NodeAggregate, error) {
@@ -194,6 +196,61 @@ func (f *fakeNodeStore) GetNode(_ context.Context, id uuid.UUID) (*Node, error) 
 	return nil, ErrNodeNotFound
 }
 
+func (f *fakeNodeStore) GetNodeByName(_ context.Context, nodeName string) (*Node, error) {
+	for i := range f.nodes {
+		if f.nodes[i].NodeName == nodeName {
+			n := f.nodes[i]
+			return &n, nil
+		}
+	}
+	return nil, ErrNodeNotFound
+}
+
+func (f *fakeNodeStore) CreateNode(_ context.Context, in CreateNodeInput) (*Node, error) {
+	for i := range f.nodes {
+		if f.nodes[i].NodeName == in.NodeName {
+			return nil, ErrNodeNameExists
+		}
+	}
+	now := time.Now().UTC()
+	n := Node{
+		ID:            uuid.New(),
+		NodeName:      in.NodeName,
+		FirstSeenAt:   now,
+		LastSeenAt:    time.Unix(0, 0).UTC(),
+		Status:        StatusSilent,
+		AdminAddr:     in.AdminAddr,
+		SyncAgentAddr: in.SyncAgentAddr,
+		HasSyncSecret: in.SyncSecretCiphertext != "",
+		SyncEnabled:   in.SyncEnabled,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if f.secrets == nil {
+		f.secrets = map[uuid.UUID]string{}
+	}
+	if in.SyncSecretCiphertext != "" {
+		f.secrets[n.ID] = in.SyncSecretCiphertext
+	}
+	f.nodes = append(f.nodes, n)
+	cp := n
+	return &cp, nil
+}
+
+func (f *fakeNodeStore) DeleteNode(_ context.Context, id uuid.UUID) error {
+	if f.inHAGroup[id] {
+		return ErrNodeInHAGroup
+	}
+	for i := range f.nodes {
+		if f.nodes[i].ID == id {
+			f.nodes = append(f.nodes[:i], f.nodes[i+1:]...)
+			delete(f.secrets, id)
+			return nil
+		}
+	}
+	return ErrNodeNotFound
+}
+
 func (f *fakeNodeStore) UpdateSyncRegistration(_ context.Context, id uuid.UUID, adminAddr string, syncEnabled bool) error {
 	for i := range f.nodes {
 		if f.nodes[i].ID == id {
@@ -205,12 +262,39 @@ func (f *fakeNodeStore) UpdateSyncRegistration(_ context.Context, id uuid.UUID, 
 	return ErrNodeNotFound
 }
 
+func (f *fakeNodeStore) UpdateNodeRegistration(_ context.Context, id uuid.UUID, upd SyncRegistrationUpdate) error {
+	for i := range f.nodes {
+		if f.nodes[i].ID == id {
+			f.nodes[i].AdminAddr = upd.AdminAddr
+			f.nodes[i].SyncAgentAddr = upd.SyncAgentAddr
+			f.nodes[i].SyncEnabled = upd.SyncEnabled
+			if upd.SyncSecretCiphertext != nil {
+				if f.secrets == nil {
+					f.secrets = map[uuid.UUID]string{}
+				}
+				if *upd.SyncSecretCiphertext == "" {
+					delete(f.secrets, id)
+					f.nodes[i].HasSyncSecret = false
+				} else {
+					f.secrets[id] = *upd.SyncSecretCiphertext
+					f.nodes[i].HasSyncSecret = true
+				}
+			}
+			return nil
+		}
+	}
+	return ErrNodeNotFound
+}
+
 func (f *fakeNodeStore) ListSyncTargets(context.Context) ([]gatewayconfig.SyncTarget, error) {
 	var out []gatewayconfig.SyncTarget
 	for i := range f.nodes {
-		if f.nodes[i].SyncEnabled && f.nodes[i].AdminAddr != "" {
+		if f.nodes[i].SyncEnabled && (f.nodes[i].AdminAddr != "" || f.nodes[i].SyncAgentAddr != "") {
 			out = append(out, gatewayconfig.SyncTarget{
-				NodeID: f.nodes[i].ID, NodeName: f.nodes[i].NodeName, AdminAddr: f.nodes[i].AdminAddr,
+				NodeID:        f.nodes[i].ID,
+				NodeName:      f.nodes[i].NodeName,
+				AdminAddr:     f.nodes[i].AdminAddr,
+				SyncAgentAddr: f.nodes[i].SyncAgentAddr,
 			})
 		}
 	}

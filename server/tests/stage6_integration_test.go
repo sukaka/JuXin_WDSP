@@ -347,8 +347,8 @@ func TestStage6SystemAlertsExport(t *testing.T) {
 		if !strings.HasPrefix(ct, "text/csv") {
 			t.Errorf("%s export Content-Type = %q, want text/csv", who, ct)
 		}
-		if !strings.HasPrefix(body, "id,alert_type,severity,") {
-			t.Errorf("%s export 缺少表头，body 前缀: %q", who, body[:min(len(body), 64)])
+		if !strings.HasPrefix(body, "\xef\xbb\xbf告警 ID,告警类型,严重级别,") {
+			t.Errorf("%s export 缺少中文表头或 UTF-8 BOM，body 前缀: %q", who, body[:min(len(body), 64)])
 		}
 	}
 	checkExport(secCookies, "SECURITY_ADMIN")

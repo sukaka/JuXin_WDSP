@@ -72,10 +72,8 @@ type networkFile struct {
 	UpdatedAt  string   `json:"updated_at"`
 }
 
-// writeNetworkJSON 原子写 network.json（同目录临时文件 + rename；目录不存在则创建）。
-// 文件 0644 / 目录 0770（显式 Chmod 避免 umask 剥离组写位）：供加入共享组 1000（无 CAP_DAC_OVERRIDE）
-// 的 netmgrd 读取 network.json 并原子回写 network-status.json，同时不开放 other 权限。
-func writeNetworkJSON(dir string, cfg Config, updatedAt time.Time) error {
+// marshalNetworkJSON 按 network.json 边车契约序列化配置（本机落盘与远端 hasyncd 推送共用）。
+func marshalNetworkJSON(cfg Config, updatedAt time.Time) ([]byte, error) {
 	cfg.normalize()
 	payload := networkFile{
 		Bridges:    cfg.Bridges,
@@ -85,17 +83,27 @@ func writeNetworkJSON(dir string, cfg Config, updatedAt time.Time) error {
 		NTPServers: cfg.NTPServers,
 		UpdatedAt:  updatedAt.UTC().Format(time.RFC3339),
 	}
+	buf, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("序列化边车配置失败: %w", err)
+	}
+	return append(buf, '\n'), nil
+}
+
+// writeNetworkJSON 原子写 network.json（同目录临时文件 + rename；目录不存在则创建）。
+// 文件 0644 / 目录 0770（显式 Chmod 避免 umask 剥离组写位）：供加入共享组 1000（无 CAP_DAC_OVERRIDE）
+// 的 netmgrd 读取 network.json 并原子回写 network-status.json，同时不开放 other 权限。
+func writeNetworkJSON(dir string, cfg Config, updatedAt time.Time) error {
+	buf, err := marshalNetworkJSON(cfg, updatedAt)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o770); err != nil {
 		return fmt.Errorf("创建边车配置目录失败: %w", err)
 	}
 	if err := os.Chmod(dir, 0o770); err != nil {
 		return fmt.Errorf("设置边车配置目录权限失败: %w", err)
 	}
-	buf, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("序列化边车配置失败: %w", err)
-	}
-	buf = append(buf, '\n')
 	tmp, err := os.CreateTemp(dir, "."+networkFileName+".*")
 	if err != nil {
 		return fmt.Errorf("创建边车配置临时文件失败: %w", err)

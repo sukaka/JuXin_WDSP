@@ -18,7 +18,10 @@ vi.mock('../../../api/client', async (importOriginal) => {
 import { request, upload } from '../../../api/client'
 
 const requestMock = vi.mocked(
-  request as unknown as (path: string, options?: { method?: string }) => Promise<unknown>,
+  request as unknown as (
+    path: string,
+    options?: { method?: string; body?: unknown },
+  ) => Promise<unknown>,
 )
 const uploadMock = vi.mocked(
   upload as unknown as (
@@ -132,6 +135,9 @@ describe('SystemUpgradePage 升级包上传（单文件 + 自动识别版本 + �
       }
       if (method === 'GET' && path === '/upgrade-packages') {
         return { items: [], page: 1, page_size: 50, total: 0 }
+      }
+      if (method === 'GET' && path === '/upgrades/nodes') {
+        return { items: [], current_version: '1.12.0', split_brain: false, cluster_ready: false }
       }
       throw new ApiError(`未打桩的请求：${method} ${path}`, 'MOCK_MISS', 500)
     })
@@ -288,6 +294,9 @@ function stubListRequests(
     if (method === 'GET' && path === '/upgrade-packages') {
       return { items: packages, page: 1, page_size: 50, total: packages.length }
     }
+    if (method === 'GET' && path === '/upgrades/nodes') {
+      return { items: [], current_version: '1.12.0', split_brain: false, cluster_ready: false }
+    }
     if (method === 'POST' && path === '/upgrades/job-sched-1/cancel') {
       return { job: { ...scheduledJob(), status: 'CANCELLED' } }
     }
@@ -433,6 +442,14 @@ describe('SystemUpgradePage 定时更新（scheduled_at + SCHEDULED 任务取消
       if (method === 'GET' && path === '/upgrade-packages') {
         return Promise.resolve({ items: [pkgA, pkgB], page: 1, page_size: 50, total: 2 })
       }
+      if (method === 'GET' && path === '/upgrades/nodes') {
+        return Promise.resolve({
+          items: [],
+          current_version: '1.12.0',
+          split_brain: false,
+          cluster_ready: false,
+        })
+      }
       if (method === 'POST' && path === '/upgrades/precheck') {
         return new Promise((resolve) => {
           resolvePrecheckA = resolve
@@ -482,6 +499,9 @@ describe('SystemUpgradePage 定时更新（scheduled_at + SCHEDULED 任务取消
       }
       if (method === 'GET' && path === '/upgrade-packages') {
         return { items: [pkg], page: 1, page_size: 50, total: 1 }
+      }
+      if (method === 'GET' && path === '/upgrades/nodes') {
+        return { items: [], current_version: '1.12.0', split_brain: false, cluster_ready: false }
       }
       if (method === 'POST' && path === '/upgrades/precheck') {
         return {
@@ -558,5 +578,279 @@ describe('SystemUpgradePage 定时更新（scheduled_at + SCHEDULED 任务取消
     expect(
       await screen.findByText(/确定回滚升级任务「job-succ」（版本：2\.5\.5 → 2\.6\.0）吗/, undefined, SLOW),
     ).toBeInTheDocument()
+  })
+
+  it('差量升级包展示变更组件清单与镜像层差量标记', async () => {
+    const deltaPkg = {
+      ...uploadedPackage(),
+      id: 'pkg-delta-1',
+      file_name: 'jiuzhang-wdsp-upgrade-1.11.2-amd64.tar.gz',
+      version_from: '1.11.1',
+      version_to: '1.11.2',
+      manifest: {
+        package_type: 'upgrade',
+        components: ['api', 'web'],
+        images: [
+          { component: 'api', service: 'api', delivery_mode: 'layer-delta' },
+          { component: 'web', service: 'web', delivery_mode: 'layer-delta' },
+        ],
+      },
+    }
+    stubListRequests([], [deltaPkg])
+    uploadMock.mockResolvedValue({ package: deltaPkg, execution: startedExecution() })
+    renderPage()
+
+    const pkgInput = await openUploadModal()
+    fireEvent.change(pkgInput, {
+      target: { files: [new File(['delta-bytes'], 'jiuzhang-wdsp-upgrade-1.11.2-amd64.tar.gz')] },
+    })
+    await waitFor(() => expect(okButton()).toBeEnabled(), SLOW)
+    fireEvent.click(okButton())
+
+    expect(
+      await screen.findByText(
+        '已开始自动升级，可在下方列表查看进度（变更组件：api、web，镜像层差量包）',
+        undefined,
+        SLOW,
+      ),
+    ).toBeInTheDocument()
+    expect(await screen.findByText('精确差量路径：1.11.1 → 1.11.2', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.getByText('镜像层差量')).toBeInTheDocument()
+    expect(screen.getByText('api')).toBeInTheDocument()
+    expect(screen.getByText('web')).toBeInTheDocument()
+  })
+})
+
+describe('SystemUpgradePage HA 集群滚动升级（节点版本、模式选择、逐节点进度与备节点重试）', () => {
+  const clusterNodesResp = {
+    current_version: '1.12.0',
+    split_brain: false,
+    cluster_ready: true,
+    items: [
+      {
+        node_id: 'node-a',
+        node_name: 'gw-a',
+        role: 'PRIMARY',
+        sync_agent_addr: '',
+        sync_enabled: false,
+        reported_version: '1.12.0',
+        version_aligned: true,
+        reachable: true,
+        caddy_reachable: true,
+        hostctl_ready: true,
+        upgrade_ready: true,
+      },
+      {
+        node_id: 'node-b',
+        node_name: 'gw-b',
+        role: 'STANDBY',
+        sync_agent_addr: 'https://10.0.0.12:18443',
+        sync_enabled: true,
+        reported_version: '1.11.9',
+        version_aligned: false,
+        reachable: true,
+        caddy_reachable: true,
+        hostctl_ready: true,
+        upgrade_ready: true,
+      },
+    ],
+  }
+
+  beforeEach(() => {
+    uploadMock.mockResolvedValue({ package: uploadedPackage(), execution: startedExecution() })
+    useAuthStore.setState({
+      user: makeUser(['upgrades.execute', 'upgrades.precheck', 'upgrades.rollback']),
+      csrfToken: null,
+      initialized: true,
+    })
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+    useAuthStore.getState().reset()
+  })
+
+  it('存在远端备节点时展示集群节点版本卡片与脑裂告警，默认选中 HA 集群滚动升级并透传 cluster_mode', async () => {
+    const pkg = uploadedPackage()
+    requestMock.mockImplementation(async (path, options) => {
+      const method = options?.method ?? 'GET'
+      if (method === 'GET' && path === '/upgrades') {
+        return { items: [], page: 1, page_size: 20, total: 0 }
+      }
+      if (method === 'GET' && path === '/upgrade-packages') {
+        return { items: [pkg], page: 1, page_size: 50, total: 1 }
+      }
+      if (method === 'GET' && path === '/upgrades/nodes') {
+        return { ...clusterNodesResp, split_brain: true }
+      }
+      if (method === 'POST' && path === '/upgrades/precheck') {
+        return {
+          passed: true,
+          precheck: [
+            { name: 'cluster_standby_nodes', result: 'PASS', critical: true, message: '备节点数量正常' },
+            { name: 'cluster_node_gw-b', result: 'PASS', critical: true, message: '备节点就绪' },
+          ],
+        }
+      }
+      if (method === 'POST' && path === '/upgrades') {
+        return { job: { ...startedExecution(), cluster_mode: 'HA_ROLLING' } }
+      }
+      throw new ApiError(`未打桩的请求：${method} ${path}`, 'MOCK_MISS', 500)
+    })
+
+    renderPage()
+    expect(await screen.findByText('集群节点版本', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.getByText('gw-b')).toBeInTheDocument()
+    expect(screen.getByText('版本不一致')).toBeInTheDocument()
+    expect(screen.getByText(/检测到主备双主脑裂（HA_SPLIT_BRAIN）/)).toBeInTheDocument()
+
+    // 预检与执行均透传 cluster_mode: HA_ROLLING
+    const select = screen.getByRole('combobox')
+    fireEvent.mouseDown(select)
+    fireEvent.click(await screen.findByText(/jiuzhang-wdsp-offline-2\.6\.0-amd64\.tar\.gz/, undefined, SLOW))
+    fireEvent.click(screen.getByRole('button', { name: /执行预检/ }))
+
+    await waitFor(
+      () =>
+        expect(
+          requestMock.mock.calls.some(
+            ([p, o]) =>
+              p === '/upgrades/precheck' &&
+              (o?.body as Record<string, unknown>)?.cluster_mode === 'HA_ROLLING',
+          ),
+        ).toBe(true),
+      SLOW,
+    )
+    expect(await screen.findByText('备节点健康与数量检查', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.getByText('备节点升级就绪检查（gw-b）')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /执行升级/ }))
+    expect(await screen.findByText(/将按「先备后主」顺序执行 HA 集群滚动升级/, undefined, SLOW)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /确认升级/ }))
+
+    await waitFor(
+      () =>
+        expect(
+          requestMock.mock.calls.some(
+            ([p, o]) =>
+              p === '/upgrades' &&
+              o?.method === 'POST' &&
+              (o?.body as Record<string, unknown>)?.cluster_mode === 'HA_ROLLING',
+          ),
+        ).toBe(true),
+      SLOW,
+    )
+
+    // 上传弹窗在集群模式下也携带 cluster_mode=HA_ROLLING
+    const pkgInput = await openUploadModal()
+    selectPackageFile(pkgInput)
+    await waitFor(() => expect(okButton()).toBeEnabled(), SLOW)
+    fireEvent.click(okButton())
+    await waitFor(() => expect(uploadMock).toHaveBeenCalledTimes(1), SLOW)
+    const [, form] = uploadMock.mock.calls[0]
+    expect(form.get('cluster_mode')).toBe('HA_ROLLING')
+  })
+
+  it('任务详情抽屉展示逐节点执行明细并支持失败备节点「重试节点升级」', async () => {
+    const rollingJob = {
+      id: 'job-ha-1',
+      package_id: 'pkg-1',
+      status: 'FAILED',
+      cluster_mode: 'HA_ROLLING',
+      requested_at: '2026-11-24T12:00:00Z',
+      started_at: '2026-11-24T12:00:05Z',
+      finished_at: '2026-11-24T12:02:00Z',
+      failure_code: 'STANDBY_UPGRADE_FAILED',
+      failure_message: '备节点 gw-b 升级失败，已中止主节点升级',
+      node_executions: [
+        {
+          id: 'ne-1',
+          job_id: 'job-ha-1',
+          node_id: 'node-b',
+          node_name: 'gw-b',
+          role: 'STANDBY',
+          seq: 1,
+          status: 'FAILED',
+          from_version: '1.12.0',
+          to_version: '1.12.1',
+          error_code: 'EXECUTOR_FAILED',
+          error_message: 'compose pull error',
+          started_at: '2026-11-24T12:00:10Z',
+          finished_at: '2026-11-24T12:01:55Z',
+          created_at: '2026-11-24T12:00:05Z',
+          updated_at: '2026-11-24T12:01:55Z',
+        },
+        {
+          id: 'ne-2',
+          job_id: 'job-ha-1',
+          node_id: 'node-a',
+          node_name: 'gw-a',
+          role: 'PRIMARY',
+          seq: 2,
+          status: 'SKIPPED',
+          from_version: '1.12.0',
+          to_version: '1.12.1',
+          error_code: '',
+          error_message: '',
+          started_at: null,
+          finished_at: null,
+          created_at: '2026-11-24T12:00:05Z',
+          updated_at: '2026-11-24T12:01:55Z',
+        },
+      ],
+    }
+
+    requestMock.mockImplementation(async (path, options) => {
+      const method = options?.method ?? 'GET'
+      if (method === 'GET' && path === '/upgrades') {
+        return { items: [rollingJob], page: 1, page_size: 20, total: 1 }
+      }
+      if (method === 'GET' && path === '/upgrade-packages') {
+        return { items: [uploadedPackage()], page: 1, page_size: 50, total: 1 }
+      }
+      if (method === 'GET' && path === '/upgrades/nodes') {
+        return clusterNodesResp
+      }
+      if (method === 'GET' && path === '/upgrades/job-ha-1') {
+        return { job: rollingJob }
+      }
+      if (method === 'POST' && path === '/upgrades/job-ha-1/retry-node') {
+        return {
+          node_execution: {
+            ...rollingJob.node_executions[0],
+            status: 'SUCCESS',
+            error_code: '',
+            error_message: '',
+          },
+        }
+      }
+      throw new ApiError(`未打桩的请求：${method} ${path}`, 'MOCK_MISS', 500)
+    })
+
+    renderPage()
+    expect(await screen.findByText('HA滚动', undefined, SLOW)).toBeInTheDocument()
+
+    // 打开任务详情抽屉
+    fireEvent.click(screen.getByRole('button', { name: '节点明细' }))
+    expect(await screen.findByText('逐节点执行明细', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.getByText(/EXECUTOR_FAILED：compose pull error/)).toBeInTheDocument()
+
+    // 仅 STANDBY FAILED 节点展示「重试节点升级」，PRIMARY SKIPPED 不展示
+    const retryBtns = screen.getAllByRole('button', { name: /重试节点升级/ })
+    expect(retryBtns).toHaveLength(1)
+    fireEvent.click(retryBtns[0])
+
+    await waitFor(
+      () =>
+        expect(
+          requestMock.mock.calls.some(
+            ([p, o]) =>
+              p === '/upgrades/job-ha-1/retry-node' &&
+              o?.method === 'POST' &&
+              (o?.body as Record<string, unknown>)?.node_id === 'node-b',
+          ),
+        ).toBe(true),
+      SLOW,
+    )
   })
 })

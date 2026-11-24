@@ -85,3 +85,30 @@ func TestGuardConfigTicketKeyJSON(t *testing.T) {
 		t.Fatalf("序列化应含票据键: %s", raw)
 	}
 }
+
+// TestGenerateTLSSessionTicketsMultiKey 验证 2 键平滑轮换：
+// apps.tls.session_tickets.key_source.keys_hex 按序输出全部密钥（首键加密、次键解密）。
+func TestGenerateTLSSessionTicketsMultiKey(t *testing.T) {
+	const key2 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	g, err := Generate(GenerateInput{
+		Apps:        sampleApps(),
+		AdminSocket: "unix//var/run/caddy/admin.sock",
+		Guard: &GuardConfig{
+			TLSSessionTicketKey:  testTicketKey,
+			TLSSessionTicketKeys: []string{testTicketKey, key2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	var cfg map[string]interface{}
+	if err := json.Unmarshal([]byte(g.JSON), &cfg); err != nil {
+		t.Fatalf("generated JSON invalid: %v", err)
+	}
+	tlsApp := cfg["apps"].(map[string]interface{})["tls"].(map[string]interface{})
+	ks := tlsApp["session_tickets"].(map[string]interface{})["key_source"].(map[string]interface{})
+	keys := ks["keys_hex"].([]interface{})
+	if len(keys) != 2 || keys[0] != testTicketKey || keys[1] != key2 {
+		t.Fatalf("keys_hex = %v, want [%s %s]", keys, testTicketKey, key2)
+	}
+}

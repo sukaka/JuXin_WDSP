@@ -4,6 +4,7 @@ import type { CertificateDetail, CertificateItem, PageResult } from '../types'
 export interface CertificateListParams {
   name?: string
   status?: string
+  include_replaced?: boolean
   page: number
   page_size: number
 }

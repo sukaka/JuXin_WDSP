@@ -24,6 +24,13 @@ const (
 	StatusExpired     = "EXPIRED"
 	StatusInvalid     = "INVALID"
 	StatusKeyMismatch = "KEY_MISMATCH"
+	StatusReplaced    = "REPLACED"
+)
+
+// 证书托管来源
+const (
+	ManagedByManual = "MANUAL"
+	ManagedByACME   = "ACME"
 )
 
 // 解析错误

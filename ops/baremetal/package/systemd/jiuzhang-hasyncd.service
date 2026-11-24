@@ -1,0 +1,26 @@
+# 九章 WDSP 高可用节点协同代理 hasyncd（裸机，可选，仅主备双机部署启用）
+# __ROOT__/__USER__/__NODE_NAME__ 由 install.sh 渲染替换后安装到 /etc/systemd/system/
+# 默认禁用且依赖共享 HMAC 密钥文件存在（ConditionPathExists），单机裸机部署不会报错或空跑。
+[Unit]
+Description=JiuZhang WDSP hasyncd (HA node sync agent, baremetal)
+After=network-online.target jiuzhang-gateway.service
+Wants=network-online.target
+ConditionPathExists=__ROOT__/data/runtime/hasync.secret
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+UMask=0027
+EnvironmentFile=__ROOT__/env
+ExecStart=__ROOT__/bin/hasyncd --node __NODE_NAME__ --caddy-socket __ROOT__/data/run/caddy/admin.sock --sidecar-dir __ROOT__/data/run/caddy/sidecars --hostctl-dir __ROOT__/data/runtime/hostctl --upgrade-packages-dir __ROOT__/data/runtime/upgrade-packages --upgrade-executor-dir __ROOT__/data/runtime/upgrade-executor --node-ifaces-log __ROOT__/data/logs/caddy/node-interfaces.jsonl
+# hasyncd 全程非 root 运行，无需任何 Linux 特权能力
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=__ROOT__/data/run/caddy/sidecars __ROOT__/data/runtime/hostctl __ROOT__/data/runtime/upgrade-packages __ROOT__/data/runtime/upgrade-executor /tmp
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

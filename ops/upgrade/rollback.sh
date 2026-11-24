@@ -343,6 +343,8 @@ while (( SECONDS < end )); do
       netmgrd) timeout 8 docker exec "$id" /usr/local/bin/netmgrd --healthcheck || { ready=false; break; } ;;
       mirrorcap) timeout 8 docker exec "$id" /usr/local/bin/mirrorcap --healthcheck || { ready=false; break; } ;;
       tproxyd) timeout 8 docker exec "$id" /usr/local/bin/tproxyd --healthcheck || { ready=false; break; } ;;
+      havipd) timeout 8 docker exec "$id" /usr/local/bin/havipd --healthcheck || { ready=false; break; } ;;
+      hasyncd) timeout 8 docker exec "$id" /usr/local/bin/hasyncd --healthcheck || { ready=false; break; } ;;
     esac
   done
   [[ "$ready" == true ]] && curl -fsS --max-time 5 "$JZ_API_BASE/api/v1/health" >/dev/null 2>&1 && break

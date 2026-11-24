@@ -19,6 +19,22 @@ import (
 // HAVRRPIfaceChecker 检查接口是否正被启用的主备组用作 VRRP 承载网卡（返回冲突组名；空串 = 未占用）。
 type HAVRRPIfaceChecker func(ctx context.Context, nodeName, iface string) (conflictGroup string, err error)
 
+// RemoteSyncer 远端网关节点 network.json 推送接口（由 *nodesync.Manager 实现）。
+type RemoteSyncer interface {
+	PushNetworkConfig(ctx context.Context, nodeName string, payload []byte) error
+}
+
+// RemoteStatusProvider 远端网关节点网络配置可编辑性与汇聚状态查询接口（由 *nodesync.Manager 实现）。
+type RemoteStatusProvider interface {
+	IsRemoteEditable(ctx context.Context, nodeName string) (bool, error)
+	GetNodeNetworkStatus(ctx context.Context, nodeName string) (json.RawMessage, error)
+}
+
+// RemoteEditableNodeLister 可选扩展接口：列举所有支持远端推送的节点名（用于 DNS/NTP 重写扇出）。
+type RemoteEditableNodeLister interface {
+	ListRemoteEditableNodes(ctx context.Context) ([]string, error)
+}
+
 // Handler 节点网络配置（网桥/路由牵引）处理器。
 type Handler struct {
 	store          Repository
@@ -28,6 +44,8 @@ type Handler struct {
 	sidecarDir     string // 边车配置目录（空用 DefaultSidecarDir）
 	haIfaceChecker HAVRRPIfaceChecker
 	onChange       func(ctx context.Context)
+	remoteSyncer   RemoteSyncer
+	remoteStatus   RemoteStatusProvider
 }
 
 // NewHandler 创建处理器（构造注入审计服务与默认节点名，语义同 nodeinterfaces）。
@@ -50,9 +68,31 @@ func (h *Handler) SetOnChange(fn func(ctx context.Context)) *Handler {
 	return h
 }
 
-// RewriteSidecar 按当前数据库配置与系统设置（network:dns_servers/ntp_servers）重写默认节点 network.json。
-// 用于系统设置更新 DNS/NTP 后即时生效，无需人工重新保存网络配置。
+// SetRemoteSyncer 注入远端节点 network.json 同步器（Phase 3 nodesync 装配）。
+func (h *Handler) SetRemoteSyncer(s RemoteSyncer) *Handler {
+	h.remoteSyncer = s
+	return h
+}
+
+// SetRemoteStatusProvider 注入远端节点网络可编辑性与汇聚状态提供者（Phase 3 nodesync 装配）。
+func (h *Handler) SetRemoteStatusProvider(p RemoteStatusProvider) *Handler {
+	h.remoteStatus = p
+	return h
+}
+
+// RewriteSidecar 按当前数据库配置与系统设置（network:dns_servers/ntp_servers）重写默认节点 network.json，
+// 若装配了远端同步器则同时向远端可编辑节点推送最新 DNS/NTP 配置（单节点失败记告警日志不阻断本机）。
 func (h *Handler) RewriteSidecar(ctx context.Context) error {
+	var dns, ntp []string
+	if sr, ok := h.store.(ServersReader); ok {
+		d, n, err := sr.NetworkServers(ctx)
+		if err != nil {
+			slog.Warn("load network dns/ntp settings failed during rewrite", "node", h.defaultNode, "error", err)
+		} else {
+			dns, ntp = d, n
+		}
+	}
+
 	cfg, _, found, err := h.store.Get(ctx, h.defaultNode)
 	if err != nil {
 		return err
@@ -60,16 +100,46 @@ func (h *Handler) RewriteSidecar(ctx context.Context) error {
 	if !found {
 		cfg = DefaultConfig()
 	}
-	if sr, ok := h.store.(ServersReader); ok {
-		dns, ntp, err := sr.NetworkServers(ctx)
-		if err != nil {
-			slog.Warn("load network dns/ntp settings failed during rewrite", "node", h.defaultNode, "error", err)
-		} else {
-			cfg.DNSServers = dns
-			cfg.NTPServers = ntp
+	cfg.DNSServers = dns
+	cfg.NTPServers = ntp
+	now := time.Now().UTC()
+	if err := writeNetworkJSON(h.dir(), cfg, now); err != nil {
+		return err
+	}
+
+	if h.remoteSyncer != nil && h.remoteStatus != nil {
+		if lister, ok := h.remoteStatus.(RemoteEditableNodeLister); ok {
+			nodes, listErr := lister.ListRemoteEditableNodes(ctx)
+			if listErr != nil {
+				slog.Warn("list remote editable nodes failed during network sidecar rewrite", "error", listErr)
+				return nil
+			}
+			for _, nodeName := range nodes {
+				if nodeName == "" || nodeName == h.defaultNode {
+					continue
+				}
+				rcfg, _, rfound, gErr := h.store.Get(ctx, nodeName)
+				if gErr != nil {
+					slog.Warn("load remote node network config failed during rewrite", "node", nodeName, "error", gErr)
+					continue
+				}
+				if !rfound {
+					rcfg = DefaultConfig()
+				}
+				rcfg.DNSServers = dns
+				rcfg.NTPServers = ntp
+				payload, mErr := marshalNetworkJSON(rcfg, now)
+				if mErr != nil {
+					slog.Warn("marshal remote network.json failed during rewrite", "node", nodeName, "error", mErr)
+					continue
+				}
+				if pErr := h.remoteSyncer.PushNetworkConfig(ctx, nodeName, payload); pErr != nil {
+					slog.Warn("push remote network.json failed during dns/ntp rewrite", "node", nodeName, "error", pErr)
+				}
+			}
 		}
 	}
-	return writeNetworkJSON(h.dir(), cfg, time.Now().UTC())
+	return nil
 }
 
 func (h *Handler) dir() string {
@@ -102,8 +172,8 @@ func (h *Handler) resolveNode(nodeName string) string {
 }
 
 // Get GET /api/v1/gateway/network-config?node_name=
-// 返回 {desired, status}：desired 为 DB 期望配置（无记录返回空配置）；
-// status 透传 sidecars/network-status.json（仅默认节点；文件不存在/解析失败为 null）。
+// 返回 {desired, status, default_node, remote_editable}：desired 为 DB 期望配置（无记录返回空配置）；
+// status 本机节点透传 sidecars/network-status.json，远端节点透传汇聚快照（缺失/解析失败为 null）。
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	nodeName := h.resolveNode(r.URL.Query().Get("node_name"))
 	cfg, updatedAt, found, err := h.store.Get(r.Context(), nodeName)
@@ -119,14 +189,26 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		desired.UpdatedAt = &updatedAt
 	}
 	var status json.RawMessage
-	// network-status.json 位于本网关节点共享卷，仅默认节点可透传（其他节点无本卷状态）
+	remoteEditable := nodeName == h.defaultNode
 	if nodeName == h.defaultNode {
 		status = readNetworkStatus(h.dir())
+	} else if h.remoteStatus != nil {
+		if editable, err := h.remoteStatus.IsRemoteEditable(r.Context(), nodeName); err != nil {
+			slog.Warn("check remote network editability failed", "node", nodeName, "error", err)
+		} else {
+			remoteEditable = editable && h.remoteSyncer != nil
+		}
+		if st, err := h.remoteStatus.GetNodeNetworkStatus(r.Context(), nodeName); err != nil {
+			slog.Warn("load remote network status failed", "node", nodeName, "error", err)
+		} else if len(st) > 0 && json.Valid(st) {
+			status = st
+		}
 	}
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
-		"desired":      desired,
-		"status":       status,
-		"default_node": h.defaultNode,
+		"desired":         desired,
+		"status":          status,
+		"default_node":    h.defaultNode,
+		"remote_editable": remoteEditable,
 	})
 }
 
@@ -140,8 +222,7 @@ type updateRequest struct {
 }
 
 // Update PUT /api/v1/gateway/network-config
-// 整体替换节点网络期望配置：严格校验（见包注释）→ 保存 DB → 原子写
-// sidecars/network.json → 审计（module=system，网络变更 MEDIUM 风险）。
+// 整体替换节点网络期望配置：严格校验 → 保存 DB → 本机写 sidecars/network.json 或远端经 hasyncd 推送 → 审计。
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	var req updateRequest
@@ -150,11 +231,23 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nodeName := h.resolveNode(req.NodeName)
-	// 安全约束：sidecar 卷属于本网关节点，写非默认节点即把配置下发到错误执行端
-	if nodeName != h.defaultNode {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
-			"当前仅支持配置本网关节点: "+h.defaultNode)
-		return
+	isRemote := nodeName != h.defaultNode
+	if isRemote {
+		if h.remoteSyncer == nil || h.remoteStatus == nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+				"当前仅支持配置本网关节点: "+h.defaultNode)
+			return
+		}
+		editable, err := h.remoteStatus.IsRemoteEditable(r.Context(), nodeName)
+		if err != nil {
+			response.InternalError(w, r, err)
+			return
+		}
+		if !editable {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+				fmt.Sprintf("节点 %s 未配置协同代理，无法远程下发网络配置", nodeName))
+			return
+		}
 	}
 	cfg := Config{Bridges: req.Bridges, IPForward: req.IPForward, Routes: req.Routes}
 
@@ -213,12 +306,34 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	if err := writeNetworkJSON(h.dir(), cfg, now); err != nil {
-		slog.Error("write network sidecar config failed", "node", nodeName, "error", err)
-		h.recordAudit(r, p, nodeName, before, configSummary(cfg), audits.ResultFailure,
-			"配置已入库，但边车配置写入失败: "+err.Error())
-		response.InternalError(w, r, fmt.Errorf("配置已保存，但下发边车配置失败: %w", err))
-		return
+	var status json.RawMessage
+	if !isRemote {
+		if err := writeNetworkJSON(h.dir(), cfg, now); err != nil {
+			slog.Error("write network sidecar config failed", "node", nodeName, "error", err)
+			h.recordAudit(r, p, nodeName, before, configSummary(cfg), audits.ResultFailure,
+				"配置已入库，但边车配置写入失败: "+err.Error())
+			response.InternalError(w, r, fmt.Errorf("配置已保存，但下发边车配置失败: %w", err))
+			return
+		}
+		status = readNetworkStatus(h.dir())
+	} else {
+		payload, err := marshalNetworkJSON(cfg, now)
+		if err != nil {
+			h.recordAudit(r, p, nodeName, before, configSummary(cfg), audits.ResultFailure,
+				"配置已入库，但序列化边车配置失败: "+err.Error())
+			response.InternalError(w, r, err)
+			return
+		}
+		if err := h.remoteSyncer.PushNetworkConfig(r.Context(), nodeName, payload); err != nil {
+			slog.Error("push remote network sidecar config failed", "node", nodeName, "error", err)
+			h.recordAudit(r, p, nodeName, before, configSummary(cfg), audits.ResultFailure,
+				"配置已入库，但远端边车配置推送失败: "+err.Error())
+			response.InternalError(w, r, fmt.Errorf("配置已保存，但推送远端节点 %s 边车配置失败: %w", nodeName, err))
+			return
+		}
+		if st, err := h.remoteStatus.GetNodeNetworkStatus(r.Context(), nodeName); err == nil && len(st) > 0 && json.Valid(st) {
+			status = st
+		}
 	}
 	if h.onChange != nil {
 		h.onChange(r.Context())
@@ -227,9 +342,10 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 	desired := Desired{Config: cfg, UpdatedAt: &now}
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
-		"desired":      desired,
-		"status":       readNetworkStatus(h.dir()),
-		"default_node": h.defaultNode,
+		"desired":         desired,
+		"status":          status,
+		"default_node":    h.defaultNode,
+		"remote_editable": true,
 	})
 }
 

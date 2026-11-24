@@ -50,33 +50,35 @@ test.describe('阶段3：应用接入与配置发布', () => {
   test('Web应用列表渲染真实数据', async ({ page }) => {
     await page.goto('/applications')
     await expect(page.locator('.ant-card-head-title', { hasText: '网站应用' })).toBeVisible()
-    await expect(page.getByText('waf-test')).toBeVisible({ timeout: 10000 })
-    await expect(page.getByText('WAF测试应用')).toBeVisible()
+    await expect(page.getByText('WAF测试应用')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('waf-test.local')).toBeVisible()
     await expect(page.getByText(/关闭|观察|防护/).first()).toBeVisible()
   })
 
   test('新建应用 → 域名 → 源站 → 连通性测试 → 删除应用', async ({ page }) => {
-    // 1. 新建应用
+    // 1. 新建应用（通过高级选项自定义应用标识，同时验证列表按名称与域名展示）
     await page.goto('/applications')
     await page.getByRole('button', { name: '新建应用' }).click()
-    await page.getByPlaceholder('小写字母、数字、短横线').fill(APP_CODE)
-    await page.getByPlaceholder('应用显示名称').fill('E2E冒烟应用')
+    await page.getByLabel('应用名称').fill('E2E冒烟应用')
+    await page.getByText('高级选项（自定义应用标识）').click()
+    await page.getByLabel('应用标识').fill(APP_CODE)
     await page.getByRole('button', { name: /确 ?定/ }).click()
-    await expect(page.getByText(APP_CODE)).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('E2E冒烟应用')).toBeVisible({ timeout: 10000 })
 
-    // 非法编码前端校验
+    // 非法标识前端校验
     await page.getByRole('button', { name: '新建应用' }).click()
-    await page.getByPlaceholder('小写字母、数字、短横线').fill('BAD--CODE')
-    await page.getByPlaceholder('应用显示名称').click()
+    await page.getByText('高级选项（自定义应用标识）').click()
+    await page.getByLabel('应用标识').fill('BAD--CODE')
+    await page.getByLabel('应用名称').click()
     await expect(page.getByText('3-64 位小写字母、数字或短横线')).toBeVisible()
     await page.getByRole('button', { name: /取 ?消/ }).click()
 
     // 2. 进入详情，新增域名
     await page
-      .getByRole('row', { name: new RegExp(APP_CODE) })
+      .getByRole('row', { name: /E2E冒烟应用/ })
       .getByText('E2E冒烟应用')
       .click()
-    await expect(page.getByText(`应用编码`)).toBeVisible()
+    await expect(page.getByText('应用标识')).toBeVisible()
     await expect(page.getByText(APP_CODE)).toBeVisible()
     await page.getByRole('button', { name: '新增域名' }).click()
     await page.getByPlaceholder('example.com 或 *.example.com').fill(`${APP_CODE}.example.com`)
@@ -106,13 +108,14 @@ test.describe('阶段3：应用接入与配置发布', () => {
     await expect(page.getByText(/连通性测试通过|测试失败/)).toBeVisible({ timeout: 15000 })
     await page.keyboard.press('Escape')
 
-    // 5. 删除应用（二次确认）
+    // 5. 返回列表验证主域名展示并删除应用（二次确认）
     await page.goto('/applications')
-    const row = page.getByRole('row', { name: new RegExp(APP_CODE) })
+    const row = page.getByRole('row', { name: new RegExp(`${APP_CODE}\\.example\\.com`) })
+    await expect(row).toBeVisible({ timeout: 10000 })
     await row.getByText('更多').hover()
     await page.getByRole('menuitem', { name: '删除' }).click()
     await page.getByRole('button', { name: /确 ?定/ }).click()
-    await expect(page.getByRole('row', { name: new RegExp(APP_CODE) })).toHaveCount(0, {
+    await expect(page.getByRole('row', { name: new RegExp(`${APP_CODE}\\.example\\.com`) })).toHaveCount(0, {
       timeout: 10000,
     })
   })
