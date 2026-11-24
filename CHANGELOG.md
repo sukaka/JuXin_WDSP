@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-11-25
+
+### 新增
+
+- **双机主备高可用协同代理（`hasyncd` / `havipd`）、节点同步与集群先备后主滚动升级**：新增迁移 `000236_ha_groups_track_and_events` 与 `000237_upgrade_node_executions`；网关侧新增 `hasyncd` 节点协同代理（HMAC 鉴权、Caddy 配置同步、状态采集、受控宿主控制、Dockerfile 与 systemd 单元）及 `havipd` 健康检查、`track_interfaces` 联动、Dockerfile 与 systemd 单元；后端新增 `internal/nodesync`（内网 SSRF 防护与重解析防重绑定、签名客户端、遥测汇聚）、`hagroups/events.go`（漂移/脑裂/联动事件持久化）、`HA_SPLIT_BRAIN` 告警及 `upgrades/cluster.go`（主备双机 `HA_ROLLING` 先备后主滚动升级与逐节点执行追踪）；同步完善 `HaGroupsPage`、`ApiNodesPage`、`NetworkConfigPage`、`SystemUpgradePage` 及离线/裸机/双机实验室编排与文档。
+- **OCI 镜像层增量升级包（`image-delta.py`）与执行器全边车校验**：新增 `ops/upgrade/image-delta.py`，支持离线包与链式升级包的镜像层差计算、防篡改校验与低收益自动回退完整层；`build-upgrade-pack.sh` 与 `upgrade-executor.sh` 接入签名层差还原、多边车就绪探测及 `hasyncd`/`pcapd` profile 守卫，同步更新 `docs/UPGRADE_PACKAGE_POLICY.md`。
+- **ACME v2 自动申请 SSL 证书与到期自动续约（Auto-SSL）**：新增迁移 `000238_auto_ssl_acme`；网关 `jiuzhang_guard` 新增 `acme_http01.go`（HTTP-01 挑战本地优先应答，优先于 HTTPS 重定向并支持 Valkey 主查与文件兜底）；后端新增 `internal/acme`（全局配置、账户与 EAB 凭据加密持久化、HTTP-01 求解、自动续签替换链与退避告警 `CERTIFICATE_AUTO_RENEW_FAILED`）；前端新增 `AcmeSettingsModal`、`AcmeOrdersTable`、`CertificatesPage` 与应用详情 `CertificatesTab` 自动 SSL 管理。
+- **源站健康周期探测、状态回写与前端表格体验增强**：后端 `runtimehealth/collector.go` 与 `upstreams/tester.go` 新增源站并发有界健康探测并回写 `applications.health_status` 与仪表盘统计（排除 `MIRROR` 旁路应用）；前端新增 `UpstreamsTab` 源站健康状态与详情展示、`SmartTable` 默认隐藏列持久化支持（`defaultHiddenKeys`）及应用详情/列表与 API 资产页面交互优化。
+- **全站 CSV 导出中文化（UTF-8 BOM + 防公式注入）与中英文双语 CSV 导入**：统一 `accesscontrolevents`、`accesslogs`、`accessrules`、`apiassets`、`audits`、`delivery`、`loginlogs`、`securityevents` 与前端规范审计 CSV 导出为 UTF-8 BOM、中文表头与枚举标签及公式注入转义；`accessrules/csv.go` 支持自动剥离 BOM 与中英文表头别名导入。
+- **聚信压测工具（JuXin Bench）交付压测套件**：新增 `test/performance/delivery-stress/`，包含纯 Go 多源 IP 压测引擎 `l7bench`、常驻内存高性能测试源站 `bench-origin`、k6 六合一脚本、RFC 2544 自动二分无损容量搜索（`binary-search.py`）、带压安全评分卡（`security-under-load.py` + OWASP 语料）、日志对账（`reconcile-events.py`）、RFC 9411 报告汇总器与单元测试。
+
+### 验证与边界
+
+- **网关**：`cd gateway && go build ./...` 及 `havipd`、`hasyncd` 单测通过；`gateway/modules/jiuzhang_guard` 变更相关用例（`TestACMEHTTP01_*` 3/3、`TestHeartbeat*` 6/6）及 16 个子包通过（跳过需实时 Valkey 的 `behaviorstore/*RealValkey`）。
+- **后端**：`cd server && go build ./...`、`go test -c ./tests` 及全部 25 个变更包（`acme`、`nodesync`、`hagroups`、`hastatus`、`apinodes`、`applications`、`certificates`、`gatewayconfig`、`guardconfig`、`upgrades`、`accesscontrolevents`、`accesslogs`、`accessrules`、`apiassets`、`audits`、`delivery`、`dashboards`、`app`、`loginlogs`、`netconfig`、`notify`、`runtimehealth`、`securityevents`、`systemalerts`、`upstreams`）全部通过。
+- **前端**：`cd web && npm run typecheck && npm run lint && npm run build` 0 报错通过；全部 16 个变更/新增 Vitest 测试文件（168/168 用例）全绿。
+- **运维、离线包与压测套件**：全部变更 `.sh` `bash -n` 通过；`ops/upgrade/tests`（53/53，含 `test_auto_plan`、`test_ha_upgrade`、`test_image_delta`、`test_layer_delta_executor`、`test_gateway_network_recreate`、`test_gateway_upgrade_executor_contract`）、`test/offline-package`（18/18，含 `test_ha_delivery` 5/5、`test_mirrorcap_delivery` 5/5、`test_tproxyd_delivery` 8/8）及 `test/performance/delivery-stress`（`l7bench`、`origin` Go 单测与 12/12 Python 用例）全部通过。
+- **未执行项（`NOT_RUN`）**：目标 Linux/amd64 双机实机 HA 切换与滚动升级演练、公网真实 CA（Let's Encrypt）ACME 签发/续期闭环、实机 PostgreSQL 迁移（`000236`–`000238`）、OCI 层差升级包实机验证及压测机物理万兆压测均为 `NOT_RUN`。
+
 ## [1.12.0] - 2026-11-24
 
 ### 新增
