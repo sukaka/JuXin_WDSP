@@ -388,8 +388,8 @@ func (m *MemStore) ListEnabledMaskingRules(_ context.Context) ([]MaskingRule, er
 
 // ---------- 敏感数据态势（内存聚合，语义同 SQL SensitiveOverview） ----------
 
-// countSensitiveDetails 统计 details_json 中 detector=sensitive_data 的明细条数
-// （overview 命中数口径：按明细条目计，与证据是否含 field 无关）。
+// countSensitiveDetails 统计 details_json 中有效 detector=sensitive_data 的明细条数
+// （排除路径字段名误报、标准协议头字段名误报与 response_body_unchecked 诊断条目）。
 func countSensitiveDetails(details []byte) int {
 	var items []sweepDetail
 	if err := json.Unmarshal(details, &items); err != nil {
@@ -397,9 +397,18 @@ func countSensitiveDetails(details []byte) int {
 	}
 	n := 0
 	for _, d := range items {
-		if d.Detector == "sensitive_data" {
-			n++
+		if d.Detector != "sensitive_data" {
+			continue
 		}
+		var loc, field string
+		if d.Evidence != nil {
+			loc = d.Evidence["location"]
+			field = d.Evidence["field"]
+		}
+		if IsIgnoredSensitiveFieldHit(loc, field, d.RuleID) {
+			continue
+		}
+		n++
 	}
 	return n
 }
@@ -530,6 +539,9 @@ func (m *MemStore) SweepOnce(_ context.Context) (*SweepResult, error) {
 			continue
 		}
 		if countSensitiveDetails(ev.details) == 0 {
+			continue
+		}
+		if hits, err := extractSweepHits(ev.details); err == nil && len(hits) == 0 {
 			continue
 		}
 		candidates = append(candidates, ev)

@@ -877,6 +877,37 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /system-health/gateway-trend:
+    get:
+      operationId: systemHealthGatewayTrend
+      tags: [system-health]
+      summary: 网关连接与会话实时及历史趋势
+      description: >-
+        查询网关 TCP 连接、HTTP 会话、QPS、进出站带宽、状态码、资源水位及按应用负载的实时与历史趋势。
+        range=10m 优先读取网关 Unix Admin Socket 的 2 秒内存环形缓冲（source=gateway_live），
+        网关未配置/不可达/返回 404 时降级查数据库近 10 分钟 GATEWAY 快照（source=database_fallback，30 秒粒度）；
+        range=1h/6h/24h 查数据库历史快照（source=database，30 秒粒度），current 优先实时读取网关并在失败时降级至数据库最新快照。
+        非法 range 返回 400 INVALID_ARGUMENT。权限：system_health.read。
+      parameters:
+        - name: range
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['10m', '1h', '6h', '24h']
+            default: '1h'
+          description: 查询时间范围（默认 1h；可选 10m、1h、6h、24h）
+      responses:
+        '200':
+          description: 网关实时与历史趋势数据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SystemHealthGatewayTrendResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /metrics:
     get:
       operationId: prometheusMetricsGet
@@ -2039,6 +2070,157 @@ components:
         backups_size_bytes: { type: integer, format: int64, description: 备份目录占用（字节） }
         backups_file_count: { type: integer, description: 备份文件数 }
         collected_at: { type: string, format: date-time, description: 采集时间（UTC） }
+
+    SystemHealthGatewayTCPStates:
+      type: object
+      description: 网关 TCP 连接状态分布（源自 /proc/net/tcp 与 tcp6，非 Linux 或不可读时为 null）
+      properties:
+        established: { type: integer, description: ESTABLISHED 数量 }
+        time_wait: { type: integer, description: TIME_WAIT 数量 }
+        close_wait: { type: integer, description: CLOSE_WAIT 数量 }
+        syn_recv: { type: integer, description: SYN_RECV 数量 }
+        fin_wait: { type: integer, description: FIN_WAIT1/FIN_WAIT2 数量 }
+        listen: { type: integer, description: LISTEN 数量 }
+        other: { type: integer, description: 其他状态数量 }
+
+    SystemHealthGatewaySoftwareBypass:
+      type: object
+      description: 网关软件旁路当前状态与阈值配置
+      properties:
+        enabled: { type: boolean, description: 自动软件旁路是否启用 }
+        active: { type: boolean, description: 当前是否处于纯透传旁路状态 }
+        reason: { type: string, description: 当前触发原因（如 CPU_THRESHOLD/MEMORY_THRESHOLD） }
+        cpu_threshold_percent: { type: integer, description: 触发旁路的 CPU 使用率阈值（%） }
+        memory_threshold_percent: { type: integer, description: 触发旁路的内存使用率阈值（%） }
+        recovery_cpu_percent: { type: integer, description: 恢复检测的 CPU 使用率阈值（%） }
+        recovery_memory_percent: { type: integer, description: 恢复检测的内存使用率阈值（%） }
+        min_hold_seconds: { type: integer, description: 旁路最短保持时间（秒） }
+        activated_at: { type: string, format: date-time, nullable: true, description: 最近一次进入旁路的时刻（UTC） }
+        transitions_total: { type: integer, format: int64, description: 累计旁路状态切换次数 }
+        bypassed_requests_total: { type: integer, format: int64, description: 累计纯透传旁路请求数 }
+
+    SystemHealthGatewayCurrent:
+      type: object
+      description: 网关当前瞬时运行指标（优先实时读取，失败时回退数据库最新快照）
+      properties:
+        status: { type: string, enum: [UP, DOWN, DEGRADED, UNKNOWN], description: 网关组件状态 }
+        latency_ms: { type: integer, nullable: true, description: 探测延迟（毫秒） }
+        taken_at: { type: string, format: date-time, description: 采样时间（UTC） }
+        cpu_percent: { type: number, format: double, nullable: true, description: CPU 使用率（%） }
+        memory_percent: { type: number, format: double, nullable: true, description: 内存使用率（%） }
+        memory_used_bytes: { type: integer, format: int64, nullable: true, description: 已用内存（字节） }
+        memory_total_bytes: { type: integer, format: int64, nullable: true, description: 总内存（字节） }
+        load1: { type: number, format: double, nullable: true, description: 1 分钟系统平均负载 }
+        load5: { type: number, format: double, nullable: true, description: 5 分钟系统平均负载 }
+        load15: { type: number, format: double, nullable: true, description: 15 分钟系统平均负载 }
+        fd_open: { type: integer, nullable: true, description: 已打开文件句柄数 }
+        fd_max: { type: integer, format: int64, nullable: true, description: 最大文件句柄上限 }
+        fd_usage_percent: { type: number, format: double, nullable: true, description: 文件句柄使用率（%） }
+        tcp_connections_active: { type: integer, format: int64, description: 当前活跃 TCP 连接数 }
+        tcp_connections_accepted_total: { type: integer, format: int64, description: 累计接入 TCP 连接数 }
+        tcp_connections_accepted_per_second: { type: number, format: double, description: 每秒新建 TCP 连接数 }
+        bytes_in_total: { type: integer, format: int64, description: 累计入站字节数 }
+        bytes_out_total: { type: integer, format: int64, description: 累计出站字节数 }
+        bytes_in_per_second: { type: number, format: double, description: 入站吞吐速率（字节/秒） }
+        bytes_out_per_second: { type: number, format: double, description: 出站吞吐速率（字节/秒） }
+        http_requests_in_flight: { type: integer, format: int64, description: 在途 HTTP 请求数 }
+        http_requests_total: { type: integer, format: int64, description: 累计 HTTP 请求数 }
+        http_requests_per_second: { type: number, format: double, description: 实时 QPS（请求/秒） }
+        http_sessions_active: { type: integer, description: 当前活跃 HTTP 会话数 }
+        http_sessions_new_total: { type: integer, format: int64, description: 累计新建 HTTP 会话数 }
+        http_sessions_new_per_second: { type: number, format: double, description: 每秒新建 HTTP 会话数 }
+        http_sessions_overflow_total: { type: integer, format: int64, description: 会话表超上限溢出次数 }
+        http_sessions_capacity: { type: integer, description: 会话表容量上限（固定 10000） }
+        status_2xx_total: { type: integer, format: int64, description: 累计 2xx 响应数 }
+        status_3xx_total: { type: integer, format: int64, description: 累计 3xx 响应数 }
+        status_4xx_total: { type: integer, format: int64, description: 累计 4xx 响应数 }
+        status_5xx_total: { type: integer, format: int64, description: 累计 5xx 响应数 }
+        status_2xx_per_second: { type: number, format: double, description: 每秒 2xx 响应数 }
+        status_3xx_per_second: { type: number, format: double, description: 每秒 3xx 响应数 }
+        status_4xx_per_second: { type: number, format: double, description: 每秒 4xx 响应数 }
+        status_5xx_per_second: { type: number, format: double, description: 每秒 5xx 响应数 }
+        software_bypass: { $ref: '#/components/schemas/SystemHealthGatewaySoftwareBypass' }
+        tcp_states:
+          nullable: true
+          allOf:
+            - { $ref: '#/components/schemas/SystemHealthGatewayTCPStates' }
+          description: TCP 连接状态分布（不可用时为 null）
+        resource_sample_error: { type: string, description: 资源采样错误信息（正常时为空字符串） }
+
+    SystemHealthGatewayTrendSummary:
+      type: object
+      description: 窗口内网关指标峰值、均值与旁路汇总
+      properties:
+        peak_tcp_connections_active: { type: integer, format: int64, description: 窗口内最大活跃 TCP 连接数 }
+        avg_tcp_connections_active: { type: number, format: double, description: 窗口内平均活跃 TCP 连接数 }
+        peak_tcp_connections_accepted_per_second: { type: number, format: double, description: 窗口内最高新建连接速率（/秒） }
+        peak_http_sessions_active: { type: integer, description: 窗口内最大活跃 HTTP 会话数 }
+        peak_http_sessions_new_per_second: { type: number, format: double, description: 窗口内最高新建会话速率（/秒） }
+        peak_http_requests_per_second: { type: number, format: double, description: 窗口内最高 QPS（请求/秒） }
+        peak_bytes_in_per_second: { type: number, format: double, description: 窗口内最高入站带宽（字节/秒） }
+        peak_bytes_out_per_second: { type: number, format: double, description: 窗口内最高出站带宽（字节/秒） }
+        peak_cpu_percent: { type: number, format: double, nullable: true, description: 窗口内最高 CPU 使用率（%；无采样时为 null） }
+        peak_memory_percent: { type: number, format: double, nullable: true, description: 窗口内最高内存使用率（%；无采样时为 null） }
+        bypass_active_points: { type: integer, description: 窗口内处于软件旁路激活状态的采样点数 }
+
+    SystemHealthGatewayTrendPoint:
+      type: object
+      description: 单个时间点的网关运行趋势样本
+      properties:
+        taken_at: { type: string, format: date-time, description: 采样时间（UTC） }
+        cpu_percent: { type: number, format: double, nullable: true, description: CPU 使用率（%） }
+        memory_percent: { type: number, format: double, nullable: true, description: 内存使用率（%） }
+        load1: { type: number, format: double, nullable: true, description: 1 分钟系统平均负载 }
+        fd_usage_percent: { type: number, format: double, nullable: true, description: 文件句柄使用率（%） }
+        tcp_connections_active: { type: integer, format: int64, description: 活跃 TCP 连接数 }
+        tcp_connections_accepted_per_second: { type: number, format: double, description: 每秒新建 TCP 连接数 }
+        bytes_in_per_second: { type: number, format: double, description: 入站吞吐速率（字节/秒） }
+        bytes_out_per_second: { type: number, format: double, description: 出站吞吐速率（字节/秒） }
+        http_requests_in_flight: { type: integer, format: int64, description: 在途 HTTP 请求数 }
+        http_requests_per_second: { type: number, format: double, description: 每秒 HTTP 请求数（QPS） }
+        http_sessions_active: { type: integer, description: 活跃 HTTP 会话数 }
+        http_sessions_new_per_second: { type: number, format: double, description: 每秒新建 HTTP 会话数 }
+        status_2xx_per_second: { type: number, format: double, description: 每秒 2xx 响应数 }
+        status_3xx_per_second: { type: number, format: double, description: 每秒 3xx 响应数 }
+        status_4xx_per_second: { type: number, format: double, description: 每秒 4xx 响应数 }
+        status_5xx_per_second: { type: number, format: double, description: 每秒 5xx 响应数 }
+        software_bypass_active: { type: boolean, description: 该时刻是否处于软件旁路状态 }
+
+    SystemHealthGatewayTrendApplication:
+      type: object
+      description: 单应用网关实时负载明细（按 QPS 降序、总请求数降序最多 20 项）
+      properties:
+        app_id: { type: string, description: 应用 ID }
+        app_code: { type: string, description: 应用编码（查不到时降级为 app_id） }
+        app_name: { type: string, description: 应用名称（查不到时降级为 app_id） }
+        requests_in_flight: { type: integer, format: int64, description: 当前在途请求数 }
+        requests_total: { type: integer, format: int64, description: 累计请求数 }
+        requests_per_second: { type: number, format: double, description: 实时 QPS }
+        bypassed_requests_total: { type: integer, format: int64, description: 累计旁路请求数 }
+        bytes_in_total: { type: integer, format: int64, description: 累计入站字节数 }
+        bytes_out_total: { type: integer, format: int64, description: 累计出站字节数 }
+        bytes_in_per_second: { type: number, format: double, description: 入站带宽（字节/秒） }
+        bytes_out_per_second: { type: number, format: double, description: 出站带宽（字节/秒） }
+        status_4xx_total: { type: integer, format: int64, description: 累计 4xx 响应数 }
+        status_5xx_total: { type: integer, format: int64, description: 累计 5xx 响应数 }
+
+    SystemHealthGatewayTrendResponse:
+      type: object
+      description: 网关连接与会话实时/历史趋势响应
+      properties:
+        range: { type: string, enum: ['10m', '1h', '6h', '24h'], description: 生效的时间范围 }
+        source: { type: string, enum: [gateway_live, database, database_fallback], description: 趋势数据源 }
+        interval_seconds: { type: integer, description: 采样间隔（秒；实时为 2，数据库为 30） }
+        generated_at: { type: string, format: date-time, description: 响应生成时间（UTC） }
+        node: { type: string, description: 网关节点标识 }
+        current:
+          nullable: true
+          allOf:
+            - { $ref: '#/components/schemas/SystemHealthGatewayCurrent' }
+          description: 当前瞬时网关状态（实时与数据库均无记录时为 null）
+        summary: { $ref: '#/components/schemas/SystemHealthGatewayTrendSummary' }
+        points: { type: array, items: { $ref: '#/components/schemas/SystemHealthGatewayTrendPoint' }, description: 时间序列表（按时间升序，无数据时为空数组） }
+        applications: { type: array, items: { $ref: '#/components/schemas/SystemHealthGatewayTrendApplication' }, description: 按应用实时负载排行（最多 20 项，无数据时为空数组） }
 
     # ==================== 系统告警 ====================
     SysAlert:

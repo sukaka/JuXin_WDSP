@@ -48,16 +48,15 @@ decision.Decide：BLOCK 类在 PROTECT 模式 → ActionBlock（engine.go:62-83�
 
 | 数据类型标签 | 模式要点 |
 |--------------|----------|
-| `phone` | `phone`、`mobile`、`telephone`、拼音 `shouji`；短词 `tel` 带非字母边界 |
-| `email` | `email`/`mail`（可选下划线）、拼音 `youxiang` |
+| `phone` | `phone`（含 `cell/tele/mobile` 前缀）、`mobile`、`tel`（分隔符/驼峰边界防 `microphone`/`automobile`/`hotel` 误伤）、拼音 `shouji` |
+| `email` | `email`/`e_mail`/`mail`（分隔符/驼峰边界防 `mailer`/`mailinglist`/`pipermail`/`blackmail` 误伤）、拼音 `youxiang` |
 | `id_card` | `id_card`/`idcard`、`identity`、拼音 `shenfenzheng`；短词 `sfz` 带边界 |
 | `bank_card` | `bank_card`、`card_number`/`card_no`、拼音 `yinhangka`；短词 `pan` 带边界 |
 | `credential` | `password`、`passwd`、`pwd`、`secret`、`token`、`api_key`/`apikey`、`access_key`、`private_key`、拼音 `mima` |
 
-**短词边界防误伤**：`tel`、`sfz`、`pan` 三个短关键字写作
-`(^|[^a-z])tel([^a-z]|$)` 形态（sensitive.go:31-35），要求两侧为非字母字符，
-避免 `hotel`、`company` 等常见词误命中（代码注释明确此意图，sensitive.go:29）。
-匹配整体大小写不敏感（`(?i)`）。
+**词根边界防误伤**：`phone`/`mobile`/`tel`/`email`/`mail` 采用分隔符与驼峰边界，
+`sfz`/`pan` 采用非字母边界（sensitive.go），兼容 `userPhone`/`emailAddress`/`USER_EMAIL` 等命名，
+同时避免 `hotel`、`company`、`mailer`、`mailinglist`、`pipermail`、`microphone`、`automobile` 等非敏感词误命中。
 
 模式表可经 `pipeline.Config.SensitivePatterns` 整体替换（pipeline.go:36-37）；
 `CompileSensitivePatterns` 对空 `data_type`/`pattern` 或正则编译失败返回错误，
@@ -70,7 +69,7 @@ decision.Decide：BLOCK 类在 PROTECT 模式 → ActionBlock（engine.go:62-83�
 | 规则 ID | 位置 | 类别 / 严重度 | ScoreDelta | 含义 |
 |---------|------|---------------|------------|------|
 | `sensitive.in_query` | Query 键名 | BLOCK / HIGH | 40 | 敏感字段出现在 URL，明文外泄（日志、历史记录、Referer 均会留存） |
-| `sensitive.field` | JSON / Form / XML 字段名；值级规则开启时扩展 HEADER 名 / PATH 字面段名 | OBSERVE / MEDIUM | 10 | 请求体携带敏感字段，观察记录 |
+| `sensitive.field` | JSON / Form / XML 字段名；值级规则开启时扩展非标准协议 HEADER 名（跳过标准浏览器/HTTP 头，不做 URL 路径字面段匹配） | OBSERVE / MEDIUM | 10 | 请求载荷/业务头携带敏感字段，观察记录 |
 | `sensitive.value_in_query` | Query 值（值级 regex） | BLOCK / HIGH | 40 | 敏感值出现在 URL，与键名命中同一升级语义（值级规则下发才启用） |
 | `sensitive.value` | JSON / Form 留存值、HEADER 非脱敏头值、PATH 原始段值（值级 regex） | OBSERVE / MEDIUM | 15 | 值级命中观察记录（证据不落值，PATH 证据用段序号/占位名） |
 

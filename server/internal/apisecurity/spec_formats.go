@@ -21,6 +21,13 @@ const (
 	SpecFormatJSONSchema = "jsonschema"
 	SpecFormatPostman    = "postman"
 	SpecFormatGraphQL    = "graphql"
+	SpecFormatProtobuf   = "protobuf"
+	SpecFormatWSDL       = "wsdl"
+	SpecFormatXSD        = "xsd"
+	SpecFormatRAML       = "raml"
+	SpecFormatAPIB       = "apib"
+	SpecFormatHAR        = "har"
+	SpecFormatAsyncAPI   = "asyncapi"
 )
 
 // 扩展格式解析错误（HTTP 层统一映射为 400 并给出明确原因）。
@@ -35,10 +42,24 @@ var (
 	ErrSpecTooLarge = errors.New("spec document too large")
 	// ErrSpecTooComplex 文档节点数/嵌套深度超出安全限制（防解析炸弹）。
 	ErrSpecTooComplex = errors.New("spec document too complex")
-	// ErrSpecExternalRef 含外部 $ref 引用（http(s)://、文件路径等），仅允许 #/ 文档内引用。
+	// ErrSpecExternalRef 含外部 $ref 引用（http(s)://、文件路径等），仅允许 #/ 文档内引用或 ZIP 包内相对引用。
 	ErrSpecExternalRef = errors.New("external $ref not allowed")
 	// ErrSpecInvalidGraphQL GraphQL SDL 无法解析出任何 Query/Mutation 操作。
 	ErrSpecInvalidGraphQL = errors.New("invalid graphql schema")
+	// ErrSpecInvalidProtobuf Protobuf (.proto) 语法错误或缺少 service/message 定义。
+	ErrSpecInvalidProtobuf = errors.New("invalid protobuf schema")
+	// ErrSpecInvalidXML WSDL / XSD XML 文档解析失败或触发安全限制（DOCTYPE/ENTITY）。
+	ErrSpecInvalidXML = errors.New("invalid xml spec document")
+	// ErrSpecInvalidRAML RAML 0.8/1.0 文档格式无效或缺少资源定义。
+	ErrSpecInvalidRAML = errors.New("invalid raml document")
+	// ErrSpecInvalidAPIB API Blueprint (.apib) 缺少有效资源/动作定义。
+	ErrSpecInvalidAPIB = errors.New("invalid api blueprint document")
+	// ErrSpecInvalidHAR HAR 归档缺少有效的 log.entries 请求项。
+	ErrSpecInvalidHAR = errors.New("invalid har archive")
+	// ErrSpecInvalidAsyncAPI AsyncAPI 2.x/3.x 版本不受支持或缺少 channels/operations。
+	ErrSpecInvalidAsyncAPI = errors.New("invalid asyncapi document")
+	// ErrSpecInvalidZip ZIP 规范归档损坏、路径非法或不含可解析规范。
+	ErrSpecInvalidZip = errors.New("invalid spec zip archive")
 )
 
 // 解析安全限制。
@@ -49,21 +70,26 @@ const (
 )
 
 // ParseSpecContent 规范导入统一解析入口：
-// 输入原始字节（粘贴上传 / URL 拉取均已在外层做 16MiB 限制，此处防御性复检），
-// 依次尝试 JSON → YAML → GraphQL SDL，返回格式标识、规范化文档与操作清单。
-// normalized：openapi3/swagger2 为 OAS3 规范化文档；jsonschema/postman 为源文档；
-// graphql 为 {"x-wdsp-spec-format":"graphql","sdl":...} 包装（spec_json 为 JSONB，须可 JSON 序列化）。
+// 输入原始字节（文件上传 / 粘贴 / URL 拉取均已在外层做 16MiB 限制，此处防御性复检），
+// 自动识别 ZIP 归档、JSON、XML（WSDL/XSD）、RAML、API Blueprint、YAML、Protobuf、GraphQL SDL，
+// 返回格式标识、规范化文档与操作清单。
+// normalized：openapi3/swagger2 为 OAS3 规范化文档；jsonschema/postman/asyncapi 为源文档；
+// har 为脱敏骨架文档；graphql/protobuf/wsdl/xsd/raml/apib 为 x-wdsp-spec-format 包装对象。
 func ParseSpecContent(body []byte) (format string, normalized map[string]any, ops []SpecOperation, err error) {
 	if len(body) > specImportMaxBytes {
 		return "", nil, nil, fmt.Errorf("%w: 超过大小上限（16MiB）", ErrSpecTooLarge)
 	}
-	trimmed := bytes.TrimSpace(body)
+	if isZipMagic(body) {
+		return parseSpecZip(body)
+	}
+	trimmed := bytes.TrimSpace(bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF}))
 	if len(trimmed) == 0 {
 		return "", nil, nil, fmt.Errorf("%w: 空文档", ErrSpecUnsupportedFormat)
 	}
 	var doc map[string]any
-	if trimmed[0] == '{' || trimmed[0] == '[' {
-		// 明确 JSON 形态：解析失败即拒绝，不再回退 YAML/GraphQL
+	switch {
+	case trimmed[0] == '{' || trimmed[0] == '[':
+		// 明确 JSON 形态：解析失败即拒绝，不再回退 YAML/文本格式
 		if jsonDepthExceeded(trimmed) {
 			return "", nil, nil, fmt.Errorf("%w: JSON 嵌套深度超过 %d", ErrSpecTooComplex, specJSONMaxDepth)
 		}
@@ -73,21 +99,41 @@ func ParseSpecContent(body []byte) (format string, normalized map[string]any, op
 		if doc == nil {
 			return "", nil, nil, fmt.Errorf("%w: 顶层必须为 JSON 对象", ErrSpecInvalidJSON)
 		}
-	} else {
-		// YAML（安全解码）；非映射顶层（如纯文本/SDL）回退 GraphQL SDL
+		return parseSpecJSONDoc(doc)
+	case trimmed[0] == '<':
+		// XML 族规范（WSDL 1.1/2.0 / XSD），安全防 XXE
+		return parseSpecXML(trimmed)
+	case isRAMLHeader(trimmed):
+		// RAML 0.8 / 1.0（YAML 子集）
+		return parseRAMLContent(trimmed)
+	case hasAPIBFormatHeader(trimmed):
+		// API Blueprint（FORMAT: 1A 声明优先于 YAML 解码，防止被误解为单键映射）
+		return parseAPIBContent(trimmed)
+	default:
+		// YAML（安全解码）；失败或未命中结构化格式时按明确形态回退 Protobuf / GraphQL SDL / APIB
 		doc, err = decodeSpecYAML(trimmed)
 		if err != nil {
-			if looksLikeGraphQLSDL(string(trimmed)) {
+			text := string(trimmed)
+			if looksLikeProtobuf(text) {
+				return parseProtobufContent(trimmed)
+			}
+			if looksLikeGraphQLSDL(text) {
 				return parseGraphQLContent(trimmed)
+			}
+			if looksLikeAPIB(text) {
+				return parseAPIBContent(trimmed)
 			}
 			return "", nil, nil, err
 		}
+		if detectExtendedSpecFormat(doc) == "" && looksLikeAPIB(string(trimmed)) {
+			return parseAPIBContent(trimmed)
+		}
+		return parseSpecJSONDoc(doc)
 	}
-	return parseSpecJSONDoc(doc)
 }
 
-// parseSpecJSONDoc 对已解码为 map 的 JSON 族文档做格式识别与分发：
-// openapi3 / swagger2（ParseSpecDocument）/ postman / jsonschema；
+// parseSpecJSONDoc 对已解码为 map 的 JSON/YAML 族文档做格式识别与分发：
+// openapi3 / swagger2（ParseSpecDocument）/ asyncapi / postman / har / jsonschema；
 // 先做外部 $ref 扫描（所有 JSON 族格式统一拒绝非 #/ 引用，绝不发起网络请求）。
 func parseSpecJSONDoc(doc map[string]any) (format string, normalized map[string]any, ops []SpecOperation, err error) {
 	if err := rejectExternalRefs(doc); err != nil {
@@ -96,12 +142,24 @@ func parseSpecJSONDoc(doc map[string]any) (format string, normalized map[string]
 	switch detectExtendedSpecFormat(doc) {
 	case SpecFormatOpenAPI3, SpecFormatSwagger2:
 		return ParseSpecDocument(doc)
+	case SpecFormatAsyncAPI:
+		ops, err := ParseAsyncAPI(doc)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		return SpecFormatAsyncAPI, doc, ops, nil
 	case SpecFormatPostman:
 		ops, err := ParsePostmanCollection(doc)
 		if err != nil {
 			return "", nil, nil, err
 		}
 		return SpecFormatPostman, doc, ops, nil
+	case SpecFormatHAR:
+		normalized, ops, err := ParseHAR(doc)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		return SpecFormatHAR, normalized, ops, nil
 	case SpecFormatJSONSchema:
 		ops, err := ParseJSONSchema(doc)
 		if err != nil {
@@ -110,6 +168,15 @@ func parseSpecJSONDoc(doc map[string]any) (format string, normalized map[string]
 		return SpecFormatJSONSchema, doc, ops, nil
 	}
 	return "", nil, nil, ErrSpecUnsupportedFormat
+}
+
+// parseProtobufContent Protobuf (.proto) 入口。
+func parseProtobufContent(raw []byte) (string, map[string]any, []SpecOperation, error) {
+	ops, title, err := ParseProtobuf(string(raw))
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return SpecFormatProtobuf, wrapRawSpecDoc(SpecFormatProtobuf, title, string(raw)), ops, nil
 }
 
 // parseGraphQLContent GraphQL SDL 入口：解析失败即 400（文档形态已确认为 SDL）。
@@ -125,16 +192,25 @@ func parseGraphQLContent(sdl []byte) (string, map[string]any, []SpecOperation, e
 	return SpecFormatGraphQL, normalized, ops, nil
 }
 
-// detectExtendedSpecFormat 扩展格式识别：openapi3 / swagger2 / postman / jsonschema / ""。
-// postman：info 为对象且 item 为数组（版本在 ParsePostmanCollection 内校验）；
-// jsonschema：$schema 指向 json-schema.org（draft 在 ParseJSONSchema 内校验）。
+// detectExtendedSpecFormat 扩展格式识别：openapi3 / swagger2 / asyncapi / postman / har / jsonschema / ""。
 func detectExtendedSpecFormat(doc map[string]any) string {
 	if f := DetectSpecFormat(doc); f != "" {
 		return f
 	}
+	if _, ok := doc["asyncapi"].(string); ok {
+		return SpecFormatAsyncAPI
+	}
 	if _, ok := doc["info"].(map[string]any); ok {
 		if _, ok := doc["item"].([]any); ok {
 			return SpecFormatPostman
+		}
+	}
+	if logObj, ok := doc["log"].(map[string]any); ok && logObj != nil {
+		if _, hasEntries := logObj["entries"]; hasEntries {
+			return SpecFormatHAR
+		}
+		if _, hasVer := logObj["version"].(string); hasVer {
+			return SpecFormatHAR
 		}
 	}
 	if s, ok := doc["$schema"].(string); ok && strings.Contains(s, "json-schema.org") {

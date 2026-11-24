@@ -1000,9 +1000,9 @@ func boolOf(raw any) bool {
 	return b
 }
 
-// parseStoredSpecOperations 从落库的规范化文档重新解析操作列表（CHANGED 对比/跨版本 diff 用）。
+// parseStoredSpecOperations 从落库的规范化文档重新解析操作列表（CHANGED 对比/跨版本 diff/审计用）。
 // openapi3/swagger2 落库内容已规范化为 OAS3，直接 ParseSpecOperations；
-// jsonschema/postman 落库为源文档，按 format 调对应解析器；graphql 从包装文档取 sdl。
+// 其余扩展格式按 format 调对应解析器或读取脱敏操作骨架。
 // 解析失败视为内部数据异常。
 func parseStoredSpecOperations(spec *ImportSpec) ([]SpecOperation, error) {
 	var doc map[string]any
@@ -1017,6 +1017,30 @@ func parseStoredSpecOperations(spec *ImportSpec) ([]SpecOperation, error) {
 	case SpecFormatGraphQL:
 		sdl, _ := doc["sdl"].(string)
 		return ParseGraphQLSDL(sdl)
+	case SpecFormatProtobuf:
+		if srcs := stringSlice(doc["sources"]); len(srcs) > 0 {
+			ops, _, err := ParseProtobufSet(srcs)
+			return ops, err
+		}
+		raw, _ := doc["raw"].(string)
+		ops, _, err := ParseProtobuf(raw)
+		return ops, err
+	case SpecFormatWSDL, SpecFormatXSD:
+		raw, _ := doc["raw"].(string)
+		_, _, ops, err := parseSpecXML([]byte(raw))
+		return ops, err
+	case SpecFormatRAML:
+		inner, _ := doc["doc"].(map[string]any)
+		ops, _, err := ParseRAML(inner)
+		return ops, err
+	case SpecFormatAPIB:
+		raw, _ := doc["raw"].(string)
+		ops, _, err := ParseAPIB(raw)
+		return ops, err
+	case SpecFormatHAR:
+		return parseStoredHAROperations(doc)
+	case SpecFormatAsyncAPI:
+		return ParseAsyncAPI(doc)
 	default:
 		return ParseSpecOperations(doc)
 	}

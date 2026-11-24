@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/classifier"
 )
 
 // ErrNotFound 资源不存在（端点/规范）。
@@ -181,14 +183,18 @@ DO UPDATE SET value = EXCLUDED.value, source = 'MANUAL', confidence = 1, updated
 
 // GraphNode 图谱节点（api_endpoints 摘要）。
 type GraphNode struct {
-	ID             uuid.UUID  `json:"id"`
-	EndpointKey    string     `json:"endpoint_key"`
-	HTTPMethod     string     `json:"http_method"`
-	NormalizedPath string     `json:"normalized_path"`
-	ApplicationID  *uuid.UUID `json:"application_id,omitempty"`
-	AssetStatus    string     `json:"asset_status"`
-	LearningStatus string     `json:"learning_status"`
-	HitCount       int64      `json:"hit_count"`
+	ID              uuid.UUID  `json:"id"`
+	EndpointKey     string     `json:"endpoint_key"`
+	HTTPMethod      string     `json:"http_method"`
+	NormalizedPath  string     `json:"normalized_path"`
+	ApplicationID   *uuid.UUID `json:"application_id,omitempty"`
+	ApplicationName string     `json:"application_name,omitempty"`
+	Host            string     `json:"host,omitempty"`
+	ProtocolType    string     `json:"protocol_type,omitempty"`
+	IsAPI           bool       `json:"is_api"`
+	AssetStatus     string     `json:"asset_status"`
+	LearningStatus  string     `json:"learning_status"`
+	HitCount        int64      `json:"hit_count"`
 	// 未闭环风险发现数（活动状态 NEW/CONFIRMED/IN_PROGRESS，000042 七态词表，
 	// 口径与 GetPosture 一致；W6-A 图谱/拓扑节点风险计数）
 	OpenFindingsCount int64 `json:"open_findings_count"`
@@ -208,10 +214,22 @@ type GraphEdge struct {
 	LastSeenAt    time.Time `json:"last_seen_at"`
 }
 
-// Graph 调用图谱（节点 + 调用边）。
+// GraphSummary 身份调用轨迹图谱过滤前后统计摘要（便于界面直观提示噪声与孤立点数量）。
+type GraphSummary struct {
+	TotalNodes       int `json:"total_nodes"`
+	VisibleNodes     int `json:"visible_nodes"`
+	StaticNoiseNodes int `json:"static_noise_nodes"`
+	IgnoredNodes     int `json:"ignored_nodes"`
+	IsolatedNodes    int `json:"isolated_nodes"`
+	TotalEdges       int `json:"total_edges"`
+	VisibleEdges     int `json:"visible_edges"`
+}
+
+// Graph 调用图谱（节点 + 调用边 + 可选摘要）。
 type Graph struct {
-	Nodes []GraphNode `json:"nodes"`
-	Edges []GraphEdge `json:"edges"`
+	Nodes   []GraphNode   `json:"nodes"`
+	Edges   []GraphEdge   `json:"edges"`
+	Summary *GraphSummary `json:"summary,omitempty"`
 }
 
 // EdgeFilter 调用边过滤（W6-A 图谱/拓扑读接口增强）。零值 = 不过滤（全量边）。
@@ -220,6 +238,119 @@ type EdgeFilter struct {
 	Start    *time.Time // 边活跃窗口下界（last_seen_at 不早于 Start）
 	End      *time.Time // 边活跃窗口上界（first_seen_at 不晚于 End）
 	MinCount int64      // 最小调用次数（call_count >= MinCount）
+}
+
+// GraphFilter 图谱读接口完整过滤条件（含节点与边过滤；零值完全兼容历史全量返回语义）。
+type GraphFilter struct {
+	EdgeFilter
+	ApplicationID  *uuid.UUID // 可选：仅查看指定应用的接口节点及边
+	Status         string     // 可选：资产状态白名单过滤
+	Keyword        string     // 可选：按 endpoint_key / 路径 / 应用名 / Host 关键字过滤
+	ExcludeStatic  bool       // 排除静态资源与非 API 噪声节点（永不排除 CONFIRMED）
+	ExcludeIgnored bool       // 排除 IGNORED 状态节点
+	OnlyConnected  bool       // 仅保留至少有 1 条边关联的节点
+}
+
+// isGraphStaticNoiseNode 判断图谱节点是否属于静态资源或非 API 噪声（保护 CONFIRMED 正式资产）。
+func isGraphStaticNoiseNode(n GraphNode) bool {
+	if strings.EqualFold(strings.TrimSpace(n.AssetStatus), "CONFIRMED") {
+		return false
+	}
+	if !n.IsAPI {
+		return true
+	}
+	if matched, _ := classifier.DefaultStaticFilter().MatchStaticPath(n.HTTPMethod, n.NormalizedPath); matched {
+		return true
+	}
+	return false
+}
+
+// applyGraphFilter 对原始图谱执行节点/边过滤并生成摘要统计（纯逻辑，不依赖数据库）。
+func applyGraphFilter(raw *Graph, f GraphFilter) *Graph {
+	if raw == nil {
+		return &Graph{
+			Nodes:   []GraphNode{},
+			Edges:   []GraphEdge{},
+			Summary: &GraphSummary{},
+		}
+	}
+	summary := &GraphSummary{
+		TotalNodes: len(raw.Nodes),
+		TotalEdges: len(raw.Edges),
+	}
+	kw := strings.ToLower(strings.TrimSpace(f.Keyword))
+	statusFilter := strings.ToUpper(strings.TrimSpace(f.Status))
+
+	candidateNodes := make([]GraphNode, 0, len(raw.Nodes))
+	allowedIDs := make(map[uuid.UUID]struct{}, len(raw.Nodes))
+	for _, n := range raw.Nodes {
+		isStaticNoise := isGraphStaticNoiseNode(n)
+		if isStaticNoise {
+			summary.StaticNoiseNodes++
+		}
+		isIgnored := strings.EqualFold(strings.TrimSpace(n.AssetStatus), "IGNORED")
+		if isIgnored {
+			summary.IgnoredNodes++
+		}
+		if f.ExcludeStatic && isStaticNoise {
+			continue
+		}
+		if f.ExcludeIgnored && isIgnored {
+			continue
+		}
+		if f.ApplicationID != nil {
+			if n.ApplicationID == nil || *n.ApplicationID != *f.ApplicationID {
+				continue
+			}
+		}
+		if statusFilter != "" && !strings.EqualFold(strings.TrimSpace(n.AssetStatus), statusFilter) {
+			continue
+		}
+		if kw != "" {
+			hay := strings.ToLower(n.EndpointKey + " " + n.NormalizedPath + " " + n.ApplicationName + " " + n.Host)
+			if !strings.Contains(hay, kw) {
+				continue
+			}
+		}
+		candidateNodes = append(candidateNodes, n)
+		allowedIDs[n.ID] = struct{}{}
+	}
+
+	filteredEdges := make([]GraphEdge, 0, len(raw.Edges))
+	connectedIDs := make(map[uuid.UUID]struct{}, len(candidateNodes))
+	for _, e := range raw.Edges {
+		if _, ok := allowedIDs[e.TargetEndpointID]; !ok {
+			continue
+		}
+		if e.SourceEndpointID != nil {
+			if _, ok := allowedIDs[*e.SourceEndpointID]; !ok {
+				continue
+			}
+			connectedIDs[*e.SourceEndpointID] = struct{}{}
+		}
+		connectedIDs[e.TargetEndpointID] = struct{}{}
+		filteredEdges = append(filteredEdges, e)
+	}
+
+	visibleNodes := make([]GraphNode, 0, len(candidateNodes))
+	for _, n := range candidateNodes {
+		_, connected := connectedIDs[n.ID]
+		if !connected {
+			summary.IsolatedNodes++
+			if f.OnlyConnected {
+				continue
+			}
+		}
+		visibleNodes = append(visibleNodes, n)
+	}
+	summary.VisibleNodes = len(visibleNodes)
+	summary.VisibleEdges = len(filteredEdges)
+
+	return &Graph{
+		Nodes:   visibleNodes,
+		Edges:   filteredEdges,
+		Summary: summary,
+	}
 }
 
 // activeFindingsJoin 未闭环 findings 计数子查询（活动状态口径同 GetPosture），
@@ -232,18 +363,24 @@ LEFT JOIN (
 
 // ListGraph 全量节点与调用边（不过滤；aitools.APISecurityReader 契约保持无参形态）。
 func (s *Store) ListGraph(ctx context.Context) (*Graph, error) {
-	return s.ListGraphFiltered(ctx, EdgeFilter{})
+	return s.ListGraphWithFilter(ctx, GraphFilter{})
 }
 
-// ListGraphFiltered 全量节点 + 按 EdgeFilter 过滤后的调用边（节点始终全量返回，
-// 过滤只作用于边）。
+// ListGraphFiltered 全量节点 + 按 EdgeFilter 过滤后的调用边（保持既有签名兼容）。
 func (s *Store) ListGraphFiltered(ctx context.Context, f EdgeFilter) (*Graph, error) {
-	g := &Graph{Nodes: []GraphNode{}, Edges: []GraphEdge{}}
+	return s.ListGraphWithFilter(ctx, GraphFilter{EdgeFilter: f})
+}
+
+// ListGraphWithFilter 节点与调用边按 GraphFilter 过滤并返回过滤前后摘要统计。
+func (s *Store) ListGraphWithFilter(ctx context.Context, f GraphFilter) (*Graph, error) {
+	raw := &Graph{Nodes: []GraphNode{}, Edges: []GraphEdge{}}
 	rows, err := s.db.Query(ctx, `
 SELECT e.id, e.endpoint_key, e.http_method, e.normalized_path, e.application_id,
+       COALESCE(a.name, ''), COALESCE(e.host, ''), COALESCE(e.protocol_type, 'REST'), e.is_api,
        e.asset_status, e.learning_status, e.hit_count, COALESCE(f.open_count, 0)
-FROM api_endpoints e`+activeFindingsJoin+`
-ORDER BY e.endpoint_key`)
+FROM api_endpoints e
+LEFT JOIN applications a ON a.id = e.application_id`+activeFindingsJoin+`
+ORDER BY e.endpoint_key, e.host, e.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -251,21 +388,22 @@ ORDER BY e.endpoint_key`)
 	for rows.Next() {
 		var n GraphNode
 		if err := rows.Scan(&n.ID, &n.EndpointKey, &n.HTTPMethod, &n.NormalizedPath,
-			&n.ApplicationID, &n.AssetStatus, &n.LearningStatus, &n.HitCount, &n.OpenFindingsCount); err != nil {
+			&n.ApplicationID, &n.ApplicationName, &n.Host, &n.ProtocolType, &n.IsAPI,
+			&n.AssetStatus, &n.LearningStatus, &n.HitCount, &n.OpenFindingsCount); err != nil {
 			return nil, err
 		}
-		g.Nodes = append(g.Nodes, n)
+		raw.Nodes = append(raw.Nodes, n)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	edges, err := s.listEdges(ctx, f)
+	edges, err := s.listEdges(ctx, f.EdgeFilter)
 	if err != nil {
 		return nil, err
 	}
-	g.Edges = edges
-	return g, nil
+	raw.Edges = edges
+	return applyGraphFilter(raw, f), nil
 }
 
 // TopologyGroup 按应用分组的端点树节点。
@@ -286,14 +424,15 @@ func (s *Store) ListTopology(ctx context.Context) (*Topology, error) {
 	return s.ListTopologyFiltered(ctx, EdgeFilter{})
 }
 
-// ListTopologyFiltered 端点按应用分组（节点附未闭环风险计数），边按 EdgeFilter 过滤。
+// ListTopologyFiltered 端点按应用分组（节点附未闭环风险计数、Host 与协议），边按 EdgeFilter 过滤。
 func (s *Store) ListTopologyFiltered(ctx context.Context, f EdgeFilter) (*Topology, error) {
 	rows, err := s.db.Query(ctx, `
 SELECT e.id, e.endpoint_key, e.http_method, e.normalized_path, e.application_id,
-       e.asset_status, e.learning_status, e.hit_count, COALESCE(a.name, ''), COALESCE(f.open_count, 0)
+       COALESCE(a.name, ''), COALESCE(e.host, ''), COALESCE(e.protocol_type, 'REST'), e.is_api,
+       e.asset_status, e.learning_status, e.hit_count, COALESCE(f.open_count, 0)
 FROM api_endpoints e
 LEFT JOIN applications a ON a.id = e.application_id`+activeFindingsJoin+`
-ORDER BY e.application_id NULLS LAST, e.endpoint_key`)
+ORDER BY e.application_id NULLS LAST, e.endpoint_key, e.host, e.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -304,9 +443,9 @@ ORDER BY e.application_id NULLS LAST, e.endpoint_key`)
 	idx := map[string]int{}
 	for rows.Next() {
 		var n GraphNode
-		var appName string
 		if err := rows.Scan(&n.ID, &n.EndpointKey, &n.HTTPMethod, &n.NormalizedPath,
-			&n.ApplicationID, &n.AssetStatus, &n.LearningStatus, &n.HitCount, &appName, &n.OpenFindingsCount); err != nil {
+			&n.ApplicationID, &n.ApplicationName, &n.Host, &n.ProtocolType, &n.IsAPI,
+			&n.AssetStatus, &n.LearningStatus, &n.HitCount, &n.OpenFindingsCount); err != nil {
 			return nil, err
 		}
 		key := "none"
@@ -315,7 +454,7 @@ ORDER BY e.application_id NULLS LAST, e.endpoint_key`)
 		}
 		gi, ok := idx[key]
 		if !ok {
-			name := appName
+			name := n.ApplicationName
 			if name == "" {
 				name = "未分组"
 			}

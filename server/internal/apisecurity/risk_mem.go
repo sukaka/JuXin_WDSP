@@ -106,7 +106,9 @@ func (m *RiskMemStore) GetFinding(ctx context.Context, id uuid.UUID) (*RiskFindi
 	if !ok {
 		return nil, ErrNotFound
 	}
-	return cloneRiskFinding(f), nil
+	cp := cloneRiskFinding(f)
+	cp.Title = localizeFindingTitle(cp.FindingType, cp.Title, cp.Detail)
+	return cp, nil
 }
 
 // TransitionFinding 状态机流转（语义与 SQL Store 一致：校验状态机 + 更新 +
@@ -143,7 +145,9 @@ func (m *RiskMemStore) TransitionFinding(ctx context.Context, id uuid.UUID, acti
 	f.Detail = raw
 	f.Status = to
 	f.UpdatedAt = &in.Now
-	return cloneRiskFinding(f), nil
+	cp := cloneRiskFinding(f)
+	cp.Title = localizeFindingTitle(cp.FindingType, cp.Title, cp.Detail)
+	return cp, nil
 }
 
 // riskBucketAgg 聚合中间态（count/hits/max severity/last_seen）。

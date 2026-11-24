@@ -245,6 +245,7 @@ func scanRiskFinding(row pgx.Row) (*RiskFinding, error) {
 	if err != nil {
 		return nil, err
 	}
+	f.Title = localizeFindingTitle(f.FindingType, f.Title, f.Detail)
 	return &f, nil
 }
 

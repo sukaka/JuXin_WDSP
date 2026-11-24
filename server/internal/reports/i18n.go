@@ -2,6 +2,8 @@ package reports
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/jiuzhang-waf/server/internal/wafrules"
 )
@@ -202,9 +204,11 @@ func peakHourText(hours []KV) string {
 	return fmt.Sprintf("攻击高峰时段：%s:00-%s:59（%d 起）。", name, name, n)
 }
 
-// FindingTypeName API 运行时发现类型中文名（词表见 api_runtime_findings.finding_type）。
+// FindingTypeName API 运行时发现类型中文名（词表见 api_runtime_findings.finding_type，
+// 支持精确词表、WAF_<规则号> 与检测域前缀兜底；未知值原样返回）。
 func FindingTypeName(t string) string {
-	switch t {
+	upper := strings.ToUpper(strings.TrimSpace(t))
+	switch upper {
 	case "SHADOW":
 		return "影子API"
 	case "ZOMBIE":
@@ -215,14 +219,93 @@ func FindingTypeName(t string) string {
 		return "对象级越权"
 	case "BFLA":
 		return "功能级越权"
+	case "BOLA_UNAUTHENTICATED_OBJECT_ACCESS":
+		return "未认证对象越权访问"
+	case "ADMISSION_UNCONFIRMED":
+		return "未确认API准入命中"
 	case "SCHEMA_DEVIATION":
 		return "模型偏离"
 	case "SENSITIVE_LEAK":
 		return "敏感数据泄露"
+	case "SENSITIVE_IN_QUERY":
+		return "URL查询含敏感字段"
+	case "SENSITIVE_VALUE_IN_QUERY":
+		return "URL查询含敏感数据"
+	case "SENSITIVE_FIELD":
+		return "请求含敏感字段名"
+	case "SENSITIVE_VALUE":
+		return "请求含敏感数据值"
+	case "SENSITIVE_RESPONSE_FIELD":
+		return "响应含敏感字段名"
+	case "SENSITIVE_RESPONSE_VALUE":
+		return "响应包含敏感数据"
 	case "MASS_ASSIGNMENT":
 		return "批量赋值"
 	case "BEHAVIOR_ANOMALY":
 		return "行为异常"
+	case "SHARED_DEVICE_ACCOUNTS":
+		return "同设备多账号"
+	case "SERVER_VERSION_DISCLOSURE":
+		return "服务端版本信息泄露"
+	case "SERVER_ERROR_DISCLOSURE":
+		return "服务端错误详情泄露"
+	case "WAF_DOWNSTREAM_INTERCEPT":
+		return "WAF下游阻断"
+	case "RESPONSE_MASK_FAILED":
+		return "响应脱敏失败"
+	case "FILE_BULK_DOWNLOAD":
+		return "同身份文件批量下载"
+	}
+	if strings.HasPrefix(upper, "WAF_") {
+		if id, err := strconv.Atoi(strings.TrimPrefix(upper, "WAF_")); err == nil && id > 0 {
+			for _, c := range crsRuleCategories {
+				if id >= c.min && id <= c.max {
+					return fmt.Sprintf("WAF %s（%d）", c.name, id)
+				}
+			}
+			return fmt.Sprintf("WAF 规则命中（%d）", id)
+		}
+		return "WAF安全检测"
+	}
+	prefixFallbacks := []struct {
+		prefix string
+		label  string
+	}{
+		{"RESPONSE_SCHEMA_", "响应模型偏离"},
+		{"RESPONSE_", "响应安全异常"},
+		{"REQUEST_", "请求安全异常"},
+		{"SCHEMA_", "请求模型偏离"},
+		{"PARSER_", "报文解析异常"},
+		{"RATELIMIT_", "频率限速触发"},
+		{"SENSITIVE_", "敏感数据风险"},
+		{"SERVER_", "服务端信息泄露"},
+		{"AUTHZ_", "授权安全异常"},
+		{"AUTH_", "认证凭据异常"},
+		{"CREDENTIAL_", "凭据安全风险"},
+		{"BOLA_", "对象级越权风险"},
+		{"BFLA_", "功能级越权风险"},
+		{"FLOWGUARD_", "强流程防护异常"},
+		{"FLOW_", "业务流程异常"},
+		{"FILE_", "文件安全告警"},
+		{"LLM_", "LLM安全告警"},
+		{"MCPGUARD_", "MCP安全防护告警"},
+		{"MCP_", "MCP工具安全告警"},
+		{"GRPCGUARD_", "gRPC安全防护告警"},
+		{"GRPC_", "gRPC协议异常"},
+		{"GRAPHQL_", "GraphQL安全告警"},
+		{"GQL_", "GraphQL安全告警"},
+		{"MACHINEID_", "机器身份异常"},
+		{"IDENTITY_", "身份信号异常"},
+		{"RESOURCE_", "资源访问异常"},
+		{"SCANNER_", "扫描器异常"},
+		{"BEHAVIOR_", "异常行为检测"},
+		{"WEBSHELL_", "WebShell通信风险"},
+		{"MIRROR_", "镜像旁路观测"},
+	}
+	for _, p := range prefixFallbacks {
+		if strings.HasPrefix(upper, p.prefix) {
+			return p.label
+		}
 	}
 	return t
 }

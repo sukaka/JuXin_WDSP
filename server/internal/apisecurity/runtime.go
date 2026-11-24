@@ -78,6 +78,7 @@ LEFT JOIN api_endpoints e ON e.id = f.endpoint_id`+cond+fmt.Sprintf(" ORDER BY f
 			&f.Title, &f.Detail, &f.FirstSeenAt, &f.LastSeenAt, &f.CreatedAt); err != nil {
 			return nil, 0, err
 		}
+		f.Title = localizeFindingTitle(f.FindingType, f.Title, f.Detail)
 		out = append(out, f)
 	}
 	return out, total, rows.Err()

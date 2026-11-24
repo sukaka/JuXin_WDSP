@@ -41,6 +41,7 @@ export default function ApplicationRiskOverridesPanel({ globalPolicy }: Props) {
   const canEdit = hasPermission(permissions, 'risk_policy.edit')
   const [applicationId, setApplicationId] = useState('')
   const [editorOpen, setEditorOpen] = useState(false)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const [form] = Form.useForm<PolicyFormValues>()
 
   const applicationsQuery = useQuery({
@@ -106,11 +107,13 @@ export default function ApplicationRiskOverridesPanel({ globalPolicy }: Props) {
       ...policyToFormValues(base),
       mode: current?.mode ?? 'OBSERVE',
     })
+    setAdvancedOpen(false)
     setEditorOpen(true)
   }
   const submit = (values: PolicyFormValues) => {
     const duplicated = duplicateScoreKeys(values.score_entries)
     if (duplicated.length > 0) {
+      setAdvancedOpen(true)
       message.error(
         `信号类型重复：${duplicated.join('、')}，请合并或删除重复行`,
       )
@@ -210,8 +213,24 @@ export default function ApplicationRiskOverridesPanel({ globalPolicy }: Props) {
           layout="vertical"
           disabled={!canEdit}
           onFinish={submit}
+          onFinishFailed={({ errorFields }) => {
+            const hasAdvanced = errorFields.some((item) => {
+              const name = item.name.map(String).join('.')
+              return (
+                name === 'signal_window_seconds' ||
+                name.startsWith('risk_levels') ||
+                name.startsWith('score_entries')
+              )
+            })
+            if (hasAdvanced) setAdvancedOpen(true)
+          }}
         >
-          <RiskPolicyFields canEdit={canEdit} showGroupControl />
+          <RiskPolicyFields
+            canEdit={canEdit}
+            showGroupControl
+            advancedOpen={advancedOpen}
+            onAdvancedOpenChange={setAdvancedOpen}
+          />
           <Button
             type="primary"
             htmlType="submit"

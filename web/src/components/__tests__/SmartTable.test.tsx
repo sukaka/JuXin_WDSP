@@ -74,6 +74,41 @@ describe('SmartTable', () => {
     expect(saved.w.status).toBeUndefined()
   })
 
+  it('无初始宽度的列起拖时优先以表头真实渲染宽度为基准，并随列宽撑开同步扩大横向滚动宽度', () => {
+    render(
+      <SmartTable<Row>
+        rowKey="id"
+        columns={columns}
+        dataSource={data}
+        pagination={false}
+        scroll={{ x: 500 }}
+        storageKey="t-measured-width"
+      />,
+    )
+    const handles = screen.getAllByLabelText('拖拽调整列宽')
+    const firstTh = handles[0].closest('th') as HTMLTableCellElement
+    vi.spyOn(firstTh, 'getBoundingClientRect').mockReturnValue({
+      width: 480,
+      height: 40,
+      top: 0,
+      left: 0,
+      right: 480,
+      bottom: 40,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
+    fireEvent.mouseDown(handles[0], { clientX: 200 })
+    fireEvent.mouseMove(document, { clientX: 240 })
+    fireEvent.mouseUp(document)
+    const saved = JSON.parse(localStorage.getItem('smart-table:t-measured-width')!)
+    // 以实测 480 为起点拖动 +40 → 520（不再回弹到 120）
+    expect(saved.w.name).toBe(520)
+    // 总列宽 520 + 100 = 620 > 初始 scroll.x(500)，表格宽度同步扩至 620px
+    const table = document.querySelector('table') as HTMLTableElement
+    expect(table.style.width).toBe('620px')
+  })
+
   it('载入时恢复上次的显隐与列宽', () => {
     localStorage.setItem('smart-table:t-restore', JSON.stringify({ w: { name: 200 }, h: ['status'] }))
     render(

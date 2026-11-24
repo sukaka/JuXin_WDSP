@@ -26,6 +26,9 @@ func TestInferStringSemantic(t *testing.T) {
 		{"amount", "amount", ""}, // money 语义允许数值
 		{"username", "username", ""},
 		{"page_size", "page_size", ""},
+		{"sec-ch-ua-mobile", "header.sec-ch-ua-mobile", ""},
+		{"Sec-CH-UA-Mobile", "header.sec-ch-ua-mobile", ""},
+		{"user-agent", "header.user-agent", ""},
 	}
 	for _, tc := range cases {
 		if got := inferStringSemantic(tc.name, tc.path); got != tc.want {

@@ -21,6 +21,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -86,16 +87,21 @@ type Collector struct {
 }
 
 // NewCollector 创建采集器。checkpointPath 为空时使用 logPath+".checkpoint"。
+// 当 checkpointPath 位于与 logPath 不同的可写目录（如容器内日志卷只读、checkpoint 落在 DataDir）时，
+// 错误文件自动落入 checkpoint 同目录，避免向只读日志卷写入 .errors 失败。
 func NewCollector(store Upserter, collectorID, logPath, checkpointPath, nodeName string) *Collector {
+	errorPath := logPath + ".errors"
 	if checkpointPath == "" {
 		checkpointPath = logPath + ".checkpoint"
+	} else if logPath != "" && filepath.Dir(checkpointPath) != filepath.Dir(logPath) {
+		errorPath = filepath.Join(filepath.Dir(checkpointPath), filepath.Base(logPath)+".errors")
 	}
 	return &Collector{
 		store:          store,
 		collectorID:    collectorID,
 		logPath:        logPath,
 		checkpointPath: checkpointPath,
-		errorPath:      logPath + ".errors",
+		errorPath:      errorPath,
 		nodeName:       nodeName,
 		batchSize:      100,
 	}

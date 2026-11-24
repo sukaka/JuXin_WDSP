@@ -141,3 +141,38 @@ func TestSensitiveOverviewHTTP(t *testing.T) {
 		t.Fatalf("overview days=3: %+v", overview)
 	}
 }
+
+func TestSensitiveOverviewExcludesPathAndHeaderFieldNoise(t *testing.T) {
+	store := NewMemStore()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// 纯噪声事件：path.mobile.zip、header.sec-ch-ua-mobile、response_body_unchecked
+	store.addRuntimeEvent("GET /mobile.zip", now, sensitiveDetails(t, []map[string]any{
+		{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.field",
+			"evidence": map[string]string{"field": "mobile.zip", "data_type": "phone", "location": "path"},
+		},
+		{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.field",
+			"evidence": map[string]string{"field": "sec-ch-ua-mobile", "data_type": "phone", "location": "header"},
+		},
+		{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.response_body_unchecked",
+			"evidence": map[string]string{"field": "response_body", "location": "response_body", "direction": "RESPONSE"},
+		},
+	}))
+
+	overview, err := store.SensitiveOverview(ctx, 7)
+	if err != nil {
+		t.Fatalf("overview: %v", err)
+	}
+	for _, pt := range overview.Trend {
+		if pt.EventCount != 0 || pt.HitCount != 0 {
+			t.Fatalf("noise-only events must not appear in overview trend: %+v", pt)
+		}
+	}
+}

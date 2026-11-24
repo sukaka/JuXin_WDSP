@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import BehaviorPolicyPage from '../BehaviorPolicyPage'
+import BehaviorPolicyGuidePage from '../BehaviorPolicyGuidePage'
 import { useAuthStore } from '../../../stores/auth'
 import type { CurrentUser } from '../../../types'
 
@@ -113,12 +114,26 @@ describe('BehaviorPolicyPage', () => {
     // 敏感路径与白名单 tags 回填
     expect(screen.getByText('/admin')).toBeInTheDocument()
     expect(screen.getByText('10.0.0.1')).toBeInTheDocument()
+    // 顶部新标签页使用说明链接
+    const guideLink = screen.getByRole('link', { name: /使用说明/ })
+    expect(guideLink).toHaveAttribute('href', '/behavior-policy/guide')
+    expect(guideLink).toHaveAttribute('target', '_blank')
     // 行为检测固定观察模式，处置模式由风险策略控制
     expect(screen.getByText(/行为策略只负责生成观察信号/)).toBeInTheDocument()
     expect(screen.getByText(/行为检测固定为观察模式；风险引擎的处置模式由风险策略控制/)).toBeInTheDocument()
     // 页脚版本信息
     expect(screen.getByText(/版本 v3/)).toBeInTheDocument()
   }, 15000)
+
+  it('说明页渲染核心说明内容', () => {
+    render(
+      <AntdApp>
+        <BehaviorPolicyGuidePage />
+      </AntdApp>,
+    )
+    expect(screen.getByText('行为策略使用说明')).toBeInTheDocument()
+    expect(screen.getByText(/一、日常怎么用/)).toBeInTheDocument()
+  })
 
   it('无 behavior_policy.edit 权限时不展示保存按钮且表单禁用', async () => {
     useAuthStore.setState({

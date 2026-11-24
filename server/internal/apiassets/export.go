@@ -351,6 +351,7 @@ func (h *Handler) ExportList(w http.ResponseWriter, r *http.Request) {
 		Keyword:         strings.TrimSpace(q.Get("keyword")),
 		DirectoryPrefix: strings.TrimSpace(q.Get("directory_path")),
 		Unassigned:      q.Get("unassigned") == "true",
+		IncludeNonAPI:   q.Get("include_non_api") == "true",
 		IDs:             ids,
 		Page:            1,
 		PageSize:        endpointExportCSVPageSize,

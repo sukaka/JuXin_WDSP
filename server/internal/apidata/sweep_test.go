@@ -333,3 +333,138 @@ func TestSweepOnceMaskedSample(t *testing.T) {
 		}
 	}
 }
+
+// TestSweepOnceIgnoresProtocolHeaderFieldNoise 历史事件中的标准浏览器协议头字段名误报
+// （如 header.sec-ch-ua-mobile + sensitive.field）不得在清扫时重新回填到 api_sensitive_fields，
+// 同时保留值级命中（sensitive.value）与自定义业务头（如 x-user-mobile）的正常记录。
+func TestSweepOnceIgnoresProtocolHeaderFieldNoise(t *testing.T) {
+	store := NewMemStore()
+	ctx := context.Background()
+	epKey := "GET /robots.txt"
+	store.addEndpoint(epKey)
+	base := time.Now().UTC().Add(-time.Hour)
+
+	// 纯历史误报事件：sec-ch-ua-mobile 命中字段名规则 sensitive.field → 应完全跳过
+	store.addRuntimeEvent(epKey, base, sensitiveDetails(t, []map[string]any{
+		{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.field",
+			"evidence": map[string]string{
+				"field":     "sec-ch-ua-mobile",
+				"data_type": "phone",
+				"location":  "header",
+			},
+		},
+	}))
+	// 混合事件：含 1 条历史误报 + 1 条值级命中 + 1 条自定义业务头字段名命中
+	store.addRuntimeEvent(epKey, base.Add(time.Minute), sensitiveDetails(t, []map[string]any{
+		{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.field",
+			"evidence": map[string]string{
+				"field":     "sec-ch-ua-mobile",
+				"data_type": "phone",
+				"location":  "header",
+			},
+		},
+		{
+			"detector":   "sensitive_data",
+			"rule_id":    "sensitive.value",
+			"confidence": 1.0,
+			"evidence": map[string]string{
+				"field":         "user-agent",
+				"data_type":     "phone",
+				"location":      "header",
+				"masked_sample": "138****8000",
+			},
+		},
+		{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.field",
+			"evidence": map[string]string{
+				"field":     "x-user-mobile",
+				"data_type": "phone",
+				"location":  "header",
+			},
+		},
+	}))
+
+	res, err := store.SweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.EventsScanned != 1 || res.Hits != 2 || res.FieldsUpserted != 2 {
+		t.Fatalf("unexpected sweep result: %+v", res)
+	}
+	byPath := map[string]sensitiveFieldRow{}
+	for _, r := range store.fieldRows() {
+		byPath[r.StructuredPath] = r
+	}
+	if _, exists := byPath["header.sec-ch-ua-mobile"]; exists {
+		t.Fatalf("sec-ch-ua-mobile field noise must not resurface: %+v", byPath)
+	}
+	if _, exists := byPath["header.user-agent"]; !exists {
+		t.Fatalf("value-level header match must be kept: %+v", byPath)
+	}
+	if _, exists := byPath["header.x-user-mobile"]; !exists {
+		t.Fatalf("custom business header match must be kept: %+v", byPath)
+	}
+}
+
+func TestSweepOnceIgnoresPathFieldNoiseButKeepsPathValueHit(t *testing.T) {
+	store := NewMemStore()
+	ctx := context.Background()
+	zipEP := "GET /mobile.zip"
+	userEP := "GET /v1/users/{id}"
+	store.addEndpoint(zipEP)
+	store.addEndpoint(userEP)
+	base := time.Now().UTC().Add(-time.Hour)
+
+	// 历史路径字段名误报 + 响应体未完成检查诊断 → 均应忽略
+	store.addRuntimeEvent(zipEP, base, sensitiveDetails(t, []map[string]any{
+		{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.field",
+			"evidence": map[string]string{
+				"field":     "mobile.zip",
+				"data_type": "phone",
+				"location":  "path",
+			},
+		},
+		{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.response_body_unchecked",
+			"evidence": map[string]string{
+				"field":     "response_body",
+				"location":  "response_body",
+				"direction": "RESPONSE",
+			},
+		},
+	}))
+	// 路径实值命中（如 /v1/users/13800138000）→ 必须保留
+	store.addRuntimeEvent(userEP, base.Add(time.Minute), sensitiveDetails(t, []map[string]any{
+		{
+			"detector":   "sensitive_data",
+			"rule_id":    "sensitive.value",
+			"confidence": 1.0,
+			"evidence": map[string]string{
+				"field":         "{id}",
+				"data_type":     "phone",
+				"location":      "path",
+				"masked_sample": "138****8000",
+			},
+		},
+	}))
+
+	res, err := store.SweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.EventsScanned != 1 || res.Hits != 1 || res.FieldsUpserted != 1 {
+		t.Fatalf("unexpected sweep result: %+v", res)
+	}
+	rows := store.fieldRows()
+	if len(rows) != 1 || rows[0].StructuredPath != "path.{id}" || rows[0].MaskedSample != "138****8000" {
+		t.Fatalf("unexpected field rows: %+v", rows)
+	}
+}

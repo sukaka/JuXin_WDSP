@@ -54,7 +54,7 @@ func assertBuiltinHeuristicClassifications(t *testing.T, env *testEnv) {
 	t.Helper()
 	for _, want := range builtinHeuristicClassifications {
 		if n := s8Count(t, env, `SELECT count(*) FROM api_classifications
-			WHERE code=$1 AND name=$2 AND description <> '' AND is_builtin`, want[0], want[1]); n != 1 {
+			WHERE code=$1 AND name=$2 AND description <> '' AND description !~ '[A-Za-z]' AND description NOT LIKE '%启发式%' AND is_builtin`, want[0], want[1]); n != 1 {
 			t.Fatalf("builtin heuristic classification %v count=%d want 1", want, n)
 		}
 	}

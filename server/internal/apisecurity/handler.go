@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"path"
@@ -32,10 +33,24 @@ type auditRecorder interface {
 	Record(ctx context.Context, in audits.RecordInput) error
 }
 
+// GraphRepository API 调用图谱只读仓储（*Store 自动实现；测试可注入内存实现）。
+type GraphRepository interface {
+	ListGraphWithFilter(ctx context.Context, f GraphFilter) (*Graph, error)
+}
+
+// ServiceRPCGraphReader 后端微服务真实 RPC/服务间调用图谱读接口。
+type ServiceRPCGraphReader interface {
+	ServiceRPCGraph(ctx context.Context, f ServiceRPCGraphFilter) (*ServiceRPCGraph, error)
+}
+
 // Handler API 安全处理器。
 type Handler struct {
 	store  *Store
 	audits auditRecorder
+	// 身份轨迹图谱只读仓储（*Store 自动实现；测试可 SetGraphRepository 覆盖）
+	graphRepo GraphRepository
+	// 后端微服务真实 RPC / 服务间调用图谱只读实现（由 app 层装配 ClickHouse + PG）
+	serviceRPCGraph ServiceRPCGraphReader
 	// 风险中心仓储（*Store 自动实现；NewHandler 传入非 nil store 时自动接线，
 	// 测试可 SetRiskRepository 覆盖为 RiskMemStore；见 risk.go）
 	risk RiskRepository
@@ -62,12 +77,20 @@ func NewHandler(store *Store, audit *audits.Service) *Handler {
 		h.audits = audit
 	}
 	if store != nil {
+		h.graphRepo = store
 		h.risk = store
 		h.admission = store
 		h.groupControl = store
+		h.serviceRPCGraph = NewServiceRPCGraphReader(store.db, nil)
 	}
 	return h
 }
+
+// SetGraphRepository 覆盖图谱只读仓储（测试注入内存实现；生产无需调用）。
+func (h *Handler) SetGraphRepository(r GraphRepository) { h.graphRepo = r }
+
+// SetServiceRPCGraphReader 注入后端微服务真实 RPC / 服务间调用图谱读实现（生产由 app 层注入 ClickHouse + PG）。
+func (h *Handler) SetServiceRPCGraphReader(r ServiceRPCGraphReader) { h.serviceRPCGraph = r }
 
 // SetRiskRepository 覆盖风险中心仓储（测试注入内存实现；生产无需调用）。
 func (h *Handler) SetRiskRepository(r RiskRepository) { h.risk = r }
@@ -264,13 +287,87 @@ func parseEdgeFilter(w http.ResponseWriter, r *http.Request) (EdgeFilter, bool) 
 	return f, true
 }
 
+// validGraphStatuses 图谱节点资产状态白名单。
+var validGraphStatuses = map[string]bool{
+	"DISCOVERED": true,
+	"CONFIRMED":  true,
+	"IGNORED":    true,
+	"DEPRECATED": true,
+	"ZOMBIE":     true,
+}
+
+func parseOptionalBoolParam(w http.ResponseWriter, r *http.Request, name string) (bool, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return false, true
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, fmt.Sprintf("无效的 %s（需 true 或 false）", name))
+		return false, false
+	}
+	return v, true
+}
+
+// parseGraphFilter 解析图谱读接口全部过滤参数（在 EdgeFilter 基础上扩展应用/状态/关键词/降噪开关）。
+func parseGraphFilter(w http.ResponseWriter, r *http.Request) (GraphFilter, bool) {
+	ef, ok := parseEdgeFilter(w, r)
+	if !ok {
+		return GraphFilter{}, false
+	}
+	f := GraphFilter{EdgeFilter: ef}
+	q := r.URL.Query()
+	if appRaw := strings.TrimSpace(q.Get("application_id")); appRaw != "" {
+		id, err := uuid.Parse(appRaw)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的 application_id（需 UUID）")
+			return f, false
+		}
+		f.ApplicationID = &id
+	}
+	if st := strings.ToUpper(strings.TrimSpace(q.Get("status"))); st != "" {
+		if !validGraphStatuses[st] {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的 status（须为 DISCOVERED/CONFIRMED/IGNORED/DEPRECATED/ZOMBIE 之一）")
+			return f, false
+		}
+		f.Status = st
+	}
+	if kw := strings.TrimSpace(q.Get("keyword")); kw != "" {
+		if len([]rune(kw)) > 128 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "keyword 长度不能超过 128 字符")
+			return f, false
+		}
+		f.Keyword = kw
+	}
+	if v, ok := parseOptionalBoolParam(w, r, "exclude_static"); !ok {
+		return f, false
+	} else {
+		f.ExcludeStatic = v
+	}
+	if v, ok := parseOptionalBoolParam(w, r, "exclude_ignored"); !ok {
+		return f, false
+	} else {
+		f.ExcludeIgnored = v
+	}
+	if v, ok := parseOptionalBoolParam(w, r, "only_connected"); !ok {
+		return f, false
+	} else {
+		f.OnlyConnected = v
+	}
+	return f, true
+}
+
 // Graph GET /api/v1/api-security/graph
 func (h *Handler) Graph(w http.ResponseWriter, r *http.Request) {
-	f, ok := parseEdgeFilter(w, r)
+	f, ok := parseGraphFilter(w, r)
 	if !ok {
 		return
 	}
-	g, err := h.store.ListGraphFiltered(r.Context(), f)
+	repo := h.graphRepo
+	if repo == nil {
+		repo = h.store
+	}
+	g, err := repo.ListGraphWithFilter(r.Context(), f)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
@@ -355,7 +452,7 @@ func writeSpecParseError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, ErrSpecInvalidYAML):
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "YAML 解析失败（不允许自定义标签/别名循环/多文档）："+detail(ErrSpecInvalidYAML))
 	case errors.Is(err, ErrSpecExternalRef):
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "不允许外部 $ref 引用（仅支持 #/ 开头的文档内引用）："+detail(ErrSpecExternalRef))
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "不允许外部 $ref 引用（仅支持 #/ 文档内引用或 ZIP 包内相对引用）："+detail(ErrSpecExternalRef))
 	case errors.Is(err, ErrSpecUnsupportedPostmanVersion):
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "仅支持 Postman Collection v2.1："+detail(ErrSpecUnsupportedPostmanVersion))
 	case errors.Is(err, ErrSpecUnsupportedJSONSchemaDraft):
@@ -364,25 +461,152 @@ func writeSpecParseError(w http.ResponseWriter, r *http.Request, err error) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "JSON Schema 无效："+detail(ErrSpecInvalidJSONSchema))
 	case errors.Is(err, ErrSpecInvalidGraphQL):
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "GraphQL SDL 解析失败："+detail(ErrSpecInvalidGraphQL))
+	case errors.Is(err, ErrSpecInvalidProtobuf):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "Protobuf (.proto) 解析失败："+detail(ErrSpecInvalidProtobuf))
+	case errors.Is(err, ErrSpecInvalidXML):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "WSDL / XSD XML 解析失败："+detail(ErrSpecInvalidXML))
+	case errors.Is(err, ErrSpecInvalidRAML):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "RAML 解析失败："+detail(ErrSpecInvalidRAML))
+	case errors.Is(err, ErrSpecInvalidAPIB):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "API Blueprint 解析失败："+detail(ErrSpecInvalidAPIB))
+	case errors.Is(err, ErrSpecInvalidHAR):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "HAR 归档解析失败："+detail(ErrSpecInvalidHAR))
+	case errors.Is(err, ErrSpecInvalidAsyncAPI):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "AsyncAPI 解析失败："+detail(ErrSpecInvalidAsyncAPI))
+	case errors.Is(err, ErrSpecInvalidZip):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "ZIP 规范归档解析失败："+detail(ErrSpecInvalidZip))
 	case errors.Is(err, ErrSpecNotOpenAPI3):
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "OpenAPI 文档缺少 openapi: 3.x 版本声明")
 	case errors.Is(err, ErrSpecNoPaths):
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "规范文档缺少有效的 paths/请求项定义")
 	case errors.Is(err, ErrSpecUnsupportedFormat):
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
-			"不支持的规范格式；支持 OpenAPI 3.x / Swagger 2.0 / JSON Schema（draft-07、2020-12）/ Postman Collection v2.1 / GraphQL SDL（JSON 或 YAML 格式）")
+			"不支持的规范格式；支持 OpenAPI 3.x / Swagger 2.0 / AsyncAPI 2.x-3.x / Postman v2.1 / JSON Schema / GraphQL SDL / Protobuf (.proto) / WSDL / XSD / RAML / API Blueprint / HAR / ZIP 规范包")
 	default:
 		response.InternalError(w, r, err)
 	}
 }
 
+// sanitizeUploadFileName 清洗上传文件名（去路径前缀与控制字符，截断至 255 字符，仅作展示元数据）。
+func sanitizeUploadFileName(raw string) string {
+	s := strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+	if s == "" {
+		return ""
+	}
+	base := path.Base(s)
+	if base == "." || base == "/" || base == ".." {
+		return ""
+	}
+	cleaned := strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, base)
+	return truncateSpecName(cleaned)
+}
+
+// decodeSpecMultipart 流式解析 multipart/form-data 规范文件上传（零临时文件落盘）：
+// 表单字段 file（规范文件，上限 16MiB）、可选 file_name（覆盖上传文件名）、可选 name（覆盖规范名）。
+func decodeSpecMultipart(w http.ResponseWriter, r *http.Request) (format string, doc map[string]any, ops []SpecOperation, fileName, reqName string, ok bool) {
+	// 放宽 1MiB 给 multipart 边界和文本字段头，文件内容本身仍严格限制 specImportMaxBytes（16MiB）
+	r.Body = http.MaxBytesReader(w, r.Body, specImportMaxBytes+(1<<20))
+	mr, err := r.MultipartReader()
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "multipart 表单格式错误")
+		return "", nil, nil, "", "", false
+	}
+
+	const (
+		maxParts     = 16
+		maxFieldSize = 4096
+	)
+	var fileBytes []byte
+	var uploadedName string
+	var explicitFileName string
+	hasFile := false
+
+	for parts := 0; parts < maxParts; parts++ {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求体过大或表单读取失败（单文件上限 16MiB）")
+			return "", nil, nil, "", "", false
+		}
+		field := part.FormName()
+		switch field {
+		case "file":
+			if hasFile {
+				_ = part.Close()
+				response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "仅允许上传单个规范文件")
+				return "", nil, nil, "", "", false
+			}
+			hasFile = true
+			uploadedName = sanitizeUploadFileName(part.FileName())
+			data, readErr := io.ReadAll(io.LimitReader(part, specImportMaxBytes+1))
+			_ = part.Close()
+			if readErr != nil {
+				response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "规范文件读取失败")
+				return "", nil, nil, "", "", false
+			}
+			if len(data) > specImportMaxBytes {
+				response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "规范文档超过大小上限（16MiB）")
+				return "", nil, nil, "", "", false
+			}
+			fileBytes = data
+		case "file_name":
+			b, _ := io.ReadAll(io.LimitReader(part, maxFieldSize))
+			_ = part.Close()
+			explicitFileName = sanitizeUploadFileName(string(b))
+		case "name":
+			b, _ := io.ReadAll(io.LimitReader(part, maxFieldSize))
+			_ = part.Close()
+			reqName = truncateSpecName(string(b))
+		default:
+			_, _ = io.Copy(io.Discard, io.LimitReader(part, maxFieldSize))
+			_ = part.Close()
+		}
+	}
+
+	if !hasFile || len(fileBytes) == 0 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请上传非空规范文件（表单字段 file）")
+		return "", nil, nil, "", "", false
+	}
+	fileName = uploadedName
+	if explicitFileName != "" {
+		fileName = explicitFileName
+	}
+
+	format, doc, ops, err = ParseSpecContent(fileBytes)
+	if err != nil {
+		writeSpecParseError(w, r, err)
+		return "", nil, nil, "", "", false
+	}
+	return format, doc, ops, fileName, reqName, true
+}
+
 // ImportSpec POST /api/v1/api-security/specs/import
-// body 为规范文档（OpenAPI 3.x / Swagger 2.0 / JSON Schema / Postman Collection v2.1 /
-// GraphQL SDL；JSON 或 YAML 格式）或 {"spec": ..., "file_name": "...", "name": "..."} 包装。
+// 支持三种提交形态：
+//  1. multipart/form-data（字段 file + 可选 file_name / name），适用于各类规范文件及 .zip 归档直传；
+//  2. JSON 包装 {"spec": <对象或原始文本>, "file_name": "...", "name": "..."}；
+//  3. 原始规范文档正文（OpenAPI 3.x / Swagger 2.0 / AsyncAPI / Postman v2.1 / JSON Schema /
+//     GraphQL SDL / Protobuf / WSDL / XSD / RAML / API Blueprint / HAR / ZIP）。
+//
 // 同名再导入 version_no 自增、旧版降 HISTORICAL，与运行时接口对比生成 MISSING_* 差异，
 // 同名跨版本生成 CHANGED 差异，规范端点幂等登记为 api_endpoints 候选。
 func (h *Handler) ImportSpec(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
+	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if mediaType == "multipart/form-data" {
+		format, specDoc, ops, fileName, reqName, ok := decodeSpecMultipart(w, r)
+		if !ok {
+			return
+		}
+		h.importSpecCore(w, r, p, format, specDoc, ops, fileName, reqName, SpecSourceUpload)
+		return
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, specImportMaxBytes))
 	if err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求体过大或读取失败（上限16MiB）")

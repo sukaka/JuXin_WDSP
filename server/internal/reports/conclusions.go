@@ -110,7 +110,7 @@ func BuildSuggestions(d *ReportData) []string {
 
 	// 规则3：未处置事件积压
 	if d.Unprocessed > 0 && pct(d.Unprocessed, d.EventsTotal) > 30 {
-		out = append(out, fmt.Sprintf("仍有%d起安全事件未处置（占%.1f%%），建议安全管理员及时分析与处置。",
+		out = append(out, fmt.Sprintf("仍有%d起安全事件未处置（占%.1f%%），建议运维管理员及时分析与处置。",
 			d.Unprocessed, pct(d.Unprocessed, d.EventsTotal)))
 	}
 

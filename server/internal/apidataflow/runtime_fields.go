@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/apidata"
 )
 
 const (
@@ -203,6 +204,7 @@ func runtimeFieldEventReference(traceID sql.NullString, endpointKey string, meth
 func extractRuntimeFieldEvidence(detailsJSON []byte) ([]FieldEvidence, error) {
 	var details []struct {
 		Detector string            `json:"detector"`
+		RuleID   string            `json:"rule_id"`
 		Evidence map[string]string `json:"evidence"`
 	}
 	if err := json.Unmarshal(detailsJSON, &details); err != nil {
@@ -221,6 +223,9 @@ func extractRuntimeFieldEvidence(detailsJSON []byte) ([]FieldEvidence, error) {
 			side = "REQUEST"
 		}
 		if field == "" || location == "" || dataType == "" || (side != "REQUEST" && side != "RESPONSE") {
+			continue
+		}
+		if apidata.IsIgnoredSensitiveFieldHit(location, field, detail.RuleID) {
 			continue
 		}
 		fields = mergeRuntimeFieldLists(fields, []FieldEvidence{{

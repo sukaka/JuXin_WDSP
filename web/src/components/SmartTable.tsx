@@ -57,14 +57,17 @@ function ResizableTitle({
   onResize,
 }: {
   children: ReactNode
-  width: number
+  width?: number
   onResize: (w: number) => void
 }) {
   const drag = useRef<{ x: number; w: number } | null>(null)
   const onMouseDown = (e: ReactMouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    drag.current = { x: e.clientX, w: width }
+    const measured = e.currentTarget.closest('th')?.getBoundingClientRect().width
+    const startWidth =
+      typeof width === 'number' ? width : measured && measured > 0 ? Math.round(measured) : 120
+    drag.current = { x: e.clientX, w: startWidth }
     const move = (ev: MouseEvent) => {
       if (!drag.current) return
       onResize(Math.max(60, drag.current.w + ev.clientX - drag.current.x))
@@ -140,6 +143,7 @@ export default function SmartTable<T extends object>(props: SmartTableProps<T>) 
     refreshQueryKeys,
     hideRefresh = false,
     defaultRefreshIntervalSeconds,
+    scroll,
     ...rest
   } = props
   const isTableLoading =
@@ -182,7 +186,7 @@ export default function SmartTable<T extends object>(props: SmartTableProps<T>) 
           ...c,
           width,
           title: (
-            <ResizableTitle width={typeof width === 'number' ? width : 120} onResize={(w) => setWidth(key, w)}>
+            <ResizableTitle width={typeof width === 'number' ? width : undefined} onResize={(w) => setWidth(key, w)}>
               {c.title as ReactNode}
             </ResizableTitle>
           ),
@@ -190,6 +194,17 @@ export default function SmartTable<T extends object>(props: SmartTableProps<T>) 
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [columns, hidden, widths])
+
+  const mergedScroll = useMemo(() => {
+    if (!scroll || typeof scroll.x !== 'number' || Object.keys(widths).length === 0) {
+      return scroll
+    }
+    const totalWidth = mergedColumns.reduce(
+      (sum, c) => sum + (typeof c.width === 'number' ? c.width : 120),
+      0,
+    )
+    return totalWidth > scroll.x ? { ...scroll, x: totalWidth } : scroll
+  }, [scroll, mergedColumns, widths])
 
   const settingsContent = (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflow: 'auto' }}>
@@ -238,7 +253,7 @@ export default function SmartTable<T extends object>(props: SmartTableProps<T>) 
           <Button size="small" type="text" icon={<SettingOutlined />} aria-label="列设置" />
         </Popover>
       </div>
-      <Table<T> columns={mergedColumns} components={components} {...rest} />
+      <Table<T> columns={mergedColumns} components={components} scroll={mergedScroll} {...rest} />
     </div>
   )
 }

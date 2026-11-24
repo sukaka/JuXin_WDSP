@@ -115,7 +115,7 @@ func apiRiskSuggestions(r *APIRiskReport) []string {
 	}
 	var out []string
 	if r.OpenFindings > 0 && r.NewFindings > 0 && pct(r.ClosedFindings, r.NewFindings) < 50 {
-		out = append(out, fmt.Sprintf("报告期内发现关闭率仅为%.1f%%，未关闭发现积压%d条，建议安全管理员及时处置。",
+		out = append(out, fmt.Sprintf("报告期内发现关闭率仅为%.1f%%，未关闭发现积压%d条，建议运维管理员及时处置。",
 			pct(r.ClosedFindings, r.NewFindings), r.OpenFindings))
 	}
 	for _, ep := range r.TopEndpoints {

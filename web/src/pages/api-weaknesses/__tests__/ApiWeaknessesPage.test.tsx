@@ -121,6 +121,26 @@ const weaknesses: Record<string, Record<string, unknown>> = {
     created_at: '2026-08-13T02:00:00Z',
     updated_at: '2026-08-14T02:00:00Z',
   },
+  w5: {
+    id: 'w5',
+    endpoint_id: 'e5',
+    endpoint_key: 'POST /v1/pay',
+    weakness_code: 'SENSITIVE_COOKIE',
+    weakness_name: 'Cookie 包含敏感凭据信息',
+    category: 'SENSITIVE',
+    severity: 'MEDIUM',
+    status: 'TO_FIX',
+    evidence: {},
+    first_seen: '2026-08-03T02:00:00Z',
+    last_seen: '2026-08-12T02:00:00Z',
+    trigger_count: 2,
+    owner: 'lisi',
+    due_date: '2026-08-20T00:00:00.000Z',
+    fixed_at: null,
+    retested_at: null,
+    created_at: '2026-08-03T02:00:00Z',
+    updated_at: '2026-08-13T02:00:00Z',
+  },
 }
 
 const actionsById: Record<string, Record<string, unknown>[]> = {
@@ -286,6 +306,31 @@ describe('ApiWeaknessesPage', () => {
     expect(assignBodies[0]).toEqual({ owner: 'zhangsan' })
   })
 
+  it('改派：TO_FIX 状态打开指派弹窗自动回填已有负责人与整改期限', async () => {
+    listIds = ['w5']
+    useAuthStore.setState({
+      user: makeUser(['api_weakness.read', 'api_weakness.handle']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: /详\s*情/ }))
+    const drawer = await screen.findByRole('dialog')
+    await within(drawer).findByText('Cookie 包含敏感凭据信息')
+
+    fireEvent.click(within(drawer).getByRole('button', { name: /指\s*派/ }))
+    await screen.findByText('指派整改')
+    expect(screen.getByLabelText('整改负责人')).toHaveValue('lisi')
+    fireEvent.click(screen.getByRole('button', { name: /确\s*定|^OK$/ }))
+
+    await waitFor(() => expect(assignBodies).toHaveLength(1))
+    expect(assignBodies[0]).toEqual({
+      owner: 'lisi',
+      due_date: '2026-08-20T00:00:00.000Z',
+    })
+  })
+
   it('复测：提交 PASS 并展示复测结果反馈', async () => {
     listIds = ['w3']
     useAuthStore.setState({
@@ -327,20 +372,26 @@ describe('ApiWeaknessesPage', () => {
       ),
     ).toBeInTheDocument()
     const row = await screen.findByRole('row', {
-      name: /SENSITIVE_RESPONSE_UNMASKED/,
+      name: /响应敏感信息未观察到成功脱敏/,
     })
     expect(
       within(row).getByText('响应敏感信息未观察到成功脱敏'),
     ).toBeInTheDocument()
+    expect(
+      within(row).queryByText('SENSITIVE_RESPONSE_UNMASKED'),
+    ).not.toBeInTheDocument()
     expect(within(row).getByText('敏感数据')).toBeInTheDocument()
     expect(within(row).getByText('中')).toBeInTheDocument()
 
     fireEvent.click(within(row).getByRole('button', { name: /详\s*情/ }))
     const drawer = await screen.findByRole('dialog')
-    await within(drawer).findByText('SENSITIVE_RESPONSE_UNMASKED')
-    expect(
-      within(drawer).getByText('弱点详情：响应敏感信息未观察到成功脱敏'),
-    ).toBeInTheDocument()
+    await within(drawer).findByText('弱点详情：响应敏感信息未观察到成功脱敏')
+    const descriptions = drawer.querySelector('.ant-descriptions')
+    expect(descriptions).not.toBeNull()
+    expect(descriptions?.textContent).not.toContain('弱点编码')
+    expect(descriptions?.textContent).not.toContain(
+      'SENSITIVE_RESPONSE_UNMASKED',
+    )
     expect(
       within(drawer).getByText('GET /v1/customers/{id}'),
     ).toBeInTheDocument()

@@ -17,9 +17,11 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 		authz(middleware.RequirePermission("api_classification.manage")(http.HandlerFunc(h.CreateClassification))))
 	mux.Handle("PUT /api/v1/api-security/endpoints/{id}/classification",
 		authz(middleware.RequirePermission("api_classification.manage")(http.HandlerFunc(h.PutEndpointClassification))))
-	// 51.4 调用图谱 / 拓扑
+	// 51.4 调用图谱 / 拓扑 / 后端微服务真实 RPC 调用图谱
 	mux.Handle("GET /api/v1/api-security/graph",
 		authz(middleware.RequirePermission("api_graph.read")(http.HandlerFunc(h.Graph))))
+	mux.Handle("GET /api/v1/api-security/service-rpc-graph",
+		authz(middleware.RequirePermission("api_graph.read")(http.HandlerFunc(h.ServiceRPCGraph))))
 	mux.Handle("GET /api/v1/api-security/topology",
 		authz(middleware.RequirePermission("api_graph.read")(http.HandlerFunc(h.Topology))))
 	// 51.5 规范导入（W3-C：版本状态机 / URL 导入 / 跨版本 CHANGED diff）

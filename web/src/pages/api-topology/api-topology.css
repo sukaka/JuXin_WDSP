@@ -1,0 +1,668 @@
+.api-topology-page {
+  --topo-ink: #21344d;
+  --topo-muted: #63768b;
+  --topo-line: #dce5ee;
+  --topo-surface: #fcfdff;
+  --topo-subtle: #f6f9fc;
+  --topo-accent: #1d5bd6;
+  overflow: hidden;
+  border-color: #dbe3ec;
+  background: var(--topo-surface);
+}
+
+.api-topology-page > .ant-card-head {
+  min-height: 60px;
+  padding: 0 24px;
+  border-bottom-color: var(--topo-line);
+  background: var(--topo-surface);
+}
+
+.api-topology-page > .ant-card-head .ant-card-head-title {
+  color: var(--topo-ink);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.api-topology-page > .ant-card-body {
+  padding: 18px 24px 22px;
+}
+
+.api-topology-header-extra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.api-topology-intro {
+  margin: 0 0 14px;
+  color: var(--topo-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* 顶部紧凑指标带 */
+.api-topology-summary-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  align-items: center;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+  border: 1px solid var(--topo-line);
+  border-radius: 8px;
+  background: var(--topo-subtle);
+}
+
+.api-topology-metric {
+  display: inline-flex;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--topo-muted);
+  font-size: 12px;
+}
+
+.api-topology-metric strong {
+  color: var(--topo-ink);
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.api-topology-metric strong.is-danger {
+  color: #cf2e36;
+}
+
+.api-topology-metric-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--topo-line);
+}
+
+.api-topology-status-legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--topo-muted);
+}
+
+.api-topology-legend-item {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.api-topology-legend-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* 应用概览栏（单应用宽幅条 / 多应用紧凑选择卡片） */
+.api-topology-app-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  align-items: center;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+  border: 1px solid #cdddf0;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #f3f8ff 0%, #fcfdff 100%);
+}
+
+.api-topology-app-banner-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  color: var(--topo-ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.api-topology-app-banner-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
+.api-topology-app-banner-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  align-items: center;
+  color: var(--topo-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.api-topology-app-banner-stats strong {
+  color: var(--topo-ink);
+  font-weight: 600;
+}
+
+.api-topology-app-banner-bar {
+  margin-left: auto;
+  width: 180px;
+  min-width: 120px;
+}
+
+.api-topology-apps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.api-topology-app-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 11px 14px;
+  border: 1px solid var(--topo-line);
+  border-radius: 8px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
+}
+
+.api-topology-app-card:hover {
+  border-color: #93b4e6;
+  background: #f9fbff;
+}
+
+.api-topology-app-card.is-active {
+  border-color: var(--topo-accent);
+  background: #f2f7ff;
+  box-shadow: 0 0 0 1px rgba(29, 91, 214, 0.12);
+}
+
+.api-topology-app-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.api-topology-app-card-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--topo-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.api-topology-app-card-count {
+  flex-shrink: 0;
+  color: var(--topo-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.api-topology-app-card-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  color: var(--topo-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.api-topology-status-bar {
+  display: flex;
+  width: 100%;
+  height: 5px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #e9eff6;
+}
+
+.api-topology-status-bar > span {
+  height: 100%;
+  min-width: 3px;
+}
+
+/* 有界主从拓扑工作区 */
+.api-topology-workspace {
+  display: grid;
+  grid-template-columns: 244px minmax(0, 1fr);
+  border: 1px solid var(--topo-line);
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.api-topology-tree-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: 600px;
+  border-right: 1px solid var(--topo-line);
+  background: #f9fbfd;
+}
+
+.api-topology-tree-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--topo-line);
+  color: var(--topo-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.api-topology-tree-search {
+  padding: 8px 10px 4px;
+}
+
+.api-topology-tree-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.api-topology-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  margin-bottom: 2px;
+}
+
+.api-topology-tree-row.is-child {
+  padding-left: 18px;
+}
+
+.api-topology-tree-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--topo-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.api-topology-tree-toggle:hover {
+  background: #e8eff7;
+  color: var(--topo-ink);
+}
+
+.api-topology-tree-toggle-placeholder {
+  width: 20px;
+  flex-shrink: 0;
+}
+
+.api-topology-tree-btn {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #324961;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.api-topology-tree-btn:hover {
+  background: #ebf2fa;
+  color: var(--topo-ink);
+}
+
+.api-topology-tree-btn.is-active {
+  background: #e5effd;
+  color: var(--topo-accent);
+  font-weight: 600;
+}
+
+.api-topology-tree-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.api-topology-tree-label.is-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.api-topology-tree-risk-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d9363e;
+  flex-shrink: 0;
+}
+
+.api-topology-tree-count {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e8eff7;
+  color: #4f647b;
+  font-size: 11px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.api-topology-tree-btn.is-active .api-topology-tree-count {
+  background: #d1e3fc;
+  color: var(--topo-accent);
+}
+
+/* 右侧主面板 */
+.api-topology-main-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #fff;
+}
+
+.api-topology-main-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e7eef5;
+}
+
+.api-topology-scope-crumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--topo-ink);
+}
+
+.api-topology-scope-prefix {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 600;
+  color: var(--topo-accent);
+}
+
+.api-topology-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid #eef3f8;
+  background: #fbfcfe;
+}
+
+.api-topology-toolbar-search {
+  width: 240px;
+  max-width: 100%;
+}
+
+.api-topology-table-wrap {
+  padding: 8px 14px 12px;
+  min-width: 0;
+}
+
+/* 接口路径严格单行省略，杜绝长 API 撑破容器 */
+.api-topology-endpoint-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.api-topology-method-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  padding: 1px 6px;
+  border: 1px solid #d2dce6;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.api-topology-path-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--topo-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px;
+}
+
+.api-topology-app-pill {
+  flex-shrink: 0;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: #f0f4f8;
+  color: #54697f;
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.api-topology-dup-pill {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: #fff7e6;
+  border: 1px solid #ffd591;
+  color: #ad6800;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.api-topology-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 交互式拓扑画布 */
+.api-topology-canvas-wrap {
+  position: relative;
+  margin: 12px 16px 16px;
+  border: 1px solid #dce2ee;
+  border-radius: 8px;
+  background-color: #f6f7fb;
+  background-image: radial-gradient(circle, #d7dde8 0.75px, transparent 0.9px);
+  background-size: 18px 18px;
+  overflow: hidden;
+}
+
+.api-topology-canvas-bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid #e2e8f2;
+  background: rgba(252, 253, 255, 0.92);
+  font-size: 12px;
+  color: var(--topo-muted);
+}
+
+.api-topology-canvas-bar strong {
+  color: var(--topo-ink);
+}
+
+/* 下方调用边明细区域 */
+.api-topology-edges-section {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--topo-line);
+}
+
+.api-topology-edges-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+}
+
+.api-topology-edges-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--topo-ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.api-topology-edges-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.api-topology-code-ellipsis {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* 详情抽屉 */
+.api-topology-drawer-path {
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  border: 1px solid var(--topo-line);
+  border-radius: 6px;
+  background: var(--topo-subtle);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.api-topology-drawer-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.api-topology-drawer-kpi {
+  padding: 10px 12px;
+  border: 1px solid var(--topo-line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.api-topology-drawer-kpi span {
+  display: block;
+  color: var(--topo-muted);
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+
+.api-topology-drawer-kpi strong {
+  color: var(--topo-ink);
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.api-topology-drawer-kpi strong.is-danger {
+  color: #cf2e36;
+}
+
+.api-topology-drawer-section {
+  margin-top: 18px;
+}
+
+.api-topology-drawer-section-title {
+  margin: 0 0 8px;
+  color: var(--topo-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+@media (max-width: 1024px) {
+  .api-topology-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .api-topology-tree-pane {
+    max-height: 240px;
+    border-right: 0;
+    border-bottom: 1px solid var(--topo-line);
+  }
+
+  .api-topology-status-legend {
+    margin-left: 0;
+  }
+
+  .api-topology-app-banner-bar {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .api-topology-page > .ant-card-head,
+  .api-topology-page > .ant-card-body {
+    padding-inline: 14px;
+  }
+
+  .api-topology-toolbar-search {
+    width: 100%;
+  }
+
+  .api-topology-drawer-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

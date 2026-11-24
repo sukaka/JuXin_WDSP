@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -67,13 +67,31 @@ function classificationRow(id: string, dimension: string, value: string) {
   }
 }
 
-function stubClassificationRows(rows: Array<Record<string, unknown>>) {
+function builtinClassificationRow(
+  code: string,
+  name: string,
+  description: string,
+) {
+  return {
+    id: `builtin-${code}`,
+    code,
+    name,
+    description,
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+  }
+}
+
+function stubClassificationRows(
+  rows: Array<Record<string, unknown>>,
+  builtin: Array<Record<string, unknown>> = [],
+) {
   vi.stubGlobal(
     'fetch',
     vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
       if (url.includes('/api-security/classifications')) {
-        return Promise.resolve(jsonResponse({ builtin: [], custom: rows }))
+        return Promise.resolve(jsonResponse({ builtin, custom: rows }))
       }
       if (url.includes('/api-security/endpoints')) {
         return Promise.resolve(
@@ -449,6 +467,223 @@ describe('ApiClassificationsPage', () => {
     }
   })
 
+  it('纯内置用途列表隐藏维度列且不显示内部英文编码', async () => {
+    stubClassificationRows(
+      [],
+      [
+        builtinClassificationRow('ADMIN', '管理运维', '后台管理接口'),
+        builtinClassificationRow('PUBLIC', '公网开放', '公网业务接口'),
+      ],
+    )
+    renderPage()
+
+    const table = screen.getByRole('table')
+    expect(await within(table).findByText('管理运维')).toBeInTheDocument()
+    expect(within(table).getByText('公网开放')).toBeInTheDocument()
+    expect(within(table).queryByText('ADMIN')).not.toBeInTheDocument()
+    expect(within(table).queryByText('PUBLIC')).not.toBeInTheDocument()
+    expect(
+      within(table).queryByRole('columnheader', { name: /维度/ }),
+    ).not.toBeInTheDocument()
+    expect(
+      within(table).getByRole('columnheader', { name: /分类名称/ }),
+    ).toBeInTheDocument()
+    expect(
+      within(table).getByRole('columnheader', { name: /分类说明/ }),
+    ).toBeInTheDocument()
+  })
+
+  it('混合维度列表保留中文维度列', async () => {
+    stubClassificationRows([
+      classificationRow('purpose-trade', 'PURPOSE', 'TRADE'),
+      classificationRow('exposure-public', 'EXPOSURE', 'PUBLIC'),
+    ])
+    renderPage()
+
+    const table = screen.getByRole('table')
+    expect(await within(table).findByText('外网')).toBeInTheDocument()
+    expect(
+      within(table).getByRole('columnheader', { name: /维度/ }),
+    ).toBeInTheDocument()
+    expect(within(table).getByText('用途')).toBeInTheDocument()
+    expect(within(table).getByText('暴露范围')).toBeInTheDocument()
+  })
+
+  it('内置用途旧默认说明在列表和详情中统一显示中文且不覆盖定制说明', async () => {
+    const cases = [
+      {
+        code: 'ADMIN',
+        name: '管理运维',
+        legacy: '后台管理、配置与运维操作接口（启发式命中 /admin /manage）',
+        expected: '后台管理、配置与运维操作接口',
+      },
+      {
+        code: 'AUTH',
+        name: '认证鉴权',
+        legacy:
+          '登录、登出、令牌签发/刷新、验证码等认证会话接口（启发式命中 /login /signin /auth /token /captcha）',
+        expected: '登录、登出、令牌签发/刷新、验证码等认证会话接口',
+      },
+      {
+        code: 'TRADE',
+        name: '交易支付',
+        legacy: '支付、订单、交易、账务等资金交易接口（启发式命中 /pay /order /trade /billing）',
+        expected: '支付、订单、交易、账务等资金交易接口',
+      },
+      {
+        code: 'FILE',
+        name: '文件传输',
+        legacy:
+          '文件上传、下载、导入导出等文件传输接口（启发式命中 /upload /file /download /export）',
+        expected: '文件上传、下载、导入导出等文件传输接口',
+      },
+      {
+        code: 'USER_MGMT',
+        name: '用户管理',
+        legacy:
+          '用户资料、账户与密保管理等用户生命周期接口（启发式命中 /user /account /profile）',
+        expected: '用户资料、账户与密保管理等用户生命周期接口',
+      },
+      {
+        code: 'QUERY',
+        name: '查询检索',
+        legacy: '搜索、查询、列表等只读检索接口（启发式命中 /search /query /list）',
+        expected: '搜索、查询、列表等只读检索接口',
+      },
+      {
+        code: 'GENERAL',
+        name: '通用业务',
+        legacy: '未命中具体类别的一般业务接口（启发式兜底分类）',
+        expected: '未命中具体类别的一般业务接口',
+      },
+      {
+        code: 'AI_INTELLIGENCE',
+        name: '人工智能',
+        legacy: '模型调用、智能分析、AI 辅助运营接口',
+        expected: '模型调用、智能分析与智能辅助运营接口',
+      },
+      {
+        code: 'DEVELOPER_PLATFORM',
+        name: '开发者平台',
+        legacy: '开放 API、应用凭证、SDK、沙箱与调用配额接口',
+        expected: '开放接口、应用凭证、开发工具包、沙箱与调用配额接口',
+      },
+      {
+        code: 'EXTERNAL_INTEGRATION',
+        name: '外部集成',
+        legacy: 'Webhook、回调、第三方开放平台对接接口',
+        expected: '事件推送、回调、第三方开放平台对接接口',
+      },
+      {
+        code: 'PRODUCT_CATALOG',
+        name: '商品目录',
+        legacy: '商品、服务、SKU、类目与价格管理接口',
+        expected: '商品、服务、规格库存、类目与价格管理接口',
+      },
+      {
+        code: 'PUBLIC',
+        name: '公网开放',
+        legacy: '面向公网开放的接口（启发式命中 /public /openapi /webhook /callback）',
+        expected: '面向公网开放的接口',
+      },
+    ]
+    stubClassificationRows(
+      [],
+      [
+        ...cases.map((item) =>
+          builtinClassificationRow(item.code, item.name, item.legacy),
+        ),
+        {
+          ...builtinClassificationRow(
+            'ADMIN',
+            '管理运维（定制）',
+            '管理员修订后的说明',
+          ),
+          id: 'builtin-admin-custom',
+        },
+      ],
+    )
+    renderPage()
+
+    const table = screen.getByRole('table')
+    expect(await within(table).findByText(cases[0].expected)).toBeInTheDocument()
+    for (const item of cases) {
+      expect(within(table).getByText(item.expected)).toBeInTheDocument()
+      expect(within(table).queryByText(item.legacy)).not.toBeInTheDocument()
+    }
+    expect(within(table).getByText('管理员修订后的说明')).toBeInTheDocument()
+
+    for (const code of ['ADMIN', 'AI_INTELLIGENCE']) {
+      const item = cases.find((candidate) => candidate.code === code)!
+      const row = within(table).getByText(item.name).closest('tr') as HTMLElement
+      fireEvent.click(within(row).getByRole('button', { name: '查看' }))
+      const drawer = await screen.findByRole('dialog')
+      expect(await within(drawer).findByText(item.expected)).toBeInTheDocument()
+      expect(within(drawer).getByText('分类说明')).toBeInTheDocument()
+      expect(within(drawer).queryByText(item.legacy)).not.toBeInTheDocument()
+    }
+  })
+
+  it('本地搜索和来源筛选实际过滤表格行', async () => {
+    stubClassificationRows(
+      [
+        {
+          ...classificationRow('custom-finance', 'BUSINESS_DOMAIN', '财务'),
+          description: '财务相关接口',
+        },
+      ],
+      [builtinClassificationRow('ADMIN', '管理运维', '后台管理接口')],
+    )
+    renderPage()
+
+    const table = screen.getByRole('table')
+    expect(await within(table).findByText('管理运维')).toBeInTheDocument()
+    const search = screen.getByRole('searchbox', { name: '搜索分类' })
+    fireEvent.change(search, { target: { value: '财务相关' } })
+    expect(within(table).getByText('财务')).toBeInTheDocument()
+    expect(within(table).queryByText('管理运维')).not.toBeInTheDocument()
+
+    fireEvent.change(search, { target: { value: '' } })
+    expect(within(table).getByText('管理运维')).toBeInTheDocument()
+    const sourceSelect = screen.getByRole('combobox', { name: '来源筛选' })
+    fireEvent.mouseDown(sourceSelect)
+    fireEvent.click(
+      await screen.findByText('内置', {
+        selector: '.ant-select-item-option-content',
+      }),
+    )
+    await waitFor(() => {
+      expect(within(table).getByText('管理运维')).toBeInTheDocument()
+      expect(within(table).queryByText('财务')).not.toBeInTheDocument()
+    })
+
+    fireEvent.mouseDown(sourceSelect)
+    fireEvent.click(
+      await screen.findByText('自定义', {
+        selector: '.ant-select-item-option-content',
+      }),
+    )
+    await waitFor(() => {
+      expect(within(table).getByText('财务')).toBeInTheDocument()
+      expect(within(table).queryByText('管理运维')).not.toBeInTheDocument()
+    })
+  })
+
+  it('自定义分类可通过查看按钮打开中文详情', async () => {
+    stubClassificationRows([
+      classificationRow('custom-exposure', 'EXPOSURE', 'PUBLIC'),
+    ])
+    renderPage()
+
+    expect(await screen.findByText('外网')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '查看' }))
+    const drawer = await screen.findByRole('dialog')
+    expect(within(drawer).getByText('分类详情')).toBeInTheDocument()
+    expect(within(drawer).getByText('分类名称')).toBeInTheDocument()
+    expect(within(drawer).getByText('外网')).toBeInTheDocument()
+    expect(within(drawer).getByText('自定义')).toBeInTheDocument()
+  })
+
   it('创建分类返回 CustomTaxonomyItem 时正常提示「分类已创建」', async () => {
     vi.stubGlobal(
       'fetch',
@@ -479,9 +714,33 @@ describe('ApiClassificationsPage', () => {
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: /新增分类/ }))
     const drawer = await screen.findByRole('dialog')
-    fireEvent.change(within(drawer).getByLabelText('维度'), { target: { value: 'BU' } })
-    fireEvent.change(within(drawer).getByLabelText('取值'), { target: { value: 'FINANCE' } })
+    fireEvent.change(within(drawer).getByLabelText('维度'), { target: { value: '业务域' } })
+    fireEvent.change(within(drawer).getByLabelText('分类名称'), { target: { value: '财务' } })
     fireEvent.click(within(drawer).getByRole('button', { name: /创\s*建/ }))
     expect(await screen.findByText('分类已创建')).toBeInTheDocument()
+  })
+
+  it('接口分类设置与新增分类表单占位提示仅使用中文示例，不展示英文示例', async () => {
+    renderPage()
+    const addButton = await screen.findByRole('button', { name: /添加维度/ })
+    fireEvent.click(addButton)
+
+    expect(screen.getByPlaceholderText('维度，如 业务域')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('分类名称，如 财务')).toBeInTheDocument()
+    expect(
+      screen.queryByPlaceholderText(/business_domain/i),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText(/finance/i)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /新增分类/ }))
+    const drawer = await screen.findByRole('dialog')
+    expect(within(drawer).getByPlaceholderText('如 业务域')).toBeInTheDocument()
+    expect(within(drawer).getByPlaceholderText('如 财务')).toBeInTheDocument()
+    expect(
+      within(drawer).queryByPlaceholderText(/business_domain/i),
+    ).not.toBeInTheDocument()
+    expect(
+      within(drawer).queryByPlaceholderText(/finance/i),
+    ).not.toBeInTheDocument()
   })
 })

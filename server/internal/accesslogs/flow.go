@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jiuzhang-waf/server/internal/apidata"
 )
 
 const (
@@ -89,7 +91,10 @@ func (s *Store) Flow(ctx context.Context, filter ListFilter, nodeLimit int) (Flo
 		nodeLimit = 8
 	}
 	where, args := buildListWhere(filter)
+	args = append(args, apidata.StandardProtocolHeaderNames())
+	headerArg := len(args)
 	args = append(args, flowMaxRows+1)
+	limitArg := len(args)
 	rows, err := s.db.Query(ctx, `
 WITH filtered_logs AS (SELECT * FROM access_logs WHERE `+where+`)
 SELECT filtered_logs.request_id, host(filtered_logs.client_ip),
@@ -108,9 +113,25 @@ FROM filtered_logs
 LEFT JOIN applications ON applications.id=filtered_logs.application_id
 LEFT JOIN api_runtime_events runtime ON runtime.request_id=filtered_logs.request_id
 LEFT JOIN LATERAL jsonb_array_elements(COALESCE(runtime.details_json,'[]'::jsonb)) WITH ORDINALITY detail(payload,ordinal)
- ON detail.payload->>'detector'='sensitive_data' AND COALESCE(detail.payload->'evidence'->>'field','')<>''
+ ON detail.payload->>'detector'='sensitive_data'
+ AND COALESCE(detail.payload->'evidence'->>'field','')<>''
+ AND lower(COALESCE(detail.payload->>'rule_id',''))<>'sensitive.response_body_unchecked'
+ AND NOT (
+   lower(COALESCE(detail.payload->>'rule_id',''))='sensitive.field'
+   AND lower(COALESCE(detail.payload->'evidence'->>'location',''))='path'
+ )
+ AND NOT (
+   lower(COALESCE(detail.payload->>'rule_id',''))='sensitive.field'
+   AND lower(COALESCE(detail.payload->'evidence'->>'location',''))='header'
+   AND (
+     lower(COALESCE(detail.payload->'evidence'->>'field','')) LIKE 'sec-ch-%'
+     OR lower(COALESCE(detail.payload->'evidence'->>'field','')) LIKE 'sec-fetch-%'
+     OR lower(COALESCE(detail.payload->'evidence'->>'field','')) LIKE 'sec-websocket-%'
+     OR lower(COALESCE(detail.payload->'evidence'->>'field','')) = ANY($`+fmt.Sprint(headerArg)+`::text[])
+   )
+ )
 ORDER BY filtered_logs.occurred_at DESC,filtered_logs.request_id,runtime.id,detail.ordinal
-LIMIT $`+fmt.Sprint(len(args)), args...)
+LIMIT $`+fmt.Sprint(limitArg), args...)
 	if err != nil {
 		return FlowResult{}, err
 	}
@@ -146,6 +167,12 @@ func (b *flowBuilder) addRow(row flowRow, filter ListFilter) {
 	}
 	if len(row.identity) > 128 {
 		row.identity = ""
+	}
+	if apidata.IsIgnoredSensitiveFieldPath(row.fieldPath, row.ruleID) {
+		row.fieldPath = ""
+		row.dataType = ""
+		row.direction = ""
+		row.ruleID = ""
 	}
 	fieldRunes := []rune(row.fieldPath)
 	if len(fieldRunes) > 512 {

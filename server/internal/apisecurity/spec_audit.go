@@ -253,12 +253,19 @@ func isSensitiveQueryParameterName(name string) bool {
 }
 
 func auditStoredSpec(spec *ImportSpec) (SpecAuditResult, error) {
-	_, _, ops, err := ParseSpecContent(spec.SpecJSON)
+	var ops []SpecOperation
+	var err error
+	switch spec.Format {
+	case "", SpecFormatOpenAPI3, SpecFormatSwagger2:
+		_, _, ops, err = ParseSpecContent(spec.SpecJSON)
+	default:
+		ops, err = parseStoredSpecOperations(spec)
+	}
 	if err != nil {
 		return SpecAuditResult{}, fmt.Errorf("解析已存规范失败: %w", err)
 	}
 	if spec.Format != SpecFormatOpenAPI3 {
-		// Swagger 落库后虽已转换为 OAS3，但最小转换不携带认证目录，不能按空目录推断。
+		// Swagger 最小转换与各类扩展格式不携带 OpenAPI 3 认证目录，不能按空目录推断。
 		for i := range ops {
 			ops[i].SecuritySemanticsKnown = false
 		}

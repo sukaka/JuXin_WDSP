@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
@@ -10,6 +10,7 @@ import {
   Spin,
   Typography,
 } from 'antd'
+import { QuestionCircleOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
 import { riskPolicyApi } from '../../api/riskPolicy'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
@@ -32,6 +33,18 @@ export default function RiskPolicyPage() {
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canEdit = hasPermission(permissions, 'risk_policy.edit')
   const [form] = Form.useForm<PolicyFormValues>()
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+
+  const hasAdvancedField = (fieldNames: string[]) =>
+    fieldNames.some(
+      (name) =>
+        name === 'signal_window_seconds' ||
+        name === 'risk_levels' ||
+        name.startsWith('risk_levels.') ||
+        name === 'scores' ||
+        name.startsWith('scores.') ||
+        name.startsWith('score_entries'),
+    )
 
   const policyQuery = useQuery({
     queryKey: ['risk-policy'],
@@ -56,6 +69,7 @@ export default function RiskPolicyPage() {
       ([, idxs]) => idxs.length > 1,
     )
     if (duplicated.length > 0) {
+      setAdvancedOpen(true)
       form.setFields(
         duplicated.flatMap(([key, idxs]) =>
           idxs.map((idx) => ({
@@ -94,6 +108,15 @@ export default function RiskPolicyPage() {
         // 后端字段级校验错误（ValidationError.details = [{field, message}]），回显到对应表单项；
         // scores.X 按信号键定位到对应键值对行，未匹配到的仅在提示中展示
         const details = e.details as { field?: string; message?: string }[]
+        if (
+          hasAdvancedField(
+            details
+              .map((d) => d.field)
+              .filter((f): f is string => Boolean(f)),
+          )
+        ) {
+          setAdvancedOpen(true)
+        }
         const entries = (form.getFieldValue('score_entries') ??
           []) as ScoreEntry[]
         const fields: {
@@ -141,16 +164,26 @@ export default function RiskPolicyPage() {
       <Card
         title="风险策略"
         extra={
-          canEdit && (
+          <Space>
             <Button
-              type="primary"
-              loading={saveMutation.isPending}
-              disabled={!policy}
-              onClick={() => form.submit()}
+              icon={<QuestionCircleOutlined />}
+              href="/risk-policy/guide"
+              target="_blank"
+              rel="noopener noreferrer"
             >
-              保存策略
+              使用说明
             </Button>
-          )
+            {canEdit && (
+              <Button
+                type="primary"
+                loading={saveMutation.isPending}
+                disabled={!policy}
+                onClick={() => form.submit()}
+              >
+                保存策略
+              </Button>
+            )}
+          </Space>
         }
       >
         {policyQuery.isLoading ? (
@@ -175,9 +208,21 @@ export default function RiskPolicyPage() {
               layout="vertical"
               disabled={!canEdit}
               onFinish={onFinish}
+              onFinishFailed={({ errorFields }) => {
+                const names = errorFields.map((item) =>
+                  item.name.map(String).join('.'),
+                )
+                if (hasAdvancedField(names)) {
+                  setAdvancedOpen(true)
+                }
+              }}
               style={{ maxWidth: 1080 }}
             >
-              <RiskPolicyFields canEdit={canEdit} />
+              <RiskPolicyFields
+                canEdit={canEdit}
+                advancedOpen={advancedOpen}
+                onAdvancedOpenChange={setAdvancedOpen}
+              />
             </Form>
 
             {policy && (

@@ -28,19 +28,24 @@ API 发现回答三个问题：哪些流量是 API（识别）、它们构成哪
 | `versioned_path` | 0.20 | 路径含 `/v1/`、`/v2/` |
 | `api_prefix` | 0.15 | 路径含 `/api/`（只是信号之一，非充分条件） |
 | `accept_json` | 0.15 | Accept 头要求 JSON |
+| `auth_header` | 0.20 | 携带 `Authorization` 或 `X-API-Key` API 认证头（不同于浏览器自动附带的 `Cookie`） |
 | `write_json` | 0.10 | POST/PUT/PATCH 且 JSON 体 |
+
+静态资源快筛（`gateway/dynamic_security/classifier/static.go`）：对读方法（`GET`/`HEAD`/`OPTIONS`）且非结构性协议的静态文件后缀（图片/图标、JS/CSS/map/wasm、字体、音视频、压缩包/归档/安装包、静态文档及 `robots.txt`/`sitemap.xml`/`/.well-known/` 等）直接判 `NON_API`（0 分），不误伤 `.json`/`.xml`/`.do`/`.php` 等动态后缀及写操作。
 
 打分截断到 1.0；**得分 ≥ 0.35 判为 API**，输出 `{IsAPI, Confidence, Signals}`。
 请求相位结果保存到 `ctx.APIConfidence`、扩展键 `api.is_api` / `api.signals` 和
-事件字段 `api_confidence`，用于网关运行时事件；该请求侧行为保持不变。
+事件字段 `api_confidence`，用于网关运行时事件。
 
-Agent v2 资产联动使用同一分类器的 `ClassifyWithResponse` 入口，在完整可见响应上
-追加以下证据：
+在线网关（`apiprotect.go` 轻量响应头窥视与响应相位）、Agent v2 资产联动及 Kafka 数据流投影均复用同一分类器的 `ClassifyWithResponse` 入口，在完整可见响应上追加以下证据：
 
 | 响应侧信号 | 权重 | 依据 |
 |------|------|------|
-| `response_json` | +0.25 | 响应 Content-Type 为 JSON |
-| `response_xml` | +0.20 | 响应 Content-Type 为 XML/SOAP |
+| `response_json` | +0.35 | 2xx/3xx 响应 Content-Type 为 JSON 族（4xx/5xx 错误 JSON 不洗白无信号路径） |
+| `response_xml` | +0.25 | 2xx/3xx 响应 Content-Type 为 XML/SOAP（排除 `image/svg+xml` 与 `xhtml+xml`） |
+| `response_sse` | +0.35 | 2xx/3xx 响应 Content-Type 为 `text/event-stream` |
+| `response_attachment` | +0.35 | 非静态路径 2xx/3xx 响应带 `Content-Disposition: attachment; filename=...`（保留动态导出接口） |
+| `response_static_mime` | 强制归零 | 响应 MIME 为 `image/*`、`font/*`、`audio/*`、`video/*`、JS/CSS、压缩包/PDF 等静态资源（非结构性协议且非动态附件导出） |
 | `response_html` | -0.35 | 2xx 成功 HTML 响应（GraphQL、SOAP/XML、gRPC 等结构性协议除外） |
 
 响应未采集、单向源、截断或流式直通时不作负向推断，保留请求侧结论；gRPC 由可信
@@ -162,10 +167,9 @@ NOT_STARTED ──learning/start──► LEARNING ──learning/stop──► 
 
 ## 六、关键设计决策
 
-1. **发现喂数据与事件入库解耦**。所有被输出的运行时记录都喂 `UpsertDiscovery`
-   （含 `is_api=false` 的非 API 记录，保留非 API画像），只有 notable 记录进
-   事件表（`collector.go:56-59`）。发现覆盖面不受「是否有风险命中」影响。
-2. **幂等键用 endpoint_key 而非 UUID**。网关与采集器不需要知道数据库主键，
+1. **发现闸门与安全事件解耦**。网关对静态资源与普通 HTML 的纯 `INFO` 明细（如 `identity.cookie_present`）不再刷屏发射事件；服务端 4 条发现入口（`apiruntime`、`mirrorcap`、`agents`、`apidataflow`）统一经可配置过滤规则（系统设置 `api_discovery:filter_rules`）拦截静态资源与 `is_api=false` 流量，不写入 `api_endpoints`；而静态路径上触发的真实 WAF/安全告警仍完整落入 `api_runtime_events` 与风险发现，不降级防护。
+2. **存量治理与批量操作**：提供 `GET/PUT /api/v1/api-security/discovery-filter` 配置排除后缀/路径前缀/保留白名单前缀，`POST /api/v1/api-security/endpoints/ignore` 批量忽略，以及 `POST /api/v1/api-security/endpoints/cleanup-noise/preview` 与 `cleanup-noise` 存量噪声安全清理（严格跳过 `CONFIRMED` 及已学习/建模/绑定策略的正式资产）。
+3. **幂等键用 endpoint_key 而非 UUID**。网关与采集器不需要知道数据库主键，
    归一化算法即身份；重放、扩容、重启天然幂等（store.go:204-212）。
 3. **置信度只升不降（GREATEST）**。同一API多次观测取最大置信度，避免偶发低信号
    请求拉低已积累的识别结论（store.go:210）。

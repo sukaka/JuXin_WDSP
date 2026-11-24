@@ -24,6 +24,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jiuzhang-waf/gateway/dynamic_security/classifier"
+	"github.com/jiuzhang-waf/server/internal/apidata"
 )
 
 // sweepBatchSize 单次清扫事件批大小（与 apidata/apiauthz 同口径）。
@@ -70,29 +73,64 @@ func NewSweeper(store sweepStore, lookup CountryLookup, settings SettingsReader)
 // sweepDetail 运行时事件检测明细子集（镜像 dsctx.DetectorMatch 的 JSON 形状）。
 type sweepDetail struct {
 	Detector string            `json:"detector"`
+	RuleID   string            `json:"rule_id"`
 	Evidence map[string]string `json:"evidence"`
 }
 
-// extractSensitiveTypes 从 details_json 提取各方向涉敏数据类型集合（纯函数）。
+// dirSensitiveHit 单方向涉敏命中聚合结果。
+type dirSensitiveHit struct {
+	dataTypes     []string
+	hasValueMatch bool
+}
+
+// hasRawSensitiveDetector 判断 details_json 是否含任意 detector=sensitive_data 条目
+// （镜像 SQL details_json @> '[{"detector":"sensitive_data"}]'::jsonb 预筛语义）。
+func hasRawSensitiveDetector(detailsJSON []byte) bool {
+	var details []sweepDetail
+	if err := json.Unmarshal(detailsJSON, &details); err != nil {
+		return false
+	}
+	for _, d := range details {
+		if d.Detector == "sensitive_data" {
+			return true
+		}
+	}
+	return false
+}
+
+// extractSensitiveByDirection 从 details_json 提取各方向有效涉敏命中（纯函数）。
 // 方向映射：evidence.direction RESPONSE → OUT（出境），REQUEST/缺省 → IN（入境），
-// 与 apidata sweep 的缺省 REQUEST 口径一致。返回键仅含确有敏感命中的方向
-// （值可为空切片：命中但明细未带 data_type 标签）。
-func extractSensitiveTypes(detailsJSON []byte) (map[string][]string, error) {
+// 与 apidata sweep 的缺省 REQUEST 口径一致。
+// 过滤非数据噪声：路径字面段字段名误报（location=path + sensitive.field）、标准浏览器协议头
+// 字段名误报（header.sec-ch-ua-mobile 等）及 sensitive.response_body_unchecked 诊断条目。
+func extractSensitiveByDirection(detailsJSON []byte) (map[string]dirSensitiveHit, error) {
 	var details []sweepDetail
 	if err := json.Unmarshal(detailsJSON, &details); err != nil {
 		return nil, fmt.Errorf("parse details_json: %w", err)
 	}
 	sets := map[string]map[string]bool{}
+	hasValue := map[string]bool{}
 	for _, d := range details {
 		if d.Detector != "sensitive_data" {
 			continue
 		}
+		var loc, field string
+		if d.Evidence != nil {
+			loc = d.Evidence["location"]
+			field = d.Evidence["field"]
+		}
+		if apidata.IsIgnoredSensitiveFieldHit(loc, field, d.RuleID) {
+			continue
+		}
 		dir := DirectionIn
-		if d.Evidence != nil && d.Evidence["direction"] == "RESPONSE" {
+		if d.Evidence != nil && strings.EqualFold(strings.TrimSpace(d.Evidence["direction"]), "RESPONSE") {
 			dir = DirectionOut
 		}
 		if sets[dir] == nil {
 			sets[dir] = map[string]bool{}
+		}
+		if apidata.IsValueLevelSensitiveRule(d.RuleID) {
+			hasValue[dir] = true
 		}
 		if d.Evidence != nil {
 			if dt := strings.TrimSpace(d.Evidence["data_type"]); dt != "" {
@@ -100,11 +138,63 @@ func extractSensitiveTypes(detailsJSON []byte) (map[string][]string, error) {
 			}
 		}
 	}
-	out := map[string][]string{}
+	out := map[string]dirSensitiveHit{}
 	for dir, set := range sets {
-		out[dir] = sortedKeys(set)
+		out[dir] = dirSensitiveHit{
+			dataTypes:     sortedKeys(set),
+			hasValueMatch: hasValue[dir],
+		}
 	}
 	return out, nil
+}
+
+// isNonTransferCrossBorderEvent 判断请求是否被网关直接阻断或命中不存在的扫描探测路由（404/405/410）。
+// 这类请求既未将数据送入业务也未将敏感响应发往境外，不构成实际数据跨境流转。
+func isNonTransferCrossBorderEvent(ev runtimeEventRow) bool {
+	switch strings.ToUpper(strings.TrimSpace(ev.finalAction)) {
+	case "BLOCK", "TEMP_BLOCK", "RATE_LIMIT":
+		return true
+	}
+	switch ev.responseStatus {
+	case 404, 405, 410:
+		return true
+	}
+	return false
+}
+
+// isNonAPIStaticEvent 判断运行时事件是否属于非 API / 静态资源路径（如 GET /mobile.zip）。
+// 这类请求仅在确有值级正则实值命中时才计入跨境数据流转，排除字段名启发式误报。
+func isNonAPIStaticEvent(ev runtimeEventRow) bool {
+	if strings.EqualFold(strings.TrimSpace(ev.apiLevel), classifier.LevelNonAPI) {
+		return true
+	}
+	method, rawPath, ok := strings.Cut(strings.TrimSpace(ev.endpointKey), " ")
+	return ok && classifier.IsStaticAssetPath(method, rawPath)
+}
+
+func lookupDataTypeLevel(dt string, levels map[string]string) (string, bool) {
+	if level, ok := levels[dt]; ok {
+		return level, true
+	}
+	// 网关词表对口令/令牌统一输出 credential，管理面字典拆分为 password/token/jwt；
+	// 查无直连键时取对应凭据子类的最高敏感等级，避免误按字典外类型降级。
+	if strings.EqualFold(dt, "credential") {
+		best := ""
+		for _, alias := range []string{"password", "token", "jwt"} {
+			if lv, ok := levels[alias]; ok {
+				if lv == "CORE" || lv == "IMPORTANT" {
+					return lv, true
+				}
+				if best == "" || lv == "SENSITIVE" {
+					best = lv
+				}
+			}
+		}
+		if best != "" {
+			return best, true
+		}
+	}
+	return "", false
 }
 
 // riskOf 由数据类型集合推导风险等级（纯函数）：
@@ -113,7 +203,7 @@ func extractSensitiveTypes(detailsJSON []byte) (map[string][]string, error) {
 func riskOf(dataTypes []string, levels map[string]string) string {
 	risk := RiskLow
 	for _, dt := range dataTypes {
-		level, ok := levels[dt]
+		level, ok := lookupDataTypeLevel(dt, levels)
 		if !ok {
 			if risk == RiskLow {
 				risk = RiskMedium // 字典外类型保守计 MEDIUM
@@ -182,12 +272,24 @@ func (s *Sweeper) SweepOnce(ctx context.Context) (*SweepResult, error) {
 			res.SkippedBadIP++
 			continue
 		}
-		typesByDir, err := extractSensitiveTypes(ev.details)
+		if isNonTransferCrossBorderEvent(ev) {
+			res.SkippedNoSensHit++
+			continue
+		}
+		hitsByDir, err := extractSensitiveByDirection(ev.details)
 		if err != nil {
 			return nil, fmt.Errorf("cross-border sweep event %s: %w", ev.id, err)
 		}
+		nonAPIStatic := isNonAPIStaticEvent(ev)
+		typesByDir := map[string][]string{}
+		for dir, hit := range hitsByDir {
+			if nonAPIStatic && !hit.hasValueMatch {
+				continue
+			}
+			typesByDir[dir] = hit.dataTypes
+		}
 		if len(typesByDir) == 0 {
-			res.SkippedNoSensHit++ // @> 命中但提取为空（防御；正常不发生）
+			res.SkippedNoSensHit++ // 仅含路径/协议头字段名噪声或非 API 无实值命中，跳过并仍推进水位
 			continue
 		}
 		// client_ip 归一化存储（maskIP 纪律：netip canonical 形态）

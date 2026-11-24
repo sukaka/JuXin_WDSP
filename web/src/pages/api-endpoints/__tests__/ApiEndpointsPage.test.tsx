@@ -650,4 +650,182 @@ describe('ApiEndpointsPage', () => {
       screen.getByText(/"normalized_path": "\/v1\/users\/\{id\}"/),
     ).toBeInTheDocument()
   })
+
+  it('发现过滤规则弹窗：加载配置并提交 PUT /api-security/discovery-filter', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read', 'api_asset.edit']),
+    })
+    const savedBodies: Record<string, unknown>[] = []
+    ;(fetch as Mock).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api-security/endpoints/site-summary')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: siteSummaryData }))
+      }
+      if (url.includes('/api-security/endpoints/directory-tree')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: directoryTreeData }))
+      }
+      if (url.includes('/api-security/discovery-filter')) {
+        if (init?.method === 'PUT') {
+          const parsed = JSON.parse(String(init.body)) as Record<string, unknown>
+          savedBodies.push(parsed)
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: '发现过滤规则已保存并立即生效',
+              data: { config: parsed, message: '发现过滤规则已保存并立即生效' },
+            }),
+          )
+        }
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: {
+              config: {
+                exclude_static_assets: true,
+                filter_non_api: true,
+                exclude_extensions: ['.png', '.js', '.zip'],
+                exclude_path_prefixes: [],
+                include_path_prefixes: [],
+              },
+              default_extensions: ['.png', '.js', '.zip', '.tar.gz'],
+            },
+          }),
+        )
+      }
+      return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }))
+    })
+
+    renderPage()
+    await screen.findByText('/v1/users/{id}')
+    fireEvent.click(screen.getByRole('button', { name: /发现过滤规则/ }))
+
+    const prefixBox = await screen.findByPlaceholderText(/\/astro/)
+    await waitFor(() => {
+      expect(prefixBox).not.toBeDisabled()
+    })
+    fireEvent.change(prefixBox, { target: { value: '/astro\n/_next/static' } })
+    fireEvent.click(screen.getByRole('button', { name: /保存并生效/ }))
+
+    await waitFor(() => {
+      expect(savedBodies.length).toBe(1)
+    })
+    expect(savedBodies[0].exclude_path_prefixes).toEqual(['/astro', '/_next/static'])
+    expect(savedBodies[0].exclude_static_assets).toBe(true)
+  })
+
+  it('清理静态/非API噪声弹窗：先预览命中项，确认后发起 POST /cleanup-noise', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read', 'api_asset.ignore']),
+    })
+    const executedBodies: Record<string, unknown>[] = []
+    ;(fetch as Mock).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api-security/endpoints/site-summary')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: siteSummaryData }))
+      }
+      if (url.includes('/api-security/endpoints/directory-tree')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: directoryTreeData }))
+      }
+      if (url.includes('/api-security/endpoints/cleanup-noise/preview')) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: {
+              total: 2,
+              protected_skipped: 1,
+              by_reason: { static_extension: 1, non_api: 1 },
+              items: [
+                {
+                  id: 'n1',
+                  http_method: 'GET',
+                  normalized_path: '/备案图标.png',
+                  directory_path: '',
+                  endpoint_key: 'GET /备案图标.png',
+                  asset_status: 'DISCOVERED',
+                  is_api: false,
+                  api_confidence: 0,
+                  hit_count: 15,
+                  last_seen_at: '2026-11-23T10:00:00Z',
+                  reason: 'static_extension:.png',
+                },
+              ],
+            },
+          }),
+        )
+      }
+      if (url.includes('/api-security/endpoints/cleanup-noise')) {
+        executedBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: '已清理删除 2 条非 API / 静态噪声端点',
+            data: {
+              result: { action: 'DELETE', affected: 2, protected_skipped: 1, by_reason: {}, sample_keys: [] },
+              message: '已清理删除 2 条非 API / 静态噪声端点',
+            },
+          }),
+        )
+      }
+      return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }))
+    })
+
+    renderPage()
+    await screen.findByText('/v1/users/{id}')
+    fireEvent.click(screen.getByRole('button', { name: /清理静态\/非API噪声/ }))
+
+    expect(await screen.findByText('/备案图标.png')).toBeInTheDocument()
+    expect(screen.getByText(/待清理总数：2 条/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /彻底删除（2 条）/ }))
+    const confirmBtn = await screen.findByRole('button', { name: /确认删除/ })
+    fireEvent.click(confirmBtn)
+
+    await waitFor(() => {
+      expect(executedBodies.length).toBe(1)
+    })
+    expect(executedBodies[0].action).toBe('DELETE')
+  })
+
+  it('勾选接口后支持批量忽略（POST /api-security/endpoints/ignore）', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read', 'api_asset.ignore']),
+    })
+    const batchBodies: Record<string, unknown>[] = []
+    ;(fetch as Mock).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api-security/endpoints/site-summary')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: siteSummaryData }))
+      }
+      if (url.includes('/api-security/endpoints/directory-tree')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: directoryTreeData }))
+      }
+      if (url.endsWith('/api-security/endpoints/ignore') && init?.method === 'POST') {
+        batchBodies.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: { ignored: 1, ignored_ids: ['e1'], failed: [] },
+          }),
+        )
+      }
+      return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }))
+    })
+
+    renderPage()
+    await screen.findByText('/v1/users/{id}')
+    const checkboxes = screen.getAllByRole('checkbox')
+    fireEvent.click(checkboxes[1])
+    fireEvent.click(await screen.findByRole('button', { name: /批量忽略/ }))
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /确认忽略/ }))
+
+    await waitFor(() => {
+      expect(batchBodies.length).toBe(1)
+    })
+    expect(batchBodies[0].ids).toEqual(['e1'])
+  })
 })

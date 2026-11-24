@@ -99,7 +99,7 @@ func TestClassifyWithResponseEvidence(t *testing.T) {
 	t.Run("JSON 请求与响应提高置信度", func(t *testing.T) {
 		p := &parser.Parsed{Method: "GET", RawPath: "/v1/orders", ContentType: "application/json"}
 		got := ClassifyWithResponse(p, &ResponseEvidence{Status: 200, ContentType: "application/json"})
-		if !got.IsAPI || !closeEnough(got.Confidence, 0.80) || got.Level != LevelConfirmedAPI {
+		if !got.IsAPI || !closeEnough(got.Confidence, 0.90) || got.Level != LevelConfirmedAPI {
 			t.Fatalf("unexpected result: %+v", got)
 		}
 		if !containsSignal(got.Signals, "response_json") {
@@ -107,10 +107,26 @@ func TestClassifyWithResponseEvidence(t *testing.T) {
 		}
 	})
 
+	t.Run("无请求侧信号的 GET 接口凭成功 JSON 响应识别为 API", func(t *testing.T) {
+		p := &parser.Parsed{Method: "GET", RawPath: "/orders/list", Headers: map[string]string{"accept": "*/*"}}
+		got := ClassifyWithResponse(p, &ResponseEvidence{Status: 200, ContentType: "application/json; charset=utf-8"})
+		if !got.IsAPI || !closeEnough(got.Confidence, 0.35) || got.Level != LevelProbableAPI {
+			t.Fatalf("GET JSON API should be identified: %+v", got)
+		}
+	})
+
+	t.Run("404 JSON 错误页不会把无信号探测路径误升格为 API", func(t *testing.T) {
+		p := &parser.Parsed{Method: "GET", RawPath: "/products"}
+		got := ClassifyWithResponse(p, &ResponseEvidence{Status: 404, ContentType: "application/json"})
+		if got.IsAPI || got.Level != LevelNonAPI {
+			t.Fatalf("404 json should not promote non-API path: %+v", got)
+		}
+	})
+
 	t.Run("SOAP 请求与 XML 响应", func(t *testing.T) {
 		p := &parser.Parsed{Method: "POST", RawPath: "/soap/orders", ContentType: "application/soap+xml"}
 		got := ClassifyWithResponse(p, &ResponseEvidence{Status: 200, ContentType: "text/xml"})
-		if !got.IsAPI || !closeEnough(got.Confidence, 0.45) || !containsSignal(got.Signals, "response_xml") {
+		if !got.IsAPI || !closeEnough(got.Confidence, 0.50) || !containsSignal(got.Signals, "response_xml") {
 			t.Fatalf("unexpected result: %+v", got)
 		}
 	})

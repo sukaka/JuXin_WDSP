@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import RiskPolicyPage from '../RiskPolicyPage'
+import RiskPolicyGuidePage from '../RiskPolicyGuidePage'
 import { useAuthStore } from '../../../stores/auth'
 import type { CurrentUser } from '../../../types'
 
@@ -138,6 +139,19 @@ describe('RiskPolicyPage', () => {
       (document.getElementById('score_entries_2_value') as HTMLInputElement)
         .value,
     ).toBe('10')
+    // 顶部新标签页使用说明链接
+    const guideLink = screen.getByRole('link', { name: /使用说明/ })
+    expect(guideLink).toHaveAttribute('href', '/risk-policy/guide')
+    expect(guideLink).toHaveAttribute('target', '_blank')
+    // 高级参数默认折叠，展开后可见信号分值操作按钮
+    expect(
+      screen.queryAllByRole('button', { name: '删除此信号分值' }),
+    ).toHaveLength(0)
+    fireEvent.click(
+      screen.getByText(
+        '高级参数：统计窗口、风险等级与信号分值（默认已调优，一般无需修改）',
+      ),
+    )
     expect(
       screen.getAllByRole('button', { name: '删除此信号分值' }),
     ).toHaveLength(3)
@@ -145,6 +159,16 @@ describe('RiskPolicyPage', () => {
     expect(screen.getByText(/风险分为身份级跨请求累计/)).toBeInTheDocument()
     expect(screen.getByText(/版本 v3/)).toBeInTheDocument()
   }, 15000)
+
+  it('说明页渲染核心说明内容', () => {
+    render(
+      <AntdApp>
+        <RiskPolicyGuidePage />
+      </AntdApp>,
+    )
+    expect(screen.getByText('风险策略使用说明')).toBeInTheDocument()
+    expect(screen.getByText(/一、日常怎么用/)).toBeInTheDocument()
+  })
 
   it('无 risk_policy.edit 权限时不展示保存按钮且表单禁用', async () => {
     useAuthStore.setState({

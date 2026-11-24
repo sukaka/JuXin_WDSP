@@ -201,3 +201,52 @@ func TestDeriveCallEdgesEmpty(t *testing.T) {
 		t.Errorf("anonymous-only deltas = %v, want empty", got)
 	}
 }
+
+// TestDeriveCallEdgesSkipsStaticNoiseWithoutBreakingSequence 静态资源/已忽略/非 API 噪声事件
+// 不产生边，且不打断同一身份前后真实 API 之间的连续轨迹（例如登录 → favicon.ico → 查订单
+// 应直接成边 登录 → 查订单）。
+func TestDeriveCallEdgesSkipsStaticNoiseWithoutBreakingSequence(t *testing.T) {
+	fp := "fp-browser"
+	t0 := callEdgeTestBase
+	noiseEP := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	events := []callEdgeEvent{
+		edgeEv(fp, edgeEP1, t0),
+		{Identity: fp, EndpointID: noiseEP, SkipNoise: true, OccurredAt: t0.Add(2 * time.Second)},
+		{Identity: fp, EndpointID: uuid.Nil, SkipNoise: true, OccurredAt: t0.Add(3 * time.Second)},
+		edgeEv(fp, edgeEP2, t0.Add(30*time.Second)),
+	}
+	deltas := deriveCallEdges(events, CallEdgeSessionWindow, nil)
+	if len(deltas) != 1 {
+		t.Fatalf("deltas = %d, want 1 (EP1→EP2): %+v", len(deltas), deltas)
+	}
+	findEdge(t, deltas, fp, edgeEP1, edgeEP2)
+}
+
+// TestIsCallEdgeNoiseEvent 验证静态资源、已忽略、非 API 与已确认资产的判定边界。
+func TestIsCallEdgeNoiseEvent(t *testing.T) {
+	cases := []struct {
+		name        string
+		endpointKey string
+		status      string
+		isAPI       bool
+		matched     bool
+		wantNoise   bool
+	}{
+		{"静态图标_未确认", "GET /favicon_128x128.ico", "DISCOVERED", true, true, true},
+		{"静态图片_中文名", "GET /备案图标.png", "DISCOVERED", true, true, true},
+		{"静态脚本_未匹配资产", "GET /admin/assets/js/app.js", "", true, false, true},
+		{"已确认资产永不跳过", "GET /favicon_128x128.ico", "CONFIRMED", false, true, false},
+		{"已忽略端点跳过", "GET /api/v1/legacy", "IGNORED", true, true, true},
+		{"非API端点跳过", "GET /customer", "DISCOVERED", false, true, true},
+		{"真实API保留", "POST /api/v1/orders", "DISCOVERED", true, true, false},
+		{"未知非静态API保留作截断点", "GET /s8ce-unknown/{id}", "", true, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isCallEdgeNoiseEvent(tc.endpointKey, tc.status, tc.isAPI, tc.matched); got != tc.wantNoise {
+				t.Errorf("isCallEdgeNoiseEvent(%q,%q,%v,%v) = %v, want %v",
+					tc.endpointKey, tc.status, tc.isAPI, tc.matched, got, tc.wantNoise)
+			}
+		})
+	}
+}

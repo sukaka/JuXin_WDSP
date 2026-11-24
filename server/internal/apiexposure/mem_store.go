@@ -35,11 +35,20 @@ type seenRow struct {
 // MemStore 进程内仓储（实现 Repository）。
 type MemStore struct {
 	mu          sync.Mutex
+	now         func() time.Time
 	endpoints   map[uuid.UUID]*memEndpoint
 	buckets     map[uuid.UUID]map[string]int64   // endpoint → date|scope → count
 	seen        map[uuid.UUID]map[string]seenRow // endpoint → date|scope|fingerprint → row
 	assessments map[uuid.UUID][]AssessmentRecord // endpoint → 评估历史（写入序）
 	applied     map[uuid.UUID]int                // endpoint → 维度 upsert 生效次数（测试断言用）
+}
+
+// SetClock 注入时钟（单测与 Sweeper.SetClock 对齐，避免墙钟与固定测试时间偏离导致 Prune 误删）。
+func (m *MemStore) SetClock(fn func() time.Time) *MemStore {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.now = fn
+	return m
 }
 
 // NewMemStore 创建空内存仓储。
@@ -274,8 +283,12 @@ func (m *MemStore) Prune(_ context.Context, retentionDays int) (int64, error) {
 	if retentionDays <= 0 {
 		retentionDays = 30
 	}
-	cutoffDay := time.Now().UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour).Truncate(24 * time.Hour)
-	cutoffTs := time.Now().UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	now := time.Now().UTC()
+	if m.now != nil {
+		now = m.now().UTC()
+	}
+	cutoffDay := now.Add(-time.Duration(retentionDays) * 24 * time.Hour).Truncate(24 * time.Hour)
+	cutoffTs := now.Add(-time.Duration(retentionDays) * 24 * time.Hour)
 	var total int64
 	for _, rows := range m.buckets {
 		for key := range rows {

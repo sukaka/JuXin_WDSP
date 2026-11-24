@@ -189,7 +189,7 @@ func NewLogger(path, gatewayNode string) (*Logger, error) {
 	if path == "" {
 		return nil, fmt.Errorf("api events log path required")
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
 	if err != nil {
 		return nil, fmt.Errorf("open api events log: %w", err)
 	}

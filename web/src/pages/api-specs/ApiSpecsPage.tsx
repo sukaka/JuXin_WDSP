@@ -15,9 +15,16 @@ import {
   Statistic,
   Tag,
   Typography,
+  Upload,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { DownloadOutlined, PlusOutlined } from '@ant-design/icons'
+import {
+  DeleteOutlined,
+  DownloadOutlined,
+  FileTextOutlined,
+  InboxOutlined,
+  PlusOutlined,
+} from '@ant-design/icons'
 import {
   apiSpecsApi,
   type ApiImportSpec,
@@ -31,15 +38,43 @@ import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
-import { formatDateTime } from '../../utils/format'
+import { formatBytes, formatDateTime } from '../../utils/format'
 import { SPEC_FORMAT_LABELS, formatLocation } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import { API_SPEC_DIFF_TYPE_META } from '../../utils/stage8'
 import { specAuditCSV } from './specAuditExport'
 
+const SPEC_MAX_FILE_BYTES = 16 * 1024 * 1024
+
+/** 支持上传的 API 规范扩展名集合（与服务端 ParseSpecContent 支持范围严格对齐） */
+export const SPEC_ALLOWED_EXTENSIONS = [
+  '.json',
+  '.yaml',
+  '.yml',
+  '.graphql',
+  '.gql',
+  '.graphqls',
+  '.sdl',
+  '.proto',
+  '.wsdl',
+  '.xsd',
+  '.xml',
+  '.raml',
+  '.apib',
+  '.har',
+  '.zip',
+] as const
+
+const SPEC_UPLOAD_ACCEPT = SPEC_ALLOWED_EXTENSIONS.join(',')
+
+function hasAllowedSpecExtension(fileName: string): boolean {
+  const lower = fileName.trim().toLowerCase()
+  return SPEC_ALLOWED_EXTENSIONS.some((ext) => lower.endsWith(ext))
+}
+
 interface ImportFormValues {
   file_name?: string
-  spec_json: string
+  spec_json?: string
 }
 
 interface ImportUrlFormValues {
@@ -116,6 +151,7 @@ export default function ApiSpecsPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [importOpen, setImportOpen] = useState(false)
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [importUrlOpen, setImportUrlOpen] = useState(false)
   const [diffSpec, setDiffSpec] = useState<ApiImportSpec | null>(null)
   const [auditSpec, setAuditSpec] = useState<ApiImportSpec | null>(null)
@@ -157,13 +193,27 @@ export default function ApiSpecsPage() {
     enabled: !!vdSpec && !!vdOtherId,
   })
 
+  const closeImportModal = () => {
+    setImportOpen(false)
+    setSelectedFile(null)
+    form.resetFields()
+  }
+
   const importMut = useMutation({
-    mutationFn: (body: { file_name?: string; spec: Record<string, unknown> }) =>
-      apiSpecsApi.import(body),
+    mutationFn: (
+      payload:
+        | { mode: 'file'; file: File; file_name?: string }
+        | { mode: 'text'; file_name?: string; spec: Record<string, unknown> | string },
+    ) =>
+      payload.mode === 'file'
+        ? apiSpecsApi.importFile(payload.file, { file_name: payload.file_name })
+        : apiSpecsApi.import({
+            file_name: payload.file_name,
+            spec: payload.spec,
+          }),
     onSuccess: (r) => {
       message.success(importSummary(r))
-      setImportOpen(false)
-      form.resetFields()
+      closeImportModal()
       void qc.invalidateQueries({ queryKey: ['api-specs'] })
     },
     onError: (e: unknown) =>
@@ -198,24 +248,61 @@ export default function ApiSpecsPage() {
       message.error(e instanceof ApiError ? e.message : '激活失败'),
   })
 
+  const handleSelectSpecFile = (file: File) => {
+    if (!hasAllowedSpecExtension(file.name)) {
+      message.error(
+        `不支持的文件扩展名，仅支持 ${SPEC_ALLOWED_EXTENSIONS.join(' / ')}`,
+      )
+      return Upload.LIST_IGNORE
+    }
+    if (file.size === 0) {
+      message.error('规范文件不能为空')
+      return Upload.LIST_IGNORE
+    }
+    if (file.size > SPEC_MAX_FILE_BYTES) {
+      message.error('规范文件大小不能超过 16 MiB')
+      return Upload.LIST_IGNORE
+    }
+    setSelectedFile(file)
+    form.setFieldValue('file_name', file.name)
+    form.setFields([{ name: 'spec_json', errors: [] }])
+    return false
+  }
+
   const handleImport = (v: ImportFormValues) => {
-    let spec: Record<string, unknown>
-    try {
-      const parsed: unknown = JSON.parse(v.spec_json)
-      if (
-        typeof parsed !== 'object' ||
-        parsed === null ||
-        Array.isArray(parsed)
-      ) {
-        message.error('规范内容须为 JSON 对象')
-        return
-      }
-      spec = parsed as Record<string, unknown>
-    } catch {
-      message.error('规范内容须为合法 JSON')
+    const fileName = v.file_name?.trim() || undefined
+    if (selectedFile) {
+      importMut.mutate({ mode: 'file', file: selectedFile, file_name: fileName })
       return
     }
-    importMut.mutate({ file_name: v.file_name?.trim() || undefined, spec })
+    const raw = (v.spec_json ?? '').trim()
+    if (!raw) {
+      message.error('请上传规范文件或粘贴规范内容')
+      return
+    }
+    if (raw.startsWith('{') || raw.startsWith('[')) {
+      try {
+        const parsed: unknown = JSON.parse(raw)
+        if (
+          typeof parsed !== 'object' ||
+          parsed === null ||
+          Array.isArray(parsed)
+        ) {
+          message.error('规范内容须为 JSON 对象')
+          return
+        }
+        importMut.mutate({
+          mode: 'text',
+          file_name: fileName,
+          spec: parsed as Record<string, unknown>,
+        })
+      } catch {
+        message.error('规范内容须为合法 JSON')
+      }
+      return
+    }
+    // YAML / GraphQL SDL / Protobuf / WSDL / XSD / RAML / API Blueprint 原文交由服务端统一解析
+    importMut.mutate({ mode: 'text', file_name: fileName, spec: raw })
   }
 
   const handleImportUrl = (v: ImportUrlFormValues) => {
@@ -510,8 +597,10 @@ export default function ApiSpecsPage() {
       }
     >
       <Typography.Paragraph type="secondary">
-        导入 OpenAPI
-        规范后，系统自动与运行时发现的接口对比：规范缺失、运行时缺失与定义变更三类差异可用于发现影子
+        导入 API 规范（支持 OpenAPI 3 / Swagger 2.0 / AsyncAPI / Postman v2.1 /
+        JSON Schema / GraphQL / Protobuf / WSDL / XSD / RAML / API Blueprint /
+        HAR / ZIP
+        规范包）后，系统自动与运行时发现的接口对比：规范缺失、运行时缺失与定义变更三类差异可用于发现影子
         API。同名再导入形成版本链（版本号自增），同名唯一激活版本，可跨版本对比定义变更。
       </Typography.Paragraph>
       <QueryErrorAlert error={listQuery.error} />
@@ -542,12 +631,12 @@ export default function ApiSpecsPage() {
       <Modal
         title="导入规范"
         open={importOpen}
-        onCancel={() => setImportOpen(false)}
+        onCancel={closeImportModal}
         onOk={() => form.submit()}
         confirmLoading={importMut.isPending}
         okText="导入"
         cancelText="取消"
-        width={640}
+        width={680}
         destroyOnHidden
       >
         <Form<ImportFormValues>
@@ -555,18 +644,83 @@ export default function ApiSpecsPage() {
           layout="vertical"
           onFinish={handleImport}
         >
+          <Form.Item label="上传规范文件">
+            <Upload.Dragger
+              accept={SPEC_UPLOAD_ACCEPT}
+              maxCount={1}
+              showUploadList={false}
+              disabled={importMut.isPending}
+              beforeUpload={handleSelectSpecFile}
+            >
+              <p className="ant-upload-drag-icon">
+                <InboxOutlined />
+              </p>
+              <p className="ant-upload-text">
+                点击或拖拽规范文件到此区域上传
+              </p>
+              <p className="ant-upload-hint">
+                支持 OpenAPI 3 / Swagger 2.0 / AsyncAPI / Postman v2.1 / JSON
+                Schema / GraphQL / Protobuf / WSDL / XSD / RAML / API Blueprint
+                / HAR / ZIP 多文件包（
+                {SPEC_ALLOWED_EXTENSIONS.join(' ')}，上限 16 MiB）
+              </p>
+            </Upload.Dragger>
+            {selectedFile ? (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: '8px 12px',
+                  border: '1px solid #d9d9d9',
+                  borderRadius: 6,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                }}
+              >
+                <Space size={8} style={{ minWidth: 0 }}>
+                  <FileTextOutlined />
+                  <Typography.Text ellipsis strong>
+                    {selectedFile.name}
+                  </Typography.Text>
+                  <Tag>{formatBytes(selectedFile.size)}</Tag>
+                </Space>
+                <Button
+                  type="text"
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={() => setSelectedFile(null)}
+                >
+                  移除
+                </Button>
+              </div>
+            ) : null}
+          </Form.Item>
           <Form.Item name="file_name" label="文件名（可选）">
-            <Input placeholder="如 openapi-payment.yaml" autoComplete="off" />
+            <Input
+              placeholder="如 openapi-payment.yaml（上传文件时自动填充）"
+              autoComplete="off"
+            />
           </Form.Item>
           <Form.Item
             name="spec_json"
-            label="规范内容（JSON）"
-            rules={[{ required: true, message: '请输入规范内容' }]}
+            label="规范内容（可直接粘贴 JSON / YAML / GraphQL / Protobuf / WSDL / XSD / RAML / APIB / HAR）"
+            rules={
+              selectedFile
+                ? []
+                : [{ required: true, message: '请上传规范文件或粘贴规范内容' }]
+            }
           >
             <Input.TextArea
-              rows={10}
+              rows={8}
+              disabled={!!selectedFile}
               style={{ fontFamily: 'monospace' }}
-              placeholder='{"openapi":"3.0.0",...}'
+              placeholder={
+                selectedFile
+                  ? `已选择文件「${selectedFile.name}」，点击「导入」直接上传；移除文件后可改用粘贴导入`
+                  : '{"openapi":"3.0.0",...} 或 openapi: 3.0.0 / type Query {...} / syntax = "proto3"; ...（.zip 包请通过上方上传）'
+              }
             />
           </Form.Item>
         </Form>
@@ -584,8 +738,10 @@ export default function ApiSpecsPage() {
         destroyOnHidden
       >
         <Typography.Paragraph type="secondary">
-          服务端拉取 URL 处的 OpenAPI 3 / Swagger 2.0 JSON 文档（仅
-          http/https，拒绝内网/保留地址，上限 16MiB）。
+          服务端拉取 URL 处的规范文档（支持 OpenAPI 3 / Swagger 2.0 / AsyncAPI /
+          Postman v2.1 / JSON Schema / GraphQL / Protobuf / WSDL / XSD / RAML /
+          API Blueprint / HAR / ZIP；仅 http/https，拒绝内网/保留地址，上限
+          16MiB）。
         </Typography.Paragraph>
         <Form<ImportUrlFormValues>
           form={urlForm}

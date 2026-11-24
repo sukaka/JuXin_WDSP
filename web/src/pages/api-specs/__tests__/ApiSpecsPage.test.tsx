@@ -88,6 +88,8 @@ const versionDiffData = {
 let listItems: Record<string, unknown>[]
 let activateCalls: string[]
 let importUrlBodies: unknown[]
+let importBodies: unknown[]
+let importFormDatas: FormData[]
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -107,6 +109,8 @@ describe('ApiSpecsPage', () => {
     listItems = [spec1]
     activateCalls = []
     importUrlBodies = []
+    importBodies = []
+    importFormDatas = []
     vi.stubGlobal(
       'fetch',
       vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -140,6 +144,26 @@ describe('ApiSpecsPage', () => {
                 missing_in_spec: 0,
                 changed: 2,
                 registered_endpoints: 1,
+              },
+            }),
+          )
+        }
+        if (method === 'POST' && url.includes('/api-security/specs/import')) {
+          if (init?.body instanceof FormData) {
+            importFormDatas.push(init.body)
+          } else {
+            importBodies.push(JSON.parse(String(init?.body)))
+          }
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: {
+                spec: { ...spec1, id: 'spec4', version_no: 3, endpoint_count: 6 },
+                missing_in_runtime: 2,
+                missing_in_spec: 0,
+                changed: 1,
+                registered_endpoints: 2,
               },
             }),
           )
@@ -200,13 +224,84 @@ describe('ApiSpecsPage', () => {
     renderPage()
     const importBtn = await screen.findByRole('button', { name: /导入规范/ })
     fireEvent.click(importBtn)
-    const textarea = await screen.findByPlaceholderText('{"openapi":"3.0.0",...}')
-    fireEvent.change(textarea, { target: { value: 'not-json' } })
-    fireEvent.click(screen.getByRole('button', { name: '导 入' }))
+    const dialog = await screen.findByRole('dialog')
+    const textarea = dialog.querySelector('#spec_json') as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: '{"openapi": broken' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '导 入' }))
     expect(await screen.findByText('规范内容须为合法 JSON')).toBeInTheDocument()
     // 仅列表与初始请求，未触发 /specs/import
     const calls = vi.mocked(fetch).mock.calls.map((c) => String(c[0]))
     expect(calls.some((u) => u.includes('/api-security/specs/import'))).toBe(false)
+  })
+
+  it('支持直接粘贴 YAML / Protobuf 等非 JSON 原文导入', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_spec.read', 'api_spec.import']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: /导入规范/ }))
+    const dialog = await screen.findByRole('dialog')
+    const fileNameInput = dialog.querySelector('#file_name') as HTMLInputElement
+    const textarea = dialog.querySelector('#spec_json') as HTMLTextAreaElement
+    fireEvent.change(fileNameInput, { target: { value: 'orders.yaml' } })
+    fireEvent.change(textarea, {
+      target: { value: 'openapi: 3.0.1\npaths:\n  /orders:\n    get: {}' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: '导 入' }))
+    await waitFor(() => expect(importBodies).toHaveLength(1))
+    expect(importBodies[0]).toEqual({
+      file_name: 'orders.yaml',
+      spec: 'openapi: 3.0.1\npaths:\n  /orders:\n    get: {}',
+    })
+    expect(await screen.findByText(/导入成功：payment-api v3/)).toBeInTheDocument()
+  })
+
+  it('支持上传规范文件（自动回填文件名并走 multipart 直传），拒绝非法扩展名与超大文件', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_spec.read', 'api_spec.import']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: /导入规范/ }))
+    const dialog = await screen.findByRole('dialog')
+    const getFileInput = () =>
+      dialog.querySelector('input[type="file"]') as HTMLInputElement
+    expect(getFileInput()).toBeTruthy()
+    expect(getFileInput().getAttribute('accept')).toContain('.proto')
+    expect(getFileInput().getAttribute('accept')).toContain('.wsdl')
+    expect(getFileInput().getAttribute('accept')).toContain('.zip')
+
+    // 1. 不支持的扩展名被客户端拦截（rc-upload 每次变更会重建 input，需重新查询）
+    const badExtFile = new File(['MZ'], 'evil.exe', { type: 'application/octet-stream' })
+    fireEvent.change(getFileInput(), { target: { files: [badExtFile] } })
+    expect(await screen.findByText(/不支持的文件扩展名/)).toBeInTheDocument()
+
+    // 2. 超过 16 MiB 被客户端拦截
+    const hugeFile = new File(['x'], 'huge.yaml', { type: 'text/yaml' })
+    Object.defineProperty(hugeFile, 'size', { value: 16 * 1024 * 1024 + 1 })
+    fireEvent.change(getFileInput(), { target: { files: [hugeFile] } })
+    expect(await screen.findByText('规范文件大小不能超过 16 MiB')).toBeInTheDocument()
+    expect(importFormDatas).toHaveLength(0)
+
+    // 3. 合法 .proto 文件：自动回填文件名并通过 FormData 提交
+    const protoFile = new File(
+      ['syntax = "proto3"; package demo; service S { rpc Ping(Req) returns (Req); }'],
+      'user_service.proto',
+      { type: 'text/plain' },
+    )
+    fireEvent.change(getFileInput(), { target: { files: [protoFile] } })
+    expect(await within(dialog).findByText('user_service.proto')).toBeInTheDocument()
+    const fileNameInput = dialog.querySelector('#file_name') as HTMLInputElement
+    expect(fileNameInput.value).toBe('user_service.proto')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '导 入' }))
+    await waitFor(() => expect(importFormDatas).toHaveLength(1))
+    expect(importFormDatas[0].get('file')).toBeInstanceOf(File)
+    expect(importFormDatas[0].get('file_name')).toBe('user_service.proto')
+    expect(await screen.findByText(/导入成功：payment-api v3/)).toBeInTheDocument()
   })
 
   it('「查看差异」打开抽屉并渲染差异类型与接口键（不携带分页参数）', async () => {

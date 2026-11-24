@@ -182,12 +182,12 @@ func TestEvaluateMatrix(t *testing.T) {
 			mustHave: "deployment_bypass",
 		},
 		{
-			name: "TRANSPARENT 旁路且无 DNS 结论 UNKNOWN",
+			name: "TRANSPARENT 在线串接记入 config_listen 而非旁路 deployment_bypass",
 			mutate: func(in *EvidenceInput) {
 				in.DeploymentMode = DeployTransparent
 			},
 			verdict: VerdictUnknown, source: SourceConfig, confidence: ConfidenceLow,
-			mustHave: "deployment_bypass",
+			mustHave: "config_listen",
 		},
 		{
 			name: "无流量无域名全不足 UNKNOWN/LOW",
@@ -267,5 +267,27 @@ func TestConfidenceScore(t *testing.T) {
 	if ConfidenceScore(ConfidenceLow) != 0.3 || ConfidenceScore(ConfidenceMedium) != 0.6 ||
 		ConfidenceScore(ConfidenceHigh) != 0.9 || ConfidenceScore("X") != 0 {
 		t.Fatal("confidence score mapping broken")
+	}
+}
+
+// TestEvaluateTransparentIsNotPassiveBypass 验证 P2-1：TRANSPARENT 是内联串接模式，
+// 仅 MIRROR 产出 deployment_bypass，TRANSPARENT 正常产出 config_listen 证据。
+func TestEvaluateTransparentIsNotPassiveBypass(t *testing.T) {
+	a := Evaluate(EvidenceInput{
+		WindowDays:     7,
+		Hostname:       "tpx.example.com",
+		HTTPPort:       intPtr(80),
+		HTTPSPort:      intPtr(443),
+		DeploymentMode: DeployTransparent,
+		DNSResult:      DNSPublic,
+	})
+	if a.Verdict != VerdictPublic || a.Source != SourceConfig {
+		t.Fatalf("Evaluate(TRANSPARENT) = (%s, %s), want (PUBLIC, CONFIG)", a.Verdict, a.Source)
+	}
+	if hasEvidenceType(a, "deployment_bypass") {
+		t.Fatalf("TRANSPARENT must not emit deployment_bypass evidence: %+v", a.Evidence)
+	}
+	if !hasEvidenceType(a, "config_listen") {
+		t.Fatalf("TRANSPARENT must emit config_listen evidence: %+v", a.Evidence)
 	}
 }

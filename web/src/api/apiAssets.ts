@@ -188,8 +188,52 @@ export interface ApiEndpointListExportParams {
   application_id?: string
   directory_path?: string
   unassigned?: boolean
+  include_non_api?: boolean
   business_type?: string
   ids?: string
+}
+
+/** API 资产发现静态资源与非 API 过滤配置（与 server/internal/apiassets.DiscoveryFilterConfig 一致） */
+export interface ApiDiscoveryFilterConfig {
+  exclude_static_assets: boolean
+  filter_non_api: boolean
+  exclude_extensions: string[]
+  exclude_path_prefixes: string[]
+  include_path_prefixes: string[]
+}
+
+/** 存量噪声扫描命中的单条候选端点 */
+export interface NoiseEndpointCandidate {
+  id: string
+  application_id?: string | null
+  application_name?: string
+  http_method: string
+  normalized_path: string
+  directory_path: string
+  endpoint_key: string
+  asset_status: string
+  is_api: boolean
+  api_confidence: number
+  hit_count: number
+  last_seen_at: string
+  reason: string
+}
+
+/** 存量噪声扫描预览结果 */
+export interface NoiseCleanupPreview {
+  total: number
+  protected_skipped: number
+  by_reason: Record<string, number>
+  items: NoiseEndpointCandidate[]
+}
+
+/** 存量噪声执行清理结果 */
+export interface NoiseCleanupResult {
+  action: 'DELETE' | 'IGNORE' | string
+  affected: number
+  protected_skipped: number
+  by_reason: Record<string, number>
+  sample_keys: string[]
 }
 
 export const apiEndpointsApi = {
@@ -202,6 +246,8 @@ export const apiEndpointsApi = {
     directory_path?: string
     /** 仅查未归属站点的接口 */
     unassigned?: boolean
+    /** 是否包含历史非 API 记录（默认仅查 is_api=true） */
+    include_non_api?: boolean
     page: number
     page_size: number
   }) => {
@@ -266,13 +312,53 @@ export const apiEndpointsApi = {
     })
     return data.items ?? []
   },
-  /** 批量确认（页面行内操作传单个 id） */
+  /** 批量确认（单次最多 100 个） */
   confirm: (ids: string[]) =>
     request<{
       confirmed: number
       confirmed_ids: string[]
       failed: { id: string; reason: string }[]
     }>('/api-security/endpoints/confirm', { method: 'POST', body: { ids } }),
+  /** 批量忽略（单次最多 100 个） */
+  ignoreBatch: (ids: string[]) =>
+    request<{
+      ignored: number
+      ignored_ids: string[]
+      failed: { id: string; reason: string }[]
+    }>('/api-security/endpoints/ignore', { method: 'POST', body: { ids } }),
+  /** 获取 API 发现静态资源与非 API 过滤配置 */
+  getDiscoveryFilter: () =>
+    request<{
+      config: ApiDiscoveryFilterConfig
+      default_extensions: string[]
+    }>('/api-security/discovery-filter'),
+  /** 更新 API 发现静态资源与非 API 过滤配置（立即生效） */
+  updateDiscoveryFilter: (body: ApiDiscoveryFilterConfig) =>
+    request<{
+      config: ApiDiscoveryFilterConfig
+      message: string
+    }>('/api-security/discovery-filter', { method: 'PUT', body }),
+  /** 预览存量可安全清理的非 API 与静态资源噪声 */
+  previewNoiseCleanup: (body: {
+    application_id?: string
+    include_ignored?: boolean
+    limit?: number
+  } = {}) =>
+    request<NoiseCleanupPreview>('/api-security/endpoints/cleanup-noise/preview', {
+      method: 'POST',
+      body,
+    }),
+  /** 执行存量静态/非 API 噪声清理（DELETE 删除释放配额 或 IGNORE 批量忽略） */
+  executeNoiseCleanup: (body: {
+    action: 'DELETE' | 'IGNORE'
+    application_id?: string
+    include_ignored?: boolean
+    ids?: string[]
+  }) =>
+    request<{ result: NoiseCleanupResult; message: string }>(
+      '/api-security/endpoints/cleanup-noise',
+      { method: 'POST', body },
+    ),
   ignore: (id: string) =>
     request<{ endpoint: ApiEndpointItem; message: string }>(
       `/api-security/endpoints/${id}/ignore`,

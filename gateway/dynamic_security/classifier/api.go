@@ -38,16 +38,28 @@ type Result struct {
 
 // ResponseEvidence 响应侧可见性证据。nil 或截断/流式响应不参与分类调整。
 type ResponseEvidence struct {
-	Status      int
-	ContentType string
-	Truncated   bool
-	Streamed    bool
+	Status             int
+	ContentType        string
+	ContentDisposition string
+	Truncated          bool
+	Streamed           bool
 }
 
 // Classify 基于请求侧解析结果打分。
 func Classify(p *parser.Parsed) Result {
 	if p == nil {
 		return Result{Level: LevelNonAPI}
+	}
+	// 静态资源路径快筛：仅读方法且非结构性协议时，图片/脚本/样式/字体/音视频/压缩包等
+	// 直接归类为 NON_API（避免路径碰巧含 /v1/ 或带 Accept 头被误判为 API）。
+	if !hasStructuralAPISignal(p) && IsStaticAssetPath(p.Method, p.RawPath) {
+		return Result{
+			IsAPI:         false,
+			Confidence:    0,
+			Signals:       []string{"static_asset_path"},
+			Level:         LevelNonAPI,
+			Confidence100: 0,
+		}
 	}
 	var score float64
 	var signals []string
@@ -82,6 +94,11 @@ func Classify(p *parser.Parsed) Result {
 	if acc, ok := p.Headers["accept"]; ok && strings.Contains(strings.ToLower(acc), "application/json") {
 		add("accept_json", 0.15)
 	}
+	// API 认证头（Authorization / X-API-Key；不同于浏览器自动携带的 Cookie，不单独过 0.35 线，
+	// 配合 /api/ 或 /v1/ 等弱信号可可靠识别 204/无体 REST 接口）
+	if p.Headers["authorization"] != "" || p.Headers["x-api-key"] != "" {
+		add("auth_header", 0.20)
+	}
 	// method write with JSON
 	if (p.Method == "POST" || p.Method == "PUT" || p.Method == "PATCH") && p.IsJSON {
 		add("write_json", 0.1)
@@ -99,26 +116,56 @@ func Classify(p *parser.Parsed) Result {
 }
 
 // ClassifyWithResponse 在请求侧评分基础上纳入完整可见响应证据。响应缺失、
-// 截断或流式直通不代表非 API，保持请求侧结论；成功 HTML 只压低非结构性通用流量。
+// 截断或流式直通不代表非 API，保持请求侧结论；静态 MIME 与成功 HTML 压低非结构性流量；
+// 成功 JSON/XML/SSE 或动态路径附件下载提升 API 置信度（避免 404/5xx JSON 错误页洗白噪声路径）。
 func ClassifyWithResponse(p *parser.Parsed, resp *ResponseEvidence) Result {
 	result := Classify(p)
 	if p == nil || resp == nil || resp.Truncated || resp.Streamed {
 		return result
 	}
+	structural := hasStructuralAPISignal(p)
+	staticPath := !structural && IsStaticAssetPath(p.Method, p.RawPath)
+	if staticPath {
+		return Result{
+			IsAPI:         false,
+			Confidence:    0,
+			Signals:       []string{"static_asset_path"},
+			Level:         LevelNonAPI,
+			Confidence100: 0,
+		}
+	}
+	successStatus := resp.Status == 0 || (resp.Status >= 200 && resp.Status < 400)
+	dynamicAttachment := successStatus && hasAttachmentDisposition(resp.ContentDisposition)
+	if !structural && !dynamicAttachment && IsStaticResponseContentType(resp.ContentType) {
+		signals := append([]string(nil), result.Signals...)
+		signals = append(signals, "response_static_mime")
+		return Result{
+			IsAPI:         false,
+			Confidence:    0,
+			Signals:       signals,
+			Level:         LevelNonAPI,
+			Confidence100: 0,
+		}
+	}
+
 	score := result.Confidence
 	signals := append([]string(nil), result.Signals...)
 	add := func(s string, w float64) {
 		signals = append(signals, s)
 		score += w
 	}
-	ct := strings.ToLower(resp.ContentType)
-	if strings.Contains(ct, "json") {
-		add("response_json", 0.25)
+	if successStatus {
+		if IsJSONResponseContentType(resp.ContentType) {
+			add("response_json", 0.35)
+		} else if IsXMLAPIResponseContentType(resp.ContentType) {
+			add("response_xml", 0.25)
+		} else if IsEventStreamResponseContentType(resp.ContentType) {
+			add("response_sse", 0.35)
+		} else if dynamicAttachment {
+			add("response_attachment", 0.35)
+		}
 	}
-	if strings.Contains(ct, "xml") || strings.Contains(ct, "soap") {
-		add("response_xml", 0.20)
-	}
-	if resp.Status >= 200 && resp.Status < 300 && strings.Contains(ct, "html") && !hasStructuralAPISignal(p) {
+	if resp.Status >= 200 && resp.Status < 300 && IsHTMLResponseContentType(resp.ContentType) && !structural {
 		add("response_html", -0.35)
 	}
 	if score < 0 {
@@ -134,6 +181,15 @@ func ClassifyWithResponse(p *parser.Parsed, resp *ResponseEvidence) Result {
 		Level:         classificationLevel(score),
 		Confidence100: int(math.Round(score * 100)),
 	}
+}
+
+func hasAttachmentDisposition(cd string) bool {
+	lower := strings.ToLower(strings.TrimSpace(cd))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "attachment") &&
+		(strings.Contains(lower, "filename=") || strings.Contains(lower, "filename*="))
 }
 
 func hasStructuralAPISignal(p *parser.Parsed) bool {

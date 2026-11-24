@@ -42,9 +42,11 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/classifier"
 )
 
 // CallEdgeSessionWindow 同一身份连续调用序列的最大间隔（超过则序列截断、不成边）。
@@ -66,7 +68,45 @@ type CallEdgeResult struct {
 type callEdgeEvent struct {
 	Identity   string    // 身份指纹（匿名空串 — SQL 层已排除，纯逻辑层防御性跳过）
 	EndpointID uuid.UUID // 已解析的 api_endpoints.id；uuid.Nil = 未解析（序列截断点）
+	SkipNoise  bool      // 静态资源 / 已忽略 / 非 API 噪声：不产边，且不打断同一身份前后真实 API 序列
 	OccurredAt time.Time // 事件发生时间
+}
+
+// splitEndpointKey 从 "METHOD /path" 形态的 endpoint_key 拆分方法与路径。
+func splitEndpointKey(key string) (method, path string) {
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" {
+		return "", ""
+	}
+	if i := strings.IndexByte(trimmed, ' '); i > 0 {
+		return strings.TrimSpace(trimmed[:i]), strings.TrimSpace(trimmed[i+1:])
+	}
+	if strings.HasPrefix(trimmed, "/") {
+		return "", trimmed
+	}
+	return "", ""
+}
+
+// isCallEdgeNoiseEvent 判断单条运行时事件是否属于静态资源/已忽略/非 API 噪声：
+//   - 已确认正式资产（CONFIRMED）永不跳过；
+//   - 已命中端点且状态为 IGNORED 或 is_api=false 时跳过；
+//   - endpoint_key 命中默认静态资源路径规则（图片/图标/CSS/JS/字体/压缩包等读请求）时跳过。
+func isCallEdgeNoiseEvent(endpointKey, assetStatus string, isAPI, matched bool) bool {
+	if strings.EqualFold(strings.TrimSpace(assetStatus), "CONFIRMED") {
+		return false
+	}
+	if matched {
+		if strings.EqualFold(strings.TrimSpace(assetStatus), "IGNORED") || !isAPI {
+			return true
+		}
+	}
+	method, path := splitEndpointKey(endpointKey)
+	if path != "" {
+		if isStatic, _ := classifier.DefaultStaticFilter().MatchStaticPath(method, path); isStatic {
+			return true
+		}
+	}
+	return false
 }
 
 // callEdgeDelta 一次派生产出的边增量（同批同边键合并）。
@@ -103,6 +143,9 @@ func deriveCallEdges(events []callEdgeEvent, window time.Duration, watermark *ti
 		ev := &sorted[i]
 		if ev.Identity == "" {
 			continue // 匿名防御（正常路径 SQL 已排除）
+		}
+		if ev.SkipNoise {
+			continue // 静态资源 / 已忽略 / 非 API 噪声：不产边，且不打断同一身份前后真实 API 序列
 		}
 		if prev != nil && prev.Identity != ev.Identity {
 			prev = nil // 身份切换，重新起算
@@ -182,10 +225,35 @@ WHERE job_type = 'CALL_EDGES' AND status = 'SUCCESS'`).Scan(&wm); err != nil {
 		scanFrom = &from
 	}
 
+	// 使用 LEFT JOIN LATERAL (... LIMIT 1) 严格保证单条运行时事件最多解析为 1 个端点：
+	// 迁移 000137 起同 endpoint_key 可按 application/domain/binding/host 共存多行，
+	// 直接 LEFT JOIN 会将单条事件扇出为多条同刻记录并在同名端点间制造伪调用边。
+	// 当 ev.application_id 非空时优先匹配同应用，仅在缺失同应用记录时回退历史未归属端点，
+	// 绝不跨应用误配。
 	rows, err := db.Query(ctx, `
-SELECT ev.identity_fingerprint, e.id, ev.occurred_at
+SELECT ev.identity_fingerprint, ev.endpoint_key, ep.id, COALESCE(ep.asset_status, ''), COALESCE(ep.is_api, TRUE), ev.occurred_at
 FROM api_runtime_events ev
-LEFT JOIN api_endpoints e ON e.endpoint_key = ev.endpoint_key
+LEFT JOIN LATERAL (
+    SELECT e.id, e.asset_status, e.is_api
+    FROM api_endpoints e
+    WHERE e.endpoint_key = ev.endpoint_key
+      AND (ev.application_id IS NULL OR e.application_id IS NULL OR e.application_id = ev.application_id)
+    ORDER BY
+      CASE
+        WHEN ev.application_id IS NOT NULL AND e.application_id = ev.application_id THEN 0
+        WHEN ev.application_id IS NULL AND e.application_id IS NULL THEN 0
+        WHEN ev.application_id IS NOT NULL AND e.application_id IS NULL THEN 1
+        ELSE 2
+      END ASC,
+      CASE
+        WHEN e.asset_status = 'CONFIRMED' THEN 0
+        WHEN e.asset_status = 'DISCOVERED' THEN 1
+        ELSE 2
+      END ASC,
+      e.hit_count DESC,
+      e.id ASC
+    LIMIT 1
+) ep ON TRUE
 WHERE ev.identity_fingerprint <> ''
   AND ($1::timestamptz IS NULL OR ev.occurred_at > $1)
 ORDER BY ev.occurred_at ASC, ev.id ASC
@@ -196,15 +264,20 @@ LIMIT $2`, scanFrom, callEdgeBatchSize)
 	events := []callEdgeEvent{}
 	for rows.Next() {
 		var ev callEdgeEvent
+		var endpointKey, assetStatus string
 		var endpointID *uuid.UUID
-		if err := rows.Scan(&ev.Identity, &endpointID, &ev.OccurredAt); err != nil {
+		var isAPI bool
+		if err := rows.Scan(&ev.Identity, &endpointKey, &endpointID, &assetStatus, &isAPI, &ev.OccurredAt); err != nil {
 			rows.Close()
 			return res, fmt.Errorf("call edge scan: %w", err)
 		}
-		if endpointID == nil {
-			res.SkippedNoEndpoint++ // 端点已删除或发现尚未落库：序列截断点
-		} else {
+		matched := endpointID != nil
+		if matched {
 			ev.EndpointID = *endpointID
+		}
+		ev.SkipNoise = isCallEdgeNoiseEvent(endpointKey, assetStatus, isAPI, matched)
+		if !matched && !ev.SkipNoise {
+			res.SkippedNoEndpoint++ // 非静态端点已删除或发现尚未落库：序列截断点
 		}
 		events = append(events, ev)
 	}

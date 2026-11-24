@@ -60,35 +60,35 @@ func TestStage8FileComplianceMigration(t *testing.T) {
 			t.Fatalf("bad row unexpectedly accepted: %s", stmt)
 		}
 	}
-	// 初始建议种子：18 条（000071 UPLOAD exe/bat/sh BLOCK + DOWNLOAD sql/bak OBSERVE；
-	// 000081 UPLOAD webshell 可执行脚本后缀 13 条 BLOCK），默认启用
+	// 默认种子：18 条（000071 UPLOAD exe/bat/sh BLOCK + DOWNLOAD sql/bak OBSERVE；
+	// 000081 UPLOAD webshell 可执行脚本后缀 13 条 BLOCK；000227 优化默认理由文案），默认启用
 	if n := s8Count(t, env, `SELECT count(*) FROM api_file_compliance_rules`); n != 18 {
 		t.Fatalf("seed rules = %d, want 18", n)
 	}
-	for _, want := range [][4]string{
-		{"UPLOAD", "EXT", "exe", "BLOCK"},
-		{"UPLOAD", "EXT", "bat", "BLOCK"},
-		{"UPLOAD", "EXT", "sh", "BLOCK"},
-		{"DOWNLOAD", "EXT", "sql", "OBSERVE"},
-		{"DOWNLOAD", "EXT", "bak", "OBSERVE"},
-		{"UPLOAD", "EXT", "jsp", "BLOCK"},
-		{"UPLOAD", "EXT", "jspx", "BLOCK"},
-		{"UPLOAD", "EXT", "asp", "BLOCK"},
-		{"UPLOAD", "EXT", "aspx", "BLOCK"},
-		{"UPLOAD", "EXT", "ashx", "BLOCK"},
-		{"UPLOAD", "EXT", "asmx", "BLOCK"},
-		{"UPLOAD", "EXT", "php", "BLOCK"},
-		{"UPLOAD", "EXT", "phtml", "BLOCK"},
-		{"UPLOAD", "EXT", "cer", "BLOCK"},
-		{"UPLOAD", "EXT", "asa", "BLOCK"},
-		{"UPLOAD", "EXT", "shtml", "BLOCK"},
-		{"UPLOAD", "EXT", "war", "BLOCK"},
-		{"UPLOAD", "EXT", "jar", "BLOCK"},
+	for _, want := range [][5]string{
+		{"UPLOAD", "EXT", "exe", "BLOCK", "禁止上传可执行程序，防范恶意软件植入"},
+		{"UPLOAD", "EXT", "bat", "BLOCK", "禁止上传批处理脚本，防范恶意命令执行"},
+		{"UPLOAD", "EXT", "sh", "BLOCK", "禁止上传 Shell 脚本，防范恶意命令执行"},
+		{"DOWNLOAD", "EXT", "sql", "OBSERVE", "审计监控数据库导出文件下载，防范敏感数据泄露"},
+		{"DOWNLOAD", "EXT", "bak", "OBSERVE", "审计监控备份文件下载，防范敏感文件泄露"},
+		{"UPLOAD", "EXT", "jsp", "BLOCK", "禁止上传 JSP 动态脚本，防范 Webshell 植入"},
+		{"UPLOAD", "EXT", "jspx", "BLOCK", "禁止上传 JSPX 动态脚本，防范 Webshell 植入"},
+		{"UPLOAD", "EXT", "asp", "BLOCK", "禁止上传 ASP 动态脚本，防范 Webshell 植入"},
+		{"UPLOAD", "EXT", "aspx", "BLOCK", "禁止上传 ASPX 动态脚本，防范 Webshell 植入"},
+		{"UPLOAD", "EXT", "ashx", "BLOCK", "禁止上传 ASHX 处理程序，防范 Webshell 植入"},
+		{"UPLOAD", "EXT", "asmx", "BLOCK", "禁止上传 ASMX 服务脚本，防范 Webshell 植入"},
+		{"UPLOAD", "EXT", "php", "BLOCK", "禁止上传 PHP 动态脚本，防范 Webshell 植入"},
+		{"UPLOAD", "EXT", "phtml", "BLOCK", "禁止上传 PHTML 脚本，防范 Webshell 植入"},
+		{"UPLOAD", "EXT", "cer", "BLOCK", "禁止上传 CER 文件，防范 IIS 按 ASP 解析植入 Webshell"},
+		{"UPLOAD", "EXT", "asa", "BLOCK", "禁止上传 ASA 文件，防范 IIS 按 ASP 解析植入 Webshell"},
+		{"UPLOAD", "EXT", "shtml", "BLOCK", "禁止上传 SHTML 页面，防范利用 SSI 执行恶意指令"},
+		{"UPLOAD", "EXT", "war", "BLOCK", "禁止上传 WAR 应用包，防范恶意部署与 Webshell 植入"},
+		{"UPLOAD", "EXT", "jar", "BLOCK", "禁止上传 JAR 归档包，防范上传恶意可执行程序"},
 	} {
 		if n := s8Count(t, env, `SELECT count(*) FROM api_file_compliance_rules
-			WHERE direction=$1 AND match_type=$2 AND match_value=$3 AND action=$4 AND enabled`,
-			want[0], want[1], want[2], want[3]); n != 1 {
-			t.Fatalf("seed rule %v missing", want)
+			WHERE direction=$1 AND match_type=$2 AND match_value=$3 AND action=$4 AND reason=$5 AND enabled`,
+			want[0], want[1], want[2], want[3], want[4]); n != 1 {
+			t.Fatalf("seed rule %v missing or reason mismatch", want)
 		}
 	}
 	// 去重键：同方向同类型同匹配值重复拒绝

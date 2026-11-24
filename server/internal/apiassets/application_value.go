@@ -47,7 +47,7 @@ SELECT count(*) FILTER (WHERE asset_status <> 'IGNORED'),
     FILTER (WHERE asset_status <> 'IGNORED' AND asset_value_explain IS NOT NULL), 2), 0),
   COALESCE(max((asset_value_explain->>'total')::int)
     FILTER (WHERE asset_status <> 'IGNORED' AND asset_value_explain IS NOT NULL), 0)
-FROM api_endpoints WHERE application_id=$1`, applicationID).Scan(
+FROM api_endpoints WHERE application_id=$1 AND is_api = TRUE`, applicationID).Scan(
 		&out.EndpointCount, &out.ScoredCount, &out.AverageScore, &out.MaxScore); err != nil {
 		return nil, err
 	}
@@ -59,7 +59,7 @@ FROM api_endpoints WHERE application_id=$1`, applicationID).Scan(
 	rows, err := s.db.Query(ctx, `
 SELECT COALESCE(NULLIF(asset_value, ''), 'UNKNOWN'), count(*)
 FROM api_endpoints
-WHERE application_id=$1 AND asset_status <> 'IGNORED' AND asset_value_explain IS NOT NULL
+WHERE application_id=$1 AND is_api = TRUE AND asset_status <> 'IGNORED' AND asset_value_explain IS NOT NULL
 GROUP BY COALESCE(NULLIF(asset_value, ''), 'UNKNOWN') ORDER BY 1`, applicationID)
 	if err != nil {
 		return nil, err
@@ -84,7 +84,7 @@ SELECT d.item->>'name',
   max((d.item->>'max')::int)
 FROM api_endpoints e
 CROSS JOIN LATERAL jsonb_array_elements(e.asset_value_explain->'dimensions') AS d(item)
-WHERE e.application_id=$1 AND e.asset_status <> 'IGNORED'
+WHERE e.application_id=$1 AND e.is_api = TRUE AND e.asset_status <> 'IGNORED'
   AND e.asset_value_explain IS NOT NULL
   AND jsonb_typeof(e.asset_value_explain->'dimensions') = 'array'
 GROUP BY d.item->>'name' ORDER BY d.item->>'name'`, applicationID)

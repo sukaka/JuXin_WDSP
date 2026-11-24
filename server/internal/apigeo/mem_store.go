@@ -39,16 +39,24 @@ var (
 
 // addRuntimeEvent 追加一条运行时事件（sweep 数据源）。
 func (m *MemStore) addRuntimeEvent(endpointKey, clientIP, identity string, occurredAt time.Time, details []byte) uuid.UUID {
+	return m.addRuntimeEventWithMeta(endpointKey, clientIP, identity, occurredAt, details, "", 0, "")
+}
+
+// addRuntimeEventWithMeta 追加带动作/状态码/API等级元数据的运行时事件（单测用）。
+func (m *MemStore) addRuntimeEventWithMeta(endpointKey, clientIP, identity string, occurredAt time.Time, details []byte, finalAction string, responseStatus int, apiLevel string) uuid.UUID {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	id := uuid.New()
 	m.events = append(m.events, runtimeEventRow{
-		id:          id,
-		endpointKey: endpointKey,
-		clientIP:    clientIP,
-		identity:    identity,
-		details:     details,
-		occurredAt:  occurredAt,
+		id:             id,
+		endpointKey:    endpointKey,
+		clientIP:       clientIP,
+		identity:       identity,
+		details:        details,
+		occurredAt:     occurredAt,
+		finalAction:    finalAction,
+		responseStatus: responseStatus,
+		apiLevel:       apiLevel,
 	})
 	return id
 }
@@ -101,9 +109,8 @@ func (m *MemStore) FetchSensitiveEvents(_ context.Context, after *time.Time, lim
 		if after != nil && !ev.occurredAt.After(*after) {
 			continue
 		}
-		hits, err := extractSensitiveTypes(ev.details)
-		if err != nil || len(hits) == 0 {
-			continue // 无敏感明细（含脏 details，SweepOnce 不会见到这批行，与 SQL @> 口径一致）
+		if !hasRawSensitiveDetector(ev.details) {
+			continue // 无 sensitive_data 明细（含脏 details，SweepOnce 不会见到这批行，与 SQL @> 口径一致）
 		}
 		matched = append(matched, ev)
 	}

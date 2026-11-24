@@ -28,10 +28,31 @@ type CompiledSensitivePattern struct {
 }
 
 // defaultSensitivePatterns 内置字段名模式（中英常见命名；编译期正则表）。
-// 短关键字（tel/pan）加非字母边界防 hotel/company 误命中。
+// 词根采用分隔符与驼峰边界，避免 hotel/company/panel、mailer/mailinglist/pipermail、
+// microphone/automobile 等非敏感词误命中，同时兼容 snake_case/kebab-case/camelCase/全大写命名。
 var defaultSensitivePatterns = []SensitivePattern{
-	{DataType: "phone", Pattern: `(?i)(phone|mobile|telephone|shouji|(^|[^a-z])tel([^a-z]|$))`},
-	{DataType: "email", Pattern: `(?i)(e?_?mail|youxiang)`},
+	{
+		DataType: "phone",
+		Pattern: `(?:` +
+			`(?:^|[^A-Za-z])(?:[Cc][Ee][Ll][Ll]|[Tt][Ee][Ll][Ee]|[Mm][Oo][Bb][Ii][Ll][Ee])?[Pp][Hh][Oo][Nn][Ee][Ss]?(?:$|[^A-Za-z])` +
+			`|(?:^|[^A-Za-z])(?:[Cc]ell|[Tt]ele|[Mm]obile)?[Pp]hone[A-Z]` +
+			`|[a-z]Phone[Ss]?(?:$|[^a-z])` +
+			`|(?:^|[^A-Za-z])[Mm][Oo][Bb][Ii][Ll][Ee][Ss]?(?:$|[^A-Za-z])` +
+			`|(?:^|[^A-Za-z])[Mm]obile[A-Z]` +
+			`|[a-z]Mobile[Ss]?(?:$|[^a-z])` +
+			`|(?:^|[^A-Za-z])[Tt][Ee][Ll](?:$|[^A-Za-z])` +
+			`|(?:^|[^A-Za-z])[Tt]el[A-Z]` +
+			`|[a-z]Tel(?:$|[^a-z])` +
+			`|(?i:shouji))`,
+	},
+	{
+		DataType: "email",
+		Pattern: `(?:` +
+			`(?:^|[^A-Za-z])(?:[Ee][-_]?[Mm][Aa][Ii][Ll]|[Mm][Aa][Ii][Ll])[Ss]?(?:$|[^A-Za-z])` +
+			`|(?:^|[^A-Za-z])(?:[Ee][-_]?[Mm]ail|[Mm]ail)[A-Z]` +
+			`|[a-z](?:Email|Mail)[Ss]?(?:$|[^a-z])` +
+			`|(?i:youxiang))`,
+	},
 	{DataType: "id_card", Pattern: `(?i)(id_?card|idcard|identity|shenfenzheng|(^|[^a-z])sfz([^a-z]|$))`},
 	{DataType: "bank_card", Pattern: `(?i)(bank_?card|card_?(number|no)|(^|[^a-z])pan([^a-z]|$)|yinhangka)`},
 	{DataType: "credential", Pattern: `(?i)(password|passwd|pwd|secret|token|api_?key|apikey|access_?key|private_?key|mima)`},
@@ -278,7 +299,9 @@ func CheckSensitiveData(ctx *dsctx.RequestContext, p *parser.Parsed, patterns []
 }
 
 // scanValueLevel 值级敏感检测：对 QUERY/FORM/JSON_BODY 留存值做 regex 匹配，
-// 并扩展 HEADER（仅非脱敏且非标准协议头；cookie 整头脱敏跳过）与 PATH 段的字段名/值级匹配。
+// 并扩展 HEADER（仅非脱敏且非标准协议头做字段名/值级匹配；cookie 整头脱敏跳过）与 PATH 原始段的值级匹配。
+// URL 路径字面段仅代表路由/资源文件名（如 /mobile.zip、/mailer.zip、/reset-password），不做字段名级敏感匹配，
+// 仅在路径段实际携带匹配值级正则的敏感取值（如 /user/13800138000/detail）时产出 sensitive.value。
 // 命中产 OBSERVE 明细（QUERY 位置值命中升级 BLOCK 类，与 sensitive.in_query 同一语义）；
 // 证据含 data_type/location/字段名/等级及网关内存脱敏后的 masked_sample，绝不落原始明文。budget 为剩余 match 上限。
 func scanValueLevel(ctx *dsctx.RequestContext, p *parser.Parsed, patterns []CompiledSensitivePattern, rules []CompiledSensitiveValueRule, budget int) {
@@ -364,48 +387,27 @@ func scanValueLevel(ctx *dsctx.RequestContext, p *parser.Parsed, patterns []Comp
 			budget--
 		}
 	}
-	// PATH 位置扩展：字段名级匹配归一化路径中的字面段（占位段 {id}/{uuid}/{hex} 非名称不参与）；
-	// 值级匹配原始路径段。证据字段名取值级安全的标识：占位段用占位名（如 {id}），
-	// 字面段命中时值即段文本（归一化保留字面），证据改用段序号，绝不落原始段值。
+	// PATH 位置扩展：仅对原始路径段做值级正则匹配，不做字面段字段名匹配（避免 /mobile.zip、
+	// /mailer.zip、/remind_password.zip、/reset-password 等路由或扫描文件名误报为敏感数据提交）。
+	// 证据字段名取值级安全的标识：占位段用占位名（如 {id}），字面段改用段序号，绝不落原始段值。
 	norm := strings.Split(strings.Trim(p.NormalizedPath, "/"), "/")
 	raw := strings.Split(strings.Trim(p.RawPath, "/"), "/")
-	for i, seg := range norm {
+	for i, rawSeg := range raw {
 		if budget <= 0 || scans >= maxSensitiveValueScans {
 			return
 		}
-		if seg == "" {
+		if rawSeg == "" {
 			continue
 		}
 		// valueField 值级命中的证据字段名（字面段 = 原始值本身，改用段序号防落值）
 		valueField := fmt.Sprintf("segment[%d]", i)
-		if strings.HasPrefix(seg, "{") {
-			valueField = seg
-		} else if typ, ok := matchSensitive(seg, patterns); ok && !IsSensitiveFieldExcluded(seg, typ, rules) {
-			// 字面段名称命中（如 /api/id_card/... 的段名即敏感语义）
-			ctx.AddMatch(dsctx.DetectorMatch{
-				Detector: "sensitive_data",
-				RuleID:   "sensitive.field",
-				Category: "OBSERVE",
-				Severity: "MEDIUM",
-				Message:  "sensitive field name observed",
-				Evidence: map[string]string{
-					"field":     seg,
-					"data_type": typ,
-					"location":  "path",
-				},
-				ScoreDelta: 10,
-			})
-			budget--
-			if budget <= 0 {
-				return
-			}
+		if i < len(norm) && strings.HasPrefix(norm[i], "{") {
+			valueField = norm[i]
 		}
-		if i < len(raw) {
-			if r, matched, ok := matchValueRulesWithSample(raw[i], "path", valueField, rules, &scans); ok {
-				addValueMatch(ctx, "sensitive.value", "OBSERVE", "MEDIUM", 15,
-					"sensitive value observed", valueField, "path", r, matched)
-				budget--
-			}
+		if r, matched, ok := matchValueRulesWithSample(rawSeg, "path", valueField, rules, &scans); ok {
+			addValueMatch(ctx, "sensitive.value", "OBSERVE", "MEDIUM", 15,
+				"sensitive value observed", valueField, "path", r, matched)
+			budget--
 		}
 	}
 }

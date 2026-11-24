@@ -30,11 +30,13 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/classifier"
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/events"
 	"github.com/jiuzhang-waf/server/internal/apiassets"
@@ -183,9 +185,19 @@ type Record struct {
 	AuthzAppliedAt *time.Time `json:"authz_applied_at"`
 }
 
-// notable 是否需要写入主事件表（有检测明细或动作非 ALLOW；纯通行的 API 请求只喂发现）。
+// notable 是否需要写入主事件表（有实质检测明细或动作非 ALLOW；
+// 纯身份存在性 INFO 明细 identity.cookie_present/token_present 不单独触发主事件入库）。
 func (r *Record) notable() bool {
-	return r.AuthzDecision != nil || len(r.Details) > 0 || (r.FinalAction != "" && r.FinalAction != "ALLOW")
+	if r.AuthzDecision != nil || (r.FinalAction != "" && r.FinalAction != "ALLOW") {
+		return true
+	}
+	for _, d := range r.Details {
+		if d.Detector == "identity" && (d.RuleID == "identity.cookie_present" || d.RuleID == "identity.token_present") {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // VectorWatermark 向量撤销水位（NG-AZ-02 §1.1 冻结契约）：
@@ -275,6 +287,8 @@ type Collector struct {
 	batchTxFactory BatchTxFactory // nil 时逐语句 autocommit（W20 行为）；接线后每个 flush 批次一个 DB 事务（W22）
 	// quotaAlert 授权端点配额超限告警回调（nil 时仅记日志）
 	quotaAlert func(ctx context.Context, endpointKey string)
+	// discoveryFilter API 资产发现过滤配置提供者（nil 时走内置默认静态资源与非 API 过滤规则）
+	discoveryFilter func(ctx context.Context) apiassets.DiscoveryFilterConfig
 	// 指标
 	processedCount int64
 	savedCount     int64
@@ -293,16 +307,21 @@ const (
 )
 
 // NewCollector 创建采集器。checkpointPath 为空时使用 logPath+".checkpoint"。
+// 当 checkpointPath 位于与 logPath 不同的可写目录（如容器内日志卷只读、checkpoint 落在 DataDir）时，
+// 错误文件自动落入 checkpoint 同目录，避免向只读日志卷写入 .errors 失败。
 func NewCollector(saver PrimarySaver, collectorID, logPath, checkpointPath, nodeName string) *Collector {
+	errorPath := logPath + ".errors"
 	if checkpointPath == "" {
 		checkpointPath = logPath + ".checkpoint"
+	} else if logPath != "" && filepath.Dir(checkpointPath) != filepath.Dir(logPath) {
+		errorPath = filepath.Join(filepath.Dir(checkpointPath), filepath.Base(logPath)+".errors")
 	}
 	return &Collector{
 		saver:          saver,
 		collectorID:    collectorID,
 		logPath:        logPath,
 		checkpointPath: checkpointPath,
-		errorPath:      logPath + ".errors",
+		errorPath:      errorPath,
 		nodeName:       nodeName,
 		flushBatch:     defaultFlushBatch,
 		flushInterval:  defaultFlushInterval,
@@ -635,6 +654,7 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 				if berr := beginBatch(); berr != nil {
 					return processed, berr
 				}
+				c.backfillApplicationByDomain(ctx, rec)
 				if batchTx != nil {
 					c.handleRecordInTx(ctx, batchTx, rec)
 				} else {
@@ -703,9 +723,13 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 // （错误仅记录日志，不影响主流程）。
 func (c *Collector) handleRecord(ctx context.Context, rec *Record) {
 	if c.discovery != nil && rec.Method != "" && rec.PathTemplate != "" {
-		ep := c.upsertDiscovery(ctx, rec)
-		c.recordTrafficBucket(ctx, rec, ep)
-		c.recordSourceBucket(ctx, rec, ep)
+		effectiveIsAPI := rec.IsAPI || classifier.IsStructuralProtocol(rec.Protocol)
+		filterCfg := c.currentDiscoveryFilter(ctx)
+		if filtered, _ := filterCfg.ShouldFilterDiscovery(rec.Method, rec.PathTemplate, effectiveIsAPI); !filtered {
+			ep := c.upsertDiscovery(ctx, rec, effectiveIsAPI)
+			c.recordTrafficBucket(ctx, rec, ep)
+			c.recordSourceBucket(ctx, rec, ep)
+		}
 	}
 	c.recordSample(ctx, rec)
 	c.recordViolations(ctx, rec)
@@ -799,9 +823,42 @@ func (c *Collector) recordHeartbeat(ctx context.Context, rec *Record) {
 	}
 }
 
+// SetDiscoveryFilter 注入 API 资产发现过滤配置提供者（nil 时使用内置默认规则）。
+func (c *Collector) SetDiscoveryFilter(fn func(ctx context.Context) apiassets.DiscoveryFilterConfig) {
+	c.discoveryFilter = fn
+}
+
+func (c *Collector) currentDiscoveryFilter(ctx context.Context) apiassets.DiscoveryFilterConfig {
+	if c.discoveryFilter != nil {
+		return c.discoveryFilter(ctx)
+	}
+	return apiassets.DefaultDiscoveryFilterConfig()
+}
+
+// backfillApplicationByDomain 当事件未携带 application_id/app_code（如 mirrorcap 旁路采集）
+// 但携带 domain 时，按域名反查应用归属并回填 rec.ApplicationID，确保主事件与端点资产均归属正确应用。
+func (c *Collector) backfillApplicationByDomain(ctx context.Context, rec *Record) {
+	if rec == nil || rec.ApplicationID != "" || rec.AppCode != "" || rec.Domain == "" || c.resolver == nil {
+		return
+	}
+	dr, ok := c.resolver.(DomainAppResolver)
+	if !ok {
+		return
+	}
+	appID, _, err := dr.ResolveApplicationByDomain(ctx, rec.Domain)
+	if err != nil {
+		slog.Warn("resolve application by domain failed",
+			"collector", c.collectorID, "domain", rec.Domain, "error", err)
+		return
+	}
+	if appID != nil {
+		rec.ApplicationID = appID.String()
+	}
+}
+
 // upsertDiscovery 归属解析 + 端点发现 upsert；成功返回端点（供流量桶计数取 endpoint_id），
 // 失败返回 nil（错误已记日志，不中断采集）。
-func (c *Collector) upsertDiscovery(ctx context.Context, rec *Record) *apiassets.Endpoint {
+func (c *Collector) upsertDiscovery(ctx context.Context, rec *Record, effectiveIsAPI bool) *apiassets.Endpoint {
 	var appID, domID *uuid.UUID
 	if rec.ApplicationID != "" {
 		if id, err := uuid.Parse(rec.ApplicationID); err == nil {
@@ -816,13 +873,34 @@ func (c *Collector) upsertDiscovery(ctx context.Context, rec *Record) *apiassets
 		} else if id != nil {
 			appID = id
 		}
-		if appID != nil && rec.Domain != "" {
-			did, err := c.resolver.ResolveDomain(ctx, appID, rec.Domain)
+	}
+	if appID == nil && c.resolver != nil && rec.Domain != "" {
+		if dr, ok := c.resolver.(DomainAppResolver); ok {
+			aid, did, err := dr.ResolveApplicationByDomain(ctx, rec.Domain)
 			if err != nil {
-				slog.Error("resolve domain failed",
+				slog.Error("resolve application by domain failed",
 					"collector", c.collectorID, "domain", rec.Domain, "error", err)
 			} else {
-				domID = did
+				appID, domID = aid, did
+				if appID != nil && rec.ApplicationID == "" {
+					rec.ApplicationID = appID.String()
+				}
+			}
+		}
+	}
+	if appID != nil && domID == nil && c.resolver != nil && rec.Domain != "" {
+		did, err := c.resolver.ResolveDomain(ctx, appID, rec.Domain)
+		if err != nil {
+			slog.Error("resolve domain failed",
+				"collector", c.collectorID, "domain", rec.Domain, "error", err)
+		} else {
+			domID = did
+		}
+		if domID == nil {
+			if dr, ok := c.resolver.(DomainAppResolver); ok {
+				if aid, did, err := dr.ResolveApplicationByDomain(ctx, rec.Domain); err == nil && aid != nil && *aid == *appID {
+					domID = did
+				}
 			}
 		}
 	}
@@ -830,7 +908,7 @@ func (c *Collector) upsertDiscovery(ctx context.Context, rec *Record) *apiassets
 		Method:        rec.Method,
 		PathTemplate:  rec.PathTemplate,
 		Confidence:    rec.APIConfidence,
-		IsAPI:         rec.IsAPI,
+		IsAPI:         effectiveIsAPI,
 		ApplicationID: appID,
 		DomainID:      domID,
 		Host:          rec.Domain,

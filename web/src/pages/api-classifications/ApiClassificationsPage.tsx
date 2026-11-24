@@ -47,6 +47,7 @@ import {
   apiExposureLabel,
   getApiFindingTypeMeta,
 } from '../../utils/stage8'
+import './api-classifications.css'
 
 interface CreateFormValues {
   dimension: string
@@ -248,14 +249,83 @@ function classificationSourceLabel(record: ApiClassificationItem): string {
   return source ? apiClassificationSourceLabel(source) : '自定义'
 }
 
+const PURPOSE_DESCRIPTION_COMPAT: Record<
+  string,
+  { legacy: string; label: string }
+> = {
+  ADMIN: {
+    legacy: '后台管理、配置与运维操作接口（启发式命中 /admin /manage）',
+    label: '后台管理、配置与运维操作接口',
+  },
+  AUTH: {
+    legacy:
+      '登录、登出、令牌签发/刷新、验证码等认证会话接口（启发式命中 /login /signin /auth /token /captcha）',
+    label: '登录、登出、令牌签发/刷新、验证码等认证会话接口',
+  },
+  TRADE: {
+    legacy: '支付、订单、交易、账务等资金交易接口（启发式命中 /pay /order /trade /billing）',
+    label: '支付、订单、交易、账务等资金交易接口',
+  },
+  FILE: {
+    legacy:
+      '文件上传、下载、导入导出等文件传输接口（启发式命中 /upload /file /download /export）',
+    label: '文件上传、下载、导入导出等文件传输接口',
+  },
+  USER_MGMT: {
+    legacy:
+      '用户资料、账户与密保管理等用户生命周期接口（启发式命中 /user /account /profile）',
+    label: '用户资料、账户与密保管理等用户生命周期接口',
+  },
+  QUERY: {
+    legacy: '搜索、查询、列表等只读检索接口（启发式命中 /search /query /list）',
+    label: '搜索、查询、列表等只读检索接口',
+  },
+  GENERAL: {
+    legacy: '未命中具体类别的一般业务接口（启发式兜底分类）',
+    label: '未命中具体类别的一般业务接口',
+  },
+  AI_INTELLIGENCE: {
+    legacy: '模型调用、智能分析、AI 辅助运营接口',
+    label: '模型调用、智能分析与智能辅助运营接口',
+  },
+  DEVELOPER_PLATFORM: {
+    legacy: '开放 API、应用凭证、SDK、沙箱与调用配额接口',
+    label: '开放接口、应用凭证、开发工具包、沙箱与调用配额接口',
+  },
+  EXTERNAL_INTEGRATION: {
+    legacy: 'Webhook、回调、第三方开放平台对接接口',
+    label: '事件推送、回调、第三方开放平台对接接口',
+  },
+  PRODUCT_CATALOG: {
+    legacy: '商品、服务、SKU、类目与价格管理接口',
+    label: '商品、服务、规格库存、类目与价格管理接口',
+  },
+  PUBLIC: {
+    legacy: '面向公网开放的接口（启发式命中 /public /openapi /webhook /callback）',
+    label: '面向公网开放的接口',
+  },
+}
+
+function classificationDescriptionLabel(record: ApiClassificationItem): string {
+  const description = record.description || '-'
+  if (
+    !record.is_builtin ||
+    record.dimension.trim().toUpperCase() !== 'PURPOSE'
+  ) {
+    return description
+  }
+  const compat = PURPOSE_DESCRIPTION_COMPAT[record.code?.trim().toUpperCase() ?? '']
+  return compat && description.trim() === compat.legacy ? compat.label : description
+}
+
 /** 详情抽屉使用中文键名，避免通用明细直接暴露英文枚举/字段名 */
 function classificationDetailRecord(
   record: ApiClassificationItem,
 ): Record<string, unknown> {
   return {
     维度: DIMENSION_LABELS[record.dimension] ?? record.dimension,
-    取值: classificationValueLabel(record.dimension, record.value),
-    说明: record.description || '-',
+    分类名称: classificationValueLabel(record.dimension, record.value),
+    分类说明: classificationDescriptionLabel(record),
     来源: classificationSourceLabel(record),
     内置: record.is_builtin ? '是' : '否',
     创建时间: record.created_at,
@@ -273,6 +343,10 @@ export default function ApiClassificationsPage() {
   const [detailRecord, setDetailRecord] =
     useState<ApiClassificationItem | null>(null)
   const [endpointId, setEndpointId] = useState<string | undefined>()
+  const [keyword, setKeyword] = useState('')
+  const [sourceFilter, setSourceFilter] = useState<
+    'ALL' | 'BUILTIN' | 'CUSTOM'
+  >('ALL')
   const [createForm] = Form.useForm<CreateFormValues>()
   const [endpointForm] = Form.useForm<EndpointClassificationFormValues>()
 
@@ -326,39 +400,57 @@ export default function ApiClassificationsPage() {
     setEndpointMut.mutate(dimensions)
   }
 
+  const records = listQuery.data ?? []
+  const showDimension = records.some(
+    (record) => record.dimension.trim().toUpperCase() !== 'PURPOSE',
+  )
+  const normalizedKeyword = keyword.trim().toLowerCase()
+  const filteredRecords = records.filter((record) => {
+    if (
+      sourceFilter === 'BUILTIN' && !record.is_builtin ||
+      sourceFilter === 'CUSTOM' && record.is_builtin
+    ) {
+      return false
+    }
+    if (!normalizedKeyword) return true
+    return [
+      classificationValueLabel(record.dimension, record.value),
+      classificationDescriptionLabel(record),
+      DIMENSION_LABELS[record.dimension] ?? record.dimension,
+    ].some((text) => text.toLowerCase().includes(normalizedKeyword))
+  })
+
   const columns: ColumnsType<ApiClassificationItem> = [
+    ...(showDimension
+      ? [
+          {
+            title: '维度',
+            dataIndex: 'dimension',
+            width: 160,
+            render: (v: string) => DIMENSION_LABELS[v] ?? v,
+          },
+        ]
+      : []),
     {
-      title: '维度',
-      dataIndex: 'dimension',
-      width: 200,
-      render: (v: string) => DIMENSION_LABELS[v] ?? v,
-    },
-    {
-      title: '取值',
+      title: '分类名称',
       dataIndex: 'value',
       width: 200,
-      render: (v: string, record) => {
-        const label = classificationValueLabel(record.dimension, v)
-        return record.is_builtin && record.code ? (
-          <span>
-            {label}
-            <Typography.Text
-              type="secondary"
-              style={{ marginLeft: 8, fontSize: 12 }}
-            >
-              {record.code}
-            </Typography.Text>
-          </span>
-        ) : (
-          label
-        )
-      },
+      render: (v: string, record) => classificationValueLabel(record.dimension, v),
     },
     {
-      title: '说明',
+      title: '分类说明',
       dataIndex: 'description',
       ellipsis: true,
-      render: (v: string) => v || '-',
+      render: (_: unknown, record) => {
+        const description = classificationDescriptionLabel(record)
+        return description === '-' ? (
+          '-'
+        ) : (
+          <Tooltip title={description} placement="topLeft">
+            <span className="api-classification-description">{description}</span>
+          </Tooltip>
+        )
+      },
     },
     {
       title: '来源',
@@ -373,10 +465,26 @@ export default function ApiClassificationsPage() {
         return <Tag color={meta.color}>{meta.label}</Tag>
       },
     },
+    {
+      title: '操作',
+      key: 'action',
+      width: 80,
+      render: (_: unknown, record) => (
+        <Button
+          type="link"
+          size="small"
+          className="api-classification-action"
+          onClick={() => setDetailRecord(record)}
+        >
+          查看
+        </Button>
+      ),
+    },
   ]
 
   return (
     <Card
+      className="api-classifications-page"
       title="用途分类"
       extra={
         canManage ? (
@@ -390,17 +498,39 @@ export default function ApiClassificationsPage() {
         ) : undefined
       }
     >
-      <Typography.Paragraph type="secondary">
-        分类体系定义可用的维度与取值（如业务域、数据等级）；在下方为具体接口设置维度键值对，用于分类统计与防护策略匹配。
+      <Typography.Paragraph type="secondary" className="api-classifications-intro">
+        按业务用途对接口进行分类，用于分类统计和防护策略匹配。
       </Typography.Paragraph>
+      <div className="api-classifications-filters">
+        <Input.Search
+          aria-label="搜索分类"
+          placeholder="搜索分类名称或说明"
+          allowClear
+          className="api-classifications-search"
+          value={keyword}
+          onChange={(event) => setKeyword(event.target.value)}
+        />
+        <Select
+          aria-label="来源筛选"
+          className="api-classifications-source-filter"
+          value={sourceFilter}
+          options={[
+            { value: 'ALL', label: '全部来源' },
+            { value: 'BUILTIN', label: '内置' },
+            { value: 'CUSTOM', label: '自定义' },
+          ]}
+          onChange={setSourceFilter}
+        />
+      </div>
       <QueryErrorAlert error={listQuery.error ?? endpointsQuery.error} />
       <SmartTable<ApiClassificationItem>
         storageKey="api-classifications"
         rowKey="id"
         loading={listQuery.isLoading}
         columns={columns}
-        dataSource={listQuery.data ?? []}
-        scroll={{ x: 800 }}
+        dataSource={filteredRecords}
+        scroll={{ x: showDimension ? 960 : 760 }}
+        hideRefresh
         onRow={(record) => ({
           onDoubleClick: () => setDetailRecord(record),
           style: { cursor: 'pointer' },
@@ -447,17 +577,17 @@ export default function ApiClassificationsPage() {
                       rules={[{ required: true, message: '请输入维度' }]}
                     >
                       <Input
-                        placeholder="维度，如 business_domain"
+                        placeholder="维度，如 业务域"
                         style={{ width: 240 }}
                         autoComplete="off"
                       />
                     </Form.Item>
                     <Form.Item
                       name={[field.name, 'value']}
-                      rules={[{ required: true, message: '请输入取值' }]}
+                      rules={[{ required: true, message: '请输入分类名称' }]}
                     >
                       <Input
-                        placeholder="取值，如 finance"
+                        placeholder="分类名称，如 财务"
                         style={{ width: 240 }}
                         autoComplete="off"
                       />
@@ -530,16 +660,16 @@ export default function ApiClassificationsPage() {
             label="维度"
             rules={[{ required: true, message: '请输入维度' }]}
           >
-            <Input placeholder="如 business_domain" autoComplete="off" />
+            <Input placeholder="如 业务域" autoComplete="off" />
           </Form.Item>
           <Form.Item
             name="value"
-            label="取值"
-            rules={[{ required: true, message: '请输入取值' }]}
+            label="分类名称"
+            rules={[{ required: true, message: '请输入分类名称' }]}
           >
-            <Input placeholder="如 finance" autoComplete="off" />
+            <Input placeholder="如 财务" autoComplete="off" />
           </Form.Item>
-          <Form.Item name="description" label="说明（可选）">
+          <Form.Item name="description" label="分类说明（可选）">
             <Input.TextArea rows={3} placeholder="该分类的业务含义" />
           </Form.Item>
         </Form>

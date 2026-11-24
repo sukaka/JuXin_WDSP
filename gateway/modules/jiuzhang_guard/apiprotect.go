@@ -12,11 +12,13 @@
 package jiuzhang_guard
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,6 +26,7 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/classifier"
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/decision"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
@@ -217,23 +220,37 @@ func (g *Guard) serveAPIProtected(w http.ResponseWriter, r *http.Request, next c
 		return proxyAndCount(w, r, next)
 	}
 	if !res.API.IsAPI && !g.hasAPIResponseControls(res.EndpointKey) {
-		// 非 API 流量且无响应相位控制：无响应捕获，维持响应前输出（状态码 0 语义不变）。
-		// 强流程（NG-FLOW-02）：命中绑定端点即产动作条目——定义绑定本身就是
-		// API 语义声明（仅 CONFIRMED 端点可入定义），条目不随分类漏判丢失
-		// （PG 事件溯源完整性），故条目存在即输出事件。
-		// 强流程响应回程（NG-FLOW-03）：成功预留存在时包装记录器，下游返回后
-		// 收口 commit/受理/INDETERMINATE，条目随下方事件一并输出。
-		// MCP SSE 逐消息检查（NG-MCP G1 D7）：tools/call 上下文存在时包装——
-		// text/event-stream 响应逐事件即检即放（非 SSE 透传零行为）
-		mw, sfMCP := g.wrapMCPSSEResponse(w, res.Context)
+		// 非 API 流量且无响应相位控制：不缓冲响应体；对非静态后缀路径仅挂轻量响应头窥视器
+		// （零内存拷贝、零流式破坏），根据源站返回 Content-Type/Content-Disposition 二次定级
+		// （识别无 Accept 头的 GET JSON/XML/SSE/动态下载接口，同时保持 HTML/静态 MIME 为 NON_API）。
+		// 强流程（NG-FLOW-02/03）与 MCP SSE 逐消息检查照常挂接。
+		var peeker *apiResponseHeaderPeek
+		downstreamW := w
+		if res.Parsed != nil && !classifier.IsStaticAssetPath(res.Parsed.Method, res.Parsed.RawPath) {
+			peeker = &apiResponseHeaderPeek{base: w}
+			downstreamW = peeker
+		}
+		mw, sfMCP := g.wrapMCPSSEResponse(downstreamW, res.Context)
 		sw, sfRec := g.wrapStrongFlowResponse(mw, res.Context)
 		nextErr := proxyWithMCPSSEGuard(sw, r, next, sfMCP)
 		if sfMCP != nil {
 			sfMCP.Finish()
 		}
 		g.finalizeStrongFlow(res.Context, sfRec, nextErr != nil)
-		if len(res.Context.CopyMatches()) > 0 || len(flowguard.ActionsFromContext(res.Context)) > 0 {
-			g.emitAPIEvent(r, res, nil)
+		var tail *apiEventTail
+		if peeker != nil && peeker.status > 0 {
+			applyResponseClassification(res, &classifier.ResponseEvidence{
+				Status:             peeker.status,
+				ContentType:        peeker.contentType,
+				ContentDisposition: peeker.contentDisposition,
+			})
+			tail = &apiEventTail{status: peeker.status, latencyMS: time.Since(start).Milliseconds()}
+		}
+		// 仅当升格为 API、命中结构性协议（如 gRPC/GraphQL/SOAP/SSE）、命中非 INFO 级安全检测
+		// （排除 identity.cookie_present 等纯信息明细）或存在强流程动作时才输出运行时事件，
+		// 避免带 Cookie 的静态资源/普通网页刷屏与污染资产。
+		if res.API.IsAPI || hasStructuralProtocol(res.Context) || hasActionableMatches(res.Context.CopyMatches()) || len(flowguard.ActionsFromContext(res.Context)) > 0 {
+			g.emitAPIEvent(r, res, tail)
 		}
 		return nextErr
 	}
@@ -671,14 +688,27 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 		dispo.RecordMaskResponse()
 	}
 	dispo.RecordOrigin(tail.status, true)
+	// 响应侧二次分类修正：利用完整可见响应头（Content-Type / Content-Disposition）修正
+	// 请求相位结论（识别无 Accept 头的 GET JSON/XML/动态下载接口，同时将静态 MIME/HTML 压低为 NON_API）。
+	if res != nil && res.Parsed != nil {
+		applyResponseClassification(res, &classifier.ResponseEvidence{
+			Status:             status,
+			ContentType:        respIn.ContentType,
+			ContentDisposition: respIn.ContentDisposition,
+			Truncated:          respIn.Truncated,
+			Streamed:           respIn.Streamed,
+		})
+	}
 	// 非 API 请求因全局响应控制（如 response_body 敏感值规则）进入捕获路径时，
-	// 若响应为静态资源/普通网页（非 JSON、无文件下载观测）且全程无检测命中/改写/强流程动作，
-	// 不产出运行时 API 事件，避免静态资源污染端点发现与事件流。
-	if !res.API.IsAPI && !masked &&
-		len(res.Context.CopyMatches()) == 0 &&
+	// 若响应为静态资源/普通网页（非 JSON、无动态文件下载观测）且全程无非 INFO 级检测命中/改写/强流程动作，
+	// 不产出运行时 API 事件，避免带 Cookie 的静态资源污染端点发现与事件流。
+	if !res.API.IsAPI && !hasStructuralProtocol(res.Context) && !masked &&
+		!hasActionableMatches(res.Context.CopyMatches()) &&
 		len(flowguard.ActionsFromContext(res.Context)) == 0 {
 		rc := res.Context.GetResponse()
-		if rc == nil || (!rc.IsJSON && rc.FileObservation == nil) {
+		staticPath := res.Parsed != nil && classifier.IsStaticAssetPath(res.Parsed.Method, res.Parsed.RawPath)
+		dynamicFileObs := rc != nil && rc.FileObservation != nil && !staticPath
+		if rc == nil || (!rc.IsJSON && !dynamicFileObs) {
 			return
 		}
 	}
@@ -1920,3 +1950,115 @@ func apiEnforcementRuleRefs(matches []dsctx.DetectorMatch) []string {
 	}
 	return out
 }
+
+// hasActionableMatches 判断检测明细中是否存在非 INFO 级的实质检测命中
+// （排除 identity.cookie_present / identity.token_present 等纯信息性标签，
+// 避免带 Cookie 的静态资源和普通网页被当作安全告警触发 API 运行时事件）。
+func hasActionableMatches(matches []dsctx.DetectorMatch) bool {
+	for _, m := range matches {
+		cat := strings.ToUpper(strings.TrimSpace(m.Category))
+		sev := strings.ToUpper(strings.TrimSpace(m.Severity))
+		if cat == "INFO" || sev == "INFO" {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func hasStructuralProtocol(ctx *dsctx.RequestContext) bool {
+	if ctx == nil {
+		return false
+	}
+	v, ok := ctx.GetExtension("api.protocol")
+	if !ok {
+		return false
+	}
+	s, _ := v.(string)
+	return classifier.IsStructuralProtocol(s)
+}
+
+// applyResponseClassification 用响应侧可见头信息刷新分类结论与上下文扩展。
+func applyResponseClassification(res *pipeline.Result, ev *classifier.ResponseEvidence) {
+	if res == nil || res.Parsed == nil || res.Context == nil || ev == nil {
+		return
+	}
+	updated := classifier.ClassifyWithResponse(res.Parsed, ev)
+	res.API = updated
+	res.Context.APIConfidence = updated.Confidence
+	res.Context.SetExtension("api.is_api", updated.IsAPI)
+	res.Context.SetExtension("api.signals", updated.Signals)
+	res.Context.SetExtension("api.classification", updated.Level)
+	res.Context.SetExtension("api.confidence100", updated.Confidence100)
+	if !updated.IsAPI {
+		return
+	}
+	curProto, _ := res.Context.GetExtension("api.protocol")
+	if curProto != nil && !classifier.IsGenericProtocol(curProto) {
+		return
+	}
+	switch {
+	case classifier.IsJSONResponseContentType(ev.ContentType):
+		res.Context.SetExtension("api.protocol", classifier.ProtocolRESTJSON)
+	case classifier.IsXMLAPIResponseContentType(ev.ContentType):
+		res.Context.SetExtension("api.protocol", classifier.ProtocolRESTXML)
+	case classifier.IsEventStreamResponseContentType(ev.ContentType):
+		res.Context.SetExtension("api.protocol", classifier.ProtocolSSE)
+	case strings.Contains(strings.ToLower(ev.ContentDisposition), "attachment"):
+		res.Context.SetExtension("api.protocol", classifier.ProtocolFileDownload)
+	case curProto == nil:
+		res.Context.SetExtension("api.protocol", classifier.ProtocolUnknownHTTPAPI)
+	}
+}
+
+// apiResponseHeaderPeek 零体缓冲轻量响应头窥视器：仅在首个最终 WriteHeader/Write 时
+// 记录状态码、Content-Type 与 Content-Disposition，不缓存任何响应体字节，完全透传流式/大文件。
+type apiResponseHeaderPeek struct {
+	base               http.ResponseWriter
+	status             int
+	contentType        string
+	contentDisposition string
+}
+
+func (p *apiResponseHeaderPeek) Header() http.Header { return p.base.Header() }
+
+func (p *apiResponseHeaderPeek) WriteHeader(code int) {
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		p.base.WriteHeader(code)
+		return
+	}
+	if p.status == 0 {
+		p.status = code
+		p.captureHeaders()
+	}
+	p.base.WriteHeader(code)
+}
+
+func (p *apiResponseHeaderPeek) Write(b []byte) (int, error) {
+	if p.status == 0 {
+		p.status = http.StatusOK
+		p.captureHeaders()
+	}
+	return p.base.Write(b)
+}
+
+func (p *apiResponseHeaderPeek) captureHeaders() {
+	h := p.base.Header()
+	p.contentType = h.Get("Content-Type")
+	p.contentDisposition = h.Get("Content-Disposition")
+}
+
+func (p *apiResponseHeaderPeek) Flush() {
+	if f, ok := p.base.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (p *apiResponseHeaderPeek) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := p.base.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("response writer does not support hijack")
+}
+
+func (p *apiResponseHeaderPeek) Unwrap() http.ResponseWriter { return p.base }

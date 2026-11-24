@@ -12,10 +12,10 @@ import type { CurrentUser } from '../../../types'
 function makeUser(permissions: string[]): CurrentUser {
   return {
     id: 'u1',
-    username: 'sysadmin',
-    display_name: '系统管理员',
+    username: 'operadmin',
+    display_name: '运维管理员',
     status: 'ACTIVE',
-    roles: [{ code: 'SYSTEM_ADMIN', name: '系统管理员' }],
+    roles: [{ code: 'SECURITY_ADMIN', name: '运维管理员' }],
     permissions,
     must_change_password: false,
   }

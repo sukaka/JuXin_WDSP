@@ -197,6 +197,7 @@ type ListFilter struct {
 	Unassigned      bool   // true 时仅查未归属接口（application_id IS NULL）
 	DirectoryPrefix string // 目录前缀（含子目录）：/test 命中 /test 与 /test/php
 	BusinessType    string // 业务类型过滤（api_assets.business_type；无资产记录接口按 OTHER 计）
+	IncludeNonAPI   bool   // true 时包含 is_api=FALSE 的历史非 API 记录；默认 false 仅查 API 资产
 	IDs             []uuid.UUID
 	Page            int
 	PageSize        int
@@ -369,6 +370,7 @@ ON CONFLICT (application_id, domain_id, application_binding_id, host, endpoint_k
   hit_count = api_endpoints.hit_count + 1,
   last_seen_at = now(),
   api_confidence = GREATEST(api_endpoints.api_confidence, EXCLUDED.api_confidence),
+  is_api = (api_endpoints.is_api OR EXCLUDED.is_api),
   updated_at = now()
 RETURNING `+endpointColumns+`, (xmax = 0) AS inserted`,
 		in.ApplicationID, in.DomainID, in.ApplicationBindingID, host, method, pathTemplate,
@@ -378,14 +380,15 @@ RETURNING `+endpointColumns+`, (xmax = 0) AS inserted`,
 		return nil, err
 	}
 	if inserted {
-		// 授权端点配额强制（0=不限制）：插入后总数 > 配额 ⟺ 插入前已达上限，
+		// 授权端点配额强制（0=不限制）：仅 API 资产（is_api=TRUE）计入授权端点配额，
+		// 历史非 API 残余行不占用配额；插入后总数 > 配额 ⟺ 插入前已达上限，
 		// 同一事务句柄删回本行并返回哨兵——autocommit 路径外层事务随错误回滚、
 		// 批次事务路径显式删除生效，两路径语义一致（新端点不落库）；
 		// 命中既有端点（inserted=false）不受配额影响，与「已有端点不受影响」口径一致。
-		if s.endpointQuota != nil {
+		if in.IsAPI && s.endpointQuota != nil {
 			if quota := s.endpointQuota(ctx); quota > 0 {
 				var total int64
-				if err := q.QueryRow(ctx, `SELECT count(*) FROM api_endpoints`).Scan(&total); err != nil {
+				if err := q.QueryRow(ctx, `SELECT count(*) FROM api_endpoints WHERE is_api = TRUE`).Scan(&total); err != nil {
 					return nil, err
 				}
 				if total > quota {
@@ -403,15 +406,15 @@ RETURNING `+endpointColumns+`, (xmax = 0) AS inserted`,
 	return e, nil
 }
 
-// Count 端点总数（全表计数不受生命周期状态影响；授权配额强制与授权状态页配额用量展示共用口径）。
+// Count API 端点总数（is_api=TRUE 口径，与监控指标/报表一致，非 API 不占授权配额）。
 func (s *Store) Count(ctx context.Context) (int64, error) {
 	var n int64
-	err := s.db.QueryRow(ctx, `SELECT count(*) FROM api_endpoints`).Scan(&n)
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM api_endpoints WHERE is_api = TRUE`).Scan(&n)
 	return n, err
 }
 
 // List 分页列表（asset_status / learning_status / keyword / application_id / unassigned / directory 过滤）。
-// 应用名经 LEFT JOIN applications 带出（未归属为空字符串）。
+// 应用名经 LEFT JOIN applications 带出（未归属为空字符串）；默认仅返 is_api=TRUE（与监控/报表同口径）。
 func (s *Store) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, error) {
 	if f.Page <= 0 {
 		f.Page = 1
@@ -419,7 +422,10 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, erro
 	if f.PageSize <= 0 || f.PageSize > 100 {
 		f.PageSize = 20
 	}
-	where := "1=1"
+	where := "e.is_api = TRUE"
+	if f.IncludeNonAPI {
+		where = "1=1"
+	}
 	args := []any{}
 	add := func(cond string, v any) {
 		args = append(args, v)
@@ -511,7 +517,7 @@ type SiteSummaryItem struct {
 	EndpointCount     int64      `json:"endpoint_count"`
 }
 
-// SiteSummary 各站点接口计数（含未归属桶）。
+// SiteSummary 各站点 API 接口计数（含未归属桶；仅统计 is_api=TRUE）。
 func (s *Store) SiteSummary(ctx context.Context) ([]SiteSummaryItem, int64, error) {
 	rows, err := s.db.Query(ctx, `
 SELECT a.id, a.name,
@@ -519,7 +525,7 @@ SELECT a.id, a.name,
     WHERE d.application_id = a.id ORDER BY d.is_primary DESC, d.created_at LIMIT 1), ''),
   count(e.id)
 FROM applications a
-LEFT JOIN api_endpoints e ON e.application_id = a.id
+LEFT JOIN api_endpoints e ON e.application_id = a.id AND e.is_api = TRUE
 GROUP BY a.id, a.name ORDER BY a.name`)
 	if err != nil {
 		return nil, 0, err
@@ -537,7 +543,7 @@ GROUP BY a.id, a.name ORDER BY a.name`)
 		return nil, 0, err
 	}
 	var unassigned int64
-	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM api_endpoints WHERE application_id IS NULL`).Scan(&unassigned); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM api_endpoints WHERE application_id IS NULL AND is_api = TRUE`).Scan(&unassigned); err != nil {
 		return nil, 0, err
 	}
 	return out, unassigned, nil
@@ -549,15 +555,15 @@ type DirectoryCount struct {
 	EndpointCount int64  `json:"endpoint_count"`
 }
 
-// DirectoryTree 按目录聚合接口计数（application_id 指定站点；unassigned=true 查未归属）。
+// DirectoryTree 按目录聚合 API 接口计数（application_id 指定站点；unassigned=true 查未归属；仅统计 is_api=TRUE）。
 func (s *Store) DirectoryTree(ctx context.Context, applicationID *uuid.UUID, unassigned bool) ([]DirectoryCount, error) {
-	where := "1=1"
+	where := "is_api = TRUE"
 	args := []any{}
 	if applicationID != nil {
 		args = append(args, *applicationID)
-		where = "application_id = $1"
+		where += " AND application_id = $1"
 	} else if unassigned {
-		where = "application_id IS NULL"
+		where += " AND application_id IS NULL"
 	}
 	rows, err := s.db.Query(ctx, `
 SELECT directory_path, count(*) FROM api_endpoints

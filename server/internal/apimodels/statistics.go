@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jiuzhang-waf/server/internal/apidata"
 )
 
 // RefreshParameterStatistics 全量重算参数统计画像（幂等：重复执行结果一致，可安全周期调用）。
@@ -131,12 +132,19 @@ WHERE st.parameter_id = p.id AND st.parameter_id = ANY($1)`, parameterIDs); err 
 	}
 
 	// 1c. 语义类型推断：空 semantic_type 时按参数名/路径启发式填充（不覆盖人工已设）。
-	// 分支顺序敏感：captcha 必须先于 token/key 类（captchaKey 等不得误判为 token）。
+	// 分支顺序敏感：标准 HTTP/浏览器协议头最先跳过（防止 Sec-CH-UA-Mobile 等被误判为 phone）；
+	// captcha 必须先于 token/key 类（captchaKey 等不得误判为 token）。
 	if _, err := tx.Exec(ctx, `
 UPDATE api_parameter_models p SET semantic_type = x.inferred
 FROM (
   SELECT id,
     CASE
+      WHEN upper(location) = 'HEADER' AND (
+        lower(parameter_name) LIKE 'sec-ch-%'
+        OR lower(parameter_name) LIKE 'sec-fetch-%'
+        OR lower(parameter_name) LIKE 'sec-websocket-%'
+        OR lower(parameter_name) = ANY($2::text[])
+      ) THEN ''
       WHEN lower(parameter_name) IN ('id','uid','user_id','userid','account_id','order_id','resource_id','object_id')
         OR lower(parameter_name) LIKE '%_id' THEN
         CASE WHEN lower(parameter_name) LIKE '%uuid%' OR lower(structured_path) LIKE '%uuid%' THEN 'uuid' ELSE 'id' END
@@ -159,7 +167,7 @@ FROM (
     END AS inferred
   FROM api_parameter_models WHERE id = ANY($1)
 ) x
-WHERE p.id = x.id AND COALESCE(p.semantic_type,'') = '' AND x.inferred <> ''`, parameterIDs); err != nil {
+WHERE p.id = x.id AND COALESCE(p.semantic_type,'') = '' AND x.inferred <> ''`, parameterIDs, apidata.StandardProtocolHeaderNames()); err != nil {
 		return 0, fmt.Errorf("infer semantic_type: %w", err)
 	}
 

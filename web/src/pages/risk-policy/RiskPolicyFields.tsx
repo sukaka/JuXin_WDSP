@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import {
   AutoComplete,
   Button,
   Col,
+  Collapse,
   Divider,
   Form,
   InputNumber,
@@ -39,11 +41,19 @@ const MODE_OPTIONS = [
 export default function RiskPolicyFields({
   canEdit,
   showGroupControl = false,
+  advancedOpen,
+  onAdvancedOpenChange,
 }: {
   canEdit: boolean
   showGroupControl?: boolean
+  advancedOpen?: boolean
+  onAdvancedOpenChange?: (open: boolean) => void
 }) {
   const mode = Form.useWatch('mode')
+  const [innerAdvancedOpen, setInnerAdvancedOpen] = useState(false)
+  const isAdvancedOpen = advancedOpen ?? innerAdvancedOpen
+  const setAdvancedOpen = onAdvancedOpenChange ?? setInnerAdvancedOpen
+
   return (
     <>
       <Divider titlePlacement="start" plain>
@@ -109,7 +119,7 @@ export default function RiskPolicyFields({
       )}
 
       <Divider titlePlacement="start" plain>
-        处置阈值
+        处置阈值（分数越高处置越严厉：限速 &lt; 挑战 &lt; 阻断）
       </Divider>
       <Row gutter={[16, 0]}>
         <Col xs={24} sm={12} md={8}>
@@ -223,140 +233,166 @@ export default function RiskPolicyFields({
             />
           </Form.Item>
         </Col>
-        <Col xs={24} sm={12} md={8}>
-          <Form.Item
-            name="signal_window_seconds"
-            label="统计窗口（秒）"
-            extra="身份风险分累计滑窗，默认 86400（24h）"
-            rules={[{ required: true, message: '请输入统计窗口' }]}
-          >
-            <InputNumber
-              min={60}
-              max={604800}
-              precision={0}
-              style={{ width: '100%' }}
-            />
-          </Form.Item>
-        </Col>
       </Row>
 
-      <Divider titlePlacement="start" plain>
-        风险等级划分（起始分，1-100）
-      </Divider>
-      <Row gutter={[16, 0]}>
-        <Col xs={24} sm={12} md={8}>
-          <Form.Item
-            name={['risk_levels', 'medium']}
-            label="中风险下限"
-            rules={[{ required: true, message: '请输入中风险下限' }]}
-          >
-            <InputNumber
-              min={1}
-              max={100}
-              precision={0}
-              style={{ width: '100%' }}
-            />
-          </Form.Item>
-        </Col>
-        <Col xs={24} sm={12} md={8}>
-          <Form.Item
-            name={['risk_levels', 'high']}
-            label="高风险下限"
-            rules={[{ required: true, message: '请输入高风险下限' }]}
-          >
-            <InputNumber
-              min={1}
-              max={100}
-              precision={0}
-              style={{ width: '100%' }}
-            />
-          </Form.Item>
-        </Col>
-        <Col xs={24} sm={12} md={8}>
-          <Form.Item
-            name={['risk_levels', 'critical']}
-            label="严重风险下限"
-            rules={[{ required: true, message: '请输入严重风险下限' }]}
-          >
-            <InputNumber
-              min={1}
-              max={100}
-              precision={0}
-              style={{ width: '100%' }}
-            />
-          </Form.Item>
-        </Col>
-      </Row>
+      <Collapse
+        activeKey={isAdvancedOpen ? ['advanced'] : []}
+        onChange={(keys) => {
+          const list = Array.isArray(keys) ? keys : [keys]
+          setAdvancedOpen(list.includes('advanced'))
+        }}
+        style={{ marginBottom: 16 }}
+        items={[
+          {
+            key: 'advanced',
+            label: '高级参数：统计窗口、风险等级与信号分值（默认已调优，一般无需修改）',
+            forceRender: true,
+            children: (
+              <>
+                <Row gutter={[16, 0]}>
+                  <Col xs={24} sm={12} md={8}>
+                    <Form.Item
+                      name="signal_window_seconds"
+                      label="统计窗口（秒）"
+                      extra="身份风险分累计滑窗，默认 86400（24h）"
+                      rules={[{ required: true, message: '请输入统计窗口' }]}
+                    >
+                      <InputNumber
+                        min={60}
+                        max={604800}
+                        precision={0}
+                        style={{ width: '100%' }}
+                      />
+                    </Form.Item>
+                  </Col>
+                </Row>
 
-      <Divider titlePlacement="start" plain>
-        信号分值（各信号命中加分，0-100）
-      </Divider>
-      <Form.List name="score_entries">
-        {(fields, { add, remove }) => (
-          <>
-            {fields.map((field) => (
-              <Space
-                key={field.key}
-                style={{ display: 'flex', marginBottom: 8 }}
-                align="baseline"
-                wrap
-              >
-                <Form.Item
-                  name={[field.name, 'key']}
-                  style={{ marginBottom: 0 }}
-                  rules={[
-                    { required: true, message: '请输入信号类型' },
-                    {
-                      pattern: /^[A-Z][A-Z0-9_]*$/,
-                      message: '仅支持大写字母、数字与下划线，如 RECON',
-                    },
-                  ]}
-                >
-                  <AutoComplete
-                    options={SIGNAL_KEY_OPTIONS}
-                    placeholder="选择或输入信号类型"
-                    style={{ width: 320 }}
-                  />
-                </Form.Item>
-                <Form.Item
-                  name={[field.name, 'value']}
-                  style={{ marginBottom: 0 }}
-                  rules={[{ required: true, message: '请输入分值' }]}
-                >
-                  <InputNumber
-                    min={0}
-                    max={100}
-                    precision={0}
-                    placeholder="分值"
-                    style={{ width: 140 }}
-                  />
-                </Form.Item>
-                {canEdit && (
-                  <Tooltip title="删除此信号分值">
-                    <Button
-                      type="text"
-                      danger
-                      icon={<MinusCircleOutlined />}
-                      aria-label="删除此信号分值"
-                      onClick={() => remove(field.name)}
-                    />
-                  </Tooltip>
-                )}
-              </Space>
-            ))}
-            {canEdit && (
-              <Button
-                block
-                type="dashed"
-                icon={<PlusOutlined />}
-                onClick={() => add({ value: 10 })}
-              >
-                添加信号
-              </Button>
-            )}
-          </>
-        )}
-      </Form.List>
+                <Divider titlePlacement="start" plain>
+                  风险等级划分（起始分，1-100，仅用于页面展示标签）
+                </Divider>
+                <Row gutter={[16, 0]}>
+                  <Col xs={24} sm={12} md={8}>
+                    <Form.Item
+                      name={['risk_levels', 'medium']}
+                      label="中风险下限"
+                      rules={[{ required: true, message: '请输入中风险下限' }]}
+                    >
+                      <InputNumber
+                        min={1}
+                        max={100}
+                        precision={0}
+                        style={{ width: '100%' }}
+                      />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} sm={12} md={8}>
+                    <Form.Item
+                      name={['risk_levels', 'high']}
+                      label="高风险下限"
+                      rules={[{ required: true, message: '请输入高风险下限' }]}
+                    >
+                      <InputNumber
+                        min={1}
+                        max={100}
+                        precision={0}
+                        style={{ width: '100%' }}
+                      />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} sm={12} md={8}>
+                    <Form.Item
+                      name={['risk_levels', 'critical']}
+                      label="严重风险下限"
+                      rules={[
+                        { required: true, message: '请输入严重风险下限' },
+                      ]}
+                    >
+                      <InputNumber
+                        min={1}
+                        max={100}
+                        precision={0}
+                        style={{ width: '100%' }}
+                      />
+                    </Form.Item>
+                  </Col>
+                </Row>
+
+                <Divider titlePlacement="start" plain>
+                  信号分值（各信号命中加分，0-100）
+                </Divider>
+                <Form.List name="score_entries">
+                  {(fields, { add, remove }) => (
+                    <>
+                      {fields.map((field) => (
+                        <Space
+                          key={field.key}
+                          style={{ display: 'flex', marginBottom: 8 }}
+                          align="baseline"
+                          wrap
+                        >
+                          <Form.Item
+                            name={[field.name, 'key']}
+                            style={{ marginBottom: 0 }}
+                            rules={[
+                              { required: true, message: '请输入信号类型' },
+                              {
+                                pattern: /^[A-Z][A-Z0-9_]*$/,
+                                message:
+                                  '仅支持大写字母、数字与下划线，如 RECON',
+                              },
+                            ]}
+                          >
+                            <AutoComplete
+                              options={SIGNAL_KEY_OPTIONS}
+                              placeholder="选择或输入信号类型"
+                              style={{ width: 320 }}
+                            />
+                          </Form.Item>
+                          <Form.Item
+                            name={[field.name, 'value']}
+                            style={{ marginBottom: 0 }}
+                            rules={[{ required: true, message: '请输入分值' }]}
+                          >
+                            <InputNumber
+                              min={0}
+                              max={100}
+                              precision={0}
+                              placeholder="分值"
+                              style={{ width: 140 }}
+                            />
+                          </Form.Item>
+                          {canEdit && (
+                            <Tooltip title="删除此信号分值">
+                              <Button
+                                type="text"
+                                danger
+                                icon={<MinusCircleOutlined />}
+                                aria-label="删除此信号分值"
+                                onClick={() => remove(field.name)}
+                              />
+                            </Tooltip>
+                          )}
+                        </Space>
+                      ))}
+                      {canEdit && (
+                        <Button
+                          block
+                          type="dashed"
+                          icon={<PlusOutlined />}
+                          onClick={() => add({ key: '', value: 10 })}
+                          style={{ maxWidth: 480 }}
+                        >
+                          添加信号
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </Form.List>
+              </>
+            ),
+          },
+        ]}
+      />
     </>
   )
 }

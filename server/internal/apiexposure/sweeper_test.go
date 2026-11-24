@@ -18,6 +18,7 @@ func fixedNow() time.Time { return time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC
 
 // newTestSweeper 装配测试评估器（假 DNS 全域公网可解析）。
 func newTestSweeper(store *MemStore, settings SettingsReader, dns *PublicResolver) *Sweeper {
+	store.SetClock(fixedNow)
 	if dns == nil {
 		dns = newTestResolver(func(context.Context, string, string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP("93.184.216.34")}, nil
@@ -220,6 +221,7 @@ func TestSweepWithoutResolver(t *testing.T) {
 	ctx := context.Background()
 	id := uuid.New()
 	store.addEndpoint(id, "GET /z", "z.example.com", DeployReverseProxy, false, "", "", 0)
+	store.SetClock(fixedNow)
 	s := NewSweeper(store, &fakeSettings{}).SetClock(fixedNow) // 无 resolver
 	if _, err := s.SweepOnce(ctx); err != nil {
 		t.Fatal(err)

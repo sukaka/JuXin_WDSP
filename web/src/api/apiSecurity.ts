@@ -1,4 +1,4 @@
-import { request } from './client'
+import { request, upload } from './client'
 import type { PageResult } from '../types'
 
 /* ==================== 阶段8 / WDSP：/api-security 命名空间扩展 API ==================== */
@@ -665,11 +665,23 @@ export const apiSpecsApi = {
     )
     return { ...data, items: data.items ?? [] }
   },
-  import: (body: { file_name?: string; spec: Record<string, unknown> }) =>
+  import: (body: {
+    file_name?: string
+    name?: string
+    spec: Record<string, unknown> | string
+  }) =>
     request<ApiSpecImportResult>(`/api-security/specs/import`, {
       method: 'POST',
       body,
     }),
+  /** 上传规范文件导入（multipart/form-data，支持多格式文本及 .zip 归档，上限 16MiB） */
+  importFile: (file: File, meta?: { file_name?: string; name?: string }) => {
+    const form = new FormData()
+    form.append('file', file, file.name)
+    if (meta?.file_name) form.append('file_name', meta.file_name)
+    if (meta?.name) form.append('name', meta.name)
+    return upload<ApiSpecImportResult>(`/api-security/specs/import`, form)
+  },
   /** 从 URL 拉取规范文档导入（服务端 SSRF 防护；headers 可选认证头，最多 20 个） */
   importUrl: (body: {
     url: string
@@ -710,6 +722,13 @@ export interface ApiGraphNode {
   normalized_path: string
   asset_status: string
   application_id?: string | null
+  application_name?: string
+  host?: string
+  protocol_type?: string
+  is_api?: boolean
+  learning_status?: string
+  hit_count?: number
+  open_findings_count?: number
 }
 
 export interface ApiGraphEdge {
@@ -718,6 +737,34 @@ export interface ApiGraphEdge {
   source_endpoint_id?: string | null
   target_endpoint_id: string
   call_count: number
+  identity_count?: number
+  first_seen_at?: string
+  last_seen_at?: string
+}
+
+export interface ApiGraphSummary {
+  total_nodes: number
+  visible_nodes: number
+  static_noise_nodes: number
+  ignored_nodes: number
+  isolated_nodes: number
+  total_edges: number
+  visible_edges: number
+}
+
+export interface ApiGraphEdgeFilter {
+  start?: string
+  end?: string
+  min_count?: number
+}
+
+export interface ApiGraphFilter extends ApiGraphEdgeFilter {
+  application_id?: string
+  status?: string
+  keyword?: string
+  exclude_static?: boolean
+  exclude_ignored?: boolean
+  only_connected?: boolean
 }
 
 export interface ApiTopologyGroup {
@@ -726,14 +773,101 @@ export interface ApiTopologyGroup {
   endpoints: ApiGraphNode[]
 }
 
+/** 后端微服务真实 RPC / 服务间调用图谱 */
+export interface ServiceRPCSourceStatus {
+  source: 'otel_traces' | 'agent_dataflow' | 'agent_grpc' | string
+  label: string
+  status: 'READY' | 'EMPTY' | 'NOT_CONFIGURED' | 'UNAVAILABLE' | string
+  edge_count: number
+  message?: string
+}
+
+export interface ServiceRPCNode {
+  id: string
+  name: string
+  node_type: 'SERVICE' | 'EXTERNAL' | string
+  protocols: string[]
+  inbound_calls: number
+  outbound_calls: number
+  inbound_edges: number
+  outbound_edges: number
+  error_count: number
+  error_rate: number
+  avg_ms: number
+  operations_count: number
+}
+
+export interface ServiceRPCEdge {
+  id: string
+  source: string
+  target: string
+  target_type: 'SERVICE' | 'EXTERNAL' | string
+  protocol: string
+  call_category: 'RPC' | 'HTTP' | string
+  evidence_type: string
+  paired: boolean
+  data_source: string
+  calls: number
+  error_count: number
+  error_rate: number
+  avg_ms: number
+  p95_ms: number
+  operations: string[]
+  sample_trace_ids: string[]
+  first_seen_at?: string
+  last_seen_at?: string
+}
+
+export interface ServiceRPCGraphSummary {
+  total_nodes: number
+  service_nodes: number
+  external_nodes: number
+  total_edges: number
+  rpc_edges: number
+  http_edges: number
+  paired_edges: number
+  error_edges: number
+  total_calls: number
+  total_errors: number
+  truncated: boolean
+}
+
+export interface ServiceRPCGraph {
+  start: string
+  end: string
+  nodes: ServiceRPCNode[]
+  edges: ServiceRPCEdge[]
+  summary: ServiceRPCGraphSummary
+  sources: ServiceRPCSourceStatus[]
+  note?: string
+}
+
+export interface ServiceRPCGraphFilter {
+  start?: string
+  end?: string
+  protocol?: string
+  service?: string
+  paired_only?: boolean
+  include_external?: boolean
+  min_calls?: number
+  limit?: number
+}
+
 export const apiGraphApi = {
-  graph: () =>
-    request<{ nodes: ApiGraphNode[]; edges: ApiGraphEdge[] }>(
+  graph: (params?: ApiGraphFilter) =>
+    request<{ nodes: ApiGraphNode[]; edges: ApiGraphEdge[]; summary?: ApiGraphSummary }>(
       `/api-security/graph`,
+      params ? { query: { ...params } } : undefined,
     ),
-  topology: () =>
+  serviceRpcGraph: (params?: ServiceRPCGraphFilter) =>
+    request<ServiceRPCGraph>(
+      `/api-security/service-rpc-graph`,
+      params ? { query: { ...params } } : undefined,
+    ),
+  topology: (params?: ApiGraphEdgeFilter) =>
     request<{ applications: ApiTopologyGroup[]; edges: ApiGraphEdge[] }>(
       `/api-security/topology`,
+      params ? { query: { ...params } } : undefined,
     ),
 }
 

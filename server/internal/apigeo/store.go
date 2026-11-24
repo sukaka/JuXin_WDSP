@@ -24,12 +24,15 @@ type Repository interface {
 
 // runtimeEventRow SweepOnce 扫描的运行时事件行（api_runtime_events 子集）。
 type runtimeEventRow struct {
-	id          uuid.UUID
-	endpointKey string
-	clientIP    string
-	identity    string
-	details     []byte
-	occurredAt  time.Time
+	id             uuid.UUID
+	endpointKey    string
+	clientIP       string
+	identity       string
+	details        []byte
+	occurredAt     time.Time
+	finalAction    string
+	responseStatus int
+	apiLevel       string
 }
 
 // crossBorderRow SweepOnce 产出的待插入行（ID/created_at 由库填）。
@@ -288,7 +291,8 @@ func (s *Store) Watermark(ctx context.Context) (*time.Time, error) {
 // FetchSensitiveEvents 水位之后含敏感明细且带 client_ip 的运行时事件（升序限量）。
 func (s *Store) FetchSensitiveEvents(ctx context.Context, after *time.Time, limit int) ([]runtimeEventRow, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT id, endpoint_key, client_ip, identity_fingerprint, details_json, occurred_at
+SELECT id, endpoint_key, client_ip, identity_fingerprint, details_json, occurred_at,
+       COALESCE(final_action, ''), COALESCE(response_status, 0), COALESCE(api_level, '')
 FROM api_runtime_events
 WHERE client_ip IS NOT NULL AND client_ip <> ''
   AND details_json @> '[{"detector":"sensitive_data"}]'::jsonb
@@ -302,7 +306,8 @@ LIMIT $2`, after, limit)
 	out := []runtimeEventRow{}
 	for rows.Next() {
 		var ev runtimeEventRow
-		if err := rows.Scan(&ev.id, &ev.endpointKey, &ev.clientIP, &ev.identity, &ev.details, &ev.occurredAt); err != nil {
+		if err := rows.Scan(&ev.id, &ev.endpointKey, &ev.clientIP, &ev.identity, &ev.details, &ev.occurredAt,
+			&ev.finalAction, &ev.responseStatus, &ev.apiLevel); err != nil {
 			return nil, err
 		}
 		out = append(out, ev)

@@ -10,7 +10,7 @@ import StatusTag from '../../components/StatusTag'
 import { AuthzEnforcementBlock } from '../../components/AuthzEnforcement'
 import { extractAuthzEnforcement } from '../../utils/authzEnforcement'
 import { formatDateTime } from '../../utils/format'
-import { API_DETECTOR_META } from '../../utils/stage8'
+import { API_DETECTOR_META, formatApiFindingTitle } from '../../utils/stage8'
 import {
   JWT_REASON_CODE_LABELS,
   JWT_UNVERIFIED_HINT,
@@ -106,7 +106,26 @@ const detailColumns: ColumnsType<ApiRuntimeEventDetail> = [
     render: (v: string) => (v ? <StatusTag value={v} map={RISK_LEVEL_META} /> : '-'),
   },
   { title: '加分', dataIndex: 'score_delta', width: 70, render: dash },
-  { title: '信息', dataIndex: 'message', ellipsis: true, render: dash },
+  {
+    title: '信息',
+    dataIndex: 'message',
+    ellipsis: true,
+    render: (v?: string | null, record?: ApiRuntimeEventDetail) => {
+      const formatted = formatApiFindingTitle(v, {
+        ruleId: record?.rule_id,
+        detector: record?.detector,
+      })
+      if (formatted) return formatted
+      if (record?.rule_id) {
+        const byRule = formatApiFindingTitle(record.rule_id, {
+          ruleId: record.rule_id,
+          detector: record.detector,
+        })
+        if (byRule && byRule !== record.rule_id) return byRule
+      }
+      return '-'
+    },
+  },
   {
     title: '证据（已脱敏）',
     key: 'evidence',

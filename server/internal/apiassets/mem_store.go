@@ -77,13 +77,24 @@ func (m *MemStore) UpsertDiscovery(ctx context.Context, in DiscoveryInput) (*End
 		if in.Confidence > e.APIConfidence {
 			e.APIConfidence = in.Confidence
 		}
+		if in.IsAPI {
+			e.IsAPI = true
+		}
 		e.LastSeenAt = time.Now().UTC()
 		return cloneEP(e), nil
 	}
-	// 授权端点配额强制（与 SQL Store 同口径）：总数已达配额时新端点拒绝落库（哨兵错误）
-	if m.endpointQuota != nil {
-		if quota := m.endpointQuota(ctx); quota > 0 && int64(len(m.byID)) >= quota {
-			return nil, ErrLicenseQuotaExceeded
+	// 授权端点配额强制（与 SQL Store 同口径）：仅统计 is_api=TRUE 端点数
+	if in.IsAPI && m.endpointQuota != nil {
+		if quota := m.endpointQuota(ctx); quota > 0 {
+			var apiCount int64
+			for _, existing := range m.byID {
+				if existing.IsAPI {
+					apiCount++
+				}
+			}
+			if apiCount >= quota {
+				return nil, ErrLicenseQuotaExceeded
+			}
 		}
 	}
 	now := time.Now().UTC()
@@ -124,6 +135,9 @@ func (m *MemStore) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, e
 	}
 	var all []Endpoint
 	for _, e := range m.byID {
+		if !f.IncludeNonAPI && !e.IsAPI {
+			continue
+		}
 		if idSet != nil {
 			if _, ok := idSet[e.ID]; !ok {
 				continue
@@ -200,6 +214,9 @@ func (m *MemStore) SiteSummary(ctx context.Context) ([]SiteSummaryItem, int64, e
 	defer m.mu.Unlock()
 	var unassigned int64
 	for _, e := range m.byID {
+		if !e.IsAPI {
+			continue
+		}
 		if e.ApplicationID == nil {
 			unassigned++
 		}
@@ -207,13 +224,16 @@ func (m *MemStore) SiteSummary(ctx context.Context) ([]SiteSummaryItem, int64, e
 	return []SiteSummaryItem{}, unassigned, nil
 }
 
-// DirectoryTree 目录聚合（内存实现按目录分组计数）。
+// DirectoryTree 目录聚合（内存实现按目录分组计数，仅统计 is_api=TRUE）。
 func (m *MemStore) DirectoryTree(ctx context.Context, applicationID *uuid.UUID, unassigned bool) ([]DirectoryCount, error) {
 	_ = ctx
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	counts := map[string]int64{}
 	for _, e := range m.byID {
+		if !e.IsAPI {
+			continue
+		}
 		if applicationID != nil && (e.ApplicationID == nil || *e.ApplicationID != *applicationID) {
 			continue
 		}

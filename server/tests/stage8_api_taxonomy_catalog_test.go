@@ -83,7 +83,7 @@ func assertTaxonomyCatalogSeeds(t *testing.T, env *testEnv) {
 	t.Helper()
 	for _, want := range taxonomyCatalogSeeds {
 		if n := s8Count(t, env, `SELECT count(*) FROM api_custom_taxonomies
-			WHERE dimension=$1 AND value=$2 AND description <> ''`, want[0], want[1]); n != 1 {
+			WHERE dimension=$1 AND value=$2 AND description <> '' AND description !~ '[A-Za-z]'`, want[0], want[1]); n != 1 {
 			t.Fatalf("taxonomy catalog seed %v count=%d want 1", want, n)
 		}
 	}

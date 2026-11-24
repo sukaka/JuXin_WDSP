@@ -21,6 +21,9 @@ type Repository interface {
 	Merge(ctx context.Context, primaryID, otherID uuid.UUID, actor string) (*Endpoint, error)
 	Split(ctx context.Context, id uuid.UUID, newPaths []string, actor string) ([]Endpoint, error)
 	SetAssetStatus(ctx context.Context, id uuid.UUID, status, actor string) (*Endpoint, error)
+	// 存量静态资源与非 API 噪声预览与安全清理
+	PreviewNoiseCleanup(ctx context.Context, cfg DiscoveryFilterConfig, f NoiseCleanupFilter) (*NoiseCleanupPreview, error)
+	ExecuteNoiseCleanup(ctx context.Context, cfg DiscoveryFilterConfig, f NoiseCleanupFilter, action, actor string) (*NoiseCleanupResult, error)
 	// 生命周期运营（ZOMBIE 状态机见 lifecycle.go）
 	Deprecate(ctx context.Context, id uuid.UUID, actor string) (*Endpoint, error)
 	Restore(ctx context.Context, id uuid.UUID, actor string) (*Endpoint, error)

@@ -64,7 +64,7 @@ func (h *Handler) RiskFindingDetail(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]any{
 		"finding":              f,
 		"related_request_ids":  related,
-		"related_request_note": "同端点（IDENTITY 主体附带身份指纹）近期运行时事件的 request_id，近似关联，非精确命中回放",
+		"related_request_note": "同 API（认证身份主体附带身份指纹）近期运行时事件的请求 ID，近似关联，非精确命中回放",
 	})
 }
 

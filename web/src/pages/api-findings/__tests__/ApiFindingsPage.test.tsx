@@ -110,6 +110,7 @@ describe('ApiFindingsPage', () => {
   let postCalls: { url: string; body: unknown }[]
 
   beforeEach(() => {
+    localStorage.clear()
     postCalls = []
     vi.stubGlobal(
       'fetch',
@@ -176,6 +177,22 @@ describe('ApiFindingsPage', () => {
     expect(await screen.findByText('fp-abc123')).toBeInTheDocument()
     const urls = (fetch as Mock).mock.calls.map((c) => String(c[0]))
     expect(urls.filter((u) => u.includes('/api-security/findings/summary'))).toHaveLength(1)
+  })
+
+  it('风险汇总表格支持拖拽调整列宽并持久化到 localStorage', async () => {
+    useAuthStore.setState({ user: makeUser(['api_runtime.read', 'api_risk.read']), csrfToken: null, initialized: true })
+    renderPage()
+    expect(await screen.findByText('风险汇总')).toBeInTheDocument()
+    const summaryTable = (await screen.findAllByRole('table'))[0]
+    expect(await within(summaryTable).findByText('影子 API')).toBeInTheDocument()
+    const handles = within(summaryTable).getAllByRole('separator', { name: '拖拽调整列宽' })
+    expect(handles).toHaveLength(5)
+    // 拖拽「风险条目」列（初始宽 100）+50 → 150
+    fireEvent.mouseDown(handles[1], { clientX: 100 })
+    fireEvent.mouseMove(document, { clientX: 150 })
+    fireEvent.mouseUp(document)
+    const saved = JSON.parse(localStorage.getItem('smart-table:api-findings-summary')!)
+    expect(saved.w.count).toBe(150)
   })
 
   it('无 api_risk.read/handle：不渲染汇总卡片与任何处置按钮，也不发汇总请求', async () => {
@@ -320,5 +337,99 @@ describe('ApiFindingsPage', () => {
       expect(labels).toContain('信息')
       expect(labels).not.toContain('无')
     })
+  })
+
+  it('后端返回英文检测标题时自动展示中文（不泄露原始英文短语）', async () => {
+    useAuthStore.setState({ user: makeUser(ALL_PERMS), csrfToken: null, initialized: true })
+    const englishFinding = {
+      ...findingNew,
+      id: 'f-en',
+      title: 'endpoint not in known baseline (shadow candidate)',
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/api-security/findings/summary')) {
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: summaryData }))
+        }
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: { items: [englishFinding], page: 1, page_size: 20, total: 1 },
+          }),
+        )
+      }),
+    )
+    renderPage()
+    expect(await screen.findByText('接口不在已知基线中（影子 API 候选）')).toBeInTheDocument()
+    expect(screen.queryByText('endpoint not in known baseline (shadow candidate)')).not.toBeInTheDocument()
+  })
+
+  it('WAF/敏感数据/授权/服务端泄露英文类型与标题全部中文化，汇总中的动态 WAF 类型可入筛选下拉', async () => {
+    useAuthStore.setState({ user: makeUser(ALL_PERMS), csrfToken: null, initialized: true })
+    const mixedItems = [
+      {
+        ...findingNew,
+        id: 'f-waf',
+        finding_type: 'WAF_942100',
+        title: 'SQL Injection Attack Detected via libinjection',
+        detail: { detector: 'waf', rule_id: '942100' },
+      },
+      {
+        ...findingNew,
+        id: 'f-sens',
+        finding_type: 'SENSITIVE_IN_QUERY',
+        title: 'sensitive field in url query',
+      },
+      {
+        ...findingNew,
+        id: 'f-authz',
+        finding_type: 'AUTHZ_BOLA_001',
+        title: 'AUTHZ_BOLA_001',
+      },
+      {
+        ...findingNew,
+        id: 'f-srv',
+        finding_type: 'SERVER_VERSION_DISCLOSURE',
+        title: 'server implementation header observed',
+      },
+    ]
+    const mixedSummary = {
+      ...summaryData,
+      by_finding_type: [
+        { finding_type: 'WAF_942100', count: 1, hits: 3, max_severity: 'HIGH', last_seen_at: '2026-07-22T09:00:00Z' },
+        { finding_type: 'SENSITIVE_IN_QUERY', count: 1, hits: 2, max_severity: 'HIGH', last_seen_at: '2026-07-22T09:00:00Z' },
+      ],
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/api-security/findings/summary')) {
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: mixedSummary }))
+        }
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: { items: mixedItems, page: 1, page_size: 20, total: mixedItems.length },
+          }),
+        )
+      }),
+    )
+    renderPage()
+    expect(await screen.findByText('通过 libinjection 检测到 SQL 注入攻击')).toBeInTheDocument()
+    expect(screen.getAllByText('WAF SQL 注入（942100）').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText('URL 查询含敏感字段').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText('URL 查询参数包含敏感字段')).toBeInTheDocument()
+    expect(screen.getAllByText('对象级越权（BOLA）').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText('服务端版本信息泄露')).toBeInTheDocument()
+    expect(screen.getByText('响应头暴露服务端实现信息')).toBeInTheDocument()
+    expect(screen.queryByText('WAF_942100')).not.toBeInTheDocument()
+    expect(screen.queryByText('SENSITIVE_IN_QUERY')).not.toBeInTheDocument()
+    expect(screen.queryByText('AUTHZ_BOLA_001')).not.toBeInTheDocument()
+    expect(screen.queryByText('SERVER_VERSION_DISCLOSURE')).not.toBeInTheDocument()
   })
 })

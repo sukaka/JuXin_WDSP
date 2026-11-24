@@ -231,6 +231,46 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /api-security/discovery-filter:
+    get:
+      operationId: apiSecDiscoveryFilterGet
+      tags: [api-security]
+      summary: 获取 API 发现静态资源与非 API 过滤配置
+      description: >-
+        返回当前生效的静态资源排除扩展名、自定义排除路径前缀、强制保留白名单前缀与非 API 过滤开关，
+        同时返回内置默认静态扩展名参考清单。权限：`api_asset.read`
+      responses:
+        '200':
+          description: 当前过滤配置与默认扩展名参考清单
+          content:
+            application/json:
+              schema: { type: object }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: apiSecDiscoveryFilterUpdate
+      tags: [api-security]
+      summary: 更新 API 发现静态资源与非 API 过滤配置
+      description: >-
+        校验并保存静态资源与非 API 发现过滤规则到系统设置（api_discovery:filter_rules），
+        立即刷新采集器、Agent 与数据流投影共享缓存，并写操作审计。权限：`api_asset.edit`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: 保存成功
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /api-security/endpoints/confirm:
     post:
       operationId: apiSecEndpointConfirmBatch
@@ -251,6 +291,79 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiSecEndpointConfirmResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/endpoints/ignore:
+    post:
+      operationId: apiSecEndpointIgnoreBatch
+      tags: [api-security]
+      summary: 批量忽略接口资产
+      description: >-
+        批量将接口置为已忽略（asset_status=IGNORED），单次最多 100 个；逐项处理并写生命周期事件与操作审计。
+        权限：`api_asset.ignore`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecEndpointConfirmRequest' }
+      responses:
+        '200':
+          description: 批量忽略结果（含逐项失败明细）
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/endpoints/cleanup-noise/preview:
+    post:
+      operationId: apiSecEndpointCleanupNoisePreview
+      tags: [api-security]
+      summary: 预览可清理的存量静态资源与非 API 噪声
+      description: >-
+        按当前发现过滤规则扫描存量 api_endpoints 中的静态资源与非 API 噪声，严格跳过已确认、
+        学习中/已建模或已绑定策略/授权/流程/接口组的受保护资产，返回待清理总数、跳过数与预览样本。
+        权限：`api_asset.read`
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: 预览结果
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/endpoints/cleanup-noise:
+    post:
+      operationId: apiSecEndpointCleanupNoiseExecute
+      tags: [api-security]
+      summary: 执行存量静态资源与非 API 噪声清理
+      description: >-
+        按当前发现过滤规则与受保护资产安全护栏，对命中的静态资源/非 API 噪声执行彻底删除（DELETE）
+        或批量忽略（IGNORE），全程记录操作审计。权限：`api_asset.ignore`
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: 清理执行结果
+          content:
+            application/json:
+              schema: { type: object }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1629,12 +1742,13 @@ paths:
     get:
       operationId: apiSecGraphGet
       tags: [api-security]
-      summary: API 调用图谱
+      summary: API 调用图谱（用户身份 10 分钟连续访问轨迹）
       description: >-
-        返回全量接口节点与调用边（节点为接口摘要并附 open_findings_count 未闭环风险计数，
+        返回接口节点与同一已识别用户身份在 10 分钟窗口内的连续访问调用边（节点附 application_name、host、
+        protocol_type、is_api 与 open_findings_count，并附 summary 噪声与孤立点统计；
         边为 api_call_edges 调用关系——由 aggregations RunCallEdges 分钟级水位增量派生，按 call_count 倒序）。
-        start/end/min_count 过滤仅作用于边，节点始终全量返回；非法取值返回 400。
-        权限：`api_graph.read`
+        支持按应用、资产状态、关键字及降噪开关（exclude_static / exclude_ignored / only_connected）过滤；
+        非法取值返回 400。权限：`api_graph.read`
       parameters:
         - name: start
           in: query
@@ -1651,12 +1765,105 @@ paths:
           required: false
           schema: { type: integer, minimum: 0 }
           description: 最小调用次数过滤（call_count >= min_count；需非负整数）
+        - name: application_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: 按所属应用 UUID 过滤节点与关联边
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [DISCOVERED, CONFIRMED, IGNORED, DEPRECATED, ZOMBIE] }
+          description: 按资产状态过滤节点
+        - name: keyword
+          in: query
+          required: false
+          schema: { type: string, maxLength: 128 }
+          description: 按 endpoint_key / 路径 / 应用名 / Host 关键字过滤
+        - name: exclude_static
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: 排除静态资源与非 API 噪声节点（永不排除 CONFIRMED 正式资产）
+        - name: exclude_ignored
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: 排除 IGNORED 状态节点
+        - name: only_connected
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: 仅返回至少有 1 条调用边关联的节点
       responses:
         '200':
-          description: 调用图谱（nodes + edges）
+          description: 调用图谱（nodes + edges + summary）
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiSecGraph' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/service-rpc-graph:
+    get:
+      operationId: apiSecServiceRpcGraphGet
+      tags: [api-security]
+      summary: 后端微服务真实 RPC / 服务间调用图谱
+      description: >-
+        汇聚 OTel 分布式追踪双端 Span 配对（apm.otel_traces）、云 API Sensor 分布式数据流
+        （wdsp.data_flow_contributions）与分布式流量 Agent gRPC 观测（agent_http_events），
+        返回后端微服务之间的真实 RPC（gRPC/Dubbo/Thrift/JSON-RPC 等）及服务间调用图谱。
+        各数据源独立优雅降级并如实通过 sources 返回状态，不伪造模拟数据。时间窗上限 24 小时。
+        权限：`api_graph.read`
+      parameters:
+        - name: start
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: 窗口起点（RFC3339；默认 end - 1h，窗口上限 24h）
+        - name: end
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: 窗口终点（RFC3339；默认当前时间）
+        - name: protocol
+          in: query
+          required: false
+          schema: { type: string, enum: [ALL, RPC, GRPC, HTTP, DUBBO, THRIFT, JSONRPC, CONNECT_RPC] }
+          description: 协议过滤（默认 ALL；RPC 仅保留 RPC 协议族）
+        - name: service
+          in: query
+          required: false
+          schema: { type: string, maxLength: 128 }
+          description: 按调用方或被调方服务名子串过滤
+        - name: paired_only
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: 仅保留双端 Span/Trace 确凿配对（Client↔Server）的微服务调用
+        - name: include_external
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: 是否包含外部目标地址（默认 false，仅展示微服务间调用）
+        - name: min_calls
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0 }
+          description: 最小调用次数过滤
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 500 }
+          description: 最大返回边数（默认 200，上限 500）
+      responses:
+        '200':
+          description: 后端微服务真实 RPC / 服务间调用图谱
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecServiceRPCGraph' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1703,22 +1910,45 @@ paths:
     post:
       operationId: apiSecSpecImport
       tags: [api-security]
-      summary: 导入 OpenAPI 规范
+      summary: 导入 API 规范（多格式 / 文件上传）
       description: >-
-        导入 OpenAPI 3.x / Swagger 2.0 JSON 文档（Swagger 2.0 自动转换）并与运行时接口对比
-        生成差异记录（api_spec_diffs，含 MISSING_* 与同名跨版本 CHANGED 两类）。
-        请求体两种形式（均为 application/json，上限 16MiB）：
-        ① 规范文档原文（含 `openapi: "3.x"` 或 `swagger: "2.0"` 字段）；
-        ② 包装形式 `{"spec": {...}, "file_name": "...", "name": "..."}`。
+        导入多格式 API 规范并与运行时接口对比生成差异记录（api_spec_diffs，含 MISSING_* 与同名跨版本 CHANGED 两类）。
+        支持格式：OpenAPI 3.x / Swagger 2.0 / AsyncAPI 2.x-3.x / Postman Collection v2.1 /
+        JSON Schema（draft-07、2020-12）/ GraphQL SDL / Protobuf (.proto) / WSDL 1.1-2.0 / XSD /
+        RAML 0.8-1.0 / API Blueprint (.apib) / HAR 1.1-1.2（落库自动脱敏凭据与响应体）/ 多文件 ZIP 归档包
+        （支持包内相对 $ref 展开，严格防 Zip 炸弹/路径穿越/SSRF）。
+        请求体支持三种形态（单规范上限 16MiB）：
+        ① multipart/form-data 文件直传（字段 file + 可选 file_name / name）；
+        ② JSON 包装 `{"spec": <对象或原始文本>, "file_name": "...", "name": "..."}`；
+        ③ 规范文档原文（JSON / YAML / XML / SDL / Protobuf / RAML / APIB / ZIP）。
         同名再导入 version_no 自增、旧 ACTIVE 降 HISTORICAL；规范端点幂等登记为候选。
-        仅支持 JSON，YAML/非 JSON 输入返回 400；缺少版本声明或有效 paths 亦返回 400；
+        格式不合法、触发安全限制（XXE/外部 $ref/YAML 炸弹/Zip 炸弹）返回 400；
         同名最新版本内容未变化返回 409。
         写操作审计。权限：`api_spec.import`
       requestBody:
         required: true
         content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 规范文件（.json/.yaml/.yml/.graphql/.gql/.graphqls/.sdl/.proto/.wsdl/.xsd/.xml/.raml/.apib/.har/.zip，上限 16MiB）
+                file_name:
+                  type: string
+                  description: 可选，覆盖上传文件名（展示元数据）
+                name:
+                  type: string
+                  description: 可选，覆盖规范名称（版本链标识）
           application/json:
             schema: { $ref: '#/components/schemas/ApiSecSpecImportRequest' }
+          text/plain:
+            schema:
+              type: string
+              description: 原始规范脚本文本（YAML / GraphQL SDL / Protobuf / WSDL / XSD / RAML / API Blueprint）
       responses:
         '200':
           description: 导入结果（含双向差异计数）
@@ -1739,10 +1969,11 @@ paths:
     post:
       operationId: apiSecSpecImportUrl
       tags: [api-security]
-      summary: 从 URL 导入 OpenAPI 规范
+      summary: 从 URL 导入 API 规范
       description: >-
-        从给定 URL 拉取规范文档（OpenAPI 3.x / Swagger 2.0，仅 JSON）并导入，
-        导入语义与粘贴导入一致（同名再导入 version_no 自增、旧 ACTIVE 降 HISTORICAL、
+        从给定 URL 拉取多格式规范文档（OpenAPI 3.x / Swagger 2.0 / AsyncAPI / Postman v2.1 /
+        JSON Schema / GraphQL / Protobuf / WSDL / XSD / RAML / API Blueprint / HAR / ZIP）并导入，
+        导入语义与文件上传/粘贴导入一致（同名再导入 version_no 自增、旧 ACTIVE 降 HISTORICAL、
         生成 MISSING_* 与 CHANGED 差异、规范端点幂等登记为候选）。
         SSRF 防护：仅 http/https、拒绝内网/保留地址、大小上限 16MiB、超时 10s、重定向再校验；
         URL 被防护拒绝返回 400，拉取失败返回 502；同名最新版本内容未变化返回 409。
@@ -8761,9 +8992,13 @@ components:
           format: uuid
           nullable: true
           description: 所属站点 ID（未归属时缺省或为 null）
+        application_name: { type: string, description: 所属应用名称 }
+        host: { type: string, description: 观测主机名（Host） }
+        protocol_type: { type: string, description: 协议类型（REST/GRPC/GRAPHQL 等） }
+        is_api: { type: boolean, description: 是否判定为 API 资产 }
         asset_status:
           type: string
-          enum: [DISCOVERED, CONFIRMED, IGNORED, DEPRECATED]
+          enum: [DISCOVERED, CONFIRMED, IGNORED, DEPRECATED, ZOMBIE]
           description: 资产状态
         learning_status:
           type: string
@@ -8771,6 +9006,18 @@ components:
           description: 学习状态
         hit_count: { type: integer, format: int64, description: 累计命中次数 }
         open_findings_count: { type: integer, format: int64, description: 未闭环风险发现数（活动状态 NEW/CONFIRMED/IN_PROGRESS） }
+
+    ApiSecGraphSummary:
+      type: object
+      description: 身份轨迹图谱过滤前后摘要统计
+      properties:
+        total_nodes: { type: integer }
+        visible_nodes: { type: integer }
+        static_noise_nodes: { type: integer }
+        ignored_nodes: { type: integer }
+        isolated_nodes: { type: integer }
+        total_edges: { type: integer }
+        visible_edges: { type: integer }
 
     ApiSecGraphEdge:
       type: object
@@ -8801,6 +9048,95 @@ components:
         edges:
           type: array
           items: { $ref: '#/components/schemas/ApiSecGraphEdge' }
+        summary: { $ref: '#/components/schemas/ApiSecGraphSummary' }
+
+    ApiSecServiceRPCSourceStatus:
+      type: object
+      description: 后端微服务调用图谱单路遥测数据源状态
+      required: [source, label, status, edge_count]
+      properties:
+        source: { type: string, enum: [otel_traces, agent_dataflow, agent_grpc] }
+        label: { type: string }
+        status: { type: string, enum: [READY, EMPTY, NOT_CONFIGURED, UNAVAILABLE] }
+        edge_count: { type: integer }
+        message: { type: string }
+
+    ApiSecServiceRPCNode:
+      type: object
+      description: 微服务调用图谱节点
+      required: [id, name, node_type, protocols, inbound_calls, outbound_calls]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        node_type: { type: string, enum: [SERVICE, EXTERNAL] }
+        protocols: { type: array, items: { type: string } }
+        inbound_calls: { type: integer, format: int64 }
+        outbound_calls: { type: integer, format: int64 }
+        inbound_edges: { type: integer }
+        outbound_edges: { type: integer }
+        error_count: { type: integer, format: int64 }
+        error_rate: { type: number }
+        avg_ms: { type: number }
+        operations_count: { type: integer }
+
+    ApiSecServiceRPCEdge:
+      type: object
+      description: 后端微服务真实 RPC / 服务间调用边
+      required: [id, source, target, target_type, protocol, call_category, evidence_type, paired, data_source, calls]
+      properties:
+        id: { type: string }
+        source: { type: string }
+        target: { type: string }
+        target_type: { type: string, enum: [SERVICE, EXTERNAL] }
+        protocol: { type: string }
+        call_category: { type: string, enum: [RPC, HTTP] }
+        evidence_type: { type: string }
+        paired: { type: boolean }
+        data_source: { type: string }
+        calls: { type: integer, format: int64 }
+        error_count: { type: integer, format: int64 }
+        error_rate: { type: number }
+        avg_ms: { type: number }
+        p95_ms: { type: number }
+        operations: { type: array, items: { type: string } }
+        sample_trace_ids: { type: array, items: { type: string } }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+
+    ApiSecServiceRPCGraphSummary:
+      type: object
+      description: 微服务 RPC 调用图谱摘要统计
+      properties:
+        total_nodes: { type: integer }
+        service_nodes: { type: integer }
+        external_nodes: { type: integer }
+        total_edges: { type: integer }
+        rpc_edges: { type: integer }
+        http_edges: { type: integer }
+        paired_edges: { type: integer }
+        error_edges: { type: integer }
+        total_calls: { type: integer, format: int64 }
+        total_errors: { type: integer, format: int64 }
+        truncated: { type: boolean }
+
+    ApiSecServiceRPCGraph:
+      type: object
+      description: 后端微服务真实 RPC / 服务间调用图谱响应
+      required: [start, end, nodes, edges, summary, sources]
+      properties:
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecServiceRPCNode' }
+        edges:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecServiceRPCEdge' }
+        summary: { $ref: '#/components/schemas/ApiSecServiceRPCGraphSummary' }
+        sources:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecServiceRPCSourceStatus' }
+        note: { type: string }
 
     ApiSecTopologyGroup:
       type: object
@@ -8833,14 +9169,19 @@ components:
     ApiSecSpecImportRequest:
       type: object
       description: >-
-        两种形式二选一：① 规范文档原文（顶层含 openapi: "3.x" 或 swagger: "2.0" 字段，
-        Swagger 2.0 自动转换为 OpenAPI 3）；② 包装形式（顶层无版本声明字段时按包装解析）：
-        spec 为文档对象，file_name/name 可选。仅支持 JSON；请求体上限 16MiB。
+        JSON 两种形式二选一（文件上传请使用 multipart/form-data）：① 规范文档对象（OpenAPI 3 / Swagger 2.0 /
+        AsyncAPI / Postman v2.1 / JSON Schema / HAR）；② 包装形式（顶层无格式字段时按包装解析）：
+        spec 为文档对象或原始文本字符串（YAML / GraphQL / Protobuf / WSDL / XSD / RAML / APIB 等），
+        file_name/name 可选。请求体上限 16MiB。
       properties:
         openapi: { type: string, example: '3.0.3', description: 形式①：OpenAPI 版本声明（须为 3.x） }
         swagger: { type: string, example: '2.0', description: 形式①：Swagger 版本声明（须为 "2.0"） }
         paths: { type: object, description: 形式①：规范 paths 对象（非空） }
-        spec: { type: object, description: 形式②：规范文档对象（包装形式时必填） }
+        spec:
+          oneOf:
+            - type: object
+            - type: string
+          description: 形式②：规范文档对象或原始脚本文本（包装形式时必填）
         file_name: { type: string, description: 形式②：可选文件名 }
         name: { type: string, description: 形式②：可选规范名称（缺省取文件名/info.title/内容哈希兜底） }
 
@@ -8860,8 +9201,8 @@ components:
         activated_at: { type: string, format: date-time, nullable: true, description: 激活时间（ACTIVE 版本） }
         format:
           type: string
-          enum: [openapi3, swagger2]
-          description: 规范格式（Swagger 2.0 导入后按 OpenAPI 3 规范化落库）
+          enum: [openapi3, swagger2, asyncapi, postman, jsonschema, graphql, protobuf, wsdl, xsd, raml, apib, har]
+          description: 规范格式（Swagger 2.0 导入后按 OpenAPI 3 规范化落库，HAR 落库自动脱敏凭据与响应体）
         file_name: { type: string, description: 文件名（未提供时为空串） }
         content_hash: { type: string, description: 规范化内容哈希（SHA-256，十六进制） }
         spec_json:

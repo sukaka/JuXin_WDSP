@@ -87,12 +87,33 @@ FROM api_sensitive_fields GROUP BY data_type ORDER BY count(*) DESC, data_type`)
 		return nil, fmt.Errorf("overview date anchor: %w", err)
 	}
 
-	// 趋势：事件数（含敏感明细的事件）与证据条目数（明细条数）分两查合并
+	// 趋势：事件数（含有效敏感明细的事件）与证据条目数（明细条数）分两查合并；
+	// 排除历史路径字段名误报、标准协议头字段名误报及 response_body_unchecked 诊断条目。
 	eventRows, err := s.db.Query(ctx, `
 SELECT occurred_at::date, count(*) FROM api_runtime_events
 WHERE occurred_at >= CURRENT_DATE - ($1::int - 1) * interval '1 day'
   AND details_json @> '[{"detector":"sensitive_data"}]'::jsonb
-GROUP BY 1`, days)
+  AND EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(details_json) AS item
+    WHERE item->>'detector' = 'sensitive_data'
+      AND lower(COALESCE(item->>'rule_id', '')) <> 'sensitive.response_body_unchecked'
+      AND NOT (
+        lower(COALESCE(item->>'rule_id', '')) = 'sensitive.field'
+        AND lower(COALESCE(item->'evidence'->>'location', '')) = 'path'
+      )
+      AND NOT (
+        lower(COALESCE(item->>'rule_id', '')) = 'sensitive.field'
+        AND lower(COALESCE(item->'evidence'->>'location', '')) = 'header'
+        AND (
+          lower(COALESCE(item->'evidence'->>'field', '')) LIKE 'sec-ch-%'
+          OR lower(COALESCE(item->'evidence'->>'field', '')) LIKE 'sec-fetch-%'
+          OR lower(COALESCE(item->'evidence'->>'field', '')) LIKE 'sec-websocket-%'
+          OR lower(COALESCE(item->'evidence'->>'field', '')) = ANY($2::text[])
+        )
+      )
+  )
+GROUP BY 1`, days, standardProtocolHeaderNames)
 	if err != nil {
 		return nil, fmt.Errorf("overview trend events: %w", err)
 	}
@@ -115,7 +136,22 @@ GROUP BY 1`, days)
 SELECT occurred_at::date, count(*) FROM api_runtime_events, jsonb_array_elements(details_json) AS item
 WHERE occurred_at >= CURRENT_DATE - ($1::int - 1) * interval '1 day'
   AND item->>'detector' = 'sensitive_data'
-GROUP BY 1`, days)
+  AND lower(COALESCE(item->>'rule_id', '')) <> 'sensitive.response_body_unchecked'
+  AND NOT (
+    lower(COALESCE(item->>'rule_id', '')) = 'sensitive.field'
+    AND lower(COALESCE(item->'evidence'->>'location', '')) = 'path'
+  )
+  AND NOT (
+    lower(COALESCE(item->>'rule_id', '')) = 'sensitive.field'
+    AND lower(COALESCE(item->'evidence'->>'location', '')) = 'header'
+    AND (
+      lower(COALESCE(item->'evidence'->>'field', '')) LIKE 'sec-ch-%'
+      OR lower(COALESCE(item->'evidence'->>'field', '')) LIKE 'sec-fetch-%'
+      OR lower(COALESCE(item->'evidence'->>'field', '')) LIKE 'sec-websocket-%'
+      OR lower(COALESCE(item->'evidence'->>'field', '')) = ANY($2::text[])
+    )
+  )
+GROUP BY 1`, days, standardProtocolHeaderNames)
 	if err != nil {
 		return nil, fmt.Errorf("overview trend hits: %w", err)
 	}

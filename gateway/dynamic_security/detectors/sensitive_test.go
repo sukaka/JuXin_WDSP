@@ -67,15 +67,79 @@ func TestSensitive_QueryMatchIsBlockClass(t *testing.T) {
 }
 
 func TestSensitive_NoMatchOnBenignNames(t *testing.T) {
-	// 负例：常见易误伤命名（hotel/company/panel 含 tel/pan 子串）不得命中
+	// 负例：常见易误伤命名（含 tel/pan/mail/phone/mobile 子串但非敏感字段）不得命中
 	ctx := dsctx.New("t", dsctx.DefaultParseLimits())
 	p := &parser.Parsed{
-		JSONFields: map[string]string{"hotel_name": "string", "company": "string", "panel_id": "number"},
+		JSONFields: map[string]string{
+			"hotel_name":   "string",
+			"company":      "string",
+			"panel_id":     "number",
+			"mailer":       "string",
+			"mailinglist":  "string",
+			"emailer":      "string",
+			"emailing":     "bool",
+			"pipermail":    "string",
+			"blackmail":    "string",
+			"voicemail":    "string",
+			"microphone":   "string",
+			"smartphone":   "string",
+			"automobile":   "string",
+			"telemetry":    "string",
+			"userEmailer":  "string",
+			"MAILING_LIST": "string",
+		},
 		FormFields: map[string]string{"title": "string", "content": "string"},
 	}
 	CheckSensitiveData(ctx, p, defaultPatterns(t), nil)
 	if ctx.MatchCount() != 0 {
 		t.Fatalf("benign fields must not match, got %+v", ctx.CopyMatches())
+	}
+}
+
+func TestSensitive_TruePositiveNamingVariants(t *testing.T) {
+	patterns := defaultPatterns(t)
+	cases := []struct {
+		field string
+		want  string
+	}{
+		{"phone", "phone"},
+		{"phones", "phone"},
+		{"user_phone", "phone"},
+		{"buyer.phone", "phone"},
+		{"userPhone", "phone"},
+		{"phoneNumber", "phone"},
+		{"telephone", "phone"},
+		{"cellphone", "phone"},
+		{"mobile", "phone"},
+		{"mobile_no", "phone"},
+		{"userMobile", "phone"},
+		{"mobileNumber", "phone"},
+		{"x-user-mobile", "phone"},
+		{"tel", "phone"},
+		{"user.address.tel", "phone"},
+		{"userTel", "phone"},
+		{"telNo", "phone"},
+		{"shouji", "phone"},
+		{"email", "email"},
+		{"emails", "email"},
+		{"e_mail", "email"},
+		{"e-mail", "email"},
+		{"user_email", "email"},
+		{"USER_EMAIL", "email"},
+		{"userEmail", "email"},
+		{"userEmailAddress", "email"},
+		{"emailAddress", "email"},
+		{"mail", "email"},
+		{"user_mail", "email"},
+		{"userMail", "email"},
+		{"mailAddress", "email"},
+		{"youxiang", "email"},
+	}
+	for _, tc := range cases {
+		got, ok := MatchSensitiveDataType(tc.field, patterns)
+		if !ok || got != tc.want {
+			t.Errorf("MatchSensitiveDataType(%q) = (%q, %v), want (%q, true)", tc.field, got, ok, tc.want)
+		}
 	}
 }
 
@@ -324,16 +388,31 @@ func TestSensitiveValue_PathLiteralSegmentValueUsesIndex(t *testing.T) {
 	}
 }
 
-func TestSensitiveValue_PathFieldNameHit(t *testing.T) {
-	ctx := dsctx.New("t", dsctx.DefaultParseLimits())
-	p := &parser.Parsed{
-		RawPath:        "/api/id_card/lookup",
-		NormalizedPath: "/api/id_card/lookup",
-	}
-	CheckSensitiveData(ctx, p, defaultPatterns(t), phoneValueRules(t))
-	m := findMatch(ctx, "sensitive.field")
-	if m == nil || m.Evidence["location"] != "path" || m.Evidence["field"] != "id_card" {
-		t.Fatalf("expected path field-name hit, got %+v", ctx.CopyMatches())
+func TestSensitiveValue_PathLiteralSegmentDoesNotEmitFieldNoise(t *testing.T) {
+	// URL 路径字面段仅代表路由或文件名（含备份压缩包扫描探测与业务路由词根），
+	// 不得产出 sensitive.field 误报；真实路径值级匹配由 TestSensitiveValue_PathSegmentHit 独立覆盖。
+	for _, rawPath := range []string{
+		"/mobile.zip",
+		"/mailer.zip",
+		"/remind_password.zip",
+		"/mailinglist.zip",
+		"/emailer.zip",
+		"/emailing.zip",
+		"/phones.zip",
+		"/mails.zip",
+		"/pipermail.zip",
+		"/api/id_card/lookup",
+		"/v1/auth/reset-password",
+	} {
+		ctx := dsctx.New("t-path-noise", dsctx.DefaultParseLimits())
+		p := &parser.Parsed{
+			RawPath:        rawPath,
+			NormalizedPath: rawPath,
+		}
+		CheckSensitiveData(ctx, p, defaultPatterns(t), phoneValueRules(t))
+		if ctx.MatchCount() != 0 {
+			t.Fatalf("path %q must not emit field-name noise, got %+v", rawPath, ctx.CopyMatches())
+		}
 	}
 }
 

@@ -18,20 +18,33 @@ type Resolver interface {
 	ResolveDomain(ctx context.Context, appID *uuid.UUID, hostname string) (*uuid.UUID, error)
 }
 
+// DomainAppResolver 可选扩展接口：按 Host/域名反查归属应用与域名 ID。
+// 用于镜像旁路（mirrorcap）等无 app_code/application_id 的事件来源回填归属。
+type DomainAppResolver interface {
+	ResolveApplicationByDomain(ctx context.Context, hostname string) (appID *uuid.UUID, domID *uuid.UUID, err error)
+}
+
 type negativeEntry struct {
 	at time.Time
+}
+
+type domainAppEntry struct {
+	appID uuid.UUID
+	domID uuid.UUID
 }
 
 const negativeRetryAfter = 60 * time.Second
 
 // appResolver 基于 applications 仓储的缓存解析器（并发安全）。
 type appResolver struct {
-	store *applications.Store
-	mu    sync.Mutex
-	apps  map[string]*uuid.UUID
-	doms  map[string]*uuid.UUID // key: appID|lower(host)
-	negA  map[string]negativeEntry
-	negD  map[string]negativeEntry
+	store          *applications.Store
+	mu             sync.Mutex
+	apps           map[string]*uuid.UUID
+	doms           map[string]*uuid.UUID // key: appID|lower(host)
+	negA           map[string]negativeEntry
+	negD           map[string]negativeEntry
+	hostMap        map[string]domainAppEntry // normalized_hostname -> (appID, domID)
+	hostMapLoaded  time.Time
 }
 
 // NewAppResolver 创建归属解析器。
@@ -123,4 +136,115 @@ func (r *appResolver) ResolveDomain(ctx context.Context, appID *uuid.UUID, hostn
 	}
 	r.mu.Unlock()
 	return found, nil
+}
+
+// ResolveApplicationByDomain 按 Host（去端口小写）反查归属应用与域名 ID（精确优先，次选 *. 泛域名）。
+// 60s 周期刷新缓存，供 mirrorcap 旁路等不含 app_code/application_id 的事件自动归属应用。
+func (r *appResolver) ResolveApplicationByDomain(ctx context.Context, hostname string) (*uuid.UUID, *uuid.UUID, error) {
+	host := normalizeResolveHost(hostname)
+	if host == "" || r.store == nil || r.store.DB() == nil {
+		return nil, nil, nil
+	}
+	r.mu.Lock()
+	entries := r.hostMap
+	needRefresh := entries == nil || time.Since(r.hostMapLoaded) >= negativeRetryAfter
+	r.mu.Unlock()
+
+	if needRefresh {
+		loaded, err := r.loadHostMap(ctx)
+		if err != nil {
+			if entries == nil {
+				return nil, nil, err
+			}
+		} else {
+			r.mu.Lock()
+			r.hostMap = loaded
+			r.hostMapLoaded = time.Now()
+			entries = loaded
+			r.mu.Unlock()
+		}
+	}
+	if e, ok := matchHostEntry(host, entries); ok {
+		a, d := e.appID, e.domID
+		return &a, &d, nil
+	}
+	return nil, nil, nil
+}
+
+func (r *appResolver) loadHostMap(ctx context.Context) (map[string]domainAppEntry, error) {
+	rows, err := r.store.DB().Query(ctx, `
+SELECT d.normalized_hostname, d.hostname, d.application_id, d.id
+FROM application_domains d
+JOIN applications a ON a.id = d.application_id AND a.deleted_at IS NULL
+ORDER BY (a.status = 'ACTIVE') DESC, (d.status = 'ACTIVE') DESC, (a.deployment_mode = 'MIRROR') DESC, d.created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]domainAppEntry)
+	for rows.Next() {
+		var norm, raw string
+		var appID, domID uuid.UUID
+		if err := rows.Scan(&norm, &raw, &appID, &domID); err != nil {
+			return nil, err
+		}
+		key := strings.ToLower(strings.TrimSpace(norm))
+		if key == "" {
+			key = strings.ToLower(strings.TrimSpace(raw))
+		}
+		if key == "" {
+			continue
+		}
+		if _, exists := out[key]; !exists {
+			out[key] = domainAppEntry{appID: appID, domID: domID}
+		}
+	}
+	return out, rows.Err()
+}
+
+func normalizeResolveHost(hostname string) string {
+	host := strings.ToLower(strings.TrimSpace(hostname))
+	if host == "" {
+		return ""
+	}
+	if i := strings.LastIndex(host, ":"); i > 0 {
+		allDigits := true
+		for j := i + 1; j < len(host); j++ {
+			if host[j] < '0' || host[j] > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			host = host[:i]
+		}
+	}
+	return host
+}
+
+func matchHostEntry(host string, entries map[string]domainAppEntry) (domainAppEntry, bool) {
+	if len(entries) == 0 || host == "" {
+		return domainAppEntry{}, false
+	}
+	if e, ok := entries[host]; ok {
+		return e, true
+	}
+	var bestKey string
+	var best domainAppEntry
+	for key, e := range entries {
+		if !strings.HasPrefix(key, "*.") {
+			continue
+		}
+		if host == key[2:] || strings.HasSuffix(host, key[1:]) {
+			// 更长后缀优先（更具体泛域名优先于更宽泛域名）
+			if len(key) > len(bestKey) {
+				bestKey = key
+				best = e
+			}
+		}
+	}
+	if bestKey != "" {
+		return best, true
+	}
+	return domainAppEntry{}, false
 }

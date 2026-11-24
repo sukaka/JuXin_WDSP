@@ -236,8 +236,9 @@ func Evaluate(in EvidenceInput) Assessment {
 		})
 	}
 
-	// 3. 配置证据回落。
-	if in.DeploymentMode == DeployMirror || in.DeploymentMode == DeployTransparent {
+	// 3. 配置证据回落（仅 MIRROR 镜像旁路为被动旁路观测；TRANSPARENT 为在线串接拦截模式，
+	// 具备真实业务域名与监听端口，正常记入 config_listen 配置证据）。
+	if in.DeploymentMode == DeployMirror {
 		ev = append(ev, EvidenceItem{
 			Type:    "deployment_bypass",
 			Summary: fmt.Sprintf("旁路观测部署（%s），监听配置不适用", in.DeploymentMode),

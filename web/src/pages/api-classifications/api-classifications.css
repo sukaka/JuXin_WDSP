@@ -1,0 +1,54 @@
+.api-classifications-page > .ant-card-body {
+  padding-top: 20px;
+}
+
+.api-classifications-intro {
+  margin-bottom: 16px !important;
+}
+
+.api-classifications-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.api-classifications-search {
+  width: min(320px, 100%);
+}
+
+.api-classifications-source-filter {
+  width: 140px;
+}
+
+.api-classifications-page .ant-table-thead > tr > th {
+  background: #fafafa;
+  vertical-align: middle;
+}
+
+.api-classifications-page .ant-table-tbody > tr > td {
+  height: 58px;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  vertical-align: middle;
+}
+
+.api-classification-description {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-classification-action {
+  padding-inline: 0;
+  white-space: nowrap;
+}
+
+@media (max-width: 560px) {
+  .api-classifications-search,
+  .api-classifications-source-filter {
+    width: 100%;
+  }
+}

@@ -99,6 +99,9 @@ func extractSweepHits(detailsJSON []byte) ([]sweepHit, error) {
 			continue
 		}
 		location := d.Evidence["location"]
+		if IsIgnoredSensitiveFieldHit(location, field, d.RuleID) {
+			continue
+		}
 		path := field
 		if location != "" {
 			path = location + "." + field
@@ -141,8 +144,29 @@ SELECT id, endpoint_key, details_json, occurred_at
 FROM api_runtime_events
 WHERE ($1::timestamptz IS NULL OR occurred_at > $1)
   AND details_json @> '[{"detector":"sensitive_data"}]'::jsonb
+  AND EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(details_json) AS d
+    WHERE d->>'detector' = 'sensitive_data'
+      AND COALESCE(d->'evidence'->>'field', '') <> ''
+      AND lower(COALESCE(d->>'rule_id', '')) <> 'sensitive.response_body_unchecked'
+      AND NOT (
+        lower(COALESCE(d->>'rule_id', '')) = 'sensitive.field'
+        AND lower(COALESCE(d->'evidence'->>'location', '')) = 'path'
+      )
+      AND NOT (
+        lower(COALESCE(d->>'rule_id', '')) = 'sensitive.field'
+        AND lower(COALESCE(d->'evidence'->>'location', '')) = 'header'
+        AND (
+          lower(COALESCE(d->'evidence'->>'field', '')) LIKE 'sec-ch-%'
+          OR lower(COALESCE(d->'evidence'->>'field', '')) LIKE 'sec-fetch-%'
+          OR lower(COALESCE(d->'evidence'->>'field', '')) LIKE 'sec-websocket-%'
+          OR lower(COALESCE(d->'evidence'->>'field', '')) = ANY($3::text[])
+        )
+      )
+  )
 ORDER BY occurred_at ASC, id ASC
-LIMIT $2`, wm, sweepBatchSize)
+LIMIT $2`, wm, sweepBatchSize, standardProtocolHeaderNames)
 	if err != nil {
 		return nil, fmt.Errorf("sensitive sweep query: %w", err)
 	}

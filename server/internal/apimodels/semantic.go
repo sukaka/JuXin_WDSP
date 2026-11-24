@@ -7,7 +7,11 @@
 // （id/money 等允许数值形态的语义不在本护栏范围内）。
 package apimodels
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/jiuzhang-waf/server/internal/apidata"
+)
 
 // stringOnlySemantics 字符串语义集合：命中这些语义的参数强制 base_type=string，
 // 且不产出数值上下界约束。
@@ -22,8 +26,14 @@ var stringOnlySemantics = map[string]struct{}{
 // inferStringSemantic 按参数名/结构化路径启发式识别字符串语义（与 statistics.go 1c
 // 词表对齐；未命中返回空串）。供候选构建与观测物化在写 base_type 前做护栏判定。
 func inferStringSemantic(name, path string) string {
-	n := strings.ToLower(name)
-	p := strings.ToLower(path)
+	n := strings.ToLower(strings.TrimSpace(name))
+	p := strings.ToLower(strings.TrimSpace(path))
+	if strings.HasPrefix(p, "header.") && apidata.IsStandardProtocolHeader(strings.TrimPrefix(p, "header.")) {
+		return ""
+	}
+	if apidata.IsStandardProtocolHeader(n) {
+		return ""
+	}
 	switch {
 	case n == "password" || n == "passwd" || n == "pwd" || n == "secret":
 		return "secret"

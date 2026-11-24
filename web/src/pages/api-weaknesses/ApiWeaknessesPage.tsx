@@ -19,7 +19,7 @@ import {
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import type { Dayjs } from 'dayjs'
+import dayjs, { type Dayjs } from 'dayjs'
 import {
   apiWeaknessesApi,
   type ApiWeakness,
@@ -251,14 +251,14 @@ export default function ApiWeaknessesPage() {
       title: '弱点',
       dataIndex: 'weakness_name',
       ellipsis: true,
-      render: (v: string, record) => (
-        <Space size={4}>
-          <Typography.Text strong>{v}</Typography.Text>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {record.weakness_code}
-          </Typography.Text>
-        </Space>
-      ),
+      render: (v: string) =>
+        v ? (
+          <Tooltip title={v}>
+            <Typography.Text strong>{v}</Typography.Text>
+          </Tooltip>
+        ) : (
+          '-'
+        ),
     },
     {
       title: '分类',
@@ -343,16 +343,27 @@ export default function ApiWeaknessesPage() {
       >
         确认
       </Button>
-      <Button
-        disabled={!ACTION_ALLOWED.assign.includes(current.status)}
-        onClick={() => {
-          assignForm.resetFields()
-          assignForm.setFieldsValue({ owner: current.owner || undefined })
-          setAssignOpen(true)
-        }}
+      <Tooltip
+        title={
+          current.status === 'NEW'
+            ? '请先确认弱点后再指派负责人和整改期限'
+            : undefined
+        }
       >
-        指派
-      </Button>
+        <Button
+          disabled={!ACTION_ALLOWED.assign.includes(current.status)}
+          onClick={() => {
+            assignForm.resetFields()
+            assignForm.setFieldsValue({
+              owner: current.owner || undefined,
+              due_date: current.due_date ? dayjs(current.due_date) : undefined,
+            })
+            setAssignOpen(true)
+          }}
+        >
+          指派
+        </Button>
+      </Tooltip>
       <Button
         disabled={!ACTION_ALLOWED.fixed.includes(current.status)}
         onClick={() => openNoteAction('fixed')}
@@ -475,11 +486,8 @@ export default function ApiWeaknessesPage() {
           <>
             {actionBar}
             <Descriptions column={2} size="small" style={{ marginBottom: 16 }}>
-              <Descriptions.Item label="弱点名称">
+              <Descriptions.Item label="弱点名称" span={2}>
                 {current.weakness_name}
-              </Descriptions.Item>
-              <Descriptions.Item label="弱点编码">
-                <Typography.Text code>{current.weakness_code}</Typography.Text>
               </Descriptions.Item>
               <Descriptions.Item label="分类">
                 <StatusTag
@@ -496,12 +504,8 @@ export default function ApiWeaknessesPage() {
               <Descriptions.Item label="状态">
                 <StatusTag value={current.status} map={WEAKNESS_STATUS_META} />
               </Descriptions.Item>
-              <Descriptions.Item label="接口">
-                {current.endpoint_key ? (
-                  <Typography.Text code>{current.endpoint_key}</Typography.Text>
-                ) : (
-                  '-'
-                )}
+              <Descriptions.Item label="触发次数">
+                {current.trigger_count}
               </Descriptions.Item>
               <Descriptions.Item label="负责人">
                 {current.owner || '-'}
@@ -509,8 +513,12 @@ export default function ApiWeaknessesPage() {
               <Descriptions.Item label="整改期限">
                 {formatDateTime(current.due_date)}
               </Descriptions.Item>
-              <Descriptions.Item label="触发次数">
-                {current.trigger_count}
+              <Descriptions.Item label="接口" span={2}>
+                {current.endpoint_key ? (
+                  <Typography.Text code>{current.endpoint_key}</Typography.Text>
+                ) : (
+                  '-'
+                )}
               </Descriptions.Item>
               <Descriptions.Item label="首次命中">
                 {formatDateTime(current.first_seen)}

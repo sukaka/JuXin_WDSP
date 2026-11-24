@@ -243,7 +243,7 @@ const normalizeAdvisory = (a: VulnAdvisory): VulnAdvisory => ({
 
 /**
  * 漏洞情报提醒（PHP 场景闭环）。
- * 权限：vuln_intel.read（查询）/ vuln_intel.manage（同步、导入、设置与技术资产维护，仅 SYSTEM_ADMIN）。
+ * 权限：vuln_intel.read（查询）/ vuln_intel.manage（同步、导入、设置与技术资产维护，归属运维管理员）。
  */
 export const vulnIntelApi = {
   overview: async () => {

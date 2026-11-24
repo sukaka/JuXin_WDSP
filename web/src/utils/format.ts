@@ -67,3 +67,37 @@ export function formatBytes(value?: number | null): string {
   const decimals = v >= 100 ? 0 : v >= 10 ? 1 : 2
   return `${v.toFixed(decimals)} ${units[u]}`
 }
+
+export type BandwidthUnit = 'B/s' | 'KB/s' | 'MB/s' | 'GB/s'
+
+/** 按峰值速率选择统一带宽单位与换算除数，用于图表 Y 轴自动缩放 */
+export function pickBandwidthScale(maxBytesPerSecond: number): { unit: BandwidthUnit; divisor: number } {
+  if (!Number.isFinite(maxBytesPerSecond) || maxBytesPerSecond < 1024) {
+    return { unit: 'B/s', divisor: 1 }
+  }
+  if (maxBytesPerSecond < 1024 ** 2) {
+    return { unit: 'KB/s', divisor: 1024 }
+  }
+  if (maxBytesPerSecond < 1024 ** 3) {
+    return { unit: 'MB/s', divisor: 1024 ** 2 }
+  }
+  return { unit: 'GB/s', divisor: 1024 ** 3 }
+}
+
+/** 拆分单点带宽速率为数值、单位和小数位，供大屏滚动数字卡片使用 */
+export function splitBandwidthRate(value?: number | null): { value: number; unit: BandwidthUnit; digits: number } {
+  if (value === null || value === undefined || !Number.isFinite(value) || value < 0) {
+    return { value: 0, unit: 'B/s', digits: 0 }
+  }
+  const { unit, divisor } = pickBandwidthScale(value)
+  const scaled = value / divisor
+  const digits = unit === 'B/s' ? 0 : scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2
+  return { value: scaled, unit, digits }
+}
+
+/** 带宽速率人性化格式化（B/s、KB/s、MB/s、GB/s），空值/非法值返回占位符 */
+export function formatBytesPerSecond(value?: number | null): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value < 0) return '-'
+  const { value: scaled, unit, digits } = splitBandwidthRate(value)
+  return `${scaled.toFixed(digits)} ${unit}`
+}

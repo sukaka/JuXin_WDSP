@@ -20,15 +20,22 @@ import (
 
 // Handler API 接口管理。
 type Handler struct {
-	store        Repository
-	audits       *audits.Service
-	exportModels ExportModelReader
-	exportExtras ExportExtrasProvider
+	store           Repository
+	audits          *audits.Service
+	exportModels    ExportModelReader
+	exportExtras    ExportExtrasProvider
+	discoveryFilter *DiscoveryFilterProvider
 }
 
 // NewHandler 创建处理器（构造注入审计服务，语义同 customrules）。
 func NewHandler(store Repository, audit *audits.Service) *Handler {
 	return &Handler{store: store, audits: audit}
+}
+
+// SetDiscoveryFilterProvider 注入发现过滤规则提供者（读写 system_settings 并共享运行期缓存）。
+func (h *Handler) SetDiscoveryFilterProvider(p *DiscoveryFilterProvider) *Handler {
+	h.discoveryFilter = p
+	return h
 }
 
 // RegisterRoutes 注册任务书 51.1 / 51.2 接口组（统一 /api/v1/api-security 前缀，
@@ -41,11 +48,16 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 	exportRoute := func(handler http.Handler) http.Handler {
 		return authz(limiter(middleware.RequirePermission("api_asset.export")(handler)))
 	}
+	mux.Handle("GET /api/v1/api-security/discovery-filter", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.GetDiscoveryFilter))))
+	mux.Handle("PUT /api/v1/api-security/discovery-filter", authz(middleware.RequirePermission("api_asset.edit")(http.HandlerFunc(h.UpdateDiscoveryFilter))))
 	mux.Handle("GET /api/v1/api-security/endpoints", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.List))))
 	mux.Handle("GET /api/v1/api-security/endpoints/export", exportRoute(http.HandlerFunc(h.ExportList)))
 	mux.Handle("GET /api/v1/api-security/endpoints/site-summary", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.SiteSummary))))
 	mux.Handle("GET /api/v1/api-security/endpoints/directory-tree", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.DirectoryTree))))
 	mux.Handle("POST /api/v1/api-security/endpoints/confirm", authz(middleware.RequirePermission("api_asset.confirm")(http.HandlerFunc(h.ConfirmBatch))))
+	mux.Handle("POST /api/v1/api-security/endpoints/ignore", authz(middleware.RequirePermission("api_asset.ignore")(http.HandlerFunc(h.IgnoreBatch))))
+	mux.Handle("POST /api/v1/api-security/endpoints/cleanup-noise/preview", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.PreviewNoiseCleanup))))
+	mux.Handle("POST /api/v1/api-security/endpoints/cleanup-noise", authz(middleware.RequirePermission("api_asset.ignore")(http.HandlerFunc(h.ExecuteNoiseCleanup))))
 	mux.Handle("GET /api/v1/api-security/endpoints/{id}", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.Get))))
 	mux.Handle("GET /api/v1/api-security/endpoints/{id}/export", exportRoute(http.HandlerFunc(h.ExportDetail)))
 	mux.Handle("GET /api/v1/api-security/endpoints/{id}/traffic-trend", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.TrafficTrend))))
@@ -75,6 +87,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		Keyword:         strings.TrimSpace(q.Get("keyword")),
 		DirectoryPrefix: strings.TrimSpace(q.Get("directory_path")),
 		Unassigned:      q.Get("unassigned") == "true",
+		IncludeNonAPI:   q.Get("include_non_api") == "true",
 		Page:            queryInt(r, "page", 1),
 		PageSize:        queryInt(r, "page_size", 20),
 	}

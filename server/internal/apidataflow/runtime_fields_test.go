@@ -272,3 +272,24 @@ func TestMergeFieldEvidenceListsReturnsEmptySliceNotNil(t *testing.T) {
 		t.Fatalf("empty fields marshaled as null instead of []: %s", encoded)
 	}
 }
+
+func TestExtractRuntimeFieldEvidenceIgnoresProtocolHeaderFieldNoise(t *testing.T) {
+	fields, err := extractRuntimeFieldEvidence([]byte(`[
+		{"detector":"sensitive_data","rule_id":"sensitive.field","evidence":{"field":"sec-ch-ua-mobile","location":"header","direction":"REQUEST","data_type":"phone"}},
+		{"detector":"sensitive_data","rule_id":"sensitive.field","evidence":{"field":"mobile.zip","location":"path","direction":"REQUEST","data_type":"phone"}},
+		{"detector":"sensitive_data","rule_id":"sensitive.value","evidence":{"field":"{id}","location":"path","direction":"REQUEST","data_type":"phone"}},
+		{"detector":"sensitive_data","rule_id":"sensitive.value","evidence":{"field":"user-agent","location":"header","direction":"REQUEST","data_type":"phone"}},
+		{"detector":"sensitive_data","rule_id":"sensitive.field","evidence":{"field":"x-user-mobile","location":"header","direction":"REQUEST","data_type":"phone"}}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fields) != 3 {
+		t.Fatalf("expected 3 non-noise fields, got %+v", fields)
+	}
+	for _, f := range fields {
+		if f.Path == "header.sec-ch-ua-mobile" || f.Path == "path.mobile.zip" {
+			t.Fatalf("noise field leaked into runtime fields: %+v", fields)
+		}
+	}
+}

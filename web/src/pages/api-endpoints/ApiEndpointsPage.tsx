@@ -34,6 +34,8 @@ import {
   apiAssetValueReasonLabel,
   buildDirectoryTree,
 } from '../../utils/stage8'
+import CleanupNoiseModal from './CleanupNoiseModal'
+import DiscoveryFilterModal from './DiscoveryFilterModal'
 import EndpointDetailDrawer from './EndpointDetailDrawer'
 
 /** 资产状态展示映射（公共映射 + 本地补充 ZOMBIE 僵尸态，见 apiassets 生命周期状态机） */
@@ -73,7 +75,7 @@ export default function ApiEndpointsPage() {
     selectedCount,
     clearSelection,
     rowSelection,
-  } = useExportSelection<ApiEndpointItem>(canExport)
+  } = useExportSelection<ApiEndpointItem>(canExport || canConfirm || canIgnore)
 
   const [assetStatus, setAssetStatus] = useState<string | undefined>()
   const [learningStatus, setLearningStatus] = useState<string | undefined>()
@@ -83,6 +85,8 @@ export default function ApiEndpointsPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [detail, setDetail] = useState<ApiEndpointItem | null>(null)
+  const [filterModalOpen, setFilterModalOpen] = useState(false)
+  const [cleanupModalOpen, setCleanupModalOpen] = useState(false)
   /** 合并弹窗：mergeSource 为保留方（主接口），mergeTargetId 为待并入接口（并入后删除） */
   const [mergeSource, setMergeSource] = useState<ApiEndpointItem | null>(null)
   const [mergeTargetId, setMergeTargetId] = useState<string | undefined>()
@@ -146,6 +150,36 @@ export default function ApiEndpointsPage() {
     },
     onError: (e: unknown) =>
       message.error(e instanceof ApiError ? e.message : '确认失败'),
+  })
+
+  const confirmBatchMut = useMutation({
+    mutationFn: (ids: string[]) => apiEndpointsApi.confirm(ids),
+    onSuccess: (r) => {
+      if (r.failed && r.failed.length > 0) {
+        message.warning(`已确认 ${r.confirmed} 个，${r.failed.length} 个失败`)
+      } else {
+        message.success(`已批量确认 ${r.confirmed} 个接口`)
+      }
+      clearSelection()
+      void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
+    },
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '批量确认失败'),
+  })
+
+  const ignoreBatchMut = useMutation({
+    mutationFn: (ids: string[]) => apiEndpointsApi.ignoreBatch(ids),
+    onSuccess: (r) => {
+      if (r.failed && r.failed.length > 0) {
+        message.warning(`已忽略 ${r.ignored} 个，${r.failed.length} 个失败`)
+      } else {
+        message.success(`已批量忽略 ${r.ignored} 个接口`)
+      }
+      clearSelection()
+      void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
+    },
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '批量忽略失败'),
   })
 
   const ignoreMut = useMutation({
@@ -262,6 +296,29 @@ export default function ApiEndpointsPage() {
       title: '操作确认',
       content: `确定忽略接口「${record.http_method} ${record.normalized_path}」吗？忽略后标记为已忽略，不再进入正式资产管理。`,
       onOk: () => ignoreMut.mutate(record.id),
+    })
+  }
+
+  const confirmBatchSelected = () => {
+    if (selectedCount === 0) return
+    modal.confirm({
+      title: '批量确认接口',
+      content: `确定将已勾选的 ${selectedCount} 个接口确认为正式 API 资产吗？`,
+      okText: '确认',
+      cancelText: '取消',
+      onOk: () => confirmBatchMut.mutate(selectedIds),
+    })
+  }
+
+  const ignoreBatchSelected = () => {
+    if (selectedCount === 0) return
+    modal.confirm({
+      title: '批量忽略接口',
+      content: `确定将已勾选的 ${selectedCount} 个接口标记为已忽略吗？忽略后不再进入正式资产管理。`,
+      okText: '确认忽略',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: () => ignoreBatchMut.mutate(selectedIds),
     })
   }
 
@@ -695,6 +752,14 @@ export default function ApiEndpointsPage() {
                 setPage(1)
               }}
             />
+            <Button onClick={() => setFilterModalOpen(true)}>
+              发现过滤规则
+            </Button>
+            {canIgnore ? (
+              <Button onClick={() => setCleanupModalOpen(true)}>
+                清理静态/非API噪声
+              </Button>
+            ) : null}
             {canExport ? (
               <ExportDropdown
                 label="导出清单"
@@ -723,6 +788,48 @@ export default function ApiEndpointsPage() {
               />
             ) : null}
           </Space>
+          {selectedCount > 0 && (canConfirm || canIgnore) ? (
+            <Space
+              style={{
+                marginBottom: 12,
+                padding: '6px 12px',
+                borderRadius: token.borderRadius,
+                background: token.colorFillAlter,
+                width: '100%',
+                justifyContent: 'space-between',
+              }}
+              wrap
+            >
+              <Typography.Text>
+                已选择 <Typography.Text strong>{selectedCount}</Typography.Text> 个接口
+              </Typography.Text>
+              <Space>
+                {canConfirm ? (
+                  <Button
+                    size="small"
+                    type="primary"
+                    loading={confirmBatchMut.isPending}
+                    onClick={confirmBatchSelected}
+                  >
+                    批量确认
+                  </Button>
+                ) : null}
+                {canIgnore ? (
+                  <Button
+                    size="small"
+                    danger
+                    loading={ignoreBatchMut.isPending}
+                    onClick={ignoreBatchSelected}
+                  >
+                    批量忽略
+                  </Button>
+                ) : null}
+                <Button size="small" onClick={clearSelection}>
+                  取消选择
+                </Button>
+              </Space>
+            </Space>
+          ) : null}
           <SmartTable<ApiEndpointItem>
             storageKey="api-endpoints"
             rowKey="id"
@@ -750,6 +857,17 @@ export default function ApiEndpointsPage() {
         </Card>
       </div>
       <EndpointDetailDrawer endpoint={detail} onClose={() => setDetail(null)} />
+      <DiscoveryFilterModal
+        open={filterModalOpen}
+        canEdit={canEdit}
+        onClose={() => setFilterModalOpen(false)}
+      />
+      <CleanupNoiseModal
+        open={cleanupModalOpen}
+        applicationId={siteFilter.applicationId}
+        applicationName={currentSiteName}
+        onClose={() => setCleanupModalOpen(false)}
+      />
 
       <Modal
         title="合并接口"

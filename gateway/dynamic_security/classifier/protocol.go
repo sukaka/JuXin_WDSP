@@ -168,6 +168,17 @@ func IsGenericProtocol(v any) bool {
 	return false
 }
 
+// IsStructuralProtocol 判定协议标签是否属于结构性 API 协议（如 GRPC/GRAPHQL/SOAP/RPC/WS/SSE/WEBHOOK）。
+// 这些协议不依赖 JSON 分类打分即明确具备 API 语义。
+func IsStructuralProtocol(proto string) bool {
+	switch strings.ToUpper(strings.TrimSpace(proto)) {
+	case ProtocolGRPC, ProtocolGraphQL, ProtocolSOAP, ProtocolJSONRPC, ProtocolXMLRPC,
+		ProtocolWebsocketHandshake, ProtocolSSE, ProtocolWebhook, ProtocolFileUpload:
+		return true
+	}
+	return false
+}
+
 // mediaType 取 Content-Type 媒体类型小写（畸形头部降级为 ';' 前缀，与 parser 同一纪律）。
 func mediaType(contentType string) string {
 	mt, _, err := mime.ParseMediaType(contentType)

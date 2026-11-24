@@ -39,7 +39,7 @@ func assertExpandedPurposeClassifications(t *testing.T, env *testEnv) {
 	t.Helper()
 	for _, want := range expandedPurposeClassifications {
 		if n := s8Count(t, env, `SELECT count(*) FROM api_classifications
-			WHERE code=$1 AND name=$2 AND description <> '' AND is_builtin`, want[0], want[1]); n != 1 {
+			WHERE code=$1 AND name=$2 AND description <> '' AND description !~ '[A-Za-z]' AND is_builtin`, want[0], want[1]); n != 1 {
 			t.Fatalf("expanded purpose classification %v count=%d want 1", want, n)
 		}
 	}

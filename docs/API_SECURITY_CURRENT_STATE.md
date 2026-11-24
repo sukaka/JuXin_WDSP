@@ -172,7 +172,7 @@
 - **Runtime Producer**: 流量自动发现；**Runtime Consumer**: 基线下发 `ListKeyStatus`（store.go:399-414）→ lifecycle detector
 - **Frontend**: api-endpoints 页（过滤/确认/忽略）；**合并/拆分无 UI（API_ONLY）**
 - **Test**: `handler_stage8_test.go`、`store_stage8_test.go`、`handler_lifecycle_test.go`、`normalize_test.go`、`value_test.go`、`lifecycle_test.go`
-- **Known Gap**: ①资产唯一键实际只有 method+normalized_path（跨域名/应用同键合并，归属首写胜出；~~protocol_type 恒 REST~~ **已补全（协议识别波）**：REST/GRPC/GRAPHQL/SOAP/WEBSOCKET 五值打标，GraphQL 不按 operation 拆API为遗留）；②应用资产无来源枚举/确认/合并/拆分；应用级评分聚合接口 `GET /api-security/applications/{id}/asset-value` 已落地，聚合既有接口评分并披露未评分覆盖，前端 `ApplicationAssetValueCard` 已接入应用详情，真实 PostgreSQL 验证与登录态浏览器验收待完成；③文件资产已有真实观测、台账与同内容关联，完整文件生命周期与因果溯源仍未实现；④`api_endpoint_path_segments` TABLE_ONLY；⑤非 API 路径也入资产表（发现不过滤 is_api）；⑥~~DEPRECATED 状态无 HTTP 入口~~ **已闭环（第三波 deprecate/restore）**；⑦资产状态（DISCOVERED/CONFIRMED/IGNORED/DEPRECATED/ZOMBIE）/学习状态/模型状态三层分离真实落地 ✅。
+- **Known Gap**: ①资产唯一键实际只有 method+normalized_path（跨域名/应用同键合并，归属首写胜出；~~protocol_type 恒 REST~~ **已补全（协议识别波）**：REST/GRPC/GRAPHQL/SOAP/WEBSOCKET 五值打标，GraphQL 不按 operation 拆API为遗留）；②应用资产无来源枚举/确认/合并/拆分；应用级评分聚合接口 `GET /api-security/applications/{id}/asset-value` 已落地，聚合既有接口评分并披露未评分覆盖，前端 `ApplicationAssetValueCard` 已接入应用详情，真实 PostgreSQL 验证与登录态浏览器验收待完成；③文件资产已有真实观测、台账与同内容关联，完整文件生命周期与因果溯源仍未实现；④`api_endpoint_path_segments` TABLE_ONLY；⑤~~非 API 路径也入资产表（发现不过滤 is_api）~~ **已修复（2026-11-23）**：分类器补齐静态资源后缀/MIME 过滤与在线网关轻量响应头二次定级，网关/镜像/Agent/Kafka 四条发现入口统一接入可配置 `api_discovery:filter_rules` 过滤闸门，列表/统计/配额统一按 `is_api=TRUE` 对齐，并提供存量静态/非 API 噪声预览与安全清理接口；⑥~~DEPRECATED 状态无 HTTP 入口~~ **已闭环（第三波 deprecate/restore）**；⑦资产状态（DISCOVERED/CONFIRMED/IGNORED/DEPRECATED/ZOMBIE）/学习状态/模型状态三层分离真实落地 ✅。
 
 ### P0-11 Shadow / Zombie
 

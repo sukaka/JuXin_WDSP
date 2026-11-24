@@ -198,6 +198,7 @@ func TestRiskOf(t *testing.T) {
 		want  string
 	}{
 		{[]string{"password"}, RiskHigh},
+		{[]string{"credential"}, RiskHigh}, // 凭据总类对齐 password/token 的 CORE 等级
 		{[]string{"id_card"}, RiskHigh},
 		{[]string{"email", "id_card"}, RiskHigh},
 		{[]string{"phone"}, RiskMedium},
@@ -259,5 +260,107 @@ func TestSweepOnceHomeRegionsSetting(t *testing.T) {
 	}
 	if len(res.HomeRegions) != 2 || res.HomeRegions[0] != "CN" || res.HomeRegions[1] != "US" {
 		t.Fatalf("home=%v", res.HomeRegions)
+	}
+}
+
+// TestSweepOnceFiltersScannerPathHeaderBlockedAndNonAPINoise 回归：境外扫描器探测 /mobile.zip、
+// /mailer.zip、/remind_password.zip 等静态备份路径，或命中标准协议头/404/已阻断/诊断条目时，
+// 不得写入跨境观察记录且水位仍正常推进；而真实 API 载荷与静态/路径上的值级实值命中必须保留。
+func TestSweepOnceFiltersScannerPathHeaderBlockedAndNonAPINoise(t *testing.T) {
+	store := NewMemStore()
+	store.setDataTypeLevels(map[string]string{
+		"password": "CORE",
+		"phone":    "SENSITIVE",
+		"email":    "GENERAL",
+	})
+	sweeper := newTestSweeper(store, map[string]string{"3.85.91.123": "US"}, fakeSettings{})
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-time.Hour)
+
+	// 1) 扫描器探测 /mobile.zip（location=path + sensitive.field）→ 跳过
+	store.addRuntimeEventWithMeta("GET /mobile.zip", "3.85.91.123", "", base,
+		sensitiveDetails(t, []map[string]any{{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.field",
+			"evidence": map[string]string{"field": "mobile.zip", "data_type": "phone", "location": "path"},
+		}}), "OBSERVE", 0, "NON_API")
+
+	// 2) 扫描器探测 /remind_password.zip（无 api_level 历史行 + location=path + sensitive.field）→ 跳过
+	store.addRuntimeEventWithMeta("GET /remind_password.zip", "3.85.91.123", "", base.Add(time.Second),
+		sensitiveDetails(t, []map[string]any{{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.field",
+			"evidence": map[string]string{"field": "remind_password.zip", "data_type": "credential", "location": "path"},
+		}}), "OBSERVE", 0, "")
+
+	// 3) 浏览器标准协议头 Sec-CH-UA-Mobile 字段名误报 → 跳过
+	store.addRuntimeEventWithMeta("GET /v1/health", "3.85.91.123", "", base.Add(2*time.Second),
+		sensitiveDetails(t, []map[string]any{{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.field",
+			"evidence": map[string]string{"field": "sec-ch-ua-mobile", "data_type": "phone", "location": "header"},
+		}}), "ALLOW", 200, "CONFIRMED_API")
+
+	// 4) 响应体未完成检查诊断条目（非敏感命中）→ 跳过
+	store.addRuntimeEventWithMeta("GET /v1/stream", "3.85.91.123", "", base.Add(3*time.Second),
+		sensitiveDetails(t, []map[string]any{{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.response_body_unchecked",
+			"evidence": map[string]string{"field": "response_body", "location": "response_body", "direction": "RESPONSE"},
+		}}), "ALLOW", 200, "CONFIRMED_API")
+
+	// 5) 已被网关阻断的请求（未到达源站）→ 跳过
+	store.addRuntimeEventWithMeta("GET /v1/users", "3.85.91.123", "", base.Add(4*time.Second),
+		sensitiveDetails(t, []map[string]any{sensHit("phone", "REQUEST")}), "BLOCK", 403, "CONFIRMED_API")
+
+	// 6) 上游 404 路由不存在的扫描探测 → 跳过
+	store.addRuntimeEventWithMeta("GET /v1/nonexistent", "3.85.91.123", "", base.Add(5*time.Second),
+		sensitiveDetails(t, []map[string]any{sensHit("phone", "REQUEST")}), "OBSERVE", 404, "PROBABLE_API")
+
+	// 7) NON_API 静态资源上的启发式字段名命中（无值级验证）→ 跳过
+	store.addRuntimeEventWithMeta("GET /bundle.js", "3.85.91.123", "", base.Add(6*time.Second),
+		sensitiveDetails(t, []map[string]any{{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.field",
+			"evidence": map[string]string{"field": "x-custom-mobile", "data_type": "phone", "location": "header"},
+		}}), "ALLOW", 200, "NON_API")
+
+	// 8) 真实值级命中：即使在 NON_API/path 上，只要经值级正则验证仍必须保留
+	store.addRuntimeEventWithMeta("GET /users/{id}", "3.85.91.123", "", base.Add(7*time.Second),
+		sensitiveDetails(t, []map[string]any{{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.value",
+			"evidence": map[string]string{"field": "{id}", "data_type": "phone", "location": "path"},
+		}}), "ALLOW", 200, "NON_API")
+
+	// 9) 真实 API 表单凭据提交：必须保留且 credential 推导为 HIGH
+	store.addRuntimeEventWithMeta("POST /api/v1/login", "3.85.91.123", "fp-login", base.Add(8*time.Second),
+		sensitiveDetails(t, []map[string]any{{
+			"detector": "sensitive_data",
+			"rule_id":  "sensitive.field",
+			"evidence": map[string]string{"field": "password", "data_type": "credential", "location": "form"},
+		}}), "ALLOW", 200, "CONFIRMED_API")
+
+	res, err := sweeper.SweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.EventsScanned != 9 || res.EventsInserted != 2 || res.SkippedNoSensHit != 7 {
+		t.Fatalf("unexpected sweep result: %+v", res)
+	}
+	rows := store.crossBorderRows()
+	if len(rows) != 2 {
+		t.Fatalf("want 2 real cross-border rows, got %d: %+v", len(rows), rows)
+	}
+	if rows[0].EndpointKey != "GET /users/{id}" || rows[0].RiskLevel != RiskMedium || len(rows[0].DataTypes) != 1 || rows[0].DataTypes[0] != "phone" {
+		t.Fatalf("row[0] = %+v", rows[0])
+	}
+	if rows[1].EndpointKey != "POST /api/v1/login" || rows[1].RiskLevel != RiskHigh || len(rows[1].DataTypes) != 1 || rows[1].DataTypes[0] != "credential" {
+		t.Fatalf("row[1] = %+v", rows[1])
+	}
+	// 水位已推进至末尾，二次清扫幂等零新增
+	res2, err := sweeper.SweepOnce(ctx)
+	if err != nil || res2.EventsScanned != 0 || res2.EventsInserted != 0 {
+		t.Fatalf("second sweep must be idempotent: %+v err=%v", res2, err)
 	}
 }

@@ -47,16 +47,16 @@ WITH svc AS (
   GROUP BY u.normalized_host, u.port
 )
 SELECT s.host, s.port, s.app_count,
-  (SELECT count(*) FROM api_endpoints e WHERE e.application_id = ANY(s.app_ids)),
+  (SELECT count(*) FROM api_endpoints e WHERE e.application_id = ANY(s.app_ids) AND e.is_api = TRUE),
   COALESCE((SELECT sum(b.request_count) FROM api_endpoint_traffic_buckets b
             JOIN api_endpoints e ON e.id = b.endpoint_id
-            WHERE e.application_id = ANY(s.app_ids)), 0),
+            WHERE e.application_id = ANY(s.app_ids) AND e.is_api = TRUE), 0),
   (SELECT count(DISTINCT f.endpoint_id) FROM api_sensitive_fields f
    JOIN api_endpoints e ON e.id = f.endpoint_id
-   WHERE e.application_id = ANY(s.app_ids)),
+   WHERE e.application_id = ANY(s.app_ids) AND e.is_api = TRUE),
   (SELECT count(*) FROM api_runtime_findings r
    JOIN api_endpoints e ON e.id = r.endpoint_id
-   WHERE e.application_id = ANY(s.app_ids)
+   WHERE e.application_id = ANY(s.app_ids) AND e.is_api = TRUE
      AND r.status IN ('NEW','CONFIRMED','IN_PROGRESS'))
 FROM svc s
 ORDER BY s.host, s.port
