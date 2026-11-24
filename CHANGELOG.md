@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-11-24
+
+### 修复
+
+- **修复 `sqlSeedPasswordHistory` 参数类型推导冲突（PostgreSQL `SQLSTATE 42P08`）**：`server/internal/users/store.go` 在 `INSERT INTO password_histories ... SELECT $1, $2 WHERE NOT EXISTS (... password_hash = $2)` 中显式声明 `$1::uuid` 与 `$2::varchar`，消除升级启动补建三权初始管理员（`AUDIT_ADMIN`/`SECURITY_ADMIN`）及新建/改密/重置密码触发的 `ERROR: inconsistent types deduced for parameter $2` 启动崩溃。
+- **修复 `ops/upgrade/rollback.sh` 迁移回退并发竞态与旧版 `netmgrd` 目录权限恢复**：回退数据库迁移前先采集 `api` 附加网络并停止可能处于 `Restarting` 循环中的 `api` 容器，杜绝回退期间容器反复重启重跑 `migrate up` 导致“数据库迁移版本未递减”；当回滚目标 Compose 的 `netmgrd` 使用 `cap_drop: [ALL]` 且未配置 `group_add: ["1000"]`（如 `1.10.1`）时，自动将 `gateway-admin/sidecars` 与 `sidecars/diag` 收敛为 `0:1000 0770`，同时兼容旧 `netmgrd` 与 `api`/`gateway`。
+- **修复离线完整包清单与构建脚本日志边界**：`ops/offline-package/build.sh` 将 `! -name 'manifest.json'` 收窄为 `! -path './manifest.json'`，确保 `agents/packages/manifest.json` 收录进顶层 `manifest.files` 消除未收录告警；`ops/offline-package/build-update-full.sh` 末行日志变量补充 `${ARCHIVE}`/`${SIZE}` 花括号，消除 macOS Bash 3.2 下 `unbound variable` 报错。
+
+### 验证
+
+- 后端：`server/internal/users`（含 `TestMS3AndH19StoreSQLGuards`）、`server/cmd/api`、`server/internal/upgrades` 单测及真实 PostgreSQL 16 + Valkey 环境下的 `TestEnsureInitialRoleUserIntegration` 全部通过。
+- 运维与升级：`ops/upgrade/rollback.sh`、`ops/offline-package/build.sh`、`ops/offline-package/build-update-full.sh` `bash -n` 语法检查通过；`ops/upgrade/tests`（`test_full_upgrade.py`、`test_mirrorcap_upgrade.py`、`test_tproxyd_upgrade.py`、`test_gateway_runtime_contract.py` 共 36/36 用例，含新增的 `api` 先停机防竞态断言与旧 `netmgrd` 目录权限恢复测试）全部通过。
+
 ## [1.11.0] - 2026-11-24
 
 ### 新增

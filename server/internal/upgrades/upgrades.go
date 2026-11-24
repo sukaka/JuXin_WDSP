@@ -53,7 +53,7 @@ const (
 )
 
 // CurrentVersion 当前系统版本（未在 system_settings 配置 system:current_version 时的兜底值）。
-const CurrentVersion = "1.11.0"
+const CurrentVersion = "1.11.1"
 
 // 错误
 var (
