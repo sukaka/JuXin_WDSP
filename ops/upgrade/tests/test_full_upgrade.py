@@ -116,7 +116,15 @@ class FullUpgradeContractTests(unittest.TestCase):
         self.assertIn("自动回滚完成", result.stderr)
         fixture = json.loads(self.base.fixture_file.read_text())
         self.assertEqual(fixture["schema"], 217)
-        migrations = [e for e in self.base.events() if e["kind"] == "run"]
+        events = self.base.events()
+        stop_indices = [
+            i for i, e in enumerate(events)
+            if e["kind"] == "compose" and e["action"] == "stop" and "api" in e["args"]
+        ]
+        run_indices = [i for i, e in enumerate(events) if e["kind"] == "run"]
+        self.assertTrue(stop_indices, "rollback must stop api before migrate down to prevent restart race")
+        self.assertLess(stop_indices[0], run_indices[0])
+        migrations = [events[i] for i in run_indices]
         self.assertEqual(len(migrations), 4)
         for event in migrations:
             self.assertEqual(event["args"][-2:], ["migrate", "down"])
@@ -416,6 +424,29 @@ class FullUpgradeContractTests(unittest.TestCase):
         self.assertIn("CONFLICTING", (dst / "cert-a.pem").read_text())
         self.assertFalse(self.base.state.exists())
         self.assertFalse([e for e in self.base.events() if e["kind"] == "compose" and e["action"] in ("rm", "up")])
+
+    def test_rollback_to_legacy_netmgrd_restores_sidecars_permissions(self):
+        paths = self._setup_cross_volume_upgrade_fixture(include_certs=True)
+        old_cfg = json.loads(self.base.old_compose.read_text())
+        old_cfg["services"]["netmgrd"]["cap_drop"] = ["ALL"]
+        old_cfg["services"]["netmgrd"].pop("group_add", None)
+        old_cfg["services"]["netmgrd"]["volumes"] = [{"type": "volume", "source": "gateway-admin", "target": "/var/run/caddy"}]
+        self.base.old_compose.write_text(json.dumps(old_cfg))
+        self.base.write_executable(
+            self.base.work / "ops/upgrade/install-executor.sh",
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$HOSTCTL_HELPER_LOG"\n',
+        )
+        self.base.write_executable(
+            self.base.work / "ops/healthcheck/check.sh",
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$HEALTH_LOG"\n'
+            '[[ "$(wc -l < "$HEALTH_LOG")" -eq 1 ]]\n',
+        )
+        result = self.run_full()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("自动回滚完成", result.stderr)
+        self.assertIn("已恢复 sidecars 目录权限（0:1000 0770", result.stdout)
+        self.assertEqual(stat.S_IMODE(paths["sidecars_dir"].stat().st_mode), 0o770)
+        self.assertEqual(stat.S_IMODE(paths["diag_dir"].stat().st_mode), 0o770)
 
     def _setup_api_extra_networks_fixture(self, api_nets, ch_nets, all_networks):
         for path in (self.base.old_compose, self.base.new_compose):

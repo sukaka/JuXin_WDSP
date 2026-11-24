@@ -1001,7 +1001,7 @@ fi
 log_info "生成 manifest.json ..."
 files_json="$(
   cd "$pkg_dir"
-  find . -type f ! -name 'manifest.json' | LC_ALL=C sort | while IFS= read -r f; do
+  find . -type f ! -path './manifest.json' | LC_ALL=C sort | while IFS= read -r f; do
     rel="${f#./}"
     hash="$(sha256_of "$rel" | awk '{print $1}')"
     size="$(stat -f%z "$rel" 2>/dev/null || stat -c%s "$rel")"

@@ -163,6 +163,9 @@ func TestMS3AndH19StoreSQLGuards(t *testing.T) {
 	if !strings.Contains(sqlSeedPasswordHistory, "INSERT INTO password_histories") {
 		t.Fatalf("sqlSeedPasswordHistory missing password_histories insert: %s", sqlSeedPasswordHistory)
 	}
+	if !strings.Contains(sqlSeedPasswordHistory, "$1::uuid") || !strings.Contains(sqlSeedPasswordHistory, "$2::varchar") {
+		t.Fatalf("sqlSeedPasswordHistory must explicitly cast $1::uuid and $2::varchar to avoid PostgreSQL 42P08: %s", sqlSeedPasswordHistory)
+	}
 }
 
 func TestUserItemIncludesTOTPEnabled(t *testing.T) {

@@ -243,7 +243,7 @@ if args[:1] == ["compose"]:
             index += 2
             continue
         index += 1
-    action = next((a for a in ("config", "up", "ps", "rm") if a in args), "other")
+    action = next((a for a in ("config", "up", "ps", "rm", "stop") if a in args), "other")
     log({"kind": "compose", "action": action, "files": files, "env_file": env_file, "args": args})
     if action == "up":
         if fixture.get("fail_up"):
@@ -290,7 +290,7 @@ if args[:1] == ["compose"]:
             print(running["id"])
             sys.exit(0)
         sys.exit(1)
-    if action == "rm":
+    if action in ("rm", "stop"):
         sys.exit(0)
     if action != "config":
         sys.exit(1)

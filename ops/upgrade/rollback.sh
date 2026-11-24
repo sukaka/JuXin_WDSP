@@ -192,8 +192,87 @@ EOF
   *) die "拒绝回滚到未知 gateway 镜像入口" ;;
 esac
 
+restore_sidecars_permissions_for_legacy_netmgrd() {
+  # 目标回滚 Compose 的 netmgrd 使用 cap_drop: [ALL] 且未配置 group_add: ["1000"] 时（如 1.10.1），
+  # 升级前 apply.sh 可能已将 sidecars 改为 1000:1000 0770，回滚后 UID 0 且无 CAP_DAC_OVERRIDE 的旧
+  # netmgrd 会因 permission denied 持续 503；将其收敛为 0:1000 0770，同时兼容旧 netmgrd(UID 0) 与 api/gateway(GID 1000)。
+  jq -e '
+    .services.netmgrd as $n |
+    ($n != null) and
+    (($n.cap_drop // []) | index("ALL") != null) and
+    ((($n.group_add // []) | map(tostring) | index("1000")) == null)
+  ' <<<"$TARGET_COMPOSE_JSON" >/dev/null 2>&1 || return 0
+
+  local admin_dir="" cur_gw_id="" admin_vol="" admin_vol_name=""
+  cur_gw_id="$(docker compose -f "$NEW_COMPOSE_FOR_CLEANUP" --env-file "$NEW_ENV_FOR_CLEANUP" ps -q gateway 2>/dev/null || true)"
+  [[ -n "$cur_gw_id" ]] || cur_gw_id="$(compose ps -q gateway 2>/dev/null || true)"
+  if [[ "$cur_gw_id" =~ ^[a-fA-F0-9]+$ ]]; then
+    admin_dir="$(docker inspect --format '{{json .Mounts}}' "$cur_gw_id" 2>/dev/null \
+      | jq -r '[.[]? | select(.Destination == "/var/run/caddy") | .Source] | if length == 1 then .[0] | select(type == "string" and startswith("/")) else empty end' 2>/dev/null || true)"
+  fi
+  if [[ -z "$admin_dir" ]]; then
+    admin_vol="$(jq -r '[.services.netmgrd.volumes[]? | select(.type == "volume" and .target == "/var/run/caddy") | .source] | if length == 1 then .[0] | select(type == "string" and length > 0) else empty end' <<<"$TARGET_COMPOSE_JSON" 2>/dev/null || true)"
+    if [[ -n "$admin_vol" ]]; then
+      admin_vol_name="$(jq -r --arg k "$admin_vol" '(.volumes[$k].name // empty) as $e | (.name // empty) as $p | if ($e | length) > 0 then $e elif ($p | length) > 0 then ($p + "_" + $k) else $k end' <<<"$TARGET_COMPOSE_JSON" 2>/dev/null || true)"
+      admin_dir="$(docker volume inspect --format '{{.Mountpoint}}' "$admin_vol_name" 2>/dev/null || true)"
+    fi
+  fi
+  [[ -n "$admin_dir" && "$admin_dir" == /* && -d "$admin_dir" && ! -L "$admin_dir" ]] || return 0
+  local sidecars_dir="$admin_dir/sidecars"
+  [[ -d "$sidecars_dir" && ! -L "$sidecars_dir" ]] || return 0
+  if [[ "$(id -u)" == "0" ]]; then
+    chown 0:1000 "$sidecars_dir" || die "无法恢复 sidecars 目录属主: $sidecars_dir"
+  fi
+  chmod 0770 "$sidecars_dir" || die "无法恢复 sidecars 目录权限: $sidecars_dir"
+  local diag_dir="$sidecars_dir/diag"
+  if [[ -d "$diag_dir" && ! -L "$diag_dir" ]]; then
+    if [[ "$(id -u)" == "0" ]]; then
+      chown 0:1000 "$diag_dir" || die "无法恢复 sidecars/diag 目录属主: $diag_dir"
+    fi
+    chmod 0770 "$diag_dir" || die "无法恢复 sidecars/diag 目录权限: $diag_dir"
+  fi
+  log_info "已恢复 sidecars 目录权限（0:1000 0770，兼容旧版无 group_add 的 netmgrd）"
+}
+
 confirm "确认恢复原容器镜像及本轮新增迁移？" || { log_warn "已取消"; exit 3; }
+EXISTING_SERVICES=()
+for i in "${!SERVICES[@]}"; do [[ -z "${OLD_IDS[$i]}" ]] || EXISTING_SERVICES+=("${SERVICES[$i]}"); done
+API_EXTRA_NETWORKS=()
+if printf '%s\n' "${EXISTING_SERVICES[@]}" | grep -Fxq api; then
+  CUR_API_ID="$(docker compose -f "$NEW_COMPOSE_FOR_CLEANUP" --env-file "$NEW_ENV_FOR_CLEANUP" ps -q api 2>/dev/null || true)"
+  [[ -n "$CUR_API_ID" ]] || CUR_API_ID="$(compose ps -q api 2>/dev/null || true)"
+  _raw_nets=()
+  if [[ -n "$API_EXTRA_NETWORKS_B64" ]]; then
+    while IFS= read -r _net; do
+      [[ -n "$_net" ]] && _raw_nets+=("$_net")
+    done < <(printf '%s' "$API_EXTRA_NETWORKS_B64" | base64 --decode 2>/dev/null | jq -r '.[]? | strings' 2>/dev/null || true)
+  fi
+  while IFS= read -r _net; do
+    [[ -n "$_net" ]] && _raw_nets+=("$_net")
+  done < <(collect_api_extra_networks "$CUR_API_ID" "$TARGET_COMPOSE_JSON")
+  if ((${#_raw_nets[@]} > 0)); then
+    _target_api_nets=()
+    while IFS= read -r _net; do
+      [[ -n "$_net" ]] && _target_api_nets+=("$_net")
+    done < <(compose_service_network_names "$TARGET_COMPOSE_JSON" api)
+    while IFS= read -r _net; do
+      [[ -n "$_net" ]] || continue
+      valid_docker_network_name "$_net" || continue
+      _skip=false
+      for _ex in ${_target_api_nets[@]+"${_target_api_nets[@]}"}; do
+        if [[ "$_net" == "$_ex" ]]; then _skip=true; break; fi
+      done
+      [[ "$_skip" == false ]] && API_EXTRA_NETWORKS+=("$_net")
+    done < <(printf '%s\n' "${_raw_nets[@]}" | LC_ALL=C sort -u)
+    unset _target_api_nets _skip _ex
+  fi
+  unset _raw_nets _net
+fi
+
 if [[ "$FULL_UPGRADE" == true ]]; then
+  # 回退迁移前先停止可能处于 Restarting 循环的 api 容器，防止并发重新执行 migrate up 导致版本未递减
+  docker compose -f "$NEW_COMPOSE_FOR_CLEANUP" --env-file "$NEW_ENV_FOR_CLEANUP" stop api >/dev/null 2>&1 || true
+  compose stop api >/dev/null 2>&1 || true
   [[ "$SCHEMA_BEFORE" =~ ^[0-9]+$ ]] || die "缺少升级前迁移版本，禁止猜测回退"
   pg_container="$(compose ps -q postgres)" || die "无法定位 PostgreSQL，停止回滚"
   current_schema="$(schema_version "$pg_container")"
@@ -236,39 +315,7 @@ else
   done
   ((${#REMOVE_SERVICES[@]} == 0)) || compose rm -sf "${REMOVE_SERVICES[@]}" >/dev/null 2>&1 || true
 fi
-EXISTING_SERVICES=()
-for i in "${!SERVICES[@]}"; do [[ -z "${OLD_IDS[$i]}" ]] || EXISTING_SERVICES+=("${SERVICES[$i]}"); done
-API_EXTRA_NETWORKS=()
-if printf '%s\n' "${EXISTING_SERVICES[@]}" | grep -Fxq api; then
-  CUR_API_ID="$(docker compose -f "$NEW_COMPOSE_FOR_CLEANUP" --env-file "$NEW_ENV_FOR_CLEANUP" ps -q api 2>/dev/null || true)"
-  [[ -n "$CUR_API_ID" ]] || CUR_API_ID="$(compose ps -q api 2>/dev/null || true)"
-  _raw_nets=()
-  if [[ -n "$API_EXTRA_NETWORKS_B64" ]]; then
-    while IFS= read -r _net; do
-      [[ -n "$_net" ]] && _raw_nets+=("$_net")
-    done < <(printf '%s' "$API_EXTRA_NETWORKS_B64" | base64 --decode 2>/dev/null | jq -r '.[]? | strings' 2>/dev/null || true)
-  fi
-  while IFS= read -r _net; do
-    [[ -n "$_net" ]] && _raw_nets+=("$_net")
-  done < <(collect_api_extra_networks "$CUR_API_ID" "$TARGET_COMPOSE_JSON")
-  if ((${#_raw_nets[@]} > 0)); then
-    _target_api_nets=()
-    while IFS= read -r _net; do
-      [[ -n "$_net" ]] && _target_api_nets+=("$_net")
-    done < <(compose_service_network_names "$TARGET_COMPOSE_JSON" api)
-    while IFS= read -r _net; do
-      [[ -n "$_net" ]] || continue
-      valid_docker_network_name "$_net" || continue
-      _skip=false
-      for _ex in ${_target_api_nets[@]+"${_target_api_nets[@]}"}; do
-        if [[ "$_net" == "$_ex" ]]; then _skip=true; break; fi
-      done
-      [[ "$_skip" == false ]] && API_EXTRA_NETWORKS+=("$_net")
-    done < <(printf '%s\n' "${_raw_nets[@]}" | LC_ALL=C sort -u)
-    unset _target_api_nets _skip _ex
-  fi
-  unset _raw_nets _net
-fi
+restore_sidecars_permissions_for_legacy_netmgrd
 log_info "重建原组件: ${EXISTING_SERVICES[*]}"
 compose rm -sf "${EXISTING_SERVICES[@]}" >/dev/null 2>&1 || true
 compose up -d --no-deps --force-recreate "${EXISTING_SERVICES[@]}" || die "原容器重建失败"

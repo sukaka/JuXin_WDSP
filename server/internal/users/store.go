@@ -365,9 +365,9 @@ RETURNING id, created_at, updated_at, version`,
 
 const sqlSeedPasswordHistory = `
 INSERT INTO password_histories (user_id, password_hash)
-SELECT $1, $2
+SELECT $1::uuid, $2::varchar
 WHERE NOT EXISTS (
-  SELECT 1 FROM password_histories WHERE user_id = $1 AND password_hash = $2
+  SELECT 1 FROM password_histories WHERE user_id = $1::uuid AND password_hash = $2::varchar
 )`
 
 func seedPasswordHistoryTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, hash string) error {

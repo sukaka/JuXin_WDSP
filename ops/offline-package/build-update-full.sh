@@ -167,7 +167,7 @@ SCAN="$OUTPUT_DIR/jiuzhang-wdsp-offline-$VERSION-amd64.scan.json"
 jq -e --arg digest "$(sha256_of "$ARCHIVE" | awk '{print $1}')" '.result == "PASS" and .input.sha256 == $digest' "$SCAN" >/dev/null \
   || die "最终内容扫描未绑定本次交付归档"
 SIZE="$(stat -f%z "$ARCHIVE" 2>/dev/null || stat -c%s "$ARCHIVE")"
-log_info "完整升级介质已校验: $ARCHIVE（$SIZE 字节）"
+log_info "完整升级介质已校验: ${ARCHIVE}（${SIZE} 字节）"
 if [[ "$DEVELOPMENT" == true ]]; then
   log_warn "development 未签名产物只用于本地验证，不能用于正式升级"
 else
