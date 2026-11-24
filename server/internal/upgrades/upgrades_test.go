@@ -15,8 +15,8 @@ import (
 // ---------- 版本号解析与比较 ----------
 
 func TestCurrentVersion(t *testing.T) {
-	if CurrentVersion != "1.11.1" {
-		t.Fatalf("CurrentVersion = %q, want 1.11.1", CurrentVersion)
+	if CurrentVersion != "1.12.0" {
+		t.Fatalf("CurrentVersion = %q, want 1.12.0", CurrentVersion)
 	}
 }
 

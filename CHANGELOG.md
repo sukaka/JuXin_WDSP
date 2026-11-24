@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-11-24
+
+### 新增
+
+- **API 接口批量启动学习与学习默认选项查询**：后端新增 `POST /api/v1/api-security/endpoints/learning/start`（权限 `api_learning.start`，单次最多 100 个接口，自动去重、跳过已在学习中的接口并记录 `learning_start_batch` 审计）及 `GET /api/v1/api-security/endpoints/learning/options`（权限 `api_asset.read`），同步更新 OpenAPI 片段 `server/openapi/fragments/07-api-security.yaml` 与合并规范 `server/openapi/wdsp-api.yaml`；前端「API 接口资产」列表勾选操作栏新增「批量启动学习」按钮与样本目标设置弹窗。
+- **确认正式资产时可选自动启动模型学习**：新增迁移 `000235_api_learning_auto_start_on_confirm` 及系统设置白名单项 `api_learning:auto_start_on_confirm`（默认 `false`），在「系统设置 → API 学习」支持开关配置；`POST /api/v1/api-security/endpoints/confirm` 向后兼容扩展 `auto_start_learning` 与 `sample_target` 参数（显式开启强制校验 `api_learning.start`，省略时仅在系统开关开启且具备学习启动权限时自动触发，学习中与已完成学习的接口自动跳过；学习达标后仍仅生成候选模型，需人工审核确认生效）；前端行内「确认」与「批量确认」弹窗同步提供「确认后自动启动模型学习」勾选项。
+
+### 验证与边界
+
+- 后端：`cd server && go test ./internal/apiassets/... ./internal/settings/... ./internal/learningjobs/... ./internal/upgrades/...` 与 `go vet ./internal/apiassets/... ./internal/settings/... ./internal/app/...` 全部通过；OpenAPI 合并与路由对账确认新增 2 条 `/api/v1/api-security/*` 路由零差集。
+- 前端：`cd web && npm run typecheck && npm run lint && npm run build` 0 报错通过；变更相关的 Vitest 测试（`ApiEndpointsPage.test.tsx`、`SystemSettingsPage.test.tsx`、`ApiLearningPage.test.tsx` 共 3 文件、51/51 用例）全部通过。
+- 未执行项（`NOT_RUN`）：目标 Linux 宿主机真实 PostgreSQL 迁移执行、实机升级/回滚部署及 Playwright E2E 均为 `NOT_RUN`。
+
 ## [1.11.1] - 2026-11-24
 
 ### 修复
