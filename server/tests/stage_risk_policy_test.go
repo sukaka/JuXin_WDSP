@@ -50,14 +50,14 @@ WHERE code IN ('risk_policy.read','risk_policy.edit')`).Scan(&n); err != nil {
 		t.Errorf("risk policy permissions = %d, want 2", n)
 	}
 
-	// read 授予系统管理员和安全管理员；edit 仅 SECURITY_ADMIN
+	// 000232 后：risk_policy.read / risk_policy.edit 均仅授予运维管理员（SECURITY_ADMIN）
 	if err := env.db.QueryRow(ctx, `SELECT count(DISTINCT r.code) FROM role_permissions rp
 JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id
 WHERE p.code = 'risk_policy.read' AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN','AUDIT_ADMIN')`).Scan(&n); err != nil {
 		t.Fatalf("query read grants: %v", err)
 	}
-	if n != 2 {
-		t.Errorf("risk_policy.read granted roles = %d, want 2", n)
+	if n != 1 {
+		t.Errorf("risk_policy.read granted roles = %d, want 1 (SECURITY_ADMIN only)", n)
 	}
 	if err := env.db.QueryRow(ctx, `SELECT count(*) FROM role_permissions rp
 JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id
@@ -155,18 +155,18 @@ func TestRiskPolicyAPI(t *testing.T) {
 		`{"enabled":true,"mode":"OBSERVE","version":999,"block_threshold":80,"rate_limit_threshold":40,"rate_limit_rps":10,"signal_window_seconds":86400}`, cookies, csrf)
 	s5Expect(t, resp, http.StatusConflict, "put risk policy with stale version")
 
-	// AUDIT_ADMIN 只读（000102 read 授予集合照 000099）：GET 200 / PUT 403
+	// 000122 收紧后 AUDIT_ADMIN 无 risk_policy.* 权限：GET 403 / PUT 403
 	auditCookies, auditCSRF := env.s5Login(t, "rp_audit", "AUDIT_ADMIN")
 	resp = env.get(t, "/api/v1/security/risk-policy", auditCookies)
-	s5Expect(t, resp, http.StatusOK, "audit admin get risk policy")
+	s5Expect(t, resp, http.StatusForbidden, "audit admin get risk policy")
 	resp = env.do(t, http.MethodPut, "/api/v1/security/risk-policy",
 		`{"enabled":true,"mode":"OBSERVE","version":1,"block_threshold":80,"rate_limit_threshold":40,"rate_limit_rps":10,"signal_window_seconds":86400}`, auditCookies, auditCSRF)
 	s5Expect(t, resp, http.StatusForbidden, "audit admin put risk policy")
 
-	// SYSTEM_ADMIN 只读（编辑权已随 000100 口径移交 SECURITY_ADMIN）：GET 200 / PUT 403
+	// 000232 后 SYSTEM_ADMIN 剥离应用防护策略（risk_policy.read）：GET 403 / PUT 403
 	sysCookies, sysCSRF := env.s5Login(t, "rp_sys", "SYSTEM_ADMIN")
 	resp = env.get(t, "/api/v1/security/risk-policy", sysCookies)
-	s5Expect(t, resp, http.StatusOK, "system admin get risk policy")
+	s5Expect(t, resp, http.StatusForbidden, "system admin get risk policy")
 	resp = env.do(t, http.MethodPut, "/api/v1/security/risk-policy",
 		`{"enabled":true,"mode":"OBSERVE","version":1,"block_threshold":80,"rate_limit_threshold":40,"rate_limit_rps":10,"signal_window_seconds":86400}`, sysCookies, sysCSRF)
 	s5Expect(t, resp, http.StatusForbidden, "system admin put risk policy")

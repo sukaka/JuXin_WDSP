@@ -81,7 +81,7 @@ func TestRolesHandlersEmptySlicesSerializeAsJSONArray(t *testing.T) {
 				if strings.Contains(sql, "FROM roles") {
 					*(dest[0].(*uuid.UUID)) = roleID
 					*(dest[1].(*string)) = "SECURITY_ADMIN"
-					*(dest[2].(*string)) = "安全管理员"
+					*(dest[2].(*string)) = "运维管理员"
 					*(dest[3].(*string)) = "desc"
 					*(dest[4].(*bool)) = true
 					return nil

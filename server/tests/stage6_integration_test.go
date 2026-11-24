@@ -88,9 +88,11 @@ func TestStage6DashboardRBAC(t *testing.T) {
 	// 系统管理员无安全态势权限
 	resp = env.get(t, "/api/v1/dashboard/security-overview", sysCookies)
 	s5Expect(t, resp, http.StatusForbidden, "sysadmin security overview")
-	// 系统管理员：运行态势 200
+	// 系统管理员（dashboard.runtime.read）与运维管理员（000232 big_screen.runtime.read）：运行态势 200
 	resp = env.get(t, "/api/v1/dashboard/runtime-overview", sysCookies)
 	s5OK(t, resp, "runtime overview")
+	resp = env.get(t, "/api/v1/dashboard/runtime-overview", secCookies)
+	s5OK(t, resp, "operadmin runtime overview")
 	// 审计管理员：000100 收紧为纯审计角色，审计态势 403（dashboard.audit.read 移除）；运行态势 403
 	resp = env.get(t, "/api/v1/dashboard/audit-overview", audCookies)
 	s5Expect(t, resp, http.StatusForbidden, "audit overview")
@@ -257,17 +259,22 @@ func TestStage6ReportTemplates(t *testing.T) {
 	s5Expect(t, delResp, http.StatusOK, "delete custom template")
 }
 
-// TestStage6SystemHealth 运行监控。
+// TestStage6SystemHealth 运行监控（000232 起运维管理员凭 big_screen.runtime.read 可读大屏所需只读接口，
+// 但 /components 与 /metrics 仍仅限系统管理员 system_health.read）。
 func TestStage6SystemHealth(t *testing.T) {
 	env := setupTestEnv(t)
 	sysCookies, _ := env.s5Login(t, "s6sys", "SYSTEM_ADMIN")
 	secCookies, _ := env.s5Login(t, "s6sec", "SECURITY_ADMIN")
+	audCookies, _ := env.s5Login(t, "s6aud", "AUDIT_ADMIN")
 
-	for _, p := range []string{"/api/v1/system-health", "/api/v1/system-health/components", "/api/v1/system-health/storage"} {
-		resp := env.get(t, p, sysCookies)
-		s5Expect(t, resp, http.StatusOK, "system health "+p)
-		resp = env.get(t, p, secCookies)
-		s5Expect(t, resp, http.StatusForbidden, "sec admin system health "+p)
+	for _, p := range []string{"/api/v1/system-health", "/api/v1/system-health/storage", "/api/v1/system-health/gateway-trend"} {
+		s5Expect(t, env.get(t, p, sysCookies), http.StatusOK, "sys admin system health "+p)
+		s5Expect(t, env.get(t, p, secCookies), http.StatusOK, "oper admin big-screen "+p)
+		s5Expect(t, env.get(t, p, audCookies), http.StatusForbidden, "audit admin system health "+p)
+	}
+	for _, p := range []string{"/api/v1/system-health/components", "/api/v1/metrics"} {
+		s5Expect(t, env.get(t, p, sysCookies), http.StatusOK, "sys admin ops-only "+p)
+		s5Expect(t, env.get(t, p, secCookies), http.StatusForbidden, "oper admin forbidden "+p)
 	}
 	resp := env.get(t, "/api/v1/system-health/storage", sysCookies)
 	result := s5OK(t, resp, "storage")
@@ -276,14 +283,17 @@ func TestStage6SystemHealth(t *testing.T) {
 	}
 }
 
-// TestStage6SystemAlerts 系统告警流转。
+// TestStage6SystemAlerts 系统告警流转（000232 起安全态势/系统告警归运维管理员 SECURITY_ADMIN；
+// 系统管理员与审计管理员均无权访问）。
 func TestStage6SystemAlerts(t *testing.T) {
 	env := setupTestEnv(t)
 	sysCookies, sysCSRF := env.s5Login(t, "s6sys", "SYSTEM_ADMIN")
 	secCookies, secCSRF := env.s5Login(t, "s6sec", "SECURITY_ADMIN")
 	audCookies, audCSRF := env.s5Login(t, "s6aud", "AUDIT_ADMIN")
 
-	resp := env.get(t, "/api/v1/system-alerts", sysCookies)
+	s5Expect(t, env.get(t, "/api/v1/system-alerts", sysCookies), http.StatusForbidden, "sysadmin list alerts forbidden")
+
+	resp := env.get(t, "/api/v1/system-alerts", secCookies)
 	result := s5OK(t, resp, "list alerts")
 	if _, ok := result.Data["total"]; !ok {
 		t.Fatalf("total missing")
@@ -299,27 +309,27 @@ func TestStage6SystemAlerts(t *testing.T) {
 		}
 	}
 	if openID != "" {
-		// 确认（系统管理员）
-		resp = env.post(t, "/api/v1/system-alerts/"+openID+"/acknowledge", `{}`, sysCookies, sysCSRF)
+		// 确认（运维管理员）
+		resp = env.post(t, "/api/v1/system-alerts/"+openID+"/acknowledge", `{}`, secCookies, secCSRF)
 		s5Expect(t, resp, http.StatusOK, "acknowledge alert")
+		// 系统管理员操作 403
+		resp = env.post(t, "/api/v1/system-alerts/"+openID+"/resolve", `{}`, sysCookies, sysCSRF)
+		s5Expect(t, resp, http.StatusForbidden, "sysadmin resolve alert")
 		// 审计管理员操作 403
 		resp = env.post(t, "/api/v1/system-alerts/"+openID+"/resolve", `{}`, audCookies, audCSRF)
 		s5Expect(t, resp, http.StatusForbidden, "audit resolve alert")
-		// 备注
-		resp = env.post(t, "/api/v1/system-alerts/"+openID+"/notes", `{"note":"排查中"}`, sysCookies, sysCSRF)
+		// 备注（运维管理员）
+		resp = env.post(t, "/api/v1/system-alerts/"+openID+"/notes", `{"note":"排查中"}`, secCookies, secCSRF)
 		s5Expect(t, resp, http.StatusOK, "add note")
 	}
 	// 不存在 ID
-	resp = env.get(t, "/api/v1/system-alerts/00000000-0000-0000-0000-000000000000", sysCookies)
+	resp = env.get(t, "/api/v1/system-alerts/00000000-0000-0000-0000-000000000000", secCookies)
 	s5Expect(t, resp, http.StatusNotFound, "alert not found")
-	_ = secCookies
-	_ = secCSRF
 }
 
 // TestStage6SystemAlertsExport 系统告警导出（§11.4）：CSV、防公式注入。
-// 权限语义按 000100 角色收敛：SYSTEM_ADMIN 保留 system_alerts.*，SECURITY_ADMIN 持
-// system_alerts.read_security，两者可导出；AUDIT_ADMIN 收紧为纯审计角色，不含任何
-// system_alerts.* 权限，导出 403。
+// 权限语义按 000232 三权重划：系统告警归运维管理员（SECURITY_ADMIN）持有，可导出；
+// SYSTEM_ADMIN 与 AUDIT_ADMIN 不含 system_alerts.* 权限，导出 403。
 func TestStage6SystemAlertsExport(t *testing.T) {
 	env := setupTestEnv(t)
 	sysCookies, _ := env.s5Login(t, "s6sys", "SYSTEM_ADMIN")
@@ -341,14 +351,14 @@ func TestStage6SystemAlertsExport(t *testing.T) {
 			t.Errorf("%s export 缺少表头，body 前缀: %q", who, body[:min(len(body), 64)])
 		}
 	}
-	checkExport(sysCookies, "SYSTEM_ADMIN")
 	checkExport(secCookies, "SECURITY_ADMIN")
 
-	// 000100 角色收敛：AUDIT_ADMIN 无任何 system_alerts.* 权限 → 导出 403
+	// 000232 角色收敛：SYSTEM_ADMIN 与 AUDIT_ADMIN 无 system_alerts.* 权限 → 导出 403
+	s5Expect(t, env.get(t, "/api/v1/system-alerts/export", sysCookies), http.StatusForbidden, "sysadmin export")
 	s5Expect(t, env.get(t, "/api/v1/system-alerts/export", audCookies), http.StatusForbidden, "audit admin export")
 
 	// 非法筛选参数 → 400（用有权限角色验证，避免被 403 前置拦截掩盖参数校验）
-	s5Expect(t, env.get(t, "/api/v1/system-alerts/export?severity=BOGUS", sysCookies), http.StatusBadRequest, "export with invalid severity")
+	s5Expect(t, env.get(t, "/api/v1/system-alerts/export?severity=BOGUS", secCookies), http.StatusBadRequest, "export with invalid severity")
 }
 
 // TestStage6BackupsLifecycle 备份全生命周期。

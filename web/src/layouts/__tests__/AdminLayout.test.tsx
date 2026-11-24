@@ -205,8 +205,8 @@ describe('AdminLayout', () => {
   it('默认使用核心扁平导航，切换全部功能后展开组内分类并记住选择', async () => {
     useAuthStore.getState().setSession({
       ...fakeUser,
-      display_name: '安全管理员',
-      roles: [{ code: 'SECURITY_ADMIN', name: '安全管理员' }],
+      display_name: '运维管理员',
+      roles: [{ code: 'SECURITY_ADMIN', name: '运维管理员' }],
     }, 'csrf-token')
     useProductStore.setState({ initialized: true, apiDynamicProtection: true, webWafEnabled: true })
     renderLayout()
@@ -228,8 +228,8 @@ describe('AdminLayout', () => {
   it('直达高级页面时核心模式只补入当前入口', async () => {
     useAuthStore.getState().setSession({
       ...fakeUser,
-      display_name: '安全管理员',
-      roles: [{ code: 'SECURITY_ADMIN', name: '安全管理员' }],
+      display_name: '运维管理员',
+      roles: [{ code: 'SECURITY_ADMIN', name: '运维管理员' }],
     }, 'csrf-token')
     useProductStore.setState({ initialized: true, apiDynamicProtection: true, webWafEnabled: true })
     renderLayout('/api-models')
@@ -257,8 +257,8 @@ describe('AdminLayout', () => {
       window.localStorage.setItem('wdsp.navigation.mode', 'full')
       useAuthStore.getState().setSession({
         ...fakeUser,
-        display_name: '安全管理员',
-        roles: [{ code: 'SECURITY_ADMIN', name: '安全管理员' }],
+        display_name: '运维管理员',
+        roles: [{ code: 'SECURITY_ADMIN', name: '运维管理员' }],
       }, 'csrf-token')
       useProductStore.setState({ initialized: true, apiDynamicProtection: true, webWafEnabled: true })
 
@@ -383,13 +383,13 @@ describe('AdminLayout', () => {
     useAuthStore.getState().setSession(
       {
         ...fakeUser,
-        username: 'oper',
-        display_name: 'oper',
-        roles: [{ code: 'SECURITY_ADMIN', name: '安全管理员' }],
+        username: 'operadmin',
+        display_name: '运维管理员',
+        roles: [{ code: 'SECURITY_ADMIN', name: '运维管理员' }],
         permissions: [
           'gateway_configs.preview',
           'gateway_configs.publish',
-          'system_alerts.read_security',
+          'system_alerts.read',
         ],
       },
       'csrf-token',
@@ -414,8 +414,8 @@ describe('AdminLayout', () => {
     renderLayout()
 
     const publishBtn = await screen.findByRole('button', { name: '配置发布' })
-    const alertBell = await screen.findByRole('button', { name: '站内告警（3 条活跃）' })
-    const userLabel = screen.getByText('oper')
+    const alertBell = await screen.findByRole('button', { name: '站内告警（3 条未处理）' })
+    const userLabel = screen.getByText('运维管理员')
 
     // 顺序校验：配置发布在左、站内告警铃铛在中间、用户菜单在右
     expect(publishBtn.compareDocumentPosition(alertBell) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -448,5 +448,55 @@ describe('AdminLayout', () => {
     expect(screen.queryByRole('button', { name: '配置发布' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /站内告警/ })).not.toBeInTheDocument()
     expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/system-alerts'))).toBe(false)
+  })
+
+  it('系统管理员正常登录时顶部不渲染告警铃铛与配置发布，完整菜单不含大屏展示与 7 大受限菜单', async () => {
+    window.localStorage.setItem('wdsp.navigation.mode', 'full')
+    useAuthStore.getState().setSession(
+      {
+        ...fakeUser,
+        permissions: [
+          'users.read',
+          'roles.read',
+          'system_settings.read',
+          'system_health.read',
+          'dashboard.runtime.read',
+        ],
+      },
+      'csrf-token',
+    )
+    useProductStore.setState({
+      initialized: true,
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+      apmEnabled: true,
+    })
+    useLicenseStore.setState({ initialized: true, status: { valid: true } as never })
+    const fetchMock = vi.fn<(input: RequestInfo | URL) => Promise<Response>>(() =>
+      Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: null })),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderLayout()
+    await screen.findByText('dashboard-page')
+    expect(screen.queryByRole('button', { name: '配置发布' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /站内告警/ })).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/system-alerts'))).toBe(false)
+
+    fireEvent.click(await screen.findByRole('button', { name: '打开导航菜单' }))
+    expect(await screen.findByRole('menuitem', { name: /用户管理/ })).toBeInTheDocument()
+    expect(screen.getByText('系统运维')).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /大屏展示/ })).not.toBeInTheDocument()
+    for (const forbidden of [
+      '应用防护',
+      '应用防护策略',
+      'API 防护',
+      '安全风险',
+      '数据接入',
+      '安全态势',
+      '安全运营',
+    ]) {
+      expect(screen.queryByText(forbidden)).not.toBeInTheDocument()
+    }
   })
 })

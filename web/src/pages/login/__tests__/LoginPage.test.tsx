@@ -232,10 +232,24 @@ describe('LoginPage', () => {
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0)
   })
 
+  it('登录后回跳：from 属于系统管理员不可见的大屏或受限菜单时回退工作台（防 403）', async () => {
+    for (const forbiddenPath of ['/big-screen/runtime-ops', '/traffic-agents', '/system-alerts']) {
+      useAuthStore.setState({ user: null, csrfToken: null, initialized: false })
+      stubLoginSuccess({
+        ...fakeUser,
+        permissions: ['system_health.read', 'dashboard.runtime.read', 'users.read'],
+      })
+      const { unmount } = renderLogin({ pathname: '/login', state: { from: forbiddenPath } })
+      await submitLogin()
+      expect(await screen.findByText('dashboard-page')).toBeInTheDocument()
+      unmount()
+    }
+  })
+
   it('登录后回跳：apm_enabled=true 且有权限时允许直接回跳 APM 页面', async () => {
     const secUser: CurrentUser = {
       ...fakeUser,
-      roles: [{ code: 'SECURITY_ADMIN', name: '安全管理员' }],
+      roles: [{ code: 'SECURITY_ADMIN', name: '运维管理员' }],
       permissions: ['apm.overview.read'],
     }
     vi.stubGlobal(

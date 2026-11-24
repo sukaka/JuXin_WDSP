@@ -52,17 +52,17 @@ WHERE table_name=$1`, table).Scan(&n); err != nil || n != 1 {
 	if err := env.db.QueryRow(ctx, `SELECT mode FROM security_regression_policy WHERE id=1`).Scan(&mode); err != nil || mode != "OFF" {
 		t.Fatalf("default gate policy mode=%q err=%v, want OFF", mode, err)
 	}
-	// read 三角色全授；import/policy 仅 SYSTEM_ADMIN/SECURITY_ADMIN
+	// 000232 后：SYSTEM_ADMIN 剥离应用防护相关权限；read 仅 SECURITY_ADMIN/AUDIT_ADMIN，import/policy 仅 SECURITY_ADMIN
 	if err := env.db.QueryRow(ctx, `SELECT count(DISTINCT r.code) FROM role_permissions rp
 JOIN roles r ON r.id=rp.role_id JOIN permissions p ON p.id=rp.permission_id
-WHERE p.code='security_regression.read' AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN','AUDIT_ADMIN')`).Scan(&n); err != nil || n != 3 {
-		t.Fatalf("security_regression.read role grants=%d, want 3 (err=%v)", n, err)
+WHERE p.code='security_regression.read' AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN','AUDIT_ADMIN')`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("security_regression.read role grants=%d, want 2 (err=%v)", n, err)
 	}
 	for _, code := range []string{"security_regression.import", "security_regression.policy"} {
 		if err := env.db.QueryRow(ctx, `SELECT count(DISTINCT r.code) FROM role_permissions rp
 JOIN roles r ON r.id=rp.role_id JOIN permissions p ON p.id=rp.permission_id
-WHERE p.code=$1 AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN')`, code).Scan(&n); err != nil || n != 2 {
-			t.Fatalf("%s role grants=%d, want 2 (err=%v)", code, n, err)
+WHERE p.code=$1 AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN')`, code).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("%s role grants=%d, want 1 (err=%v)", code, n, err)
 		}
 	}
 }
@@ -93,6 +93,14 @@ func TestSecurityRegressionPermissions(t *testing.T) {
 		`{"mode":"OFF","required_level":"FULL","evidence_max_age_seconds":604800,"expected_version":1,"reason":"x"}`,
 		auditCookies, auditCSRF), http.StatusForbidden, "audit policy put")
 
+	// 000232 后 SYSTEM_ADMIN 无安全回归读/写权限 → 全 403
+	sysCookies, sysCSRF := env.s5Login(t, "sreg_sys", "SYSTEM_ADMIN")
+	s5Expect(t, env.get(t, "/api/v1/security/regressions", sysCookies), http.StatusForbidden, "sys list")
+	s5Expect(t, env.get(t, "/api/v1/security/regression-policy", sysCookies), http.StatusForbidden, "sys policy get")
+	s5Expect(t, env.do(t, http.MethodPut, "/api/v1/security/regression-policy",
+		`{"mode":"OBSERVE","required_level":"FULL","evidence_max_age_seconds":604800,"expected_version":1,"reason":"x"}`,
+		sysCookies, sysCSRF), http.StatusForbidden, "sys policy put")
+
 	secCookies, secCSRF := env.s5Login(t, "sreg_sec", "SECURITY_ADMIN")
 	s5Expect(t, env.get(t, "/api/v1/security/regressions", secCookies), http.StatusOK, "sec list")
 	// SECURITY_ADMIN 写路径不再被权限拦截（策略修改成功）
@@ -105,7 +113,7 @@ func TestSecurityRegressionPermissions(t *testing.T) {
 // 非法 mode/有效期/缺 reason → 400；过期 expected_version → 409；审计写入。
 func TestSecurityRegressionPolicyValidationAndConflict(t *testing.T) {
 	env := setupTestEnv(t)
-	cookies, csrf := env.s5Login(t, "sreg_admin", "SYSTEM_ADMIN")
+	cookies, csrf := env.s5Login(t, "sreg_oper", "SECURITY_ADMIN")
 
 	// 默认 OFF / version=1
 	result := s5OK(t, env.get(t, "/api/v1/security/regression-policy", cookies), "policy get")

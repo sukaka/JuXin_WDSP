@@ -26,7 +26,15 @@ export const MENU_ITEMS: MenuDef[] = [
   {
     key: '/big-screen',
     label: '大屏展示',
-    roles: ['SECURITY_ADMIN', 'SYSTEM_ADMIN'],
+    roles: ['SECURITY_ADMIN'],
+    permissions: [
+      'dashboard.security.read',
+      'analytics.security.read',
+      'security_events.read',
+      'api_runtime.read',
+      'big_screen.runtime.read',
+    ],
+    denyAuditOnly: true,
   },
   {
     key: '/applications',
@@ -58,13 +66,8 @@ export const MENU_ITEMS: MenuDef[] = [
     roles: ['SECURITY_ADMIN'],
     group: '应用防护',
   },
-  // P1-04 R4a：安全回归证据与发布门禁（read 含 AUDIT_ADMIN，按权限点显隐）
-  {
-    key: '/security-regressions',
-    label: '安全回归',
-    permissions: ['security_regression.read'],
-    group: '应用防护',
-  },
+  // 安全回归（/security-regressions）面向外部 CI 回归门禁，常规客户侧边栏不展示；
+  // 路由与后端接口保留，仅在门禁开启（OBSERVE/ENFORCE）或门禁拒绝发布时由发布页链接进入。
   {
     key: '/gateway-status',
     label: '网关状态',
@@ -586,11 +589,11 @@ export const MENU_ITEMS: MenuDef[] = [
     group: '业务性能',
   },
   // WDSP 流量采集 Agent（阶段8，契约 docs/agents/WDSP_AGENT_PHASE1_CONTRACT.md §4/§7）：
-  // view 授 SYSTEM_ADMIN/SECURITY_ADMIN；自定义角色持有 traffic.agents.view 按权限点补显
+  // 归属运维管理员（SECURITY_ADMIN）；自定义角色持有 traffic.agents.view 按权限点补显
   {
     key: '/traffic-agents',
     label: 'Agent 管理',
-    roles: ['SYSTEM_ADMIN', 'SECURITY_ADMIN'],
+    roles: ['SECURITY_ADMIN'],
     permissions: ['traffic.agents.view'],
     denyAuditOnly: true,
     group: '数据接入',
@@ -607,14 +610,14 @@ export const MENU_ITEMS: MenuDef[] = [
     roles: ['SECURITY_ADMIN'],
     group: '安全态势',
   },
-  // 系统告警：安全管理员（安全告警）与系统管理员（系统运维告警）双角色可见
+  // 系统告警：归属运维管理员（SECURITY_ADMIN）
   {
     key: '/system-alerts',
     label: '系统告警',
-    roles: ['SECURITY_ADMIN', 'SYSTEM_ADMIN'],
+    roles: ['SECURITY_ADMIN'],
     group: '安全态势',
   },
-  // 漏洞情报提醒（PHP 场景闭环）：读 vuln_intel.read，写 vuln_intel.manage（仅 SYSTEM_ADMIN）页面内控
+  // 漏洞情报提醒（PHP 场景闭环）：读 vuln_intel.read，写 vuln_intel.manage（归属运维管理员）页面内控
   {
     key: '/vuln-intel',
     label: '漏洞情报',
@@ -731,7 +734,7 @@ export const MENU_ITEMS: MenuDef[] = [
     denyAuditOnly: true,
     group: '系统运维',
   },
-  // 阶段7：智能安全运营（仅安全管理员）
+  // 阶段7：智能安全运营（仅运维管理员）
   {
     key: '/ai/assistant',
     label: '安全助手',

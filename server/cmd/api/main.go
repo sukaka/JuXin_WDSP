@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/accesscontrolevents"
 	"github.com/jiuzhang-waf/server/internal/accesslogs"
 	"github.com/jiuzhang-waf/server/internal/accessrules"
@@ -43,7 +42,6 @@ import (
 	"github.com/jiuzhang-waf/server/internal/learningjobs"
 	"github.com/jiuzhang-waf/server/internal/nodeinterfaces"
 	"github.com/jiuzhang-waf/server/internal/protectedaddresses"
-	"github.com/jiuzhang-waf/server/internal/security"
 	"github.com/jiuzhang-waf/server/internal/securityevents"
 	"github.com/jiuzhang-waf/server/internal/settings"
 	"github.com/jiuzhang-waf/server/internal/sitediscovery"
@@ -95,9 +93,9 @@ func run() error {
 	}
 	defer cacheClient.Close()
 
-	// 初始化管理员（首次启动）
-	if err := ensureInitialAdmin(ctx, db, cfg); err != nil {
-		return fmt.Errorf("ensure initial admin: %w", err)
+	// 初始化默认三权管理员（按内置角色缺失幂等补齐）
+	if err := ensureInitialAdmins(ctx, users.NewStore(db), cfg, os.Stdout); err != nil {
+		return fmt.Errorf("ensure initial admins: %w", err)
 	}
 
 	// 装配应用
@@ -222,6 +220,12 @@ func run() error {
 		cfg.WAF.SiteDiscoveryLog, filepath.Join(cfg.Gateway.DataDir, "site-discovery.checkpoint"), cfg.WAF.GatewayNodeName)
 	go siteDiscoveryCollector.Run(collectorCtx, 2*time.Second)
 
+	// 节点网口清单采集（网关/mirrorcap node-interfaces.jsonl 全量快照，60s 周期重建；
+	// 全产品形态均常驻，保留用户 sort_order/role，新口排末尾，消失口置 present=false）
+	ifaceCollector := nodeinterfaces.NewCollector(nodeinterfaces.NewStore(db),
+		"iface-collector-01", cfg.WAF.NodeIfacesLog)
+	go ifaceCollector.Run(collectorCtx, 60*time.Second)
+
 	// client_identity 体系：身份与行为事件采集器（identity-events.log 三种记录——
 	// 身份观测/行为快照/侦察信号，断点名 identity-events.checkpoint；WAF_IDENTITY_EVENTS_LOG
 	// 为空 = 不启动该采集器；checkpoint 落在可写数据目录，日志卷只读挂载）
@@ -251,6 +255,9 @@ func run() error {
 		apiCollector := apiruntime.NewCollector(apiRuntimeStore, "api-collector-01",
 			cfg.WAF.APIEventsLog, filepath.Join(cfg.Gateway.DataDir, "api-runtime-events.checkpoint"), cfg.WAF.GatewayNodeName)
 		apiCollector.SetDiscoveryUpserter(apiAssetStore)
+		if df := application.APIDiscoveryFilter(); df != nil {
+			apiCollector.SetDiscoveryFilter(df.Get)
+		}
 		// 端点归属解析：app_code → application_id，host → domain_id
 		apiCollector.SetResolver(apiruntime.NewAppResolver(applications.NewStore(db)))
 		// 学习自动化闭环（P0-1）：样本按学习任务落库 + 达阈值自动完成学习并生成候选模型
@@ -308,11 +315,6 @@ func run() error {
 		}
 		go apiCollector.Run(collectorCtx, 2*time.Second)
 
-		// WDSP 阶段A：节点网口清单采集（网关 node-interfaces.jsonl 全量快照，60s 周期重建；
-		// 保留用户 sort_order/role，新口排末尾，消失口置 present=false）
-		ifaceCollector := nodeinterfaces.NewCollector(nodeinterfaces.NewStore(db),
-			"iface-collector-01", cfg.WAF.NodeIfacesLog)
-		go ifaceCollector.Run(collectorCtx, 60*time.Second)
 		// 学习闭环审计同样纳入 syslog 外发（setter 注入，可为 nil 时跳过）
 		learningAuditSvc := audits.NewService(db)
 		learningAuditSvc.SetSyslogForwarder(func(severityHint string, payload interface{}) {
@@ -469,68 +471,4 @@ func runMigrate(ctx context.Context, cfg *config.Config, args []string) error {
 		migrationsDir = "migrations"
 	}
 	return database.Migrate(ctx, db, migrationsDir, direction)
-}
-
-// ensureInitialAdmin 首次启动时创建初始管理员。
-// 密码优先级：环境变量注入 > 生成一次性随机密码（仅打印一次到 stdout）。
-// 临时密码必须首次登录修改，不写入任何日志文件。
-func ensureInitialAdmin(ctx context.Context, db *pgxpool.Pool, cfg *config.Config) error {
-	store := users.NewStore(db)
-	has, err := store.HasUsers(ctx)
-	if err != nil {
-		return err
-	}
-	if has {
-		return nil
-	}
-
-	username := cfg.Security.InitialAdminUsername
-	password := cfg.Security.InitialAdminPassword
-	generated := false
-	if password == "" {
-		password, err = security.GenerateTemporaryPassword(16)
-		if err != nil {
-			return err
-		}
-		generated = true
-	}
-	hash, err := security.HashPassword(password)
-	if err != nil {
-		return err
-	}
-
-	now := time.Now()
-	user := &users.User{
-		Username:           username,
-		DisplayName:        "系统管理员",
-		PasswordHash:       hash,
-		Status:             users.StatusActive,
-		MustChangePassword: true,
-		PasswordChangedAt:  &now,
-	}
-	if err := store.Create(ctx, user); err != nil {
-		return err
-	}
-	roleID, err := store.GetRoleIDByCode(ctx, "SYSTEM_ADMIN")
-	if err != nil {
-		return err
-	}
-	if err := store.AssignRole(ctx, user.ID, roleID, user.ID); err != nil {
-		return err
-	}
-
-	if generated {
-		// 仅打印一次到 stdout，不写入日志文件，首次登录必须修改
-		fmt.Fprintf(os.Stdout, "\n")
-		fmt.Fprintf(os.Stdout, "╔══════════════════════════════════════════════════════════════╗\n")
-		fmt.Fprintf(os.Stdout, "║  九章WAF 初始管理员已创建（仅此一次显示，请立即记录）          ║\n")
-		fmt.Fprintf(os.Stdout, "╠══════════════════════════════════════════════════════════════╣\n")
-		fmt.Fprintf(os.Stdout, "║  用户名: %-51s ║\n", username)
-		fmt.Fprintf(os.Stdout, "║  临时密码: %-49s ║\n", password)
-		fmt.Fprintf(os.Stdout, "║  首次登录必须修改密码                                          ║\n")
-		fmt.Fprintf(os.Stdout, "╚══════════════════════════════════════════════════════════════╝\n\n")
-	} else {
-		slog.Info("initial admin created from environment variable", "username", username)
-	}
-	return nil
 }

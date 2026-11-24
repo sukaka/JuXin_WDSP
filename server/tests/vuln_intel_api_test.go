@@ -23,7 +23,7 @@ func vulnIntelImportBody(cveID, severity string, score float64, techs []string) 
 // 列表/详情/概览、订阅设置门槛、技术资产映射、SECURITY_ADMIN 只读、CSRF 强制。
 func TestVulnIntelAPI(t *testing.T) {
 	env := setupTestEnv(t)
-	cookies, csrf := env.login(t, "test_sysadmin", env.adminPwd)
+	cookies, csrf := env.s5Login(t, "vi_oper", "SECURITY_ADMIN")
 	ctx := context.Background()
 
 	// ---- 订阅设置默认值 ----
@@ -239,16 +239,18 @@ func TestVulnIntelAPI(t *testing.T) {
 	}
 }
 
-// TestVulnIntelAPIPermissions 权限矩阵：SECURITY_ADMIN 只读（manage 接口 403）；
-// 未登录 401；CSRF 缺失 403；审计员无 vuln_intel.read 403。
+// TestVulnIntelAPIPermissions 权限矩阵（000232 后）：运维管理员（SECURITY_ADMIN）拥有完整读写权限；
+// 系统管理员（SYSTEM_ADMIN）与审计管理员（AUDIT_ADMIN）均无 vuln_intel.* 权限（全 403）；
+// 未登录 401；CSRF 缺失 403。
 func TestVulnIntelAPIPermissions(t *testing.T) {
 	env := setupTestEnv(t)
 	env.createUserDirect(t, "vi_secadmin", "SecAdmin@2026!", "SECURITY_ADMIN")
 	env.createUserDirect(t, "vi_auditor", "Auditor@2026!", "AUDIT_ADMIN")
 	secCookies, secCSRF := env.login(t, "vi_secadmin", "SecAdmin@2026!")
+	sysCookies, sysCSRF := env.login(t, "test_sysadmin", env.adminPwd)
 	audCookies, _ := env.login(t, "vi_auditor", "Auditor@2026!")
 
-	// SECURITY_ADMIN：读接口 200
+	// SECURITY_ADMIN（运维管理员）：读接口 200，写接口可访问（非 403）
 	for _, path := range []string{
 		"/api/v1/vuln-intel/overview",
 		"/api/v1/vuln-intel/advisories",
@@ -261,26 +263,45 @@ func TestVulnIntelAPIPermissions(t *testing.T) {
 		}
 		resp.Body.Close()
 	}
-	// SECURITY_ADMIN：写接口 403（sync 在权限层拦截，不触发任何外呼）
-	resp := env.post(t, "/api/v1/vuln-intel/import", `{"advisories":[]}`, secCookies, secCSRF)
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("SECURITY_ADMIN import = %d, want 403", resp.StatusCode)
+	resp := env.do(t, http.MethodPut, "/api/v1/vuln-intel/settings",
+		`{"watch_techs":["php"],"min_severity":"HIGH","sync_enabled":false}`, secCookies, secCSRF)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("SECURITY_ADMIN put settings = %d, want 200", resp.StatusCode)
 	}
 	resp.Body.Close()
-	resp = env.post(t, "/api/v1/vuln-intel/sync", ``, secCookies, secCSRF)
+
+	// SYSTEM_ADMIN（000232 后无安全运营/漏洞情报权限）：读写均 403
+	for _, path := range []string{
+		"/api/v1/vuln-intel/overview",
+		"/api/v1/vuln-intel/advisories",
+		"/api/v1/vuln-intel/tech-assets",
+		"/api/v1/vuln-intel/settings",
+	} {
+		resp = env.get(t, path, sysCookies)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("SYSTEM_ADMIN GET %s = %d, want 403", path, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	resp = env.post(t, "/api/v1/vuln-intel/import", `{"advisories":[]}`, sysCookies, sysCSRF)
 	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("SECURITY_ADMIN sync = %d, want 403", resp.StatusCode)
+		t.Errorf("SYSTEM_ADMIN import = %d, want 403", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = env.post(t, "/api/v1/vuln-intel/sync", ``, sysCookies, sysCSRF)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("SYSTEM_ADMIN sync = %d, want 403", resp.StatusCode)
 	}
 	resp.Body.Close()
 	resp = env.do(t, http.MethodPut, "/api/v1/vuln-intel/settings",
-		`{"watch_techs":["php"],"min_severity":"HIGH","sync_enabled":false}`, secCookies, secCSRF)
+		`{"watch_techs":["php"],"min_severity":"HIGH","sync_enabled":false}`, sysCookies, sysCSRF)
 	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("SECURITY_ADMIN put settings = %d, want 403", resp.StatusCode)
+		t.Errorf("SYSTEM_ADMIN put settings = %d, want 403", resp.StatusCode)
 	}
 	resp.Body.Close()
-	resp = env.do(t, http.MethodPut, "/api/v1/vuln-intel/tech-assets", `{"items":[]}`, secCookies, secCSRF)
+	resp = env.do(t, http.MethodPut, "/api/v1/vuln-intel/tech-assets", `{"items":[]}`, sysCookies, sysCSRF)
 	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("SECURITY_ADMIN put tech-assets = %d, want 403", resp.StatusCode)
+		t.Errorf("SYSTEM_ADMIN put tech-assets = %d, want 403", resp.StatusCode)
 	}
 	resp.Body.Close()
 
@@ -301,9 +322,8 @@ func TestVulnIntelAPIPermissions(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// 已登录但缺 CSRF → 403
-	cookies, _ := env.login(t, "test_sysadmin", env.adminPwd)
-	resp = env.post(t, "/api/v1/vuln-intel/import", `{"advisories":[]}`, cookies, "")
+	// 已登录（运维管理员）但缺 CSRF → 403
+	resp = env.post(t, "/api/v1/vuln-intel/import", `{"advisories":[]}`, secCookies, "")
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("缺 CSRF = %d, want 403", resp.StatusCode)
 	}
@@ -313,7 +333,7 @@ func TestVulnIntelAPIPermissions(t *testing.T) {
 // TestVulnIntelImportValidation 导入边界校验：空批、超上限、非法级别、缺 tech_tags。
 func TestVulnIntelImportValidation(t *testing.T) {
 	env := setupTestEnv(t)
-	cookies, csrf := env.login(t, "test_sysadmin", env.adminPwd)
+	cookies, csrf := env.s5Login(t, "vi_oper_val", "SECURITY_ADMIN")
 
 	resp := env.post(t, "/api/v1/vuln-intel/import", `{"advisories":[]}`, cookies, csrf)
 	if resp.StatusCode != http.StatusBadRequest {
@@ -363,7 +383,7 @@ func TestVulnIntelImportValidation(t *testing.T) {
 // TestVulnIntelTechAssetsReplace 技术资产整组替换语义与校验。
 func TestVulnIntelTechAssetsReplace(t *testing.T) {
 	env := setupTestEnv(t)
-	cookies, csrf := env.login(t, "test_sysadmin", env.adminPwd)
+	cookies, csrf := env.s5Login(t, "vi_oper_assets", "SECURITY_ADMIN")
 	ctx := context.Background()
 
 	var app1, app2 string

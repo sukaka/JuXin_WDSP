@@ -192,12 +192,11 @@ test('回归控制台链路：列表 → 详情 → 用例差异（真实导入�
     await expect(page.locator('script', { hasText: 'alert(2)' })).toHaveCount(0)
   })
 
-  await test.step('配置发布页：OFF 门禁状态如实展示', async () => {
+  await test.step('配置发布页：OFF 默认关闭态不展示回归门禁提示条', async () => {
     await page.goto('/config-publish')
-    await expect(
-      page.getByText(/回归门禁未强制（OFF）：本次发布不检查回归证据/),
-    ).toBeVisible()
-    await expect(page.getByRole('link', { name: '查看安全回归' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '发布到网关' })).toBeVisible()
+    await expect(page.getByText(/回归门禁未强制/)).toHaveCount(0)
+    await expect(page.getByRole('link', { name: '查看安全回归' })).toHaveCount(0)
   })
 })
 

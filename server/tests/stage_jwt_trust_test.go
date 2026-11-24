@@ -74,16 +74,16 @@ WHERE table_name=$1`, table).Scan(&n); err != nil || n != 1 {
 WHERE code IN ('jwt_trust.read','jwt_trust.manage')`).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("jwt_trust permissions = %d, want 2 (err %v)", n, err)
 	}
-	// read 三角色全授；manage 仅 SYSTEM_ADMIN/SECURITY_ADMIN
+	// 000232 后：SYSTEM_ADMIN 已剥离 jwt_trust.*；read 仅 SECURITY_ADMIN/AUDIT_ADMIN，manage 仅 SECURITY_ADMIN
 	if err := env.db.QueryRow(ctx, `SELECT count(DISTINCT r.code) FROM role_permissions rp
 JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id
-WHERE p.code = 'jwt_trust.read' AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN','AUDIT_ADMIN')`).Scan(&n); err != nil || n != 3 {
-		t.Errorf("jwt_trust.read granted roles = %d, want 3 (err %v)", n, err)
+WHERE p.code = 'jwt_trust.read' AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN','AUDIT_ADMIN')`).Scan(&n); err != nil || n != 2 {
+		t.Errorf("jwt_trust.read granted roles = %d, want 2 (err %v)", n, err)
 	}
 	if err := env.db.QueryRow(ctx, `SELECT count(DISTINCT r.code) FROM role_permissions rp
 JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id
-WHERE p.code = 'jwt_trust.manage' AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN')`).Scan(&n); err != nil || n != 2 {
-		t.Errorf("jwt_trust.manage granted roles = %d, want 2 (err %v)", n, err)
+WHERE p.code = 'jwt_trust.manage' AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN')`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("jwt_trust.manage granted roles = %d, want 1 (err %v)", n, err)
 	}
 	// remote_jwks_allowlist 设置种子（默认空=仅公网 HTTPS）
 	if err := env.db.QueryRow(ctx, `SELECT count(*) FROM system_settings

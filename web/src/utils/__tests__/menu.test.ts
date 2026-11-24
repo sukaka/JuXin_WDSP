@@ -7,16 +7,13 @@ import {
 } from '../menu'
 
 describe('filterMenusByRoles', () => {
-  it('系统管理员菜单：运维 + 智能能力管理 + 系统告警（不含六组安全功能）', () => {
+  it('系统管理员菜单：运维 + 智能能力管理 + 账号系统设置（不含大屏与 7 大安全/业务菜单）', () => {
     const keys = filterMenusByRoles(['SYSTEM_ADMIN'], [], {
       apiDynamicProtection: true,
       webWafEnabled: true,
     }).map((m) => m.key)
     expect(keys).toEqual([
       '/dashboard',
-      '/big-screen',
-      '/traffic-agents',
-      '/system-alerts',
       '/system-monitoring',
       '/node-interfaces',
       '/network-config',
@@ -45,6 +42,114 @@ describe('filterMenusByRoles', () => {
     ])
   })
 
+  it('系统管理员持有全部 71 项保留权限时，完整模式与核心模式均零漏出大屏与 7 大受限菜单', () => {
+    const sysAdminRetainedPermissions = [
+      // 基础与个人中心
+      'dashboard.read_basic',
+      'profile.read',
+      'profile.update',
+      'sessions.read_self',
+      'sessions.revoke_self',
+      // 用户/会话/角色只读
+      'users.read',
+      'users.create',
+      'users.update',
+      'users.disable',
+      'users.unlock',
+      'users.reset_password',
+      'users.force_logout',
+      'sessions.read',
+      'sessions.revoke',
+      'roles.read',
+      'permissions.read',
+      'login_logs.read_limited',
+      // 系统设置
+      'system_settings.read',
+      'system_settings.update',
+      'logging.syslog_test',
+      // 系统运维
+      'system_health.read',
+      'dashboard.runtime.read',
+      'network_tools.execute',
+      'network_tools.download',
+      'containers.read',
+      'containers.logs',
+      'containers.control',
+      'containers.update',
+      'ha.read',
+      'ha.manage',
+      'backups.read',
+      'backups.create',
+      'backups.delete',
+      'backups.restore',
+      'backups.verify',
+      'upgrades.read',
+      'upgrades.upload',
+      'upgrades.apply',
+      'upgrades.rollback',
+      'system.reboot',
+      'system.shutdown',
+      'system.factory_reset',
+      'request_pcap.capture_control',
+      'delivery_checks.read',
+      'delivery_checks.run',
+      'notification.read',
+      'notification.update',
+      'notification.test',
+      'license.read',
+      'license.manage',
+      // 智能能力管理
+      'ai.models.read',
+      'ai.models.manage',
+      'ai.agents.read',
+      'ai.agents.manage',
+      'ai.tools.read',
+      'ai.tools.manage',
+      'ai.prompts.read',
+      'ai.prompts.create',
+      'ai.prompts.update',
+      'ai.prompts.delete',
+      'ai.prompts.publish',
+      'ai.prompts.test',
+      'ai.prompts.rollback',
+      'ai.memories.read_own',
+      'ai.memories.manage_own',
+      'ai.usage.read',
+      'ai.audits.read',
+      'ai.evaluations.run',
+      'ai.sessions.read_own',
+      'ai.sessions.delete_own',
+    ]
+    const menus = filterMenusByRoles(['SYSTEM_ADMIN'], sysAdminRetainedPermissions, {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+      apmEnabled: true,
+    })
+    const keys = menus.map((m) => m.key)
+    const groups = new Set(menus.map((m) => m.group).filter(Boolean))
+
+    expect(keys).not.toContain('/big-screen')
+    for (const forbiddenGroup of [
+      '应用防护',
+      '应用防护策略',
+      'API 防护',
+      '安全风险',
+      '数据接入',
+      '安全态势',
+      '安全运营',
+    ]) {
+      expect(groups.has(forbiddenGroup), `系统管理员不应看到分组「${forbiddenGroup}」`).toBe(false)
+    }
+    expect(filterCoreMenus(menus).map((m) => m.key)).toEqual([
+      '/dashboard',
+      '/system-monitoring',
+      '/users',
+      '/system-settings',
+      '/license',
+      '/profile',
+    ])
+  })
+
   it('审计管理员菜单：仅操作审计、登录日志与全角色公共入口', () => {
     const keys = filterMenusByRoles(['AUDIT_ADMIN'], [], {
       apiDynamicProtection: true,
@@ -54,7 +159,7 @@ describe('filterMenusByRoles', () => {
     expect(keys).toEqual(['/dashboard', '/login-logs', '/audits', '/profile'])
   })
 
-  it('安全管理员菜单含六组安全功能，不含智能能力管理', () => {
+  it('运维管理员（SECURITY_ADMIN）菜单含全部业务安全防护、大屏与移交功能，不含智能能力管理', () => {
     const keys = filterMenusByRoles(['SECURITY_ADMIN'], [], {
       apiDynamicProtection: true,
       webWafEnabled: true,
@@ -224,18 +329,59 @@ describe('filterMenusByRoles', () => {
     expect(keys).toContain('/api-endpoints')
   })
 
-  it('系统管理员无安全态势与报表中心菜单（系统告警除外）', () => {
+  it('系统管理员无大屏、安全态势、数据接入、安全运营与报表中心菜单', () => {
     const keys = filterMenusByRoles(['SYSTEM_ADMIN'], [], {
       apiDynamicProtection: true,
       webWafEnabled: true,
     }).map((m) => m.key)
+    expect(keys).not.toContain('/big-screen')
+    expect(keys).not.toContain('/traffic-agents')
     expect(keys).not.toContain('/security-overview')
     expect(keys).not.toContain('/analytics')
+    expect(keys).not.toContain('/system-alerts')
+    expect(keys).not.toContain('/vuln-intel')
     expect(keys).not.toContain('/reports')
     expect(keys).not.toContain('/report-templates')
     expect(keys).not.toContain('/report-archives')
-    // 系统告警对系统管理员保留（运维告警职责）
+  })
+
+  it('运维管理员持有移交权限时完整可见 7 大菜单与大屏展示', () => {
+    const menus = filterMenusByRoles(
+      ['SECURITY_ADMIN'],
+      [
+        'big_screen.runtime.read',
+        'behavior_policy.read',
+        'risk_policy.read',
+        'security_identities.read',
+        'attack_sessions.read',
+        'traffic.agents.view',
+        'system_alerts.read',
+        'vuln_intel.read',
+        'vuln_intel.manage',
+      ],
+      { apiDynamicProtection: true, webWafEnabled: true, apmEnabled: true },
+    )
+    const keys = menus.map((m) => m.key)
+    const groups = new Set(menus.map((m) => m.group).filter(Boolean))
+    expect(keys).toContain('/big-screen')
+    expect(keys).toContain('/traffic-agents')
     expect(keys).toContain('/system-alerts')
+    expect(keys).toContain('/vuln-intel')
+    expect(keys).toContain('/behavior-policy')
+    expect(keys).toContain('/risk-policy')
+    expect(keys).toContain('/risk-identities')
+    expect(keys).toContain('/attack-sessions')
+    for (const requiredGroup of [
+      '应用防护',
+      '应用防护策略',
+      'API 防护',
+      '安全风险',
+      '数据接入',
+      '安全态势',
+      '安全运营',
+    ]) {
+      expect(groups.has(requiredGroup), `运维管理员应可见分组「${requiredGroup}」`).toBe(true)
+    }
   })
 
   it('权限点命中即显示（角色码不匹配时按权限点补显，与路由 RequirePermission 口径一致）', () => {
@@ -471,7 +617,7 @@ describe('filterMenusByRoles', () => {
     expect(diagKeys).not.toContain('/apm-slos')
   })
 
-  it('审计管理员不显示超出审计职责的四个菜单', () => {
+  it('审计管理员不显示超出审计职责的五个菜单（含大屏展示）', () => {
     const keys = filterMenusByRoles(
       ['AUDIT_ADMIN'],
       [
@@ -479,6 +625,7 @@ describe('filterMenusByRoles', () => {
         'login_logs.read',
         'reports.read_audit',
         'dashboard.security.read',
+        'big_screen.runtime.read',
         'risk_policy.read',
         'attack_sessions.read',
         'traffic.agents.view',
@@ -487,6 +634,7 @@ describe('filterMenusByRoles', () => {
       { apiDynamicProtection: true, webWafEnabled: true },
     ).map((m) => m.key)
 
+    expect(keys).not.toContain('/big-screen')
     expect(keys).not.toContain('/risk-policy')
     expect(keys).not.toContain('/attack-sessions')
     expect(keys).not.toContain('/traffic-agents')
@@ -532,5 +680,16 @@ describe('filterMenusByRoles', () => {
       webWafEnabled: true,
     }).map((m) => m.key)
     expect(keys).toContain('/system-control')
+  })
+
+  it('安全回归不作为常规侧边栏菜单展示（即使持有 security_regression.read 权限）', () => {
+    for (const role of ['SECURITY_ADMIN', 'SYSTEM_ADMIN', 'AUDIT_ADMIN', 'CUSTOM_ROLE']) {
+      const keys = filterMenusByRoles([role], ['security_regression.read'], {
+        apiDynamicProtection: true,
+        webWafEnabled: true,
+        apmEnabled: true,
+      }).map((m) => m.key)
+      expect(keys).not.toContain('/security-regressions')
+    }
   })
 })

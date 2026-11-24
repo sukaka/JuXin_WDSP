@@ -40,9 +40,12 @@ export default function SystemAlertsPage() {
   const { message, modal } = AntdApp.useApp()
   const queryClient = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
-  // SYS：全部告警操作；SEC：安全类告警确认；AUD：只读
-  const canAcknowledge = hasAnyPermission(permissions, ['system_alerts.acknowledge', 'system_alerts.acknowledge_security'])
-  const canResolve = hasAnyPermission(permissions, ['system_alerts.resolve'])
+  // 运维管理员（SECURITY_ADMIN）持有告警读写与完整处置权限（system_alerts.acknowledge / system_alerts.acknowledge_security）；
+  // 审计管理员（AUDIT_ADMIN）仅只读，不渲染处置按钮与维护窗口管理入口
+  const canOperate = hasAnyPermission(permissions, [
+    'system_alerts.acknowledge',
+    'system_alerts.acknowledge_security',
+  ])
   const {
     selectedIds,
     selectedCount,
@@ -154,12 +157,12 @@ export default function SystemAlertsPage() {
           <Button type="link" size="small" onClick={() => setDetailId(record.id)}>
             详情
           </Button>
-          {canAcknowledge && record.status === 'OPEN' && (
+          {canOperate && record.status === 'OPEN' && (
             <Button type="link" size="small" onClick={() => confirmAction(record, 'acknowledge')}>
               确认
             </Button>
           )}
-          {canResolve && (record.status === 'OPEN' || record.status === 'ACKNOWLEDGED') && (
+          {canOperate && (record.status === 'OPEN' || record.status === 'ACKNOWLEDGED') && (
             <>
               <Button type="link" size="small" onClick={() => confirmAction(record, 'resolve')}>
                 解决
@@ -330,7 +333,7 @@ export default function SystemAlertsPage() {
                 }))}
               />
             )}
-            {(canAcknowledge || canResolve) && (
+            {canOperate && (
               <Space.Compact style={{ width: '100%' }}>
                 <Input
                   placeholder="添加处置备注"
@@ -354,7 +357,7 @@ export default function SystemAlertsPage() {
         )}
       </Drawer>
 
-      <MaintenanceWindowsDrawer open={maintOpen} canManage={canAcknowledge} onClose={() => setMaintOpen(false)} />
+      <MaintenanceWindowsDrawer open={maintOpen} canManage={canOperate} onClose={() => setMaintOpen(false)} />
     </Card>
   )
 }

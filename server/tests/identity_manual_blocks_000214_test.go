@@ -106,8 +106,9 @@ func TestIdentityManualBlockPublishAndAuditIntegration(t *testing.T) {
 	unblockPath := "/api/v1/security/identities/" + identityID.String() + "/unblock"
 
 	s5Expect(t, env.post(t, blockPath, `{"reason":"confirmed abuse"}`, auditCookies, auditCSRF), http.StatusForbidden, "audit admin cannot block")
-	if status := env.post(t, blockPath, `{"reason":"confirmed abuse"}`, systemCookies, systemCSRF); status.StatusCode != http.StatusOK {
-		t.Fatalf("system admin block status=%d", status.StatusCode)
+	s5Expect(t, env.post(t, blockPath, `{"reason":"confirmed abuse"}`, systemCookies, systemCSRF), http.StatusForbidden, "system admin cannot block after 000232")
+	if status := env.post(t, blockPath, `{"reason":"confirmed abuse"}`, securityCookies, securityCSRF); status.StatusCode != http.StatusOK {
+		t.Fatalf("security admin block status=%d", status.StatusCode)
 	} else {
 		var result apiResp
 		readJSON(t, status, &result)
@@ -127,9 +128,9 @@ func TestIdentityManualBlockPublishAndAuditIntegration(t *testing.T) {
 		}
 	}
 	s5Expect(t, env.post(t, "/api/v1/security/identities/"+uuid.NewString()+"/block",
-		`{"reason":"missing"}`, systemCookies, systemCSRF), http.StatusNotFound, "block missing identity")
-	s5Expect(t, env.post(t, blockPath, `{"reason":" "}`, systemCookies, systemCSRF), http.StatusBadRequest, "blank reason")
-	s5Expect(t, env.post(t, unblockPath, `{}`, systemCookies, systemCSRF), http.StatusBadRequest, "non-empty unblock")
+		`{"reason":"missing"}`, securityCookies, securityCSRF), http.StatusNotFound, "block missing identity")
+	s5Expect(t, env.post(t, blockPath, `{"reason":" "}`, securityCookies, securityCSRF), http.StatusBadRequest, "blank reason")
+	s5Expect(t, env.post(t, unblockPath, `{}`, securityCookies, securityCSRF), http.StatusBadRequest, "non-empty unblock")
 
 	provider := identityBlocksProvider(env, true)
 	blockedCfg, err := provider.BuildGuardConfig(ctx)
@@ -159,7 +160,7 @@ func TestIdentityManualBlockPublishAndAuditIntegration(t *testing.T) {
 			t.Fatalf("first unblock changed=%v", result.Data["changed"])
 		}
 	}
-	if status := env.post(t, unblockPath, "", systemCookies, systemCSRF); status.StatusCode != http.StatusOK {
+	if status := env.post(t, unblockPath, "", securityCookies, securityCSRF); status.StatusCode != http.StatusOK {
 		t.Fatalf("repeat unblock status=%d", status.StatusCode)
 	} else {
 		var result apiResp
@@ -169,6 +170,7 @@ func TestIdentityManualBlockPublishAndAuditIntegration(t *testing.T) {
 			t.Fatalf("repeat unblock changed=%v", result.Data["changed"])
 		}
 	}
+	s5Expect(t, env.post(t, unblockPath, "", systemCookies, systemCSRF), http.StatusForbidden, "system admin cannot unblock after 000232")
 
 	identity, err := securityidentities.NewStore(env.db).GetByID(ctx, identityID)
 	if err != nil {

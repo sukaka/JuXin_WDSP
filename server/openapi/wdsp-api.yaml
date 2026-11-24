@@ -2254,6 +2254,11 @@ components:
         mac:
           type: string
           description: MAC 地址
+        ip_addresses:
+          type: array
+          items:
+            type: string
+          description: 网口当前绑定的全局单播 IPv4/IPv6 地址列表（CIDR 形式，IPv4 优先；空数组表示未配置或不可见）
         pci_path:
           type: string
           description: PCI 拓扑路径（如 0000:03:00.0）
@@ -2694,10 +2699,16 @@ components:
           description: 来源规则文件名
         name:
           type: string
-          description: 规则名称（取规则消息前 200 字符）
+          description: 规则名称（中文展示名）
         message:
           type: string
-          description: 规则消息（SecRule msg）
+          description: 规则消息（中文展示消息）
+        description:
+          type: string
+          description: 规则中文详细说明摘要
+        detail:
+          $ref: '#/components/schemas/WafRuleDetailInfo'
+          description: 结构化中文规则详细说明（详情接口返回）
         severity:
           type: string
           enum:
@@ -2746,6 +2757,115 @@ components:
         crs_version:
           type: string
           description: 所属 CRS 版本
+    WafRuleDetailInfo:
+      type: object
+      description: WAF 规则结构化中文详细说明（由详情接口返回）
+      properties:
+        rule_type:
+          type: string
+          enum:
+          - DETECTION
+          - OBSERVE
+          - BLOCKING_EVALUATION
+          - EXCLUSION
+          - PREPROCESSING
+          - INTERNAL
+          description: 规则功能类别代码
+        rule_type_label:
+          type: string
+          description: 规则功能类别中文名
+        source:
+          type: string
+          enum:
+          - CUSTOM
+          - BUILTIN
+          - PARSED
+          - AUTO
+          description: 规则说明来源（人工维护 / 内置规则库 / 规则文件自动解析 / 元数据自动生成）
+        source_label:
+          type: string
+          description: 规则说明来源中文名
+        customized:
+          type: boolean
+          description: 是否包含管理员手工维护的说明覆盖
+        summary:
+          type: string
+          description: 规则中文详细说明
+        detection_logic:
+          type: string
+          description: 检测原理与匹配机制中文说明
+        risk_impact:
+          type: string
+          description: 安全风险与防护意义中文说明
+        tuning_advice:
+          type: string
+          description: 误报排查与调优建议中文说明
+        phase_description:
+          type: string
+          description: 执行阶段中文说明
+        paranoia_level:
+          type: string
+          description: 生效偏执级别中文说明
+        action_behavior:
+          type: string
+          description: 处置与异常评分行为中文说明
+        targets:
+          type: array
+          items:
+            type: string
+          description: 检查目标变量中文说明列表
+        references:
+          type: array
+          items:
+            type: string
+          description: 关联漏洞编号（CVE/CNNVD）、CAPEC 攻击模式与规则族引用列表
+        custom_fields:
+          $ref: '#/components/schemas/WafRuleDescriptionOverride'
+          description: 管理员人工覆盖的原始字段（仅 customized=true 时返回）
+    WafRuleDescriptionRequest:
+      type: object
+      description: 管理员编辑规则中文说明请求体（至少填写一项非空内容，留空字段继承系统默认说明）
+      properties:
+        summary:
+          type: string
+          maxLength: 2000
+          description: 自定义规则概述
+        detection_logic:
+          type: string
+          maxLength: 2000
+          description: 自定义检测原理与检查目标说明
+        risk_impact:
+          type: string
+          maxLength: 2000
+          description: 自定义安全风险与防护意义说明
+        tuning_advice:
+          type: string
+          maxLength: 2000
+          description: 自定义误报排查与调优建议
+    WafRuleDescriptionOverride:
+      type: object
+      description: 管理员维护的规则中文说明覆盖记录
+      properties:
+        summary:
+          type: string
+          description: 自定义规则概述
+        detection_logic:
+          type: string
+          description: 自定义检测原理说明
+        risk_impact:
+          type: string
+          description: 自定义安全风险说明
+        tuning_advice:
+          type: string
+          description: 自定义误报与调优建议
+        updated_by_name:
+          type: string
+          description: 最近维护人用户名
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近维护时间
     WafRuleListResponse:
       type: object
       properties:
@@ -3088,7 +3208,6 @@ components:
       required:
       - rule_id
       - name
-      - phase
       - operator
       - target_variables
       - action
@@ -3118,9 +3237,10 @@ components:
           description: 严重级别；非法或缺省值落 WARNING
         phase:
           type: integer
-          minimum: 1
+          minimum: 0
           maximum: 5
-          description: 执行阶段 1-5
+          description: 执行阶段（可选；缺省或传 0 时由服务端按 target_variables 自动推导：含 REQUEST_BODY/ARGS_POST/ARGS/ARGS_NAMES 为 2，否则为 1；显式传
+            1-5 保持向后兼容）
         operator:
           type: string
           enum:
@@ -7395,6 +7515,466 @@ components:
           type: string
           format: date-time
           description: 采集时间（UTC）
+    SystemHealthGatewayTCPStates:
+      type: object
+      description: 网关 TCP 连接状态分布（源自 /proc/net/tcp 与 tcp6，非 Linux 或不可读时为 null）
+      properties:
+        established:
+          type: integer
+          description: ESTABLISHED 数量
+        time_wait:
+          type: integer
+          description: TIME_WAIT 数量
+        close_wait:
+          type: integer
+          description: CLOSE_WAIT 数量
+        syn_recv:
+          type: integer
+          description: SYN_RECV 数量
+        fin_wait:
+          type: integer
+          description: FIN_WAIT1/FIN_WAIT2 数量
+        listen:
+          type: integer
+          description: LISTEN 数量
+        other:
+          type: integer
+          description: 其他状态数量
+    SystemHealthGatewaySoftwareBypass:
+      type: object
+      description: 网关软件旁路当前状态与阈值配置
+      properties:
+        enabled:
+          type: boolean
+          description: 自动软件旁路是否启用
+        active:
+          type: boolean
+          description: 当前是否处于纯透传旁路状态
+        reason:
+          type: string
+          description: 当前触发原因（如 CPU_THRESHOLD/MEMORY_THRESHOLD）
+        cpu_threshold_percent:
+          type: integer
+          description: 触发旁路的 CPU 使用率阈值（%）
+        memory_threshold_percent:
+          type: integer
+          description: 触发旁路的内存使用率阈值（%）
+        recovery_cpu_percent:
+          type: integer
+          description: 恢复检测的 CPU 使用率阈值（%）
+        recovery_memory_percent:
+          type: integer
+          description: 恢复检测的内存使用率阈值（%）
+        min_hold_seconds:
+          type: integer
+          description: 旁路最短保持时间（秒）
+        activated_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近一次进入旁路的时刻（UTC）
+        transitions_total:
+          type: integer
+          format: int64
+          description: 累计旁路状态切换次数
+        bypassed_requests_total:
+          type: integer
+          format: int64
+          description: 累计纯透传旁路请求数
+    SystemHealthGatewayCurrent:
+      type: object
+      description: 网关当前瞬时运行指标（优先实时读取，失败时回退数据库最新快照）
+      properties:
+        status:
+          type: string
+          enum:
+          - UP
+          - DOWN
+          - DEGRADED
+          - UNKNOWN
+          description: 网关组件状态
+        latency_ms:
+          type: integer
+          nullable: true
+          description: 探测延迟（毫秒）
+        taken_at:
+          type: string
+          format: date-time
+          description: 采样时间（UTC）
+        cpu_percent:
+          type: number
+          format: double
+          nullable: true
+          description: CPU 使用率（%）
+        memory_percent:
+          type: number
+          format: double
+          nullable: true
+          description: 内存使用率（%）
+        memory_used_bytes:
+          type: integer
+          format: int64
+          nullable: true
+          description: 已用内存（字节）
+        memory_total_bytes:
+          type: integer
+          format: int64
+          nullable: true
+          description: 总内存（字节）
+        load1:
+          type: number
+          format: double
+          nullable: true
+          description: 1 分钟系统平均负载
+        load5:
+          type: number
+          format: double
+          nullable: true
+          description: 5 分钟系统平均负载
+        load15:
+          type: number
+          format: double
+          nullable: true
+          description: 15 分钟系统平均负载
+        fd_open:
+          type: integer
+          nullable: true
+          description: 已打开文件句柄数
+        fd_max:
+          type: integer
+          format: int64
+          nullable: true
+          description: 最大文件句柄上限
+        fd_usage_percent:
+          type: number
+          format: double
+          nullable: true
+          description: 文件句柄使用率（%）
+        tcp_connections_active:
+          type: integer
+          format: int64
+          description: 当前活跃 TCP 连接数
+        tcp_connections_accepted_total:
+          type: integer
+          format: int64
+          description: 累计接入 TCP 连接数
+        tcp_connections_accepted_per_second:
+          type: number
+          format: double
+          description: 每秒新建 TCP 连接数
+        bytes_in_total:
+          type: integer
+          format: int64
+          description: 累计入站字节数
+        bytes_out_total:
+          type: integer
+          format: int64
+          description: 累计出站字节数
+        bytes_in_per_second:
+          type: number
+          format: double
+          description: 入站吞吐速率（字节/秒）
+        bytes_out_per_second:
+          type: number
+          format: double
+          description: 出站吞吐速率（字节/秒）
+        http_requests_in_flight:
+          type: integer
+          format: int64
+          description: 在途 HTTP 请求数
+        http_requests_total:
+          type: integer
+          format: int64
+          description: 累计 HTTP 请求数
+        http_requests_per_second:
+          type: number
+          format: double
+          description: 实时 QPS（请求/秒）
+        http_sessions_active:
+          type: integer
+          description: 当前活跃 HTTP 会话数
+        http_sessions_new_total:
+          type: integer
+          format: int64
+          description: 累计新建 HTTP 会话数
+        http_sessions_new_per_second:
+          type: number
+          format: double
+          description: 每秒新建 HTTP 会话数
+        http_sessions_overflow_total:
+          type: integer
+          format: int64
+          description: 会话表超上限溢出次数
+        http_sessions_capacity:
+          type: integer
+          description: 会话表容量上限（固定 10000）
+        status_2xx_total:
+          type: integer
+          format: int64
+          description: 累计 2xx 响应数
+        status_3xx_total:
+          type: integer
+          format: int64
+          description: 累计 3xx 响应数
+        status_4xx_total:
+          type: integer
+          format: int64
+          description: 累计 4xx 响应数
+        status_5xx_total:
+          type: integer
+          format: int64
+          description: 累计 5xx 响应数
+        status_2xx_per_second:
+          type: number
+          format: double
+          description: 每秒 2xx 响应数
+        status_3xx_per_second:
+          type: number
+          format: double
+          description: 每秒 3xx 响应数
+        status_4xx_per_second:
+          type: number
+          format: double
+          description: 每秒 4xx 响应数
+        status_5xx_per_second:
+          type: number
+          format: double
+          description: 每秒 5xx 响应数
+        software_bypass:
+          $ref: '#/components/schemas/SystemHealthGatewaySoftwareBypass'
+        tcp_states:
+          nullable: true
+          allOf:
+          - $ref: '#/components/schemas/SystemHealthGatewayTCPStates'
+          description: TCP 连接状态分布（不可用时为 null）
+        resource_sample_error:
+          type: string
+          description: 资源采样错误信息（正常时为空字符串）
+    SystemHealthGatewayTrendSummary:
+      type: object
+      description: 窗口内网关指标峰值、均值与旁路汇总
+      properties:
+        peak_tcp_connections_active:
+          type: integer
+          format: int64
+          description: 窗口内最大活跃 TCP 连接数
+        avg_tcp_connections_active:
+          type: number
+          format: double
+          description: 窗口内平均活跃 TCP 连接数
+        peak_tcp_connections_accepted_per_second:
+          type: number
+          format: double
+          description: 窗口内最高新建连接速率（/秒）
+        peak_http_sessions_active:
+          type: integer
+          description: 窗口内最大活跃 HTTP 会话数
+        peak_http_sessions_new_per_second:
+          type: number
+          format: double
+          description: 窗口内最高新建会话速率（/秒）
+        peak_http_requests_per_second:
+          type: number
+          format: double
+          description: 窗口内最高 QPS（请求/秒）
+        peak_bytes_in_per_second:
+          type: number
+          format: double
+          description: 窗口内最高入站带宽（字节/秒）
+        peak_bytes_out_per_second:
+          type: number
+          format: double
+          description: 窗口内最高出站带宽（字节/秒）
+        peak_cpu_percent:
+          type: number
+          format: double
+          nullable: true
+          description: 窗口内最高 CPU 使用率（%；无采样时为 null）
+        peak_memory_percent:
+          type: number
+          format: double
+          nullable: true
+          description: 窗口内最高内存使用率（%；无采样时为 null）
+        bypass_active_points:
+          type: integer
+          description: 窗口内处于软件旁路激活状态的采样点数
+    SystemHealthGatewayTrendPoint:
+      type: object
+      description: 单个时间点的网关运行趋势样本
+      properties:
+        taken_at:
+          type: string
+          format: date-time
+          description: 采样时间（UTC）
+        cpu_percent:
+          type: number
+          format: double
+          nullable: true
+          description: CPU 使用率（%）
+        memory_percent:
+          type: number
+          format: double
+          nullable: true
+          description: 内存使用率（%）
+        load1:
+          type: number
+          format: double
+          nullable: true
+          description: 1 分钟系统平均负载
+        fd_usage_percent:
+          type: number
+          format: double
+          nullable: true
+          description: 文件句柄使用率（%）
+        tcp_connections_active:
+          type: integer
+          format: int64
+          description: 活跃 TCP 连接数
+        tcp_connections_accepted_per_second:
+          type: number
+          format: double
+          description: 每秒新建 TCP 连接数
+        bytes_in_per_second:
+          type: number
+          format: double
+          description: 入站吞吐速率（字节/秒）
+        bytes_out_per_second:
+          type: number
+          format: double
+          description: 出站吞吐速率（字节/秒）
+        http_requests_in_flight:
+          type: integer
+          format: int64
+          description: 在途 HTTP 请求数
+        http_requests_per_second:
+          type: number
+          format: double
+          description: 每秒 HTTP 请求数（QPS）
+        http_sessions_active:
+          type: integer
+          description: 活跃 HTTP 会话数
+        http_sessions_new_per_second:
+          type: number
+          format: double
+          description: 每秒新建 HTTP 会话数
+        status_2xx_per_second:
+          type: number
+          format: double
+          description: 每秒 2xx 响应数
+        status_3xx_per_second:
+          type: number
+          format: double
+          description: 每秒 3xx 响应数
+        status_4xx_per_second:
+          type: number
+          format: double
+          description: 每秒 4xx 响应数
+        status_5xx_per_second:
+          type: number
+          format: double
+          description: 每秒 5xx 响应数
+        software_bypass_active:
+          type: boolean
+          description: 该时刻是否处于软件旁路状态
+    SystemHealthGatewayTrendApplication:
+      type: object
+      description: 单应用网关实时负载明细（按 QPS 降序、总请求数降序最多 20 项）
+      properties:
+        app_id:
+          type: string
+          description: 应用 ID
+        app_code:
+          type: string
+          description: 应用编码（查不到时降级为 app_id）
+        app_name:
+          type: string
+          description: 应用名称（查不到时降级为 app_id）
+        requests_in_flight:
+          type: integer
+          format: int64
+          description: 当前在途请求数
+        requests_total:
+          type: integer
+          format: int64
+          description: 累计请求数
+        requests_per_second:
+          type: number
+          format: double
+          description: 实时 QPS
+        bypassed_requests_total:
+          type: integer
+          format: int64
+          description: 累计旁路请求数
+        bytes_in_total:
+          type: integer
+          format: int64
+          description: 累计入站字节数
+        bytes_out_total:
+          type: integer
+          format: int64
+          description: 累计出站字节数
+        bytes_in_per_second:
+          type: number
+          format: double
+          description: 入站带宽（字节/秒）
+        bytes_out_per_second:
+          type: number
+          format: double
+          description: 出站带宽（字节/秒）
+        status_4xx_total:
+          type: integer
+          format: int64
+          description: 累计 4xx 响应数
+        status_5xx_total:
+          type: integer
+          format: int64
+          description: 累计 5xx 响应数
+    SystemHealthGatewayTrendResponse:
+      type: object
+      description: 网关连接与会话实时/历史趋势响应
+      properties:
+        range:
+          type: string
+          enum:
+          - 10m
+          - 1h
+          - 6h
+          - 24h
+          description: 生效的时间范围
+        source:
+          type: string
+          enum:
+          - gateway_live
+          - database
+          - database_fallback
+          description: 趋势数据源
+        interval_seconds:
+          type: integer
+          description: 采样间隔（秒；实时为 2，数据库为 30）
+        generated_at:
+          type: string
+          format: date-time
+          description: 响应生成时间（UTC）
+        node:
+          type: string
+          description: 网关节点标识
+        current:
+          nullable: true
+          allOf:
+          - $ref: '#/components/schemas/SystemHealthGatewayCurrent'
+          description: 当前瞬时网关状态（实时与数据库均无记录时为 null）
+        summary:
+          $ref: '#/components/schemas/SystemHealthGatewayTrendSummary'
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/SystemHealthGatewayTrendPoint'
+          description: 时间序列表（按时间升序，无数据时为空数组）
+        applications:
+          type: array
+          items:
+            $ref: '#/components/schemas/SystemHealthGatewayTrendApplication'
+          description: 按应用实时负载排行（最多 20 项，无数据时为空数组）
     SysAlert:
       type: object
       description: 系统告警
@@ -11928,6 +12508,18 @@ components:
           format: uuid
           nullable: true
           description: 所属站点 ID（未归属时缺省或为 null）
+        application_name:
+          type: string
+          description: 所属应用名称
+        host:
+          type: string
+          description: 观测主机名（Host）
+        protocol_type:
+          type: string
+          description: 协议类型（REST/GRPC/GRAPHQL 等）
+        is_api:
+          type: boolean
+          description: 是否判定为 API 资产
         asset_status:
           type: string
           enum:
@@ -11935,6 +12527,7 @@ components:
           - CONFIRMED
           - IGNORED
           - DEPRECATED
+          - ZOMBIE
           description: 资产状态
         learning_status:
           type: string
@@ -11952,6 +12545,24 @@ components:
           type: integer
           format: int64
           description: 未闭环风险发现数（活动状态 NEW/CONFIRMED/IN_PROGRESS）
+    ApiSecGraphSummary:
+      type: object
+      description: 身份轨迹图谱过滤前后摘要统计
+      properties:
+        total_nodes:
+          type: integer
+        visible_nodes:
+          type: integer
+        static_noise_nodes:
+          type: integer
+        ignored_nodes:
+          type: integer
+        isolated_nodes:
+          type: integer
+        total_edges:
+          type: integer
+        visible_edges:
+          type: integer
     ApiSecGraphEdge:
       type: object
       description: 调用边（api_call_edges）
@@ -12008,6 +12619,205 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ApiSecGraphEdge'
+        summary:
+          $ref: '#/components/schemas/ApiSecGraphSummary'
+    ApiSecServiceRPCSourceStatus:
+      type: object
+      description: 后端微服务调用图谱单路遥测数据源状态
+      required:
+      - source
+      - label
+      - status
+      - edge_count
+      properties:
+        source:
+          type: string
+          enum:
+          - otel_traces
+          - agent_dataflow
+          - agent_grpc
+        label:
+          type: string
+        status:
+          type: string
+          enum:
+          - READY
+          - EMPTY
+          - NOT_CONFIGURED
+          - UNAVAILABLE
+        edge_count:
+          type: integer
+        message:
+          type: string
+    ApiSecServiceRPCNode:
+      type: object
+      description: 微服务调用图谱节点
+      required:
+      - id
+      - name
+      - node_type
+      - protocols
+      - inbound_calls
+      - outbound_calls
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        node_type:
+          type: string
+          enum:
+          - SERVICE
+          - EXTERNAL
+        protocols:
+          type: array
+          items:
+            type: string
+        inbound_calls:
+          type: integer
+          format: int64
+        outbound_calls:
+          type: integer
+          format: int64
+        inbound_edges:
+          type: integer
+        outbound_edges:
+          type: integer
+        error_count:
+          type: integer
+          format: int64
+        error_rate:
+          type: number
+        avg_ms:
+          type: number
+        operations_count:
+          type: integer
+    ApiSecServiceRPCEdge:
+      type: object
+      description: 后端微服务真实 RPC / 服务间调用边
+      required:
+      - id
+      - source
+      - target
+      - target_type
+      - protocol
+      - call_category
+      - evidence_type
+      - paired
+      - data_source
+      - calls
+      properties:
+        id:
+          type: string
+        source:
+          type: string
+        target:
+          type: string
+        target_type:
+          type: string
+          enum:
+          - SERVICE
+          - EXTERNAL
+        protocol:
+          type: string
+        call_category:
+          type: string
+          enum:
+          - RPC
+          - HTTP
+        evidence_type:
+          type: string
+        paired:
+          type: boolean
+        data_source:
+          type: string
+        calls:
+          type: integer
+          format: int64
+        error_count:
+          type: integer
+          format: int64
+        error_rate:
+          type: number
+        avg_ms:
+          type: number
+        p95_ms:
+          type: number
+        operations:
+          type: array
+          items:
+            type: string
+        sample_trace_ids:
+          type: array
+          items:
+            type: string
+        first_seen_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+    ApiSecServiceRPCGraphSummary:
+      type: object
+      description: 微服务 RPC 调用图谱摘要统计
+      properties:
+        total_nodes:
+          type: integer
+        service_nodes:
+          type: integer
+        external_nodes:
+          type: integer
+        total_edges:
+          type: integer
+        rpc_edges:
+          type: integer
+        http_edges:
+          type: integer
+        paired_edges:
+          type: integer
+        error_edges:
+          type: integer
+        total_calls:
+          type: integer
+          format: int64
+        total_errors:
+          type: integer
+          format: int64
+        truncated:
+          type: boolean
+    ApiSecServiceRPCGraph:
+      type: object
+      description: 后端微服务真实 RPC / 服务间调用图谱响应
+      required:
+      - start
+      - end
+      - nodes
+      - edges
+      - summary
+      - sources
+      properties:
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiSecServiceRPCNode'
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiSecServiceRPCEdge'
+        summary:
+          $ref: '#/components/schemas/ApiSecServiceRPCGraphSummary'
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiSecServiceRPCSourceStatus'
+        note:
+          type: string
     ApiSecTopologyGroup:
       type: object
       description: 按站点分组的接口树节点
@@ -12044,8 +12854,9 @@ components:
             $ref: '#/components/schemas/ApiSecGraphEdge'
     ApiSecSpecImportRequest:
       type: object
-      description: '两种形式二选一：① 规范文档原文（顶层含 openapi: "3.x" 或 swagger: "2.0" 字段， Swagger 2.0 自动转换为 OpenAPI 3）；② 包装形式（顶层无版本声明字段时按包装解析）：
-        spec 为文档对象，file_name/name 可选。仅支持 JSON；请求体上限 16MiB。'
+      description: JSON 两种形式二选一（文件上传请使用 multipart/form-data）：① 规范文档对象（OpenAPI 3 / Swagger 2.0 / AsyncAPI / Postman v2.1 /
+        JSON Schema / HAR）；② 包装形式（顶层无格式字段时按包装解析）： spec 为文档对象或原始文本字符串（YAML / GraphQL / Protobuf / WSDL / XSD / RAML / APIB
+        等）， file_name/name 可选。请求体上限 16MiB。
       properties:
         openapi:
           type: string
@@ -12059,8 +12870,10 @@ components:
           type: object
           description: 形式①：规范 paths 对象（非空）
         spec:
-          type: object
-          description: 形式②：规范文档对象（包装形式时必填）
+          oneOf:
+          - type: object
+          - type: string
+          description: 形式②：规范文档对象或原始脚本文本（包装形式时必填）
         file_name:
           type: string
           description: 形式②：可选文件名
@@ -12115,7 +12928,17 @@ components:
           enum:
           - openapi3
           - swagger2
-          description: 规范格式（Swagger 2.0 导入后按 OpenAPI 3 规范化落库）
+          - asyncapi
+          - postman
+          - jsonschema
+          - graphql
+          - protobuf
+          - wsdl
+          - xsd
+          - raml
+          - apib
+          - har
+          description: 规范格式（Swagger 2.0 导入后按 OpenAPI 3 规范化落库，HAR 落库自动脱敏凭据与响应体）
         file_name:
           type: string
           description: 文件名（未提供时为空串）
@@ -28116,9 +28939,12 @@ components:
             backend:
               type: string
               enum:
+              - auto
               - afpacket
               - ebpf
-              - auto
+              - bpf
+              - npcap
+              - rawsocket
         capture_level:
           type: string
           enum:
@@ -28381,6 +29207,117 @@ components:
         cert_expires_at:
           type: string
           format: date-time
+    TrafficAgentPackageItem:
+      type: object
+      required:
+      - os
+      - distro
+      - arch
+      - format
+      - filename
+      - size
+      - sha256
+      properties:
+        os:
+          type: string
+          enum:
+          - linux
+          - darwin
+          - windows
+        distro:
+          type: string
+        arch:
+          type: string
+          enum:
+          - amd64
+          - arm64
+        format:
+          type: string
+          enum:
+          - rpm
+          - deb
+          - pkg
+          - targz
+          - zip
+        filename:
+          type: string
+        size:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+    TrafficAgentPackageManifest:
+      type: object
+      required:
+      - version
+      - built_at
+      - packages
+      properties:
+        version:
+          type: string
+        built_at:
+          type: string
+          format: date-time
+        packages:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrafficAgentPackageItem'
+    TrafficAgentPackagesResponse:
+      type: object
+      required:
+      - available
+      - packages
+      properties:
+        available:
+          type: boolean
+        version:
+          type: string
+        built_at:
+          type: string
+        packages:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrafficAgentPackageItem'
+    TrafficAgentInstallEndpoint:
+      type: object
+      required:
+      - recommended_url
+      - saved_url
+      - source
+      - https_port
+      - self_signed_tls
+      - candidate_ips
+      - candidate_urls
+      properties:
+        recommended_url:
+          type: string
+        saved_url:
+          type: string
+        source:
+          type: string
+          enum:
+          - saved
+          - env
+          - request_host
+          - configured_host_ip
+          - console_cert
+          - host_interface
+          - unresolved
+        https_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        self_signed_tls:
+          type: boolean
+        candidate_ips:
+          type: array
+          items:
+            type: string
+        candidate_urls:
+          type: array
+          items:
+            type: string
     NetdiagJobParams:
       type: object
       description: 动作参数（与共享卷请求文件 params 一致；未使用字段为 0/空）
@@ -34268,6 +35205,94 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 03-policies.yaml
+  /waf-rules/{rule_id}/description:
+    put:
+      operationId: wafRuleUpdateDescription
+      tags:
+      - waf-rules
+      summary: 编辑 WAF 规则中文详细说明
+      description: '保存或更新管理员针对指定规则 ID 维护的中文详细说明覆盖记录（支持按字段局部覆盖，
+
+        留空字段自动沿用系统内置或规则文件自动解析说明；独立持久化，不受后续 CRS 同步覆盖）。
+
+        记录操作审计（风险：低）。权限：`rule_overrides.manage`
+
+        '
+      parameters:
+      - name: rule_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+        description: SecRule 规则 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WafRuleDescriptionRequest'
+      responses:
+        '200':
+          description: 更新后的规则详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WafRule'
+        '400':
+          description: 参数非法或全部字段为空
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: wafRuleResetDescription
+      tags:
+      - waf-rules
+      summary: 重置 WAF 规则中文详细说明为默认
+      description: '删除管理员针对指定规则 ID 的人工说明覆盖记录，恢复系统内置中文说明或规则文件自动解析说明。
+
+        记录操作审计（风险：低）。权限：`rule_overrides.manage`
+
+        '
+      parameters:
+      - name: rule_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+        description: SecRule 规则 ID
+      responses:
+        '200':
+          description: 恢复默认后的规则详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WafRule'
+        '400':
+          description: 规则 ID 非法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 03-policies.yaml
   /waf-rules/sync:
     post:
       operationId: wafRuleSync
@@ -34618,6 +35643,10 @@ paths:
 
         （命令执行、文件读取、命令替换等），rx 操作符额外校验正则语法，并生成对应 SecLang 文本。
 
+        phase 可选，缺省或传 0 时由服务端根据 target_variables 自动推导（含请求体相关变量推导为 2，否则为 1）；
+
+        显式传 1-5 保持向后兼容。
+
         规则 ID 必须在 7100000-7199999 区间且全库唯一；新规则默认 ENABLED、GLOBAL 作用域。
 
         创建后需发布配置方可生效。记录操作审计（风险：中）。权限：`custom_rules.manage`
@@ -34690,7 +35719,9 @@ paths:
       summary: 更新自定义规则
       description: '更新自定义规则，采用乐观锁：请求体 version 必须与当前版本一致，否则返回 409。
 
-        rule_id 不可修改（请求体中的 rule_id 被忽略）；其余字段重新校验并重新生成 SecLang。
+        rule_id 不可修改（请求体中的 rule_id 被忽略）；phase 缺省或传 0 时按新 target_variables 自动重新推导；
+
+        其余字段重新校验并重新生成 SecLang。
 
         更新后需发布配置方可生效。记录操作审计（风险：中）。权限：`custom_rules.manage`
 
@@ -39658,6 +40689,44 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 05-events-analytics.yaml
+  /system-health/gateway-trend:
+    get:
+      operationId: systemHealthGatewayTrend
+      tags:
+      - system-health
+      summary: 网关连接与会话实时及历史趋势
+      description: 查询网关 TCP 连接、HTTP 会话、QPS、进出站带宽、状态码、资源水位及按应用负载的实时与历史趋势。 range=10m 优先读取网关 Unix Admin Socket 的 2 秒内存环形缓冲（source=gateway_live），
+        网关未配置/不可达/返回 404 时降级查数据库近 10 分钟 GATEWAY 快照（source=database_fallback，30 秒粒度）； range=1h/6h/24h 查数据库历史快照（source=database，30
+        秒粒度），current 优先实时读取网关并在失败时降级至数据库最新快照。 非法 range 返回 400 INVALID_ARGUMENT。权限：system_health.read。
+      parameters:
+      - name: range
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - 10m
+          - 1h
+          - 6h
+          - 24h
+          default: 1h
+        description: 查询时间范围（默认 1h；可选 10m、1h、6h、24h）
+      responses:
+        '200':
+          description: 网关实时与历史趋势数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemHealthGatewayTrendResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 05-events-analytics.yaml
   /metrics:
     get:
       operationId: prometheusMetricsGet
@@ -43127,6 +44196,54 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 07-api-security.yaml
+  /api-security/discovery-filter:
+    get:
+      operationId: apiSecDiscoveryFilterGet
+      tags:
+      - api-security
+      summary: 获取 API 发现静态资源与非 API 过滤配置
+      description: 返回当前生效的静态资源排除扩展名、自定义排除路径前缀、强制保留白名单前缀与非 API 过滤开关， 同时返回内置默认静态扩展名参考清单。权限：`api_asset.read`
+      responses:
+        '200':
+          description: 当前过滤配置与默认扩展名参考清单
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: apiSecDiscoveryFilterUpdate
+      tags:
+      - api-security
+      summary: 更新 API 发现静态资源与非 API 过滤配置
+      description: 校验并保存静态资源与非 API 发现过滤规则到系统设置（api_discovery:filter_rules）， 立即刷新采集器、Agent 与数据流投影共享缓存，并写操作审计。权限：`api_asset.edit`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: 保存成功
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 07-api-security.yaml
   /api-security/endpoints/confirm:
     post:
       operationId: apiSecEndpointConfirmBatch
@@ -43147,6 +44264,93 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiSecEndpointConfirmResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 07-api-security.yaml
+  /api-security/endpoints/ignore:
+    post:
+      operationId: apiSecEndpointIgnoreBatch
+      tags:
+      - api-security
+      summary: 批量忽略接口资产
+      description: 批量将接口置为已忽略（asset_status=IGNORED），单次最多 100 个；逐项处理并写生命周期事件与操作审计。 权限：`api_asset.ignore`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiSecEndpointConfirmRequest'
+      responses:
+        '200':
+          description: 批量忽略结果（含逐项失败明细）
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 07-api-security.yaml
+  /api-security/endpoints/cleanup-noise/preview:
+    post:
+      operationId: apiSecEndpointCleanupNoisePreview
+      tags:
+      - api-security
+      summary: 预览可清理的存量静态资源与非 API 噪声
+      description: 按当前发现过滤规则扫描存量 api_endpoints 中的静态资源与非 API 噪声，严格跳过已确认、 学习中/已建模或已绑定策略/授权/流程/接口组的受保护资产，返回待清理总数、跳过数与预览样本。 权限：`api_asset.read`
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: 预览结果
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 07-api-security.yaml
+  /api-security/endpoints/cleanup-noise:
+    post:
+      operationId: apiSecEndpointCleanupNoiseExecute
+      tags:
+      - api-security
+      summary: 执行存量静态资源与非 API 噪声清理
+      description: 按当前发现过滤规则与受保护资产安全护栏，对命中的静态资源/非 API 噪声执行彻底删除（DELETE） 或批量忽略（IGNORE），全程记录操作审计。权限：`api_asset.ignore`
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: 清理执行结果
+          content:
+            application/json:
+              schema:
+                type: object
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -44893,9 +46097,10 @@ paths:
       operationId: apiSecGraphGet
       tags:
       - api-security
-      summary: API 调用图谱
-      description: 返回全量接口节点与调用边（节点为接口摘要并附 open_findings_count 未闭环风险计数， 边为 api_call_edges 调用关系——由 aggregations RunCallEdges
-        分钟级水位增量派生，按 call_count 倒序）。 start/end/min_count 过滤仅作用于边，节点始终全量返回；非法取值返回 400。 权限：`api_graph.read`
+      summary: API 调用图谱（用户身份 10 分钟连续访问轨迹）
+      description: 返回接口节点与同一已识别用户身份在 10 分钟窗口内的连续访问调用边（节点附 application_name、host、 protocol_type、is_api 与 open_findings_count，并附
+        summary 噪声与孤立点统计； 边为 api_call_edges 调用关系——由 aggregations RunCallEdges 分钟级水位增量派生，按 call_count 倒序）。 支持按应用、资产状态、关键字及降噪开关（exclude_static
+        / exclude_ignored / only_connected）过滤； 非法取值返回 400。权限：`api_graph.read`
       parameters:
       - name: start
         in: query
@@ -44918,13 +46123,146 @@ paths:
           type: integer
           minimum: 0
         description: 最小调用次数过滤（call_count >= min_count；需非负整数）
+      - name: application_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+        description: 按所属应用 UUID 过滤节点与关联边
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - DISCOVERED
+          - CONFIRMED
+          - IGNORED
+          - DEPRECATED
+          - ZOMBIE
+        description: 按资产状态过滤节点
+      - name: keyword
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+        description: 按 endpoint_key / 路径 / 应用名 / Host 关键字过滤
+      - name: exclude_static
+        in: query
+        required: false
+        schema:
+          type: boolean
+        description: 排除静态资源与非 API 噪声节点（永不排除 CONFIRMED 正式资产）
+      - name: exclude_ignored
+        in: query
+        required: false
+        schema:
+          type: boolean
+        description: 排除 IGNORED 状态节点
+      - name: only_connected
+        in: query
+        required: false
+        schema:
+          type: boolean
+        description: 仅返回至少有 1 条调用边关联的节点
       responses:
         '200':
-          description: 调用图谱（nodes + edges）
+          description: 调用图谱（nodes + edges + summary）
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiSecGraph'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 07-api-security.yaml
+  /api-security/service-rpc-graph:
+    get:
+      operationId: apiSecServiceRpcGraphGet
+      tags:
+      - api-security
+      summary: 后端微服务真实 RPC / 服务间调用图谱
+      description: 汇聚 OTel 分布式追踪双端 Span 配对（apm.otel_traces）、云 API Sensor 分布式数据流 （wdsp.data_flow_contributions）与分布式流量 Agent
+        gRPC 观测（agent_http_events）， 返回后端微服务之间的真实 RPC（gRPC/Dubbo/Thrift/JSON-RPC 等）及服务间调用图谱。 各数据源独立优雅降级并如实通过 sources 返回状态，不伪造模拟数据。时间窗上限
+        24 小时。 权限：`api_graph.read`
+      parameters:
+      - name: start
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: 窗口起点（RFC3339；默认 end - 1h，窗口上限 24h）
+      - name: end
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: 窗口终点（RFC3339；默认当前时间）
+      - name: protocol
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - ALL
+          - RPC
+          - GRPC
+          - HTTP
+          - DUBBO
+          - THRIFT
+          - JSONRPC
+          - CONNECT_RPC
+        description: 协议过滤（默认 ALL；RPC 仅保留 RPC 协议族）
+      - name: service
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+        description: 按调用方或被调方服务名子串过滤
+      - name: paired_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+        description: 仅保留双端 Span/Trace 确凿配对（Client↔Server）的微服务调用
+      - name: include_external
+        in: query
+        required: false
+        schema:
+          type: boolean
+        description: 是否包含外部目标地址（默认 false，仅展示微服务间调用）
+      - name: min_calls
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+        description: 最小调用次数过滤
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+        description: 最大返回边数（默认 200，上限 500）
+      responses:
+        '200':
+          description: 后端微服务真实 RPC / 服务间调用图谱
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiSecServiceRPCGraph'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -44985,17 +46323,41 @@ paths:
       operationId: apiSecSpecImport
       tags:
       - api-security
-      summary: 导入 OpenAPI 规范
-      description: '导入 OpenAPI 3.x / Swagger 2.0 JSON 文档（Swagger 2.0 自动转换）并与运行时接口对比 生成差异记录（api_spec_diffs，含 MISSING_* 与同名跨版本
-        CHANGED 两类）。 请求体两种形式（均为 application/json，上限 16MiB）： ① 规范文档原文（含 `openapi: "3.x"` 或 `swagger: "2.0"` 字段）； ② 包装形式 `{"spec":
-        {...}, "file_name": "...", "name": "..."}`。 同名再导入 version_no 自增、旧 ACTIVE 降 HISTORICAL；规范端点幂等登记为候选。 仅支持 JSON，YAML/非
-        JSON 输入返回 400；缺少版本声明或有效 paths 亦返回 400； 同名最新版本内容未变化返回 409。 写操作审计。权限：`api_spec.import`'
+      summary: 导入 API 规范（多格式 / 文件上传）
+      description: '导入多格式 API 规范并与运行时接口对比生成差异记录（api_spec_diffs，含 MISSING_* 与同名跨版本 CHANGED 两类）。 支持格式：OpenAPI 3.x / Swagger
+        2.0 / AsyncAPI 2.x-3.x / Postman Collection v2.1 / JSON Schema（draft-07、2020-12）/ GraphQL SDL / Protobuf (.proto)
+        / WSDL 1.1-2.0 / XSD / RAML 0.8-1.0 / API Blueprint (.apib) / HAR 1.1-1.2（落库自动脱敏凭据与响应体）/ 多文件 ZIP 归档包 （支持包内相对 $ref
+        展开，严格防 Zip 炸弹/路径穿越/SSRF）。 请求体支持三种形态（单规范上限 16MiB）： ① multipart/form-data 文件直传（字段 file + 可选 file_name / name）； ② JSON
+        包装 `{"spec": <对象或原始文本>, "file_name": "...", "name": "..."}`； ③ 规范文档原文（JSON / YAML / XML / SDL / Protobuf / RAML /
+        APIB / ZIP）。 同名再导入 version_no 自增、旧 ACTIVE 降 HISTORICAL；规范端点幂等登记为候选。 格式不合法、触发安全限制（XXE/外部 $ref/YAML 炸弹/Zip 炸弹）返回 400；
+        同名最新版本内容未变化返回 409。 写操作审计。权限：`api_spec.import`'
       requestBody:
         required: true
         content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 规范文件（.json/.yaml/.yml/.graphql/.gql/.graphqls/.sdl/.proto/.wsdl/.xsd/.xml/.raml/.apib/.har/.zip，上限
+                    16MiB）
+                file_name:
+                  type: string
+                  description: 可选，覆盖上传文件名（展示元数据）
+                name:
+                  type: string
+                  description: 可选，覆盖规范名称（版本链标识）
           application/json:
             schema:
               $ref: '#/components/schemas/ApiSecSpecImportRequest'
+          text/plain:
+            schema:
+              type: string
+              description: 原始规范脚本文本（YAML / GraphQL SDL / Protobuf / WSDL / XSD / RAML / API Blueprint）
       responses:
         '200':
           description: 导入结果（含双向差异计数）
@@ -45023,9 +46385,10 @@ paths:
       operationId: apiSecSpecImportUrl
       tags:
       - api-security
-      summary: 从 URL 导入 OpenAPI 规范
-      description: 从给定 URL 拉取规范文档（OpenAPI 3.x / Swagger 2.0，仅 JSON）并导入， 导入语义与粘贴导入一致（同名再导入 version_no 自增、旧 ACTIVE 降 HISTORICAL、
-        生成 MISSING_* 与 CHANGED 差异、规范端点幂等登记为候选）。 SSRF 防护：仅 http/https、拒绝内网/保留地址、大小上限 16MiB、超时 10s、重定向再校验； URL 被防护拒绝返回 400，拉取失败返回
+      summary: 从 URL 导入 API 规范
+      description: 从给定 URL 拉取多格式规范文档（OpenAPI 3.x / Swagger 2.0 / AsyncAPI / Postman v2.1 / JSON Schema / GraphQL / Protobuf
+        / WSDL / XSD / RAML / API Blueprint / HAR / ZIP）并导入， 导入语义与文件上传/粘贴导入一致（同名再导入 version_no 自增、旧 ACTIVE 降 HISTORICAL、 生成
+        MISSING_* 与 CHANGED 差异、规范端点幂等登记为候选）。 SSRF 防护：仅 http/https、拒绝内网/保留地址、大小上限 16MiB、超时 10s、重定向再校验； URL 被防护拒绝返回 400，拉取失败返回
         502；同名最新版本内容未变化返回 409。 写操作审计。权限：`api_spec.import`
       requestBody:
         required: true
@@ -60420,6 +61783,128 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 19-traffic-agents.yaml
+  /traffic/agents/packages:
+    get:
+      operationId: trafficAgentPackagesList
+      tags:
+      - traffic-agents
+      summary: 跨平台 Agent 安装包清单
+      description: 返回服务端已挂载的 CentOS/Debian/macOS/Windows 安装包清单与 SHA-256 校验和；未挂载时返回 available=false。权限：`traffic.agents.view`。
+      responses:
+        '200':
+          description: 安装包清单
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentPackagesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents/packages/{os}/{arch}/{format}:
+    get:
+      operationId: trafficAgentPackageDownload
+      tags:
+      - traffic-agents
+      summary: 下载跨平台 Agent 离线安装包
+      description: 流式下载目标平台安装包并附带 X-WDSP-SHA256 响应头，记录审计日志。权限：`traffic.agents.view`。
+      parameters:
+      - name: os
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - linux
+          - darwin
+          - windows
+      - name: arch
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - amd64
+          - arm64
+      - name: format
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - rpm
+          - deb
+          - pkg
+          - targz
+          - zip
+      responses:
+        '200':
+          description: 安装包二进制流
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents/install-endpoint:
+    get:
+      operationId: trafficAgentInstallEndpointGet
+      tags:
+      - traffic-agents
+      summary: 自动探测 WDSP Agent 接入地址与候选 IP
+      description: 返回供客户端一键安装的 WDSP HTTPS 接入地址、宿主候选 IP 列表与自签证书标记。权限：`traffic.agents.view`。
+      responses:
+        '200':
+          description: 接入地址信息
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentInstallEndpoint'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      operationId: trafficAgentInstallEndpointUpdate
+      tags:
+      - traffic-agents
+      summary: 保存默认 WDSP Agent 对接地址（IP/域名）
+      description: 保存管理员指定的 WDSP 对接 IP 或 HTTPS 地址（传空串则清空恢复自动探测），非本机地址强制要求 https。权限：`traffic.agents.manage`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - server_url
+              properties:
+                server_url:
+                  type: string
+                  maxLength: 256
+      responses:
+        '200':
+          description: 已更新的接入地址信息
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentInstallEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    x-source: 19-traffic-agents.yaml
   /traffic/agents/summary:
     get:
       operationId: trafficAgentSummary
@@ -61179,6 +62664,110 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /agents/bootstrap/manifest:
+    get:
+      operationId: trafficAgentBootstrapManifest
+      tags:
+      - traffic-agents
+      security: []
+      summary: 机器引导：拉取安装包清单
+      description: 使用 Authorization Bearer 携带 ACTIVE 状态的一次性 Enrollment Token（只读校验不消耗令牌，禁止经 URL 参数传递）。
+      responses:
+        '200':
+          description: 安装包 manifest.json
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentPackageManifest'
+        '400':
+          description: 非法参数或 URL 泄露令牌
+        '401':
+          description: 注册令牌无效、已过期、已使用或已撤销
+        '404':
+          description: 服务端尚未挂载安装包
+    x-source: 19-traffic-agents.yaml
+  /agents/bootstrap/script/{os}:
+    get:
+      operationId: trafficAgentBootstrapScript
+      tags:
+      - traffic-agents
+      security: []
+      summary: 机器引导：拉取平台受控安装脚本
+      description: 需通过 Authorization Bearer 携带 ACTIVE 状态一次性 Enrollment Token（不消耗令牌）。响应头附带 X-WDSP-SHA256。
+      parameters:
+      - name: os
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - linux
+          - darwin
+          - windows
+      responses:
+        '200':
+          description: 安装脚本正文
+          content:
+            text/plain:
+              schema:
+                type: string
+        '400':
+          description: 非法平台参数
+        '401':
+          description: 注册令牌无效
+    x-source: 19-traffic-agents.yaml
+  /agents/bootstrap/packages/{os}/{arch}/{format}:
+    get:
+      operationId: trafficAgentBootstrapPackage
+      tags:
+      - traffic-agents
+      security: []
+      summary: 机器引导：拉取目标平台安装包
+      description: 需通过 Authorization Bearer 携带 ACTIVE 状态一次性 Enrollment Token（不消耗令牌）。响应头附带 X-WDSP-SHA256。
+      parameters:
+      - name: os
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - linux
+          - darwin
+          - windows
+      - name: arch
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - amd64
+          - arm64
+      - name: format
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - rpm
+          - deb
+          - pkg
+          - targz
+          - zip
+      responses:
+        '200':
+          description: 安装包二进制流
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: 非法参数
+        '401':
+          description: 注册令牌无效
+        '404':
+          description: 安装包不可用
     x-source: 19-traffic-agents.yaml
   /agents/enroll:
     post:

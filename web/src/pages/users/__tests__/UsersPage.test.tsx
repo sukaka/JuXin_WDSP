@@ -46,8 +46,8 @@ const SAMPLE_ROLES: RoleItem[] = [
   {
     id: 'r-2',
     code: 'SECURITY_ADMIN',
-    name: '安全管理员',
-    description: '策略管理',
+    name: '运维管理员',
+    description: '日常运维与安全防护',
     is_builtin: true,
   },
 ]
@@ -60,7 +60,7 @@ const SAMPLE_USERS: UserItem[] = [
     status: 'ACTIVE',
     must_change_password: false,
     totp_enabled: true,
-    roles: [{ code: 'SECURITY_ADMIN', name: '安全管理员' }],
+    roles: [{ code: 'SECURITY_ADMIN', name: '运维管理员' }],
     created_at: '2026-11-20T08:00:00Z',
     updated_at: '2026-11-20T08:00:00Z',
     version: 1,
@@ -147,7 +147,7 @@ describe('UsersPage 与 users/roles API 契约测试', () => {
     const roleSelect = dialog.querySelector('.ant-select') as HTMLElement
     expect(roleSelect).toBeTruthy()
     fireEvent.mouseDown(roleSelect)
-    const roleOption = await screen.findByText('安全管理员', {
+    const roleOption = await screen.findByText('运维管理员', {
       selector: '.ant-select-item-option-content',
     })
     fireEvent.click(roleOption)
@@ -222,7 +222,7 @@ describe('UsersPage 与 users/roles API 契约测试', () => {
     const roleSelect = dialog.querySelector('.ant-select') as HTMLElement
     fireEvent.mouseDown(roleSelect)
     fireEvent.click(
-      await screen.findByText('安全管理员', {
+      await screen.findByText('运维管理员', {
         selector: '.ant-select-item-option-content',
       }),
     )

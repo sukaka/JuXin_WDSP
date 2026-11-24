@@ -34,7 +34,7 @@ export interface HeaderAlertsPopoverProps {
 
 /**
  * 顶部导航栏站内告警铃铛：
- * - 展示活跃未静默告警（view=ACTIVE）数量角标；
+ * - 展示未处理（status=OPEN）告警数量角标；确认/解决/忽略后角标立即消退；
  * - 点击展开告警预览面板（trigger="click"，不套 Tooltip 避免遮挡），支持快速确认与直达系统告警页。
  */
 export default function HeaderAlertsPopover({ disabled = false }: HeaderAlertsPopoverProps) {
@@ -48,11 +48,11 @@ export default function HeaderAlertsPopover({ disabled = false }: HeaderAlertsPo
   ])
   const [open, setOpen] = useState(false)
 
-  const activeAlertsQuery = useQuery({
-    queryKey: ['system-alerts', 'header-active'],
+  const openAlertsQuery = useQuery({
+    queryKey: ['system-alerts', 'header-open'],
     queryFn: () =>
       systemAlertsApi.list({
-        view: 'ACTIVE',
+        status: 'OPEN',
         page: 1,
         page_size: HEADER_ALERT_LIMIT,
       }),
@@ -70,16 +70,19 @@ export default function HeaderAlertsPopover({ disabled = false }: HeaderAlertsPo
     },
     onError: (e: unknown) => {
       message?.error(e instanceof ApiError ? e.message : '确认告警失败')
+      if (e instanceof ApiError && e.status === 409) {
+        void queryClient.invalidateQueries({ queryKey: ['system-alerts'] })
+      }
     },
   })
 
-  const items: SystemAlertItem[] = activeAlertsQuery.data?.items ?? []
-  const total = activeAlertsQuery.data?.total ?? 0
+  const items: SystemAlertItem[] = openAlertsQuery.data?.items ?? []
+  const total = openAlertsQuery.data?.total ?? 0
 
   const handleOpenChange = (nextOpen: boolean) => {
     setOpen(nextOpen)
     if (nextOpen && !disabled) {
-      void activeAlertsQuery.refetch()
+      void openAlertsQuery.refetch()
     }
   }
 
@@ -94,11 +97,11 @@ export default function HeaderAlertsPopover({ disabled = false }: HeaderAlertsPo
         <span>站内告警</span>
         {total > 0 ? (
           <Tag color="red" style={{ marginInlineEnd: 0 }}>
-            {total} 条活跃
+            {total} 条未处理
           </Tag>
         ) : (
           <Tag color="green" style={{ marginInlineEnd: 0 }}>
-            正常
+            无未处理
           </Tag>
         )}
       </Space>
@@ -107,32 +110,32 @@ export default function HeaderAlertsPopover({ disabled = false }: HeaderAlertsPo
         size="small"
         icon={<ReloadOutlined />}
         aria-label="刷新站内告警"
-        loading={activeAlertsQuery.isFetching}
-        onClick={() => void activeAlertsQuery.refetch()}
+        loading={openAlertsQuery.isFetching}
+        onClick={() => void openAlertsQuery.refetch()}
       />
     </div>
   )
 
   const popoverContent = (
     <div style={{ width: 360, maxWidth: 'calc(100vw - 32px)' }}>
-      {activeAlertsQuery.isLoading ? (
+      {openAlertsQuery.isLoading ? (
         <div style={{ padding: '24px 0', textAlign: 'center' }}>
           <Spin size="small" />
         </div>
-      ) : activeAlertsQuery.isError ? (
+      ) : openAlertsQuery.isError ? (
         <Alert
           type="error"
           showIcon
           title="加载站内告警失败"
           description={
-            activeAlertsQuery.error instanceof ApiError ? activeAlertsQuery.error.message : undefined
+            openAlertsQuery.error instanceof ApiError ? openAlertsQuery.error.message : undefined
           }
           style={{ marginBottom: 8 }}
         />
       ) : items.length === 0 ? (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description="当前无活跃告警"
+          description="当前无未处理告警"
           style={{ margin: '16px 0' }}
         />
       ) : (
@@ -215,7 +218,7 @@ export default function HeaderAlertsPopover({ disabled = false }: HeaderAlertsPo
         }}
       >
         <Button type="link" size="small" block onClick={goToAlerts}>
-          查看全部系统告警{total > items.length ? `（共 ${total} 条活跃）` : ''}
+          查看全部系统告警{total > items.length ? `（共 ${total} 条未处理）` : ''}
         </Button>
       </div>
     </div>
@@ -234,7 +237,7 @@ export default function HeaderAlertsPopover({ disabled = false }: HeaderAlertsPo
         <Button
           type="text"
           icon={<BellOutlined style={{ fontSize: 16 }} />}
-          aria-label={total > 0 ? `站内告警（${total} 条活跃）` : '站内告警'}
+          aria-label={total > 0 ? `站内告警（${total} 条未处理）` : '站内告警'}
           style={{
             display: 'inline-flex',
             alignItems: 'center',

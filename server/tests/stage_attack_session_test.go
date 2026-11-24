@@ -145,11 +145,11 @@ func TestAttackSessionMigrations(t *testing.T) {
 		t.Errorf("permission module = %s, want security", module)
 	}
 
-	// 系统管理员和安全管理员只读授权；000122 撤销审计管理员权限
+	// 000122 撤销审计管理员权限；000232 撤销系统管理员权限，仅运维管理员（SECURITY_ADMIN）持有
 	if n := as4Count(t, env, `SELECT count(*) FROM role_permissions rp
 JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id
-WHERE p.code='attack_sessions.read' AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN','AUDIT_ADMIN')`); n != 2 {
-		t.Errorf("attack_sessions.read role grants = %d, want 2", n)
+WHERE p.code='attack_sessions.read' AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN','AUDIT_ADMIN')`); n != 1 {
+		t.Errorf("attack_sessions.read role grants = %d, want 1 (SECURITY_ADMIN only)", n)
 	}
 
 	// api_assets.business_type 列（默认 OTHER，枚举应用层校验不落 CHECK）
@@ -372,15 +372,15 @@ func TestAttackSessionAcceptanceChain(t *testing.T) {
 	resp = env.get(t, "/api/v1/security/attack-sessions/not-a-uuid", cookies)
 	s5Expect(t, resp, http.StatusBadRequest, "get attack session bad uuid")
 
-	// 三角色只读（000104）：SYSTEM_ADMIN / AUDIT_ADMIN 均 200
+	// 000122 与 000232 收敛后：SYSTEM_ADMIN 与 AUDIT_ADMIN 均无 attack_sessions.read → 403
 	sysCookies, _ := env.s5Login(t, "as4_sys", "SYSTEM_ADMIN")
 	resp = env.get(t, "/api/v1/security/attack-sessions", sysCookies)
-	s5Expect(t, resp, http.StatusOK, "SYSTEM_ADMIN list attack-sessions")
+	s5Expect(t, resp, http.StatusForbidden, "SYSTEM_ADMIN list attack-sessions")
 	auditCookies, _ := env.s5Login(t, "as4_audit", "AUDIT_ADMIN")
 	resp = env.get(t, "/api/v1/security/attack-sessions", auditCookies)
-	s5Expect(t, resp, http.StatusOK, "AUDIT_ADMIN list attack-sessions")
+	s5Expect(t, resp, http.StatusForbidden, "AUDIT_ADMIN list attack-sessions")
 	resp = env.get(t, "/api/v1/security/attack-sessions/"+sessA, auditCookies)
-	s5Expect(t, resp, http.StatusOK, "AUDIT_ADMIN get attack session")
+	s5Expect(t, resp, http.StatusForbidden, "AUDIT_ADMIN get attack session")
 }
 
 // ---------- business_type 全链路 ----------

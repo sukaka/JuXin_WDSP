@@ -3,7 +3,7 @@ import { loginViaAPI } from './helpers'
 
 /**
  * 场景一：系统管理员完整流程
- * 登录 → 创建安全管理员 → 创建审计管理员 → 用户列表 → 重置密码 → 强制下线 → 修改密码策略 → 退出
+ * 登录 → 创建运维管理员 → 创建审计管理员 → 用户列表 → 重置密码 → 强制下线 → 修改密码策略 → 退出
  */
 
 const SYSADMIN = process.env.E2E_SYSADMIN_USER || 'jiuzhang_admin'
@@ -28,11 +28,12 @@ test.describe('场景一：系统管理员', () => {
     await expect(page.getByRole('menuitem', { name: /用户管理/ })).toBeVisible()
     await expect(page.getByRole('menuitem', { name: /系统设置/ })).toBeVisible()
     await expect(page.getByRole('menuitem', { name: /角色权限/ })).toBeVisible()
-    // 系统管理员不应看到"操作审计"菜单
+    // 系统管理员不应看到"操作审计"和"大屏展示"菜单
     await expect(page.getByRole('menuitem', { name: /操作审计/ })).not.toBeVisible()
+    await expect(page.getByRole('menuitem', { name: /大屏展示/ })).not.toBeVisible()
   })
 
-  test('创建安全管理员并返回临时密码', async ({ page }) => {
+  test('创建运维管理员并返回临时密码', async ({ page }) => {
     await loginViaAPI(page, SYSADMIN, SYSADMIN_PWD); await page.goto("/dashboard")
     await expect(page).toHaveURL(/dashboard/, { timeout: 10000 })
 
@@ -42,11 +43,11 @@ test.describe('场景一：系统管理员', () => {
     await page.getByRole('button', { name: '新建用户' }).click()
     const username = `e2e_sec_${Date.now().toString().slice(-8)}`
     await page.getByPlaceholder('登录用户名').fill(username)
-    await page.getByPlaceholder('用户显示名称').fill('E2E安全管理员')
+    await page.getByPlaceholder('用户显示名称').fill('E2E运维管理员')
     // 选择角色（antd Select，在 Modal 作用域内）
     const modal = page.locator('.ant-modal')
     await modal.locator('.ant-select').click()
-    await page.getByTitle('安全管理员').locator('div').click()
+    await page.getByTitle('运维管理员').locator('div').click()
     // 监听创建用户请求响应
     const createRespPromise = page.waitForResponse(
       (resp) => resp.url().includes('/api/v1/users') && resp.request().method() === 'POST',

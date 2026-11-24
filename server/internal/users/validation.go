@@ -11,8 +11,8 @@ var reservedUsernames = map[string]bool{
 	"null": true, "undefined": true,
 }
 
-// validateUsername 校验用户名规则。
-func validateUsername(username string) error {
+// ValidateUsername 校验用户名规则。
+func ValidateUsername(username string) error {
 	if len(username) < 4 || len(username) > 64 {
 		return errors.New("用户名长度须为4至64位")
 	}
@@ -27,4 +27,9 @@ func validateUsername(username string) error {
 		return errors.New("该用户名为系统保留名称")
 	}
 	return nil
+}
+
+// validateUsername 包内兼容别名。
+func validateUsername(username string) error {
+	return ValidateUsername(username)
 }

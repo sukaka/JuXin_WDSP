@@ -25,7 +25,7 @@ export type SystemAlertExportParams = Partial<Omit<SystemAlertListParams, 'page'
 /**
  * 系统告警。
  * 权限：system_alerts.read（全部）/ system_alerts.read_security（安全类）/ system_alerts.read_audit（只读审计视角）；
- * 操作：system_alerts.acknowledge / system_alerts.resolve / system_alerts.acknowledge_security。
+ * 操作：system_alerts.acknowledge / system_alerts.acknowledge_security（统一覆盖确认/解决/忽略/备注/维护窗口）。
  */
 export const systemAlertsApi = {
   list: async (params: SystemAlertListParams) => {

@@ -25,25 +25,25 @@ func TestVulnIntelMigration000189Replay(t *testing.T) {
 			t.Fatalf("table %s 不存在", table)
 		}
 	}
-	// 权限点与授权就位
+	// 权限点与授权就位（000232 后读写均归运维管理员 SECURITY_ADMIN，SYSTEM_ADMIN 不再持有）
 	if n := s8Count(t, env, `SELECT count(*) FROM permissions WHERE code IN ('vuln_intel.read','vuln_intel.manage')`); n != 2 {
 		t.Fatalf("vuln_intel permission rows=%d want 2", n)
 	}
 	if n := s8Count(t, env, `SELECT count(*) FROM role_permissions rp
 		JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id
-		WHERE r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN') AND p.code = 'vuln_intel.read'`); n != 2 {
-		t.Fatalf("vuln_intel.read grants=%d want 2（SYSTEM_ADMIN+SECURITY_ADMIN）", n)
+		WHERE r.code = 'SECURITY_ADMIN' AND p.code = 'vuln_intel.read'`); n != 1 {
+		t.Fatalf("vuln_intel.read SECURITY_ADMIN grant=%d want 1", n)
 	}
 	if n := s8Count(t, env, `SELECT count(*) FROM role_permissions rp
 		JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id
-		WHERE r.code = 'SYSTEM_ADMIN' AND p.code = 'vuln_intel.manage'`); n != 1 {
-		t.Fatalf("vuln_intel.manage SYSTEM_ADMIN grant=%d want 1", n)
+		WHERE r.code = 'SECURITY_ADMIN' AND p.code = 'vuln_intel.manage'`); n != 1 {
+		t.Fatalf("vuln_intel.manage SECURITY_ADMIN grant=%d want 1", n)
 	}
-	// manage 不授予其他内置角色
+	// 读写均不泄漏到其他内置角色
 	if n := s8Count(t, env, `SELECT count(*) FROM role_permissions rp
 		JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id
-		WHERE r.code <> 'SYSTEM_ADMIN' AND p.code = 'vuln_intel.manage'`); n != 0 {
-		t.Fatalf("vuln_intel.manage 泄漏到其他角色: %d", n)
+		WHERE r.code <> 'SECURITY_ADMIN' AND p.code IN ('vuln_intel.read','vuln_intel.manage')`); n != 0 {
+		t.Fatalf("vuln_intel.* 泄漏到其他角色: %d", n)
 	}
 
 	upRaw, err := os.ReadFile("../migrations/000189_vuln_intel.up.sql")

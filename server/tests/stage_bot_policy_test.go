@@ -85,16 +85,16 @@ WHERE table_name=$1`, table).Scan(&n); err != nil || n != 1 {
 WHERE code IN ('bot_policy.read','bot_policy.edit')`).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("bot_policy permissions = %d, want 2 (err %v)", n, err)
 	}
-	// read 三角色全授；edit 仅 SYSTEM_ADMIN/SECURITY_ADMIN
+	// 000232 后：SYSTEM_ADMIN 已剥离 bot_policy.*；read 仅 SECURITY_ADMIN/AUDIT_ADMIN，edit 仅 SECURITY_ADMIN
 	if err := env.db.QueryRow(ctx, `SELECT count(DISTINCT r.code) FROM role_permissions rp
 JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id
-WHERE p.code = 'bot_policy.read' AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN','AUDIT_ADMIN')`).Scan(&n); err != nil || n != 3 {
-		t.Errorf("bot_policy.read granted roles = %d, want 3 (err %v)", n, err)
+WHERE p.code = 'bot_policy.read' AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN','AUDIT_ADMIN')`).Scan(&n); err != nil || n != 2 {
+		t.Errorf("bot_policy.read granted roles = %d, want 2 (err %v)", n, err)
 	}
 	if err := env.db.QueryRow(ctx, `SELECT count(DISTINCT r.code) FROM role_permissions rp
 JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id
-WHERE p.code = 'bot_policy.edit' AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN')`).Scan(&n); err != nil || n != 2 {
-		t.Errorf("bot_policy.edit granted roles = %d, want 2 (err %v)", n, err)
+WHERE p.code = 'bot_policy.edit' AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN')`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("bot_policy.edit granted roles = %d, want 1 (err %v)", n, err)
 	}
 }
 

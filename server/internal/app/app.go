@@ -172,6 +172,8 @@ type App struct {
 	// 10 分钟周期评估由 cmd/api/main.go sweeper 群启动）
 	apiExposureSweeper *apiexposure.Sweeper
 	haStatusSweeper    *hastatus.Sweeper
+	// 阶段8 / WDSP：API 资产发现静态资源与非 API 过滤配置加载器（所有发现入口共享同一热缓存）
+	apiDiscoveryFilter *apiassets.DiscoveryFilterProvider
 	// 离线授权：产品侧授权服务（门控中间件/发布通道/配额强制共用其内存状态；
 	// StartStage6Workers 启动 60s 周期复核）
 	licenseSvc *license.Service
@@ -666,6 +668,21 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		publisher.SetSidecarConfig(cfg.WAF.GatewayNodeName, nodeinterfaces.NewStore(db))
 		// 边车共享卷目录（空串保持默认 DefaultSidecarDir；网络配置边车 network.json 同卷）
 		publisher.SetSidecarDir(cfg.WAF.SidecarDir)
+		// 网关侧输出日志路径（下发 mirrorcap.json，支持裸机自定义日志根目录）
+		publisher.SetSidecarLogPaths(cfg.WAF.APIEventsLogGateway, cfg.WAF.AuditLogGateway, cfg.WAF.SiteDiscoveryLogGateway)
+		// 透明串接模式 tproxyd 监听与下游 Caddy 回环目标地址 + TLS SNI 透传白名单设置
+		publisher.SetTproxyAddresses(
+			cfg.Gateway.TproxyListenGateway,
+			cfg.Gateway.TproxyTargetGateway,
+			cfg.Gateway.TproxyTargetTLSGateway,
+		)
+		publisher.SetTproxyPassthroughAllowlistProvider(func(ctx context.Context) (string, error) {
+			v, found, err := settingsSvc.GetStringWithSource(ctx, "network", "tproxy_passthrough_allowlist")
+			if err != nil || !found {
+				return "", err
+			}
+			return v, nil
+		})
 		// L7 访问控制与 URL 白名单：仅 WAF/WDSP 交付形态下发（API 形态 GuardConfig 与历史一致）
 		if cfg.Product.WebWAFProtectionEnabled() {
 			guardProvider.SetL7Rules(l7RuleStore)
@@ -694,7 +711,42 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	}
 	storageProbe := runtimehealth.NewStorageProbe(db, c, diskPath,
 		filepath.Join(cfg.Gateway.DataDir, "reports"), filepath.Join(cfg.Gateway.DataDir, "backups"))
+	var healthCaddyClient *gatewayconfig.CaddyClient
+	if strings.TrimSpace(cfg.Gateway.AdminSocket) != "" {
+		healthCaddyClient = gatewayconfig.NewCaddyClient(cfg.Gateway.AdminSocket)
+	}
 	healthHandler := runtimehealth.NewHandler(healthStore, storageProbe)
+	if healthCaddyClient != nil {
+		healthHandler.SetGatewayRuntimeProvider(healthCaddyClient)
+	}
+	healthHandler.SetAppNameLookup(func(ctx context.Context, appIDs []string) (map[string]runtimehealth.AppMeta, error) {
+		ids := make([]uuid.UUID, 0, len(appIDs))
+		for _, raw := range appIDs {
+			if id, err := uuid.Parse(strings.TrimSpace(raw)); err == nil {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) == 0 {
+			return map[string]runtimehealth.AppMeta{}, nil
+		}
+		qCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		rows, err := db.Query(qCtx, `SELECT id, code, name FROM applications WHERE id = ANY($1)`, ids)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := make(map[string]runtimehealth.AppMeta, len(ids))
+		for rows.Next() {
+			var id uuid.UUID
+			var code, name string
+			if err := rows.Scan(&id, &code, &name); err != nil {
+				return nil, err
+			}
+			out[id.String()] = runtimehealth.AppMeta{Code: code, Name: name}
+		}
+		return out, rows.Err()
+	})
 	// APM 运行期配置（系统设置界面可配、热生效）：界面设置（system_settings apm 组
 	// DB 行）优先、环境变量（APM_ENABLED / APM_CLICKHOUSE_DSN）兜底——与
 	// guardProvider.SetAPIModeOverride 的"DB 覆盖优先于构造配置"先例一致；
@@ -1055,7 +1107,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	// DSN 界面热更新后下轮采集自动走重建后的连接）。
 	var chProber runtimehealth.ClickHouseProber = apm.NewCHProberAdapter(chManager)
 	a.healthCollector = runtimehealth.NewCollector(db, runtimehealth.Options{
-		Caddy:                 gatewayconfig.NewCaddyClient(cfg.Gateway.AdminSocket),
+		Caddy:                 healthCaddyClient,
 		Cache:                 c,
 		GuardEventsLog:        cfg.WAF.GuardEventsLog,
 		SecurityCollectorID:   "collector-01",
@@ -1250,6 +1302,8 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	mux.Handle("GET /api/v1/waf-rules/categories", authz(middleware.RequirePermission("waf_rules.read")(http.HandlerFunc(ruleHandler.Categories))))
 	mux.Handle("GET /api/v1/waf-rules/versions", authz(middleware.RequirePermission("waf_rules.read")(http.HandlerFunc(ruleHandler.Versions))))
 	mux.Handle("GET /api/v1/waf-rules/{rule_id}", authz(middleware.RequirePermission("waf_rules.read")(http.HandlerFunc(ruleHandler.Get))))
+	mux.Handle("PUT /api/v1/waf-rules/{rule_id}/description", authz(middleware.RequirePermission("rule_overrides.manage")(http.HandlerFunc(ruleHandler.UpdateDescription))))
+	mux.Handle("DELETE /api/v1/waf-rules/{rule_id}/description", authz(middleware.RequirePermission("rule_overrides.manage")(http.HandlerFunc(ruleHandler.ResetDescription))))
 	mux.Handle("POST /api/v1/waf-rules/sync", authz(middleware.RequirePermission("waf_rules.sync")(http.HandlerFunc(ruleHandler.Sync))))
 
 	// 规则覆盖
@@ -1376,7 +1430,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	// 权限与 accessrules 导入一致（access_rules.import），/api/v1/threat-intel/ 不在授权门控白名单（业务接口）
 	mux.Handle("POST /api/v1/threat-intel/import", authz(middleware.RequirePermission("access_rules.import")(http.HandlerFunc(threatIntelHandler.Import))))
 	// 漏洞情报提醒（VULN_INTEL MVP；表/权限种子见迁移 000189）：
-	// 读 vuln_intel.read（SYSTEM_ADMIN+SECURITY_ADMIN），写 vuln_intel.manage（仅 SYSTEM_ADMIN）；
+	// 漏洞情报提醒（VULN_INTEL MVP；表/权限种子见迁移 000189，000232 起读写均归运维管理员 SECURITY_ADMIN）；
 	// 只提醒，不自动创建 WAF 规则；在线同步为纯下行（硬编码 NVD 地址）。
 	mux.Handle("GET /api/v1/vuln-intel/overview", authz(middleware.RequirePermission("vuln_intel.read")(http.HandlerFunc(vulnIntelHandler.Overview))))
 	mux.Handle("GET /api/v1/vuln-intel/advisories", authz(middleware.RequirePermission("vuln_intel.read")(http.HandlerFunc(vulnIntelHandler.ListAdvisories))))
@@ -1470,7 +1524,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	// ---- 阶段6：态势/统计/报告/监控/告警/备份恢复/升级/交付检查 ----
 	// 态势首页
 	mux.Handle("GET /api/v1/dashboard/security-overview", authz(middleware.RequirePermission("dashboard.security.read")(http.HandlerFunc(dashboardHandler.SecurityOverview))))
-	mux.Handle("GET /api/v1/dashboard/runtime-overview", authz(middleware.RequirePermission("dashboard.runtime.read")(http.HandlerFunc(dashboardHandler.RuntimeOverview))))
+	mux.Handle("GET /api/v1/dashboard/runtime-overview", authz(requireAnyPerm("dashboard.runtime.read", "big_screen.runtime.read")(http.HandlerFunc(dashboardHandler.RuntimeOverview))))
 	mux.Handle("GET /api/v1/dashboard/audit-overview", authz(middleware.RequirePermission("dashboard.audit.read")(http.HandlerFunc(dashboardHandler.AuditOverview))))
 	// 统计分析
 	analyticsSec := middleware.RequirePermission("analytics.security.read")
@@ -1490,10 +1544,13 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	mux.Handle("GET /api/v1/analytics/disposition-overview", authz(middleware.RequirePermission("analytics.disposition.read")(http.HandlerFunc(analyticsHandler.DispositionOverview))))
 	// 报告（含模板/任务/归档，权限在 handler 路由层）
 	reportHandler.RegisterRoutes(mux, authz)
-	// 运行监控
-	mux.Handle("GET /api/v1/system-health", authz(middleware.RequirePermission("system_health.read")(http.HandlerFunc(healthHandler.SystemHealth))))
+	// 运行监控（大屏运行监控/网关连接会话复用 3 个只读接口，经 big_screen.runtime.read 隔离，
+	// 避免运维管理员越权访问系统运维页、网口管理与网络配置）
+	runtimeScreenRead := requireAnyPerm("system_health.read", "big_screen.runtime.read")
+	mux.Handle("GET /api/v1/system-health", authz(runtimeScreenRead(http.HandlerFunc(healthHandler.SystemHealth))))
 	mux.Handle("GET /api/v1/system-health/components", authz(middleware.RequirePermission("system_health.read")(http.HandlerFunc(healthHandler.Components))))
-	mux.Handle("GET /api/v1/system-health/storage", authz(middleware.RequirePermission("system_health.read")(http.HandlerFunc(healthHandler.Storage))))
+	mux.Handle("GET /api/v1/system-health/storage", authz(runtimeScreenRead(http.HandlerFunc(healthHandler.Storage))))
+	mux.Handle("GET /api/v1/system-health/gateway-trend", authz(runtimeScreenRead(http.HandlerFunc(healthHandler.GatewayTrend))))
 	mux.Handle("GET /api/v1/metrics", authz(middleware.RequirePermission("system_health.read")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		_, _ = w.Write([]byte(audits.RenderMetrics()))
@@ -1543,6 +1600,18 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	upgradeHandler.RegisterRoutes(mux, authz)
 	deliveryHandler.RegisterRoutes(mux, authz)
 
+	// 网关节点仓储（主备高可用 /ha-groups、多节点发布扇出与 WDSP 节点一致性视图共用；
+	// 节点只读列表接口全产品形态注册，避免 edition=waf 下 /ha-groups 页面 404）。
+	apiNodeStore := apinodes.NewStore(db)
+	apiNodeHandler := apinodes.NewHandler(apiNodeStore).SetAudits(auditSvc)
+	mux.Handle("GET /api/v1/api-security/nodes",
+		authz(requireAnyPerm(apinodes.PermRuntimeRead, "ha.read")(http.HandlerFunc(apiNodeHandler.ListNodes))))
+	// 多节点发布扇出（§200 配置面同步）：主发布成功后将同一份配置推送至登记的次要节点（逐节点记录结果）
+	if publisher != nil {
+		publisher.SetNodeSyncStore(apiNodeStore)
+		publisher.SetSyncAlerter(syncAlerterAdapter{alertEngine})
+	}
+
 	// ---- 阶段8 / WDSP：API 动态防护（任务书 /api/v1/api-security 命名空间）----
 	if cfg.Product.APIDynamicProtectionEnabled() {
 		authzStore := apiauthz.NewStore(db)
@@ -1554,14 +1623,20 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		a.authzKeyHex = authzKeyHex
 		apiEndpointStore := apiassets.NewStore(db)
 		apiModelStore := apimodels.NewStore(db)
+		if a.apiDiscoveryFilter == nil {
+			a.apiDiscoveryFilter = apiassets.NewDiscoveryFilterProvider(settingsSvc)
+		}
 		apiEndpointHandler := apiassets.NewHandler(apiEndpointStore, auditSvc).
 			SetExportModelReader(apiModelStore).
-			SetExportExtrasProvider(apiEndpointStore)
+			SetExportExtrasProvider(apiEndpointStore).
+			SetDiscoveryFilterProvider(a.apiDiscoveryFilter)
 		apiassets.RegisterRoutes(mux, authz, apiEndpointHandler, exportRate)
 		apigroups.RegisterRoutes(mux, authz, apigroups.NewHandler(apigroups.NewStore(db), auditSvc))
 		apiModelHandler := apimodels.NewHandler(apiModelStore, auditSvc)
 		apimodels.RegisterRoutes(mux, authz, apiModelHandler)
 		apiSecurityHandler := apisecurity.NewHandler(apisecurity.NewStore(db), auditSvc)
+		// 后端微服务真实 RPC / 服务间调用图谱：汇聚 ClickHouse（OTel + 数据流）与 PG（流量 Agent gRPC）
+		apiSecurityHandler.SetServiceRPCGraphReader(apisecurity.NewServiceRPCGraphReader(db, chManager.ResolveQuerier))
 		// 策略接口：产品设置 + settings 覆盖 + 发布通道（publisher 不可用时发布接口返回 503）
 		apiSecurityHandler.SetPolicySource(apisecurity.PolicySourceFromProduct(cfg.Product))
 		apiSecurityHandler.SetPolicySettings(settingsSvc)
@@ -1724,10 +1799,9 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		llmStore := apillm.NewStore(db)
 		apillm.RegisterRoutes(mux, authz, apillm.NewHandler(llmStore))
 		apillm.RegisterSecurityPolicyRoutes(mux, authz, apillm.NewSecurityPolicyHandler(llmStore, auditSvc))
-		// 多节点版本校验（§201 遥测路径）：节点列表/一致性视图 + 周期聚合（权限复用 api_runtime.read）
-		apiNodeStore := apinodes.NewStore(db)
+		// 多节点版本校验（§201 遥测路径）：一致性视图/登记编辑 + 周期聚合（节点只读列表已在全形态注册）
 		a.apiNodesSweeper = apinodes.NewSweeper(apiNodeStore).SetAlerter(alertEngine)
-		apinodes.RegisterRoutes(mux, authz, apinodes.NewHandler(apiNodeStore).SetAudits(auditSvc))
+		apinodes.RegisterSyncRoutes(mux, authz, apiNodeHandler)
 		// 统一执行覆盖查询（NG-COV-02 查询侧）：五态聚合 agg / 节点阶段计数 stages
 		// （权限 api_protection.read，种子见迁移 000169；采集摄入见 cmd/api/main.go）
 		coverage.RegisterRoutes(mux, authz, coverage.NewHandler(coverage.NewStore(db)))
@@ -1743,11 +1817,6 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		// GraphQL 成本预算策略（NG-GQL-03 管理面）：apps/{id}/graphql-policy 读/写/删
 		// （权限沿用 api_policy.read/edit 无新权限点；表见迁移 000171；发布链见上注入）
 		apigql.RegisterRoutes(mux, authz, apigql.NewHandler(apigql.NewStore(db), auditSvc))
-		// 多节点发布扇出（§200 配置面同步）：主发布成功后将同一份配置推送至登记的次要节点（逐节点记录结果）
-		if publisher != nil {
-			publisher.SetNodeSyncStore(apiNodeStore)
-			publisher.SetSyncAlerter(syncAlerterAdapter{alertEngine})
-		}
 		// 文件资产（P1-04）：列表/统计（权限复用 api_data.read）
 		apifiles.RegisterRoutes(mux, authz, apifiles.NewHandler(apifiles.NewStore(db)))
 		// 文件合规规则（P2-03 管理面）+ 文件签名验证/密钥轮换（P2-02 验证面）
@@ -1774,21 +1843,93 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 			w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 			_, _ = w.Write([]byte(a.apiMetrics.Render()))
 		}))))
-		// WDSP 阶段A：节点网口管理（清单采集见 cmd/api/main.go；权限复用 system_health/system_settings）
-		nodeinterfaces.RegisterRoutes(mux, authz, nodeinterfaces.NewHandler(nodeinterfaces.NewStore(db), auditSvc))
-		// WDSP：页面配置网桥与路由牵引（docs/NETWORK_MODES_DESIGN.md §七；网络变更 MEDIUM 风险审计，
-		// 严格校验 MANAGEMENT 口禁入桥、成员口存在且 present、CIDR/IP 合法，仅默认节点可写）
-		netHandler := netconfig.NewHandler(netconfig.NewStore(db), nodeinterfaces.NewStore(db), auditSvc, cfg.WAF.GatewayNodeName)
-		netHandler.SetSidecarDir(cfg.WAF.SidecarDir)
-		netconfig.RegisterRoutes(mux, authz, netHandler)
-		// WDSP：主备高可用（VIP 漂移 + 端口联动，docs/HA_ACTIVE_STANDBY_DESIGN.md §8）；
-		// 成员节点限定已登记网关节点（apinodes），VRRP 认证串经 encSvc 加密落库，高危审计
-		haHandler := hagroups.NewHandler(hagroups.NewStore(db), haNodeLister{apiNodeStore}, encSvc, auditSvc)
-		haHandler.SetSidecarDir(cfg.WAF.SidecarDir)
-		hagroups.RegisterRoutes(mux, authz, haHandler)
-		// HA/网络执行状态告警清扫（M4）：周期读本节点边车状态文件 → 系统告警 → 通知渠道
-		a.haStatusSweeper = hastatus.NewSweeper(cfg.WAF.SidecarDir).SetAlerter(alertEngine)
 	}
+	// 主备高可用（VIP 漂移 + 端口联动，docs/HA_ACTIVE_STANDBY_DESIGN.md §8）与网络/网桥状态告警：
+	// 全产品形态（WAF/WDSP）均可使用，确保 edition=waf 下 /ha-groups 不 404 且 Link-Pair/网络告警正常触发。
+	netStore := netconfig.NewStore(db)
+	ifaceStore := nodeinterfaces.NewStore(db)
+	haStore := hagroups.NewStore(db)
+	haHandler := hagroups.NewHandler(haStore, haNodeLister{apiNodeStore}, encSvc, auditSvc)
+	haHandler.SetSidecarDir(cfg.WAF.SidecarDir)
+	haHandler.SetBridgePortChecker(func(ctx context.Context, nodeNames []string, iface string) (string, string, error) {
+		for _, nodeName := range nodeNames {
+			br, err := netStore.BridgePortOwner(ctx, nodeName, iface)
+			if err != nil {
+				return "", "", err
+			}
+			if br != "" {
+				return nodeName, br, nil
+			}
+		}
+		return "", "", nil
+	})
+	hagroups.RegisterRoutes(mux, authz, haHandler)
+	// HA/网络执行状态告警清扫（M4）：周期读本节点边车状态文件 → 系统告警 → 通知渠道
+	a.haStatusSweeper = hastatus.NewSweeper(cfg.WAF.SidecarDir).SetAlerter(alertEngine)
+
+	// 节点网口管理与网桥/路由网络配置：与前端菜单口径一致，全产品形态（WAF/WDSP）均可使用；
+	// 角色变更（标记/取消 MIRROR 或 TRAFFIC 口）及网桥变更后立即刷新边车配置，无需手动重发。
+	ifaceHandler := nodeinterfaces.NewHandler(ifaceStore, auditSvc)
+	ifaceHandler.SetBridgePortChecker(netStore.BridgePortOwner)
+	if publisher != nil {
+		publisher.SetBridgePortsProvider(netStore)
+		ifaceHandler.SetOnChange(func(ctx context.Context) {
+			if err := publisher.RefreshSidecarConfigs(ctx); err != nil {
+				slog.Warn("refresh sidecar configs after interface role change failed", "error", err)
+			}
+		})
+	}
+	nodeinterfaces.RegisterRoutes(mux, authz, ifaceHandler)
+	netHandler := netconfig.NewHandler(netStore, ifaceStore, auditSvc, cfg.WAF.GatewayNodeName)
+	netHandler.SetSidecarDir(cfg.WAF.SidecarDir)
+	netHandler.SetHAVRRPIfaceChecker(func(ctx context.Context, nodeName, iface string) (string, error) {
+		groups, err := haStore.List(ctx)
+		if err != nil {
+			return "", err
+		}
+		for _, g := range groups {
+			if g.State != "ENABLED" || g.Iface != iface {
+				continue
+			}
+			if len(g.Members) == 0 {
+				return g.Name, nil
+			}
+			for _, m := range g.Members {
+				if m.NodeName == nodeName {
+					return g.Name, nil
+				}
+			}
+		}
+		return "", nil
+	})
+	if publisher != nil {
+		netHandler.SetOnChange(func(ctx context.Context) {
+			if err := publisher.RefreshSidecarConfigs(ctx); err != nil {
+				slog.Warn("refresh sidecar configs after network config update failed", "error", err)
+			}
+		})
+	}
+	netconfig.RegisterRoutes(mux, authz, netHandler)
+	// 系统设置联动钩子：
+	//   - network:dns_servers / network:ntp_servers 更新后立即重写 network.json；
+	//   - network:tproxy_passthrough_allowlist 更新后立即刷新 tproxyd.json。
+	settingHandler.SetOnChange(func(ctx context.Context, group, key string) {
+		if group != "network" {
+			return
+		}
+		switch key {
+		case "dns_servers", "ntp_servers":
+			if err := netHandler.RewriteSidecar(ctx); err != nil {
+				slog.Warn("rewrite network.json after dns/ntp setting update failed", "key", key, "error", err)
+			}
+		case "tproxy_passthrough_allowlist":
+			if publisher != nil {
+				if err := publisher.RefreshSidecarConfigs(ctx); err != nil {
+					slog.Warn("refresh sidecar configs after tproxy passthrough allowlist update failed", "error", err)
+				}
+			}
+		}
+	})
 	// 产品 edition 探测（已登录可读，供前端菜单/路由按产品形态过滤）。
 	// 生效形态由授权决定：有效授权按 license.product 返回 edition，能力位与包装配能力取交集
 	// （wdsp 包 + waf 授权 → edition=waf 且 API 能力 false；waf 包未装配 API 能力则授权
@@ -1914,7 +2055,16 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	if caErr != nil {
 		return nil, fmt.Errorf("initialize traffic agent CA: %w", caErr)
 	}
-	agents.RegisterAdminRoutes(mux, authz, agents.NewHandler(trafficAgentStore).SetAudits(auditSvc))
+	agents.RegisterAdminRoutes(mux, authz, agents.NewHandler(trafficAgentStore).
+		SetAudits(auditSvc).
+		SetPackageDir(cfg.TrafficAgents.PackagesDir).
+		SetInstallEndpointConfig(agents.InstallEndpointConfig{
+			PublicURL:        cfg.TrafficAgents.PublicURL,
+			ConsoleHTTPSPort: cfg.TrafficAgents.ConsoleHTTPSPort,
+			HostIPs:          cfg.TrafficAgents.HostIPs,
+			ConsoleCertFile:  cfg.TrafficAgents.ConsoleCertFile,
+			Settings:         settingsSvc,
+		}))
 	// Phase 3（契约 §6）：机器端 http 端点挂 API 资产联动（复用 apiassets 既有
 	// UpsertDiscovery 入口，与 apiruntime 网关采集器同一通道；离线授权端点配额强制
 	// 与 main.go 采集链路同口径——license 内存状态无 IO，无效授权返回 0=不限制）。
@@ -1928,8 +2078,13 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 			return st.Quotas.MaxAPIEndpoints
 		})
 	}
+	if a.apiDiscoveryFilter == nil {
+		a.apiDiscoveryFilter = apiassets.NewDiscoveryFilterProvider(settingsSvc)
+	}
 	machineHandler := agents.NewMachineHandler(trafficAgentStore).
-		SetCA(trafficAgentCA).SetDiscoveryUpserter(agentHTTPAssets)
+		SetCA(trafficAgentCA).SetDiscoveryUpserter(agentHTTPAssets).
+		SetDiscoveryFilter(a.apiDiscoveryFilter.Get).
+		SetPackageDir(cfg.TrafficAgents.PackagesDir)
 	if cfg.Kafka.Enabled {
 		brokerConfig := ingest.Config{
 			Brokers: cfg.Kafka.Brokers, ClientID: "jiuzhang-server",
@@ -1949,7 +2104,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		a.apiObservationProjector = apidataflow.NewProjector(a.kafkaBroker, a.kafkaBroker,
 			cfg.Kafka.Topic, cfg.Kafka.DLQTopic,
 			apidataflow.NewCHObservationStore(chManager.ResolveQuerier),
-			apidataflow.NewPostgresAssetProjector(db, agentHTTPAssets))
+			apidataflow.NewPostgresAssetProjector(db, agentHTTPAssets).SetDiscoveryFilter(a.apiDiscoveryFilter.Get))
 		a.dataflowWorker = apidataflow.NewDataflowWorker(a.kafkaBroker, a.kafkaBroker,
 			cfg.Kafka.Topic, cfg.Kafka.DLQTopic,
 			apidataflow.NewCHContributionStore(chManager.ResolveQuerier))
@@ -2031,6 +2186,9 @@ func (a *App) LicenseService() *license.Service { return a.licenseSvc }
 
 // AlertEngine 返回系统告警引擎（main 装配采集链路告警回调用）。
 func (a *App) AlertEngine() *systemalerts.Engine { return a.alertEngine }
+
+// APIDiscoveryFilter 返回 API 资产发现静态资源与非 API 过滤配置加载器（main 装配采集器共用缓存）。
+func (a *App) APIDiscoveryFilter() *apiassets.DiscoveryFilterProvider { return a.apiDiscoveryFilter }
 
 // APMDiagnosticsSweeper 返回 APM 深度诊断到期扫描工人（恒装配；集成测试经此直接
 // 驱动 SweepOnce，不必等待分钟级 ticker）。

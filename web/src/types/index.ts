@@ -394,7 +394,13 @@ export interface CertificateDetail extends CertificateItem {
 
 /** 业务摘要（preview 响应中为对象；version/diff 中为同结构的 JSON 字符串） */
 export interface BusinessSnapshot {
-  apps: { code: string; mode: string; domains: number; upstreams: number }[]
+  apps: {
+    code: string
+    mode: string
+    deployment_mode?: DeploymentMode | string
+    domains: number
+    upstreams: number
+  }[]
 }
 
 /** 发布任务 */
@@ -476,6 +482,55 @@ export interface ProtectionPolicyDetail extends ProtectionPolicyItem {
   application_ids: string[] | null
 }
 
+/** WAF 规则功能类别 */
+export type WafRuleType =
+  | 'DETECTION'
+  | 'OBSERVE'
+  | 'BLOCKING_EVALUATION'
+  | 'EXCLUSION'
+  | 'PREPROCESSING'
+  | 'INTERNAL'
+
+/** WAF 规则说明来源：人工维护 / 内置规则库 / 规则文件自动解析 / 元数据自动生成 */
+export type WafRuleDetailSource = 'CUSTOM' | 'BUILTIN' | 'PARSED' | 'AUTO'
+
+/** 管理员维护的规则中文说明覆盖记录 */
+export interface WafRuleDescriptionOverride {
+  summary: string
+  detection_logic: string
+  risk_impact: string
+  tuning_advice: string
+  updated_by_name?: string
+  updated_at?: string | null
+}
+
+/** 管理员编辑规则中文说明请求体（留空字段自动沿用系统默认说明） */
+export interface WafRuleDescriptionPayload {
+  summary?: string
+  detection_logic?: string
+  risk_impact?: string
+  tuning_advice?: string
+}
+
+/** WAF 规则结构化中文详细说明（GET /waf-rules/{rule_id} 返回） */
+export interface WafRuleDetailInfo {
+  rule_type: WafRuleType | string
+  rule_type_label: string
+  source?: WafRuleDetailSource | string
+  source_label?: string
+  customized?: boolean
+  summary: string
+  detection_logic: string
+  risk_impact: string
+  tuning_advice: string
+  phase_description: string
+  paranoia_level: string
+  action_behavior: string
+  targets: string[]
+  references: string[]
+  custom_fields?: WafRuleDescriptionOverride | null
+}
+
 /**
  * WAF 规则（CRS 元数据）。
  * 注意：后端将 jsonb 标签以 []byte 放入 map 序列化，tags 实际为 base64 编码的 JSON 字符串，
@@ -488,6 +543,10 @@ export interface WafRuleItem {
   file_name: string
   name: string
   message: string
+  /** 规则中文详细说明摘要 */
+  description?: string
+  /** 结构化中文规则详细说明（详情接口返回） */
+  detail?: WafRuleDetailInfo
   severity: string
   phase: number
   tags: string[] | string | null
@@ -2013,10 +2072,154 @@ export interface StorageOverview {
   collected_at?: string
 }
 
+/** 网关趋势查询时间窗口 */
+export type GatewayTrendRange = '10m' | '1h' | '6h' | '24h'
+
+/** 网关趋势数据源 */
+export type GatewayTrendSource = 'gateway_live' | 'database' | 'database_fallback'
+
+/** 网关 TCP 连接状态细分 */
+export interface GatewayTCPStates {
+  established: number
+  time_wait: number
+  close_wait: number
+  syn_recv: number
+  fin_wait: number
+  listen: number
+  other: number
+}
+
+/** 网关软件旁路状态 */
+export interface GatewaySoftwareBypassState {
+  enabled: boolean
+  active: boolean
+  reason?: string
+  cpu_threshold_percent?: number
+  memory_threshold_percent?: number
+  recovery_cpu_percent?: number
+  recovery_memory_percent?: number
+  min_hold_seconds?: number
+  activated_at?: string | null
+  transitions_total?: number
+  bypassed_requests_total?: number
+}
+
+/** 网关当前实时指标快照 */
+export interface GatewayTrendCurrent {
+  status: string
+  latency_ms?: number | null
+  taken_at?: string
+  cpu_percent?: number | null
+  memory_percent?: number | null
+  memory_used_bytes?: number | null
+  memory_total_bytes?: number | null
+  load1?: number | null
+  load5?: number | null
+  load15?: number | null
+  fd_open?: number | null
+  fd_max?: number | null
+  fd_usage_percent?: number | null
+  tcp_connections_active: number
+  tcp_connections_accepted_total: number
+  tcp_connections_accepted_per_second: number
+  bytes_in_total: number
+  bytes_out_total: number
+  bytes_in_per_second: number
+  bytes_out_per_second: number
+  http_requests_in_flight: number
+  http_requests_total: number
+  http_requests_per_second: number
+  http_sessions_active: number
+  http_sessions_new_total: number
+  http_sessions_new_per_second: number
+  http_sessions_overflow_total: number
+  http_sessions_capacity?: number
+  status_2xx_total: number
+  status_3xx_total: number
+  status_4xx_total: number
+  status_5xx_total: number
+  status_2xx_per_second: number
+  status_3xx_per_second: number
+  status_4xx_per_second: number
+  status_5xx_per_second: number
+  software_bypass?: GatewaySoftwareBypassState | null
+  tcp_states?: GatewayTCPStates | null
+  resource_sample_error?: string
+}
+
+/** 网关趋势区间统计摘要 */
+export interface GatewayTrendSummary {
+  peak_tcp_connections_active: number
+  avg_tcp_connections_active: number
+  peak_tcp_connections_accepted_per_second: number
+  peak_http_sessions_active: number
+  peak_http_sessions_new_per_second: number
+  peak_http_requests_per_second: number
+  peak_bytes_in_per_second: number
+  peak_bytes_out_per_second: number
+  peak_cpu_percent?: number | null
+  peak_memory_percent?: number | null
+  bypass_active_points: number
+}
+
+/** 网关趋势单个时间采样点 */
+export interface GatewayTrendPoint {
+  taken_at: string
+  cpu_percent?: number | null
+  memory_percent?: number | null
+  load1?: number | null
+  fd_usage_percent?: number | null
+  tcp_connections_active: number
+  tcp_connections_accepted_per_second: number
+  bytes_in_per_second: number
+  bytes_out_per_second: number
+  http_requests_in_flight: number
+  http_requests_per_second: number
+  http_sessions_active: number
+  http_sessions_new_per_second: number
+  status_2xx_per_second: number
+  status_3xx_per_second: number
+  status_4xx_per_second: number
+  status_5xx_per_second: number
+  software_bypass_active: boolean
+}
+
+/** 按应用实时负载明细 */
+export interface GatewayTrendApplication {
+  app_id: string
+  app_code?: string
+  app_name?: string
+  requests_in_flight: number
+  requests_total: number
+  requests_per_second: number
+  bypassed_requests_total: number
+  bytes_in_total: number
+  bytes_out_total: number
+  bytes_in_per_second: number
+  bytes_out_per_second: number
+  status_4xx_total: number
+  status_5xx_total: number
+}
+
+/** 网关实时与历史趋势响应（GET /system-health/gateway-trend） */
+export interface GatewayTrendResponse {
+  range: GatewayTrendRange
+  source: GatewayTrendSource
+  interval_seconds: number
+  generated_at: string
+  node?: string
+  current?: GatewayTrendCurrent | null
+  summary?: GatewayTrendSummary | null
+  points: GatewayTrendPoint[]
+  applications: GatewayTrendApplication[]
+}
+
 /** 节点物理网口（GET /gateway/interfaces；WDSP 阶段A 网口管理） */
 export interface NodeInterfaceItem {
   ifname: string
   mac: string
+  /** 网口绑定的全局单播 IPv4/IPv6 地址列表（CIDR 形式，IPv4 优先） */
+  ip_addresses?: string[]
   pci_path?: string
   driver?: string
   /** 介质类型：TP 电口 / FIBRE 光口 / UNKNOWN 未知 */
@@ -2120,6 +2323,22 @@ export interface NetworkLinkPairStatus {
   message?: string
 }
 
+/** 透明串接牵引运行状态（netmgrd network-status.json transparent 字段，未启用/未初始化时省略） */
+export interface NetworkTransparentStatus {
+  /** 运行状态：INACTIVE 未启用 / ACTIVE 牵引生效 / DEGRADED 已降级 */
+  state: 'INACTIVE' | 'ACTIVE' | 'DEGRADED' | string
+  enabled?: boolean
+  redirect_active?: boolean
+  listen_port?: number
+  ports?: number[] | null
+  bridges?: string[] | null
+  tproxyd_healthy?: boolean
+  caddy_healthy?: boolean
+  bridge_nf_ready?: boolean
+  message?: string
+  updated_at?: string
+}
+
 /** 节点网络配置执行状态（边车 network-status.json 上报；null 表示节点尚未上报） */
 export interface NetworkConfigStatus {
   applied_at?: string
@@ -2130,6 +2349,8 @@ export interface NetworkConfigStatus {
   routes?: NetworkRouteStatus[] | null
   /** 启用端口联动的桥的运行状态（未启用联动时缺省） */
   link_pairs?: NetworkLinkPairStatus[] | null
+  /** 透明串接牵引运行状态（netmgrd 可选上报） */
+  transparent?: NetworkTransparentStatus | null
   message?: string
 }
 
@@ -2137,6 +2358,8 @@ export interface NetworkConfigStatus {
 export interface NetworkConfigData {
   desired?: Partial<NetworkDesiredConfig> | null
   status?: NetworkConfigStatus | null
+  /** 本网关默认节点名（可选；非默认节点仅支持只读查看） */
+  default_node?: string
 }
 
 /** 网络工具诊断动作（POST /network-tools/jobs 的 action 取值） */

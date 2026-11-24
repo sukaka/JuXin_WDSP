@@ -7,6 +7,7 @@ import { hasAnyPermission } from '../utils/permission'
 import { FullScreenLoading, RequireLicense } from './RequireLicense'
 import { RequireWebWaf } from './RequireWebWaf'
 import { RequireApm } from './RequireApm'
+import { RequireBigScreen } from './RequireBigScreen'
 const AdminLayout = lazy(() => import('../layouts/AdminLayout'))
 const LoginPage = lazy(() => import('../pages/login/LoginPage'))
 const ChangePasswordPage = lazy(
@@ -28,6 +29,9 @@ const TrafficAccessScreen = lazy(
 )
 const ApiSecurityScreen = lazy(
   () => import('../pages/big-screen/ApiSecurityScreen'),
+)
+const GatewayConnectionScreen = lazy(
+  () => import('../pages/big-screen/GatewayConnectionScreen'),
 )
 const RuntimeOpsScreen = lazy(
   () => import('../pages/big-screen/RuntimeOpsScreen'),
@@ -201,7 +205,13 @@ const AttackSessionDetailPage = lazy(
 const BehaviorPolicyPage = lazy(
   () => import('../pages/behavior-policy/BehaviorPolicyPage'),
 )
+const BehaviorPolicyGuidePage = lazy(
+  () => import('../pages/behavior-policy/BehaviorPolicyGuidePage'),
+)
 const RiskPolicyPage = lazy(() => import('../pages/risk-policy/RiskPolicyPage'))
+const RiskPolicyGuidePage = lazy(
+  () => import('../pages/risk-policy/RiskPolicyGuidePage'),
+)
 const SecurityRegressionsPage = lazy(
   () => import('../pages/security-regressions/SecurityRegressionsPage'),
 )
@@ -423,11 +433,35 @@ export default function AppRoutes() {
           }
         />
         <Route
+          path="/behavior-policy/guide"
+          element={
+            <RequireAuth>
+              <RequireLicense>
+                <RequirePermission permission="behavior_policy.read">
+                  <BehaviorPolicyGuidePage />
+                </RequirePermission>
+              </RequireLicense>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/risk-policy/guide"
+          element={
+            <RequireAuth>
+              <RequireLicense>
+                <RequirePermission permission="risk_policy.read" denyAuditOnly>
+                  <RiskPolicyGuidePage />
+                </RequirePermission>
+              </RequireLicense>
+            </RequireAuth>
+          }
+        />
+        <Route
           path="/big-screen/security-posture"
           element={
             <RequireAuth>
               <RequireLicense>
-                <RequirePermission permission="dashboard.security.read">
+                <RequirePermission permission="dashboard.security.read" denyAuditOnly>
                   <SecurityPostureScreen />
                 </RequirePermission>
               </RequireLicense>
@@ -444,6 +478,7 @@ export default function AppRoutes() {
                     'analytics.security.read',
                     'security_events.read',
                   ]}
+                  denyAuditOnly
                 >
                   <AttackMonitorScreen />
                 </RequirePermission>
@@ -461,6 +496,7 @@ export default function AppRoutes() {
                     'analytics.security.read',
                     'security_events.read',
                   ]}
+                  denyAuditOnly
                 >
                   <GlobeScreen />
                 </RequirePermission>
@@ -473,7 +509,7 @@ export default function AppRoutes() {
           element={
             <RequireAuth>
               <RequireLicense>
-                <RequirePermission permission="analytics.security.read">
+                <RequirePermission permission="analytics.security.read" denyAuditOnly>
                   <TrafficAccessScreen />
                 </RequirePermission>
               </RequireLicense>
@@ -486,10 +522,22 @@ export default function AppRoutes() {
             <RequireAuth>
               <RequireLicense>
                 <RequireAPIDynamicProtection>
-                  <RequirePermission permission="api_runtime.read">
+                  <RequirePermission permission="api_runtime.read" denyAuditOnly>
                     <ApiSecurityScreen />
                   </RequirePermission>
                 </RequireAPIDynamicProtection>
+              </RequireLicense>
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/big-screen/gateway-connections"
+          element={
+            <RequireAuth>
+              <RequireLicense>
+                <RequirePermission permission="big_screen.runtime.read" denyAuditOnly>
+                  <GatewayConnectionScreen />
+                </RequirePermission>
               </RequireLicense>
             </RequireAuth>
           }
@@ -499,7 +547,7 @@ export default function AppRoutes() {
           element={
             <RequireAuth>
               <RequireLicense>
-                <RequirePermission permission="system_health.read">
+                <RequirePermission permission="big_screen.runtime.read" denyAuditOnly>
                   <RuntimeOpsScreen />
                 </RequirePermission>
               </RequireLicense>
@@ -518,7 +566,14 @@ export default function AppRoutes() {
         >
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
-          <Route path="big-screen" element={<ScreenLobbyPage />} />
+          <Route
+            path="big-screen"
+            element={
+              <RequireBigScreen>
+                <ScreenLobbyPage />
+              </RequireBigScreen>
+            }
+          />
           <Route
             path="license"
             element={

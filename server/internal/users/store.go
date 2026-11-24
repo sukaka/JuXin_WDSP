@@ -89,6 +89,7 @@ u.totp_enabled, u.totp_enabled_at, u.totp_recovery_codes,
 u.created_by, u.created_at, u.updated_at, u.deleted_at, u.version`
 
 const systemAdminGuardLockKey int64 = 0x4a5a57414641444d
+const initialAdminBootstrapLockKey int64 = 0x4a5a574146424f4f
 
 // scanUserInto 按 userColumns 列序扫描用户（供单行与多行查询复用）。
 func scanUserInto(u *User, lastLoginIP **netip.Addr) []interface{} {
@@ -814,6 +815,77 @@ func (s *Store) HasUsers(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// HasRoleUsers 判断指定内置角色下是否存在任意未删除用户（用于三权默认账号按角色幂等初始化）。
+func (s *Store) HasRoleUsers(ctx context.Context, roleCode string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM users u
+  JOIN user_roles ur ON ur.user_id = u.id
+  JOIN roles r ON r.id = ur.role_id
+  WHERE r.code = $1 AND u.deleted_at IS NULL
+)`, roleCode).Scan(&exists)
+	return exists, err
+}
+
+// EnsureInitialRoleUser 在事务与咨询锁保护下按角色幂等创建初始管理员账号：
+// 若该角色下已存在任意未删除用户，则返回 (false, nil)；
+// 若目标用户名已被占用（含逻辑删除历史用户名，遵循 idx_users_username_lower），返回 (false, ErrUsernameExists)。
+func (s *Store) EnsureInitialRoleUser(ctx context.Context, roleCode string, u *User) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, initialAdminBootstrapLockKey); err != nil {
+		return false, err
+	}
+	var hasRoleUser bool
+	if err := tx.QueryRow(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM users usr
+  JOIN user_roles ur ON ur.user_id = usr.id
+  JOIN roles r ON r.id = ur.role_id
+  WHERE r.code = $1 AND usr.deleted_at IS NULL
+)`, roleCode).Scan(&hasRoleUser); err != nil {
+		return false, err
+	}
+	if hasRoleUser {
+		return false, tx.Commit(ctx)
+	}
+	var roleID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM roles WHERE code = $1`, roleCode).Scan(&roleID); err != nil {
+		return false, mapNotFound(err)
+	}
+	err = tx.QueryRow(ctx, `
+INSERT INTO users (username, display_name, password_hash, status, must_change_password,
+                   password_changed_at, password_expires_at, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, created_at, updated_at, version`,
+		u.Username, u.DisplayName, u.PasswordHash, u.Status, u.MustChangePassword,
+		u.PasswordChangedAt, u.PasswordExpiresAt, u.CreatedBy).
+		Scan(&u.ID, &u.CreatedAt, &u.UpdatedAt, &u.Version)
+	if err != nil {
+		if strings.Contains(err.Error(), "idx_users_username_lower") {
+			return false, ErrUsernameExists
+		}
+		return false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO user_roles (user_id, role_id, created_by) VALUES ($1, $2, $3)`,
+		u.ID, roleID, u.ID); err != nil {
+		return false, err
+	}
+	if err := seedPasswordHistoryTx(ctx, tx, u.ID, u.PasswordHash); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // AssignRole 分配角色（替换式：一个用户仅一个内置管理角色）。

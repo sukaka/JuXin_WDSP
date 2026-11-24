@@ -15,8 +15,8 @@ const ROLES = [
   {
     id: 'role-1',
     code: 'SECURITY_ADMIN',
-    name: '安全管理员',
-    description: '负责安全策略配置',
+    name: '运维管理员',
+    description: '负责日常安全防护与运行监控大屏',
     is_builtin: true,
   },
 ]
@@ -25,7 +25,8 @@ const PERMISSIONS = [
   { id: 'p1', code: 'applications.read', name: '查看应用', module: 'applications', description: '查看应用列表' },
   { id: 'p2', code: 'applications.create', name: '创建应用', module: 'applications', description: '新建应用' },
   { id: 'p3', code: 'waf_rules.read', name: '查看规则', module: 'waf_rules', description: '查看 WAF 规则' },
-  { id: 'p4', code: 'custom_mod.read', name: '自定义权限', module: 'custom_mod', description: '未知模块回退' },
+  { id: 'p4', code: 'big_screen.runtime.read', name: '查看运行监控大屏', module: 'big_screen', description: '查看运行监控与网关连接大屏' },
+  { id: 'p5', code: 'custom_mod.read', name: '自定义权限', module: 'custom_mod', description: '未知模块回退' },
 ]
 
 describe('RolesPage 权限模块中文化展示', () => {
@@ -65,13 +66,14 @@ describe('RolesPage 权限模块中文化展示', () => {
 
     expect(await screen.findByText('应用管理（2）')).toBeInTheDocument()
     expect(screen.getByText('防护规则（1）')).toBeInTheDocument()
+    expect(screen.getByText('大屏展示（1）')).toBeInTheDocument()
     expect(screen.getByText('custom_mod（1）')).toBeInTheDocument()
     expect(screen.queryByText('applications（2）')).not.toBeInTheDocument()
     expect(screen.queryByText('waf_rules（1）')).not.toBeInTheDocument()
 
     // 打开角色详情抽屉，模块标题同样中文化
     fireEvent.click(screen.getByRole('button', { name: '查看权限' }))
-    expect(await screen.findByText('角色权限：安全管理员')).toBeInTheDocument()
+    expect(await screen.findByText('角色权限：运维管理员')).toBeInTheDocument()
     expect(screen.getAllByText('应用管理（2）').length).toBeGreaterThanOrEqual(2)
     expect(screen.getAllByText('防护规则（1）').length).toBeGreaterThanOrEqual(2)
   })
