@@ -312,13 +312,57 @@ export const apiEndpointsApi = {
     })
     return data.items ?? []
   },
-  /** 批量确认（单次最多 100 个） */
-  confirm: (ids: string[]) =>
+  /** 批量确认（单次最多 100 个；可选联动自动启动模型学习） */
+  confirm: (
+    ids: string[],
+    options?: { auto_start_learning?: boolean; sample_target?: number },
+  ) =>
     request<{
       confirmed: number
       confirmed_ids: string[]
       failed: { id: string; reason: string }[]
-    }>('/api-security/endpoints/confirm', { method: 'POST', body: { ids } }),
+      learning_started?: number
+      learning_started_ids?: string[]
+      learning_skipped?: number
+      learning_skipped_ids?: string[]
+      learning_failed?: { id: string; reason: string }[]
+    }>('/api-security/endpoints/confirm', {
+      method: 'POST',
+      body: {
+        ids,
+        ...(options?.auto_start_learning !== undefined
+          ? { auto_start_learning: options.auto_start_learning }
+          : {}),
+        ...(options?.sample_target !== undefined
+          ? { sample_target: options.sample_target }
+          : {}),
+      },
+    }),
+  /** 批量启动接口学习（单次最多 100 个；已在学习中的接口自动跳过） */
+  learningStartBatch: (ids: string[], sampleTarget?: number) =>
+    request<{
+      started: number
+      started_ids: string[]
+      skipped: number
+      skipped_ids: string[]
+      failed: { id: string; reason: string }[]
+      sample_target: number
+      message: string
+    }>('/api-security/endpoints/learning/start', {
+      method: 'POST',
+      body: {
+        ids,
+        ...(sampleTarget !== undefined ? { sample_target: sampleTarget } : {}),
+      },
+    }),
+  /** 获取 API 学习默认选项（确认资产时默认自动启动学习开关及样本目标范围） */
+  learningOptions: () =>
+    request<{
+      auto_start_on_confirm: boolean
+      default_sample_target: number
+      min_sample_target: number
+      max_sample_target: number
+    }>('/api-security/endpoints/learning/options'),
   /** 批量忽略（单次最多 100 个） */
   ignoreBatch: (ids: string[]) =>
     request<{

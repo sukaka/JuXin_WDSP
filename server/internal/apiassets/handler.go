@@ -2,9 +2,11 @@
 package apiassets
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,13 +20,26 @@ import (
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
+const (
+	// LearningSettingGroup API 学习系统设置分组名（system_settings）。
+	LearningSettingGroup = "api_learning"
+	// LearningSettingAutoStartOnConfirm 确认正式资产时默认自动启动学习开关（迁移 000235，默认 false）。
+	LearningSettingAutoStartOnConfirm = "auto_start_on_confirm"
+)
+
+// LearningSettingsReader API 学习策略设置只读接口（*settings.Service 实现；nil 时回落默认）。
+type LearningSettingsReader interface {
+	GetBool(ctx context.Context, group, key string, def bool) bool
+}
+
 // Handler API 接口管理。
 type Handler struct {
-	store           Repository
-	audits          *audits.Service
-	exportModels    ExportModelReader
-	exportExtras    ExportExtrasProvider
-	discoveryFilter *DiscoveryFilterProvider
+	store            Repository
+	audits           *audits.Service
+	exportModels     ExportModelReader
+	exportExtras     ExportExtrasProvider
+	discoveryFilter  *DiscoveryFilterProvider
+	learningSettings LearningSettingsReader
 }
 
 // NewHandler 创建处理器（构造注入审计服务，语义同 customrules）。
@@ -36,6 +51,19 @@ func NewHandler(store Repository, audit *audits.Service) *Handler {
 func (h *Handler) SetDiscoveryFilterProvider(p *DiscoveryFilterProvider) *Handler {
 	h.discoveryFilter = p
 	return h
+}
+
+// SetLearningSettingsReader 注入 API 学习策略设置读取器（读取 api_learning:auto_start_on_confirm）。
+func (h *Handler) SetLearningSettingsReader(r LearningSettingsReader) *Handler {
+	h.learningSettings = r
+	return h
+}
+
+func (h *Handler) autoStartOnConfirm(ctx context.Context) bool {
+	if h.learningSettings == nil {
+		return false
+	}
+	return h.learningSettings.GetBool(ctx, LearningSettingGroup, LearningSettingAutoStartOnConfirm, false)
 }
 
 // RegisterRoutes 注册任务书 51.1 / 51.2 接口组（统一 /api/v1/api-security 前缀，
@@ -56,6 +84,8 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 	mux.Handle("GET /api/v1/api-security/endpoints/directory-tree", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.DirectoryTree))))
 	mux.Handle("POST /api/v1/api-security/endpoints/confirm", authz(middleware.RequirePermission("api_asset.confirm")(http.HandlerFunc(h.ConfirmBatch))))
 	mux.Handle("POST /api/v1/api-security/endpoints/ignore", authz(middleware.RequirePermission("api_asset.ignore")(http.HandlerFunc(h.IgnoreBatch))))
+	mux.Handle("POST /api/v1/api-security/endpoints/learning/start", authz(middleware.RequirePermission("api_learning.start")(http.HandlerFunc(h.LearningStartBatch))))
+	mux.Handle("GET /api/v1/api-security/endpoints/learning/options", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.LearningOptions))))
 	mux.Handle("POST /api/v1/api-security/endpoints/cleanup-noise/preview", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.PreviewNoiseCleanup))))
 	mux.Handle("POST /api/v1/api-security/endpoints/cleanup-noise", authz(middleware.RequirePermission("api_asset.ignore")(http.HandlerFunc(h.ExecuteNoiseCleanup))))
 	mux.Handle("GET /api/v1/api-security/endpoints/{id}", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.Get))))
@@ -148,12 +178,16 @@ func (h *Handler) DirectoryTree(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]any{"items": items})
 }
 
-// ConfirmBatch POST /api/v1/api-security/endpoints/confirm  {ids:[...]}
-// 批量确认 asset_status=CONFIRMED。
+// ConfirmBatch POST /api/v1/api-security/endpoints/confirm
+// {ids:[...], auto_start_learning?: bool, sample_target?: int}
+// 批量确认 asset_status=CONFIRMED；可选联动自动启动模型学习（需具备 api_learning.start 权限，
+// 缺省遵循系统设置 api_learning:auto_start_on_confirm，学习中或已完成学习的接口自动跳过）。
 func (h *Handler) ConfirmBatch(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	var req struct {
-		IDs []uuid.UUID `json:"ids"`
+		IDs               []uuid.UUID `json:"ids"`
+		AutoStartLearning *bool       `json:"auto_start_learning"`
+		SampleTarget      *int        `json:"sample_target"`
 	}
 	if err := response.DecodeJSON(w, r, &req, 8192); err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
@@ -167,14 +201,46 @@ func (h *Handler) ConfirmBatch(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "单次最多确认 100 个接口")
 		return
 	}
+	sampleTarget := 0
+	if req.SampleTarget != nil {
+		if *req.SampleTarget < MinSampleTarget || *req.SampleTarget > MaxSampleTarget {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+				fmt.Sprintf("样本目标需在 %d~%d 之间", MinSampleTarget, MaxSampleTarget))
+			return
+		}
+		sampleTarget = *req.SampleTarget
+	}
+	shouldAutoStart := false
+	if req.AutoStartLearning != nil {
+		if *req.AutoStartLearning {
+			if p == nil || !p.HasPermission("api_learning.start") {
+				response.Error(w, r, http.StatusForbidden, response.CodePermissionDenied,
+					"权限不足，无法在确认时自动启动学习（需要 api_learning.start）")
+				return
+			}
+			shouldAutoStart = true
+		}
+	} else if h.autoStartOnConfirm(r.Context()) && p != nil && p.HasPermission("api_learning.start") {
+		shouldAutoStart = true
+	}
+
+	ids := dedupUUIDs(req.IDs)
+	var createdBy *uuid.UUID
+	if p != nil {
+		uid := p.UserID
+		createdBy = &uid
+	}
 	type failedItem struct {
 		ID     string `json:"id"`
 		Reason string `json:"reason"`
 	}
 	confirmed := []string{}
 	failed := []failedItem{}
-	for _, id := range req.IDs {
-		_, err := h.store.Confirm(r.Context(), id)
+	learningStarted := []string{}
+	learningSkipped := []string{}
+	learningFailed := []failedItem{}
+	for _, id := range ids {
+		ep, err := h.store.Confirm(r.Context(), id)
 		if errors.Is(err, ErrNotFound) {
 			failed = append(failed, failedItem{ID: id.String(), Reason: "接口不存在"})
 			continue
@@ -184,19 +250,192 @@ func (h *Handler) ConfirmBatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		confirmed = append(confirmed, id.String())
+		if !shouldAutoStart {
+			continue
+		}
+		// 学习中或已完成学习的接口自动跳过，避免覆盖/重复启动已有学习成果
+		if ep != nil && (ep.LearningStatus == "LEARNING" || ep.LearningStatus == "LEARNED") {
+			learningSkipped = append(learningSkipped, id.String())
+			continue
+		}
+		_, startErr := h.store.StartLearning(r.Context(), id, sampleTarget, createdBy)
+		if errors.Is(startErr, ErrLearningRunning) {
+			learningSkipped = append(learningSkipped, id.String())
+			continue
+		}
+		if startErr != nil {
+			slog.Warn("auto start learning after confirm failed", "endpoint_id", id, "error", startErr)
+			learningFailed = append(learningFailed, failedItem{ID: id.String(), Reason: "自动启动学习失败"})
+			continue
+		}
+		learningStarted = append(learningStarted, id.String())
 	}
 	objID := ""
-	if len(req.IDs) > 0 {
-		objID = req.IDs[0].String()
+	if len(ids) > 0 {
+		objID = ids[0].String()
 	}
-	h.recordAudit(r, p, "confirm", objID, fmt.Sprintf("批量确认 %d 个接口", len(req.IDs)),
-		summaryJSON(map[string]any{"ids": req.IDs}),
-		summaryJSON(map[string]any{"confirmed": len(confirmed), "failed": len(failed)}), audits.RiskLow)
+	afterMap := map[string]any{
+		"confirmed":           len(confirmed),
+		"failed":              len(failed),
+		"auto_start_learning": shouldAutoStart,
+		"learning_started":    len(learningStarted),
+		"learning_skipped":    len(learningSkipped),
+		"learning_failed":     len(learningFailed),
+	}
+	if shouldAutoStart {
+		effectiveTarget := sampleTarget
+		if effectiveTarget == 0 {
+			effectiveTarget = DefaultSampleTarget
+		}
+		afterMap["sample_target"] = effectiveTarget
+	}
+	h.recordAudit(r, p, "confirm", objID, fmt.Sprintf("批量确认 %d 个接口", len(ids)),
+		summaryJSON(map[string]any{"ids": ids, "auto_start_learning": shouldAutoStart}),
+		summaryJSON(afterMap), audits.RiskLow)
 	response.JSON(w, r, http.StatusOK, map[string]any{
-		"confirmed":     len(confirmed),
-		"confirmed_ids": confirmed,
-		"failed":        failed,
+		"confirmed":            len(confirmed),
+		"confirmed_ids":        confirmed,
+		"failed":               failed,
+		"learning_started":     len(learningStarted),
+		"learning_started_ids": learningStarted,
+		"learning_skipped":     len(learningSkipped),
+		"learning_skipped_ids": learningSkipped,
+		"learning_failed":      learningFailed,
 	})
+}
+
+// LearningOptions GET /api/v1/api-security/endpoints/learning/options
+// 返回前端确认弹窗与批量启动学习所需的非敏感学习默认选项（权限：api_asset.read）。
+func (h *Handler) LearningOptions(w http.ResponseWriter, r *http.Request) {
+	response.JSON(w, r, http.StatusOK, map[string]any{
+		"auto_start_on_confirm": h.autoStartOnConfirm(r.Context()),
+		"default_sample_target": DefaultSampleTarget,
+		"min_sample_target":     MinSampleTarget,
+		"max_sample_target":     MaxSampleTarget,
+	})
+}
+
+// LearningStartBatch POST /api/v1/api-security/endpoints/learning/start
+// {ids:[...], sample_target?: int}
+// 批量启动接口模型学习（单次最多 100 个，权限：api_learning.start）；
+// 已在学习中（RUNNING）的接口自动跳过并计入 skipped，不存在的接口计入 failed，写操作审计。
+func (h *Handler) LearningStartBatch(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	var req struct {
+		IDs          []uuid.UUID `json:"ids"`
+		SampleTarget *int        `json:"sample_target"`
+	}
+	if err := response.DecodeJSON(w, r, &req, 8192); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	if len(req.IDs) == 0 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "ids 不能为空")
+		return
+	}
+	if len(req.IDs) > 100 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "单次最多启动 100 个接口学习")
+		return
+	}
+	sampleTarget := 0
+	if req.SampleTarget != nil {
+		if *req.SampleTarget < MinSampleTarget || *req.SampleTarget > MaxSampleTarget {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+				fmt.Sprintf("样本目标需在 %d~%d 之间", MinSampleTarget, MaxSampleTarget))
+			return
+		}
+		sampleTarget = *req.SampleTarget
+	}
+	effectiveTarget := sampleTarget
+	if effectiveTarget == 0 {
+		effectiveTarget = DefaultSampleTarget
+	}
+	ids := dedupUUIDs(req.IDs)
+	var createdBy *uuid.UUID
+	if p != nil {
+		uid := p.UserID
+		createdBy = &uid
+	}
+	type failedItem struct {
+		ID     string `json:"id"`
+		Reason string `json:"reason"`
+	}
+	started := []string{}
+	skipped := []string{}
+	failed := []failedItem{}
+	for _, id := range ids {
+		_, err := h.store.StartLearning(r.Context(), id, sampleTarget, createdBy)
+		if errors.Is(err, ErrNotFound) {
+			failed = append(failed, failedItem{ID: id.String(), Reason: "接口不存在"})
+			continue
+		}
+		if errors.Is(err, ErrLearningRunning) {
+			skipped = append(skipped, id.String())
+			continue
+		}
+		if err != nil {
+			response.InternalError(w, r, err)
+			return
+		}
+		started = append(started, id.String())
+	}
+	objID := ""
+	if len(ids) > 0 {
+		objID = ids[0].String()
+	}
+	h.recordAudit(r, p, "learning_start_batch", objID, fmt.Sprintf("批量启动学习 %d 个接口", len(ids)),
+		summaryJSON(map[string]any{"ids": ids, "sample_target": effectiveTarget}),
+		summaryJSON(map[string]any{
+			"started":       len(started),
+			"skipped":       len(skipped),
+			"failed":        len(failed),
+			"sample_target": effectiveTarget,
+		}), audits.RiskLow)
+	response.JSON(w, r, http.StatusOK, map[string]any{
+		"started":       len(started),
+		"started_ids":   started,
+		"skipped":       len(skipped),
+		"skipped_ids":   skipped,
+		"failed":        failed,
+		"sample_target": effectiveTarget,
+		"message":       formatBatchLearningStartMessage(len(started), len(skipped), len(failed)),
+	})
+}
+
+func dedupUUIDs(in []uuid.UUID) []uuid.UUID {
+	out := make([]uuid.UUID, 0, len(in))
+	seen := make(map[uuid.UUID]struct{}, len(in))
+	for _, id := range in {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func formatBatchLearningStartMessage(started, skipped, failed int) string {
+	if started > 0 && skipped == 0 && failed == 0 {
+		return fmt.Sprintf("已批量启动 %d 个接口学习", started)
+	}
+	if started == 0 && skipped > 0 && failed == 0 {
+		return fmt.Sprintf("所选 %d 个接口均已在学习中，已自动跳过", skipped)
+	}
+	parts := make([]string, 0, 3)
+	if started > 0 {
+		parts = append(parts, fmt.Sprintf("已启动 %d 个", started))
+	}
+	if skipped > 0 {
+		parts = append(parts, fmt.Sprintf("跳过 %d 个（学习中）", skipped))
+	}
+	if failed > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个失败", failed))
+	}
+	if len(parts) == 0 {
+		return "未启动任何学习任务"
+	}
+	return strings.Join(parts, "，")
 }
 
 // Get GET /api/v1/api-security/endpoints/{id}（含 api_assets 扩展字段与近 7 天日均调用量）

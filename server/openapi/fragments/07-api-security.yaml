@@ -278,8 +278,10 @@ paths:
       summary: 批量确认接口资产
       description: >-
         批量将接口确认为资产（asset_status=CONFIRMED 并记录 confirmed_at），单次最多 100 个；
-        逐项处理，不存在的接口计入 failed 列表，其余照常确认。写操作审计。
-        权限：`api_asset.confirm`
+        逐项处理，不存在的接口计入 failed 列表，其余照常确认。可选 `auto_start_learning` 联动自动启动模型学习
+        （显式传 true 时需具备 `api_learning.start` 权限，否则返回 403；缺省遵循系统设置 `api_learning:auto_start_on_confirm`
+        并在具备 `api_learning.start` 时生效；学习中或已完成学习的接口自动跳过）。写操作审计。
+        权限：`api_asset.confirm`（联动自动启动学习时需同时具备 `api_learning.start`）
       requestBody:
         required: true
         content:
@@ -287,7 +289,7 @@ paths:
             schema: { $ref: '#/components/schemas/ApiSecEndpointConfirmRequest' }
       responses:
         '200':
-          description: 批量确认结果（含逐项失败明细）
+          description: 批量确认结果（含逐项失败明细及联动学习结果）
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiSecEndpointConfirmResponse' }
@@ -308,7 +310,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ApiSecEndpointConfirmRequest' }
+            schema: { $ref: '#/components/schemas/ApiSecEndpointBatchIDsRequest' }
       responses:
         '200':
           description: 批量忽略结果（含逐项失败明细）
@@ -316,6 +318,49 @@ paths:
             application/json:
               schema: { type: object }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/endpoints/learning/start:
+    post:
+      operationId: apiSecLearningStartBatch
+      tags: [api-security]
+      summary: 批量启动接口学习
+      description: >-
+        批量为选中的 API 接口启动模型学习任务（单次最多 100 个），可选 `sample_target`（10~100000，缺省 100）；
+        已在学习中（RUNNING）的接口自动跳过并计入 `skipped_ids`，不存在的接口计入 `failed`。写操作审计。
+        权限：`api_learning.start`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecLearningStartBatchRequest' }
+      responses:
+        '200':
+          description: 批量启动学习结果（含启动、跳过与失败明细）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecLearningStartBatchResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/endpoints/learning/options:
+    get:
+      operationId: apiSecLearningOptions
+      tags: [api-security]
+      summary: 获取 API 学习默认选项
+      description: >-
+        返回前端确认弹窗与批量启动学习所需的非敏感学习默认选项（含确认资产时自动启动学习默认开关与样本目标范围）。
+        权限：`api_asset.read`
+      responses:
+        '200':
+          description: 学习默认选项
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecLearningOptionsResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
@@ -8278,6 +8323,17 @@ components:
               items: { $ref: '#/components/schemas/ApiSecEndpointExportSensitiveField' }
             sensitive_fields_total: { type: integer, format: int64 }
 
+    ApiSecEndpointBatchIDsRequest:
+      type: object
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          items: { type: string, format: uuid }
+          minItems: 1
+          maxItems: 100
+          description: 接口 ID 列表（单次最多 100 个）
+
     ApiSecEndpointConfirmRequest:
       type: object
       required: [ids]
@@ -8288,12 +8344,20 @@ components:
           minItems: 1
           maxItems: 100
           description: 待确认接口 ID 列表（单次最多 100 个）
+        auto_start_learning:
+          type: boolean
+          description: 确认后是否同时自动启动学习（可选；缺省遵循系统设置 api_learning:auto_start_on_confirm）
+        sample_target:
+          type: integer
+          minimum: 10
+          maximum: 100000
+          description: 自动启动学习时的样本目标（可选，默认 100）
 
     ApiSecConfirmFailedItem:
       type: object
       required: [id, reason]
       properties:
-        id: { type: string, format: uuid, description: 确认失败的接口 ID }
+        id: { type: string, format: uuid, description: 失败的接口 ID }
         reason: { type: string, description: 失败原因 }
 
     ApiSecEndpointConfirmResponse:
@@ -8309,6 +8373,66 @@ components:
           type: array
           items: { $ref: '#/components/schemas/ApiSecConfirmFailedItem' }
           description: 逐项失败明细
+        learning_started: { type: integer, description: 联动自动启动学习的接口数量 }
+        learning_started_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: 联动自动启动学习的接口 ID 列表
+        learning_skipped: { type: integer, description: 联动学习时自动跳过的接口数量（已在学习中或已完成） }
+        learning_skipped_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: 联动学习时自动跳过的接口 ID 列表
+        learning_failed:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecConfirmFailedItem' }
+          description: 联动启动学习失败明细
+
+    ApiSecLearningStartBatchRequest:
+      type: object
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          items: { type: string, format: uuid }
+          minItems: 1
+          maxItems: 100
+          description: 待启动学习的接口 ID 列表（单次最多 100 个）
+        sample_target:
+          type: integer
+          minimum: 10
+          maximum: 100000
+          description: 样本目标（可选，默认 100）
+
+    ApiSecLearningStartBatchResponse:
+      type: object
+      required: [started, started_ids, skipped, skipped_ids, failed, sample_target, message]
+      properties:
+        started: { type: integer, description: 成功启动学习的接口数量 }
+        started_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: 成功启动学习的接口 ID 列表
+        skipped: { type: integer, description: 自动跳过的接口数量（已在学习中） }
+        skipped_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: 自动跳过的接口 ID 列表
+        failed:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecConfirmFailedItem' }
+          description: 启动失败明细（如接口不存在）
+        sample_target: { type: integer, description: 本次批量启动生效的样本目标 }
+        message: { type: string, description: 操作结果汇总提示 }
+
+    ApiSecLearningOptionsResponse:
+      type: object
+      required: [auto_start_on_confirm, default_sample_target, min_sample_target, max_sample_target]
+      properties:
+        auto_start_on_confirm: { type: boolean, description: 确认资产时默认自动启动学习开关 }
+        default_sample_target: { type: integer, description: 默认样本目标（100） }
+        min_sample_target: { type: integer, description: 最小样本目标（10） }
+        max_sample_target: { type: integer, description: 最大样本目标（100000） }
 
     ApiSecEndpointResponse:
       type: object

@@ -1,12 +1,14 @@
-import { useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   App as AntdApp,
   Badge,
   Button,
   Card,
+  Checkbox,
   Divider,
   Input,
+  InputNumber,
   Modal,
   Select,
   Space,
@@ -66,6 +68,7 @@ export default function ApiEndpointsPage() {
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canConfirm = hasPermission(permissions, 'api_asset.confirm')
   const canIgnore = hasPermission(permissions, 'api_asset.ignore')
+  const canLearnStart = hasPermission(permissions, 'api_learning.start')
   const canMerge = hasPermission(permissions, 'api_asset.merge')
   const canSplit = hasPermission(permissions, 'api_asset.split')
   const canEdit = hasPermission(permissions, 'api_asset.edit')
@@ -75,7 +78,9 @@ export default function ApiEndpointsPage() {
     selectedCount,
     clearSelection,
     rowSelection,
-  } = useExportSelection<ApiEndpointItem>(canExport || canConfirm || canIgnore)
+  } = useExportSelection<ApiEndpointItem>(
+    canExport || canConfirm || canIgnore || canLearnStart,
+  )
 
   const [assetStatus, setAssetStatus] = useState<string | undefined>()
   const [learningStatus, setLearningStatus] = useState<string | undefined>()
@@ -87,6 +92,20 @@ export default function ApiEndpointsPage() {
   const [detail, setDetail] = useState<ApiEndpointItem | null>(null)
   const [filterModalOpen, setFilterModalOpen] = useState(false)
   const [cleanupModalOpen, setCleanupModalOpen] = useState(false)
+  /** 确认资产弹窗（单条/批量共用）：具备 api_learning.start 权限时可选联动自动启动学习 */
+  const [confirmDialog, setConfirmDialog] = useState<{
+    mode: 'single' | 'batch'
+    ids: string[]
+    label?: string
+  } | null>(null)
+  const [confirmAutoStart, setConfirmAutoStart] = useState(false)
+  const [confirmAutoStartTouched, setConfirmAutoStartTouched] = useState(false)
+  const [confirmSampleTarget, setConfirmSampleTarget] = useState<number | null>(
+    100,
+  )
+  /** 批量启动学习弹窗 */
+  const [batchLearnOpen, setBatchLearnOpen] = useState(false)
+  const [batchSampleTarget, setBatchSampleTarget] = useState<number | null>(100)
   /** 合并弹窗：mergeSource 为保留方（主接口），mergeTargetId 为待并入接口（并入后删除） */
   const [mergeSource, setMergeSource] = useState<ApiEndpointItem | null>(null)
   const [mergeTargetId, setMergeTargetId] = useState<string | undefined>()
@@ -138,33 +157,117 @@ export default function ApiEndpointsPage() {
       }),
   })
 
-  const confirmMut = useMutation({
-    mutationFn: (id: string) => apiEndpointsApi.confirm([id]),
-    onSuccess: (r) => {
-      if (r.failed && r.failed.length > 0) {
-        message.error(r.failed[0].reason || '确认失败')
-      } else {
-        message.success('已确认')
-      }
-      void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
-    },
-    onError: (e: unknown) =>
-      message.error(e instanceof ApiError ? e.message : '确认失败'),
+  /** 确认弹窗打开且具备学习启动权限时，读取系统默认开关（api_learning:auto_start_on_confirm） */
+  const learningOptionsQuery = useQuery({
+    queryKey: ['api-endpoints', 'learning-options'],
+    queryFn: () => apiEndpointsApi.learningOptions(),
+    enabled: confirmDialog !== null && canLearnStart,
+    retry: false,
   })
 
-  const confirmBatchMut = useMutation({
-    mutationFn: (ids: string[]) => apiEndpointsApi.confirm(ids),
+  useEffect(() => {
+    if (
+      confirmDialog !== null &&
+      !confirmAutoStartTouched &&
+      learningOptionsQuery.data
+    ) {
+      setConfirmAutoStart(learningOptionsQuery.data.auto_start_on_confirm)
+      setConfirmSampleTarget(
+        learningOptionsQuery.data.default_sample_target || 100,
+      )
+    }
+  }, [confirmDialog, confirmAutoStartTouched, learningOptionsQuery.data])
+
+  const confirmEndpointsMut = useMutation({
+    mutationFn: (vars: {
+      mode: 'single' | 'batch'
+      ids: string[]
+      autoStartLearning?: boolean
+      sampleTarget?: number
+    }) =>
+      apiEndpointsApi.confirm(
+        vars.ids,
+        vars.autoStartLearning !== undefined
+          ? {
+              auto_start_learning: vars.autoStartLearning,
+              ...(vars.autoStartLearning && vars.sampleTarget !== undefined
+                ? { sample_target: vars.sampleTarget }
+                : {}),
+            }
+          : undefined,
+      ),
+    onSuccess: (r, vars) => {
+      const started = r.learning_started ?? 0
+      const skipped = r.learning_skipped ?? 0
+      const learnFailed = r.learning_failed?.length ?? 0
+      if (vars.mode === 'single') {
+        if (r.failed && r.failed.length > 0) {
+          message.error(r.failed[0].reason || '确认失败')
+        } else if (learnFailed > 0) {
+          message.warning('已确认，但自动启动学习失败，请到学习中心重试')
+        } else if (started > 0) {
+          message.success('已确认并启动学习')
+        } else if (skipped > 0) {
+          message.success('已确认（已在学习中或已完成学习，已跳过启动）')
+        } else {
+          message.success('已确认')
+        }
+      } else {
+        const parts = [`已批量确认 ${r.confirmed} 个接口`]
+        if (started > 0) parts.push(`启动学习 ${started} 个`)
+        if (skipped > 0) parts.push(`跳过学习 ${skipped} 个`)
+        if (learnFailed > 0) parts.push(`学习启动失败 ${learnFailed} 个`)
+        if (r.failed && r.failed.length > 0) {
+          parts.push(`确认失败 ${r.failed.length} 个`)
+          message.warning(parts.join('，'))
+        } else if (learnFailed > 0) {
+          message.warning(parts.join('，'))
+        } else {
+          message.success(parts.join('，'))
+        }
+        clearSelection()
+      }
+      setConfirmDialog(null)
+      void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
+      void qc.invalidateQueries({ queryKey: ['api-learning'] })
+    },
+    onError: (e: unknown, vars) =>
+      message.error(
+        e instanceof ApiError
+          ? e.message
+          : vars.mode === 'batch'
+            ? '批量确认失败'
+            : '确认失败',
+      ),
+  })
+
+  const learningStartBatchMut = useMutation({
+    mutationFn: ({
+      ids,
+      sampleTarget,
+    }: {
+      ids: string[]
+      sampleTarget?: number
+    }) => apiEndpointsApi.learningStartBatch(ids, sampleTarget),
     onSuccess: (r) => {
       if (r.failed && r.failed.length > 0) {
-        message.warning(`已确认 ${r.confirmed} 个，${r.failed.length} 个失败`)
+        message.warning(
+          r.message || `已启动 ${r.started} 个，${r.failed.length} 个失败`,
+        )
+      } else if (r.started === 0 && r.skipped > 0) {
+        message.info(
+          r.message || `所选 ${r.skipped} 个接口均已在学习中，已自动跳过`,
+        )
       } else {
-        message.success(`已批量确认 ${r.confirmed} 个接口`)
+        message.success(r.message || `已批量启动 ${r.started} 个接口学习`)
       }
+      setBatchLearnOpen(false)
       clearSelection()
       void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
+      void qc.invalidateQueries({ queryKey: ['api-learning'] })
     },
     onError: (e: unknown) =>
-      message.error(e instanceof ApiError ? e.message : '批量确认失败'),
+      message.error(e instanceof ApiError ? e.message : '批量启动学习失败'),
   })
 
   const ignoreBatchMut = useMutation({
@@ -283,11 +386,24 @@ export default function ApiEndpointsPage() {
   }
 
   /** 行内操作统一二次确认 */
+  const openConfirmDialog = (next: {
+    mode: 'single' | 'batch'
+    ids: string[]
+    label?: string
+  }) => {
+    setConfirmAutoStartTouched(false)
+    setConfirmAutoStart(learningOptionsQuery.data?.auto_start_on_confirm ?? false)
+    setConfirmSampleTarget(
+      learningOptionsQuery.data?.default_sample_target ?? 100,
+    )
+    setConfirmDialog(next)
+  }
+
   const confirmEndpoint = (record: ApiEndpointItem) => {
-    modal.confirm({
-      title: '操作确认',
-      content: `确定将接口「${record.http_method} ${record.normalized_path}」确认为正式 API 资产吗？确认后进入正式资产管理。`,
-      onOk: () => confirmMut.mutate(record.id),
+    openConfirmDialog({
+      mode: 'single',
+      ids: [record.id],
+      label: `${record.http_method} ${record.normalized_path}`,
     })
   }
 
@@ -301,12 +417,59 @@ export default function ApiEndpointsPage() {
 
   const confirmBatchSelected = () => {
     if (selectedCount === 0) return
-    modal.confirm({
-      title: '批量确认接口',
-      content: `确定将已勾选的 ${selectedCount} 个接口确认为正式 API 资产吗？`,
-      okText: '确认',
-      cancelText: '取消',
-      onOk: () => confirmBatchMut.mutate(selectedIds),
+    openConfirmDialog({
+      mode: 'batch',
+      ids: [...selectedIds],
+    })
+  }
+
+  const handleConfirmOk = () => {
+    if (!confirmDialog) return
+    if (canLearnStart && confirmAutoStart) {
+      if (
+        typeof confirmSampleTarget !== 'number' ||
+        !Number.isInteger(confirmSampleTarget) ||
+        confirmSampleTarget < 10 ||
+        confirmSampleTarget > 100000
+      ) {
+        message.warning('样本目标需为 10~100000 之间的整数')
+        return
+      }
+    }
+    confirmEndpointsMut.mutate({
+      mode: confirmDialog.mode,
+      ids: confirmDialog.ids,
+      ...(canLearnStart
+        ? {
+            autoStartLearning: confirmAutoStart,
+            sampleTarget: confirmAutoStart
+              ? (confirmSampleTarget ?? 100)
+              : undefined,
+          }
+        : {}),
+    })
+  }
+
+  const openBatchLearn = () => {
+    if (selectedCount === 0) return
+    setBatchSampleTarget(learningOptionsQuery.data?.default_sample_target ?? 100)
+    setBatchLearnOpen(true)
+  }
+
+  const handleBatchLearnOk = () => {
+    if (selectedCount === 0) return
+    if (
+      typeof batchSampleTarget !== 'number' ||
+      !Number.isInteger(batchSampleTarget) ||
+      batchSampleTarget < 10 ||
+      batchSampleTarget > 100000
+    ) {
+      message.warning('样本目标需为 10~100000 之间的整数')
+      return
+    }
+    learningStartBatchMut.mutate({
+      ids: [...selectedIds],
+      sampleTarget: batchSampleTarget,
     })
   }
 
@@ -692,7 +855,7 @@ export default function ApiEndpointsPage() {
         <Card title="API 接口资产">
           <Typography.Paragraph type="secondary">
             路径自动归一化（如 /users/123 →
-            /users/&#123;id&#125;），接口由网关自动发现上报。确认后进入正式资产；学习模型见「API
+            /users/&#123;id&#125;），接口由网关自动发现上报。确认后进入正式资产，可勾选批量启动学习或在确认时自动启动学习；学习模型见「API
             模型版本」。
           </Typography.Paragraph>
           <QueryErrorAlert error={listQuery.error} />
@@ -788,7 +951,7 @@ export default function ApiEndpointsPage() {
               />
             ) : null}
           </Space>
-          {selectedCount > 0 && (canConfirm || canIgnore) ? (
+          {selectedCount > 0 && (canConfirm || canIgnore || canLearnStart) ? (
             <Space
               style={{
                 marginBottom: 12,
@@ -808,10 +971,22 @@ export default function ApiEndpointsPage() {
                   <Button
                     size="small"
                     type="primary"
-                    loading={confirmBatchMut.isPending}
+                    loading={
+                      confirmEndpointsMut.isPending &&
+                      confirmDialog?.mode === 'batch'
+                    }
                     onClick={confirmBatchSelected}
                   >
                     批量确认
+                  </Button>
+                ) : null}
+                {canLearnStart ? (
+                  <Button
+                    size="small"
+                    loading={learningStartBatchMut.isPending}
+                    onClick={openBatchLearn}
+                  >
+                    批量启动学习
                   </Button>
                 ) : null}
                 {canIgnore ? (
@@ -868,6 +1043,90 @@ export default function ApiEndpointsPage() {
         applicationName={currentSiteName}
         onClose={() => setCleanupModalOpen(false)}
       />
+
+      <Modal
+        title={confirmDialog?.mode === 'batch' ? '批量确认接口' : '操作确认'}
+        open={confirmDialog !== null}
+        onCancel={() => setConfirmDialog(null)}
+        onOk={handleConfirmOk}
+        okText="确定"
+        okButtonProps={{ loading: confirmEndpointsMut.isPending }}
+        cancelText="取消"
+        destroyOnHidden
+      >
+        <Space orientation="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Text>
+            {confirmDialog?.mode === 'batch'
+              ? `确定将已勾选的 ${confirmDialog.ids.length} 个接口确认为正式 API 资产吗？确认后进入正式资产管理。`
+              : `确定将接口「${confirmDialog?.label ?? '-'}」确认为正式 API 资产吗？确认后进入正式资产管理。`}
+          </Typography.Text>
+          {canLearnStart ? (
+            <>
+              <Checkbox
+                checked={confirmAutoStart}
+                onChange={(e) => {
+                  setConfirmAutoStartTouched(true)
+                  setConfirmAutoStart(e.target.checked)
+                }}
+              >
+                确认后自动启动模型学习
+              </Checkbox>
+              {confirmAutoStart ? (
+                <Space orientation="vertical" size={6} style={{ width: '100%' }}>
+                  <span>
+                    样本目标：
+                    <InputNumber
+                      min={10}
+                      max={100000}
+                      precision={0}
+                      value={confirmSampleTarget}
+                      onChange={(v) =>
+                        setConfirmSampleTarget(typeof v === 'number' ? v : null)
+                      }
+                    />
+                  </span>
+                  <Typography.Text type="secondary">
+                    学习中或已完成学习的接口将自动跳过；有效样本达到目标后仅生成候选模型，仍需人工审核确认后才生效。
+                  </Typography.Text>
+                </Space>
+              ) : null}
+            </>
+          ) : null}
+        </Space>
+      </Modal>
+
+      <Modal
+        title="批量启动学习"
+        open={batchLearnOpen}
+        onCancel={() => setBatchLearnOpen(false)}
+        onOk={handleBatchLearnOk}
+        okText="启动学习"
+        okButtonProps={{ loading: learningStartBatchMut.isPending }}
+        cancelText="取消"
+        destroyOnHidden
+      >
+        <Space orientation="vertical" size={10} style={{ width: '100%' }}>
+          <Typography.Text>
+            确定为已勾选的 <Typography.Text strong>{selectedCount}</Typography.Text>{' '}
+            个接口启动模型学习吗？
+          </Typography.Text>
+          <span>
+            样本目标：
+            <InputNumber
+              min={10}
+              max={100000}
+              precision={0}
+              value={batchSampleTarget}
+              onChange={(v) =>
+                setBatchSampleTarget(typeof v === 'number' ? v : null)
+              }
+            />
+          </span>
+          <Typography.Text type="secondary">
+            已在学习中的接口将自动跳过；有效样本达到目标后自动完成学习并生成模型候选（候选仍需人工审核确认后才生效）。
+          </Typography.Text>
+        </Space>
+      </Modal>
 
       <Modal
         title="合并接口"

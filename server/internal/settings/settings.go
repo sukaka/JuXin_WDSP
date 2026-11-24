@@ -835,7 +835,7 @@ var AllowedSettingKeys = map[string]bool{
 	"api_learning:sweep_interval_seconds": true, "api_learning:min_valid_samples": true,
 	"api_learning:min_unique_ips": true, "api_learning:min_unique_identities": true,
 	"api_learning:min_learning_duration_seconds": true, "api_learning:max_learning_duration_seconds": true,
-	"api_learning:minimum_success_ratio": true,
+	"api_learning:minimum_success_ratio": true, "api_learning:auto_start_on_confirm": true,
 	// 阶段8 / WDSP：网关运行时设置（发布通道下发；非法值中止发布）
 	"gateway_runtime:behavior_store": true, "gateway_runtime:behavior_store_ttl_seconds": true,
 	"gateway_runtime:identity_salt": true, "gateway_runtime:tls_session_ticket_key": true,

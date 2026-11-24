@@ -169,6 +169,10 @@ const SETTING_META: Record<
     max: 1,
     step: 0.05,
   },
+  'api_learning:auto_start_on_confirm': {
+    description:
+      '确认 API 接口为正式资产时默认自动启动模型学习（需具备学习启动权限；学习中或已完成学习的接口自动跳过）',
+  },
   'logging:access_log_enabled': {
     description: '记录所有经过网关的访问日志（总开关，关闭后不再产生访问日志）',
   },
@@ -646,7 +650,7 @@ function SettingGroupPanel({ group }: { group: string }) {
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="以上条件全部满足才判定采样完成，并自动生成参数模型候选版本；每个任务的样本目标在学习中心启动学习时单独设置。"
+          message="以上条件全部满足才判定采样完成，并自动生成参数模型候选版本；样本目标可在批量启动学习或学习中心设置，也可开启「确认资产时自动启动学习」默认开关。"
         />
       )}
       {group === 'logging' && canSyslogTest && (

@@ -1629,7 +1629,8 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		apiEndpointHandler := apiassets.NewHandler(apiEndpointStore, auditSvc).
 			SetExportModelReader(apiModelStore).
 			SetExportExtrasProvider(apiEndpointStore).
-			SetDiscoveryFilterProvider(a.apiDiscoveryFilter)
+			SetDiscoveryFilterProvider(a.apiDiscoveryFilter).
+			SetLearningSettingsReader(settingsSvc)
 		apiassets.RegisterRoutes(mux, authz, apiEndpointHandler, exportRate)
 		apigroups.RegisterRoutes(mux, authz, apigroups.NewHandler(apigroups.NewStore(db), auditSvc))
 		apiModelHandler := apimodels.NewHandler(apiModelStore, auditSvc)

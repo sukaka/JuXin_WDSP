@@ -181,7 +181,7 @@ export default function ApiLearningPage() {
       }
     >
       <Typography.Paragraph type="secondary">
-        选择接口后查看其学习状态、学习任务与采集样本；启动学习后网关按样本目标采集流量，样本经有效性校验后用于生成模型候选。
+        选择接口后查看其学习状态、学习任务与采集样本；启动学习后网关按样本目标采集流量，样本经有效性校验后用于生成模型候选。批量启动学习可在「API 接口资产」页勾选接口操作。
       </Typography.Paragraph>
       <QueryErrorAlert error={endpointsQuery.error ?? statusQuery.error ?? samplesQuery.error} />
       <Space style={{ marginBottom: 16 }} wrap>

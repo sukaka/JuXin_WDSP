@@ -331,3 +331,15 @@ func TestValidateTproxyPassthroughAllowlist(t *testing.T) {
 		}
 	}
 }
+
+func TestAPILearningAutoStartOnConfirmSettingAllowed(t *testing.T) {
+	if !AllowedSettingKeys["api_learning:auto_start_on_confirm"] {
+		t.Fatal("api_learning:auto_start_on_confirm must be in AllowedSettingKeys")
+	}
+	if err := validateValueType("boolean", json.RawMessage(`true`)); err != nil {
+		t.Fatalf("boolean true should be valid: %v", err)
+	}
+	if err := validateValueType("boolean", json.RawMessage(`"true"`)); err == nil {
+		t.Fatal("string should be rejected for boolean setting")
+	}
+}

@@ -828,4 +828,202 @@ describe('ApiEndpointsPage', () => {
     })
     expect(batchBodies[0].ids).toEqual(['e1'])
   })
+
+  it('无 api_learning.start 权限：不显示「批量启动学习」与确认弹窗自动学习选项', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read', 'api_asset.confirm']),
+      csrfToken: null,
+      initialized: true,
+    })
+    const confirmBodies: Record<string, unknown>[] = []
+    ;(fetch as Mock).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api-security/endpoints/site-summary')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: siteSummaryData }))
+      }
+      if (url.includes('/api-security/endpoints/directory-tree')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: directoryTreeData }))
+      }
+      if (url.endsWith('/api-security/endpoints/confirm') && init?.method === 'POST') {
+        confirmBodies.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: { confirmed: 1, confirmed_ids: ['e1'], failed: [] },
+          }),
+        )
+      }
+      return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }))
+    })
+
+    renderPage()
+    await screen.findByText('/v1/users/{id}')
+    const checkboxes = screen.getAllByRole('checkbox')
+    fireEvent.click(checkboxes[1])
+    expect(await screen.findByRole('button', { name: /批量确认/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /批量启动学习/ })).not.toBeInTheDocument()
+
+    // 打开确认弹窗，不展示自动启动学习复选框，确认时不传 auto_start_learning
+    fireEvent.click(screen.getByRole('button', { name: /批量确认/ }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).queryByText(/确认后自动启动模型学习/)).not.toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: /确\s*定/ }))
+
+    await waitFor(() => {
+      expect(confirmBodies).toHaveLength(1)
+    })
+    expect(confirmBodies[0]).toEqual({ ids: ['e1'] })
+  })
+
+  it('勾选接口后支持批量启动学习（POST /api-security/endpoints/learning/start）', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read', 'api_learning.start']),
+      csrfToken: null,
+      initialized: true,
+    })
+    const batchStartBodies: Record<string, unknown>[] = []
+    ;(fetch as Mock).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api-security/endpoints/site-summary')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: siteSummaryData }))
+      }
+      if (url.includes('/api-security/endpoints/directory-tree')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: directoryTreeData }))
+      }
+      if (url.endsWith('/api-security/endpoints/learning/start') && init?.method === 'POST') {
+        batchStartBodies.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: {
+              started: 1,
+              started_ids: ['e2'],
+              skipped: 1,
+              skipped_ids: ['e1'],
+              failed: [],
+              sample_target: 250,
+              message: '已启动 1 个，跳过 1 个（学习中）',
+            },
+          }),
+        )
+      }
+      return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }))
+    })
+
+    renderPage()
+    await screen.findByText('/v1/users/{id}')
+    const checkboxes = screen.getAllByRole('checkbox')
+    fireEvent.click(checkboxes[1])
+    fireEvent.click(checkboxes[2])
+
+    fireEvent.click(await screen.findByRole('button', { name: /批量启动学习/ }))
+    const dialog = await screen.findByRole('dialog')
+    const spin = within(dialog).getByRole('spinbutton')
+    fireEvent.change(spin, { target: { value: '250' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /启动学习/ }))
+
+    await waitFor(() => {
+      expect(batchStartBodies).toHaveLength(1)
+    })
+    expect(batchStartBodies[0]).toEqual({
+      ids: ['e1', 'e2'],
+      sample_target: 250,
+    })
+  })
+
+  it('确认弹窗联动自动启动学习：遵循默认开关并支持调整样本目标或手动取消', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read', 'api_asset.confirm', 'api_learning.start']),
+      csrfToken: null,
+      initialized: true,
+    })
+    const confirmBodies: Record<string, unknown>[] = []
+    ;(fetch as Mock).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api-security/endpoints/site-summary')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: siteSummaryData }))
+      }
+      if (url.includes('/api-security/endpoints/directory-tree')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: directoryTreeData }))
+      }
+      if (url.includes('/api-security/endpoints/learning/options')) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: {
+              auto_start_on_confirm: true,
+              default_sample_target: 100,
+              min_sample_target: 10,
+              max_sample_target: 100000,
+            },
+          }),
+        )
+      }
+      if (url.endsWith('/api-security/endpoints/confirm') && init?.method === 'POST') {
+        confirmBodies.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: {
+              confirmed: 1,
+              confirmed_ids: ['e1'],
+              failed: [],
+              learning_started: 1,
+              learning_started_ids: ['e1'],
+              learning_skipped: 0,
+              learning_skipped_ids: [],
+              learning_failed: [],
+            },
+          }),
+        )
+      }
+      return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }))
+    })
+
+    renderPage()
+    await screen.findByText('/v1/users/{id}')
+
+    // 1. 行内确认：系统默认 auto_start_on_confirm=true 时复选框自动勾选，可调整样本目标
+    fireEvent.click(screen.getByRole('button', { name: /^确\s*认$/ }))
+    const dialog = await screen.findByRole('dialog')
+    const checkbox = await within(dialog).findByRole('checkbox', {
+      name: /确认后自动启动模型学习/,
+    })
+    await waitFor(() => expect(checkbox).toBeChecked())
+    const spin = within(dialog).getByRole('spinbutton')
+    fireEvent.change(spin, { target: { value: '150' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /确\s*定/ }))
+
+    await waitFor(() => {
+      expect(confirmBodies).toHaveLength(1)
+    })
+    expect(confirmBodies[0]).toEqual({
+      ids: ['e1'],
+      auto_start_learning: true,
+      sample_target: 150,
+    })
+
+    // 2. 再次打开确认弹窗并手动取消勾选 → 显式传 auto_start_learning: false
+    fireEvent.click(screen.getByRole('button', { name: /^确\s*认$/ }))
+    const dialog2 = await screen.findByRole('dialog')
+    const checkbox2 = await within(dialog2).findByRole('checkbox', {
+      name: /确认后自动启动模型学习/,
+    })
+    await waitFor(() => expect(checkbox2).toBeChecked())
+    fireEvent.click(checkbox2)
+    expect(checkbox2).not.toBeChecked()
+    fireEvent.click(within(dialog2).getByRole('button', { name: /确\s*定/ }))
+
+    await waitFor(() => {
+      expect(confirmBodies).toHaveLength(2)
+    })
+    expect(confirmBodies[1]).toEqual({
+      ids: ['e1'],
+      auto_start_learning: false,
+    })
+  })
 })

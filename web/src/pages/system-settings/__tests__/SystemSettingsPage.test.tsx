@@ -142,6 +142,13 @@ function apiLearningItems(): SettingItem[] {
       setting_value: '0',
       value_type: 'string',
     }),
+    makeItem({
+      id: 'l3',
+      setting_group: 'api_learning',
+      setting_key: 'auto_start_on_confirm',
+      setting_value: false,
+      value_type: 'boolean',
+    }),
   ]
 }
 
@@ -232,6 +239,24 @@ describe('SystemSettingsPage · api_learning 分组学习达标条件', () => {
     fireEvent.change(within(row).getByRole('spinbutton'), { target: { value: '2' } })
     expect(within(row).getByRole('button', { name: /^保\s*存$/ })).toBeDisabled()
     expect(findPutCall()).toBeUndefined()
+  })
+
+  it('确认资产时自动启动学习开关：渲染为 Switch 并按布尔值提交', async () => {
+    renderPage()
+    const row = await openApiLearningRow('auto_start_on_confirm')
+    expect(
+      within(row).getByText(/确认 API 接口为正式资产时默认自动启动模型学习/),
+    ).toBeInTheDocument()
+    const sw = within(row).getByRole('switch')
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(sw)
+    await clickSaveWhenEnabled(row)
+
+    const body = await waitForPutBody()
+    expect(body.setting_group).toBe('api_learning')
+    expect(body.setting_key).toBe('auto_start_on_confirm')
+    expect(body.setting_value).toBe(true)
+    expect(body.version).toBe(1)
   })
 })
 
