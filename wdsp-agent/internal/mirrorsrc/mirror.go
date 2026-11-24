@@ -29,7 +29,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -289,7 +288,7 @@ func (r *Receiver) listen() (net.Listener, error) {
 	}
 	if dir := filepath.Dir(path); dir != "" {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-			return nil, fmt.Errorf("mirrorsrc: socket 目录 %s 不存在（请由部署侧以 0700 预建）", dir)
+			return nil, fmt.Errorf("mirrorsrc: socket 目录 %s 不存在（请由部署侧以 0700 预建；配置 socket_group 时需 0750）", dir)
 		}
 	}
 	ln, err := net.Listen("unix", path)
@@ -301,19 +300,9 @@ func (r *Receiver) listen() (net.Listener, error) {
 		return nil, fmt.Errorf("mirrorsrc: 设置 socket 权限失败: %w", err)
 	}
 	if r.cfg.SocketGroup != "" {
-		g, err := user.LookupGroup(r.cfg.SocketGroup)
-		if err != nil {
+		if err := applySocketGroup(path, r.cfg.SocketGroup); err != nil {
 			_ = ln.Close()
-			return nil, fmt.Errorf("mirrorsrc: 属组 %q 不存在: %w", r.cfg.SocketGroup, err)
-		}
-		gid, err := strconv.Atoi(g.Gid)
-		if err != nil {
-			_ = ln.Close()
-			return nil, fmt.Errorf("mirrorsrc: 属组 %q GID 非法: %w", r.cfg.SocketGroup, err)
-		}
-		if err := os.Chown(path, -1, gid); err != nil {
-			_ = ln.Close()
-			return nil, fmt.Errorf("mirrorsrc: 设置 socket 属组失败: %w", err)
+			return nil, err
 		}
 	}
 	return ln, nil

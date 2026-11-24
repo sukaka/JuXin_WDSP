@@ -26,10 +26,10 @@ func (h *Handler) ListHTTPAssetSources(w http.ResponseWriter, r *http.Request) {
 	}
 	state := strings.TrimSpace(r.URL.Query().Get("state"))
 	switch state {
-	case "", AssetLinkLinked, AssetLinkUnassigned, AssetLinkQuotaRejected, AssetLinkFailed:
+	case "", AssetLinkLinked, AssetLinkUnassigned, AssetLinkQuotaRejected, AssetLinkFailed, AssetLinkSkippedNonAPI:
 	default:
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
-			"state 须为 LINKED/UNASSIGNED/QUOTA_REJECTED/FAILED 之一")
+			"state 须为 LINKED/UNASSIGNED/QUOTA_REJECTED/FAILED/SKIPPED_NON_API 之一")
 		return
 	}
 	rows, total, err := h.store.ListHTTPAssetSources(r.Context(), id, HTTPAssetSourceFilter{

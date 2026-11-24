@@ -204,6 +204,17 @@ var _ Repository = (*Store)(nil)
 
 // ---------- 机器端 ----------
 
+// IsEnrollmentTokenActive 只读校验一次性注册令牌是否处于 ACTIVE 状态（不消耗令牌；跨平台契约 §5.3）。
+func (s *Store) IsEnrollmentTokenActive(ctx context.Context, tokenHash string, now time.Time) (bool, error) {
+	var ok bool
+	err := s.db.QueryRow(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM agent_enrollment_tokens
+  WHERE token_hash = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > $2
+)`, tokenHash, now.UTC()).Scan(&ok)
+	return ok, err
+}
+
 // Enroll 注册事务（令牌原子消费与 Agent 创建同生共死）。
 func (s *Store) Enroll(ctx context.Context, in EnrollInput) (*Agent, error) {
 	tx, err := s.db.Begin(ctx)

@@ -159,6 +159,11 @@ export const ASSET_LINK_STATE_META: Record<string, { color: string; label: strin
   },
   QUOTA_REJECTED: { color: 'red', label: '配额拒绝', tooltip: '授权端点配额超限，新端点未落库' },
   FAILED: { color: 'red', label: '关联失败' },
+  SKIPPED_NON_API: {
+    color: 'default',
+    label: '已过滤(非API)',
+    tooltip: '命中静态资源或非 API 过滤规则，仅留存来源记录，不写入 API 资产表',
+  },
 }
 
 /** gRPC 流状态展示（v2 契约 §2.2；取消与未结束如实表示） */

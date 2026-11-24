@@ -75,6 +75,7 @@ const (
 	DropReasonFrameOversize      = "frame_oversize"        // RAW 帧超 65535 上限
 	DropReasonReassemblyConnFull = "reassembly_table_full" // HTTP 重组连接表满拒绝
 	DropReasonFlowTableFull      = "flow_table_full"       // 流表满驱逐
+	DropReasonNonEthernetRaw     = "non_ethernet_raw"      // 非以太网 L3 捕获源跳过 RAW 封装（不伪造假头）
 )
 
 // httpQItem HTTP 记录队列项（带字节估算，用于 64MB 队列硬上限记账）。
@@ -211,7 +212,7 @@ func New(cfg *config.Config, cfgPath, stateDir string, log *slog.Logger) (*Agent
 	a.bucket = ratelimit.New(policy.Limits.OutboundMbps)
 	a.replayBucket = ratelimit.New(a.replayShareMbps(policy))
 	a.monitor = selfmon.NewMonitor(policy.Limits.CPUPercent, policy.Limits.MemoryMB)
-	a.sampler = selfmon.NewProcSampler()
+	a.sampler = selfmon.NewDefaultSampler()
 
 	bufCfg := policy.Buffer
 	if !cfg.Buffer.Enabled {
@@ -652,8 +653,15 @@ func reserveQBytes(q *atomic.Int64, n, limit int64) bool {
 	}
 }
 
-// enqueueRaw RAW 帧入队：限速桶满直接丢弃计数（契约 §6）；队列满丢弃计数。
+// enqueueRaw RAW 帧入队：限速桶满直接丢弃计数（契约 §6）；队列满丢弃计数；
+// 非以太网二层帧（如 Windows L3 Raw Socket 或 macOS DLT_NULL）跳过不伪造假头。
 func (a *Agent) enqueueRaw(p capture.Packet) {
+	if p.NonEthernet {
+		a.metrics.RawDropped.Add(1)
+		a.metrics.Dropped.Add(1)
+		a.metrics.DropReason(DropReasonNonEthernetRaw, 1)
+		return
+	}
 	frameBytes := len(p.Frame) + 20
 	if !a.bucket.Allow(frameBytes) {
 		a.metrics.RawDropped.Add(1)

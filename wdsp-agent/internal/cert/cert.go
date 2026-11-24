@@ -18,6 +18,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/jiuzhang-waf/wdsp-agent/internal/fsperm"
 )
 
 // 状态目录内固定文件名（契约 §12）。
@@ -73,7 +75,7 @@ func ParseKeyPEM(data []byte) (*ecdsa.PrivateKey, error) {
 
 // writeFileAtomic tmp+rename 原子写文件并修正权限（与 config.Save 同口径）。
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := fsperm.MkdirPrivate(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("创建目录: %w", err)
 	}
 	tmp := path + ".tmp"
@@ -83,7 +85,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("替换文件: %w", err)
 	}
-	if err := os.Chmod(path, perm); err != nil {
+	if err := fsperm.SecureFile(path, perm); err != nil {
 		return fmt.Errorf("修正权限: %w", err)
 	}
 	return nil

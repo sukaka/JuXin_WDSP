@@ -25,10 +25,54 @@ export interface TrafficAgentMetrics {
   current_mbps?: number
   raw_frames_received?: number
   raw_bytes_received?: number
+  /** Phase 2 / 跨平台：当前生效抓包后端（ebpf/afpacket/bpf/npcap/rawsocket） */
+  capture_backend?: string
+  /** 抓包后端回退原因（无回退不上报） */
+  backend_fallback_reason?: string
+  /** 捕获截断帧数（D-06） */
+  truncated_frames?: number
   /** Phase 4 §3：背压降级帽（当前生效等级上限，如 "L1"；未降级不上报） */
   backpressure_cap?: string
   /** Phase 4 §3：背压累计降级次数（omitempty，未降级不上报） */
   backpressure_events?: number
+}
+
+/** 跨平台安装包清单单条记录（GET /traffic/agents/packages） */
+export interface TrafficAgentPackageItem {
+  os: 'linux' | 'darwin' | 'windows' | string
+  distro: string
+  arch: 'amd64' | 'arm64' | string
+  format: 'rpm' | 'deb' | 'pkg' | 'targz' | 'zip' | string
+  filename: string
+  size: number
+  sha256: string
+}
+
+/** 跨平台安装包清单响应 */
+export interface TrafficAgentPackagesResponse {
+  available: boolean
+  version?: string
+  built_at?: string
+  packages: TrafficAgentPackageItem[]
+}
+
+/** WDSP 一键安装接入地址自动探测响应（GET/PUT /traffic/agents/install-endpoint） */
+export interface TrafficAgentInstallEndpoint {
+  recommended_url: string
+  saved_url: string
+  source:
+    | 'saved'
+    | 'env'
+    | 'request_host'
+    | 'configured_host_ip'
+    | 'console_cert'
+    | 'host_interface'
+    | 'unresolved'
+    | string
+  https_port: number
+  self_signed_tls: boolean
+  candidate_ips: string[]
+  candidate_urls: string[]
 }
 
 /** Agent 列表项（GET /traffic/agents） */
@@ -226,8 +270,14 @@ export interface TrafficHttpAssetSource {
   source_epoch: number
   application_binding_id: string | null
   binding_version: number | null
-  /** LINKED=关联成功 / UNASSIGNED=未绑定待确认 / QUOTA_REJECTED=授权配额拒绝 / FAILED=关联失败 */
-  association_state: 'LINKED' | 'UNASSIGNED' | 'QUOTA_REJECTED' | 'FAILED' | string
+  /** LINKED=关联成功 / UNASSIGNED=未绑定待确认 / QUOTA_REJECTED=授权配额拒绝 / FAILED=关联失败 / SKIPPED_NON_API=非API或静态资源已过滤 */
+  association_state:
+    | 'LINKED'
+    | 'UNASSIGNED'
+    | 'QUOTA_REJECTED'
+    | 'FAILED'
+    | 'SKIPPED_NON_API'
+    | string
   last_error: string
   first_seen_at: string
   last_seen_at: string
@@ -376,6 +426,45 @@ export const trafficAgentsApi = {
         method: 'POST',
       },
     ),
+  /** GET /traffic/agents/packages：跨平台安装包清单与 SHA-256 */
+  packages: async (): Promise<TrafficAgentPackagesResponse> => {
+    const data = await request<TrafficAgentPackagesResponse>('/traffic/agents/packages')
+    const pkgs = Array.isArray(data?.packages) ? data.packages : []
+    return {
+      available: Boolean(data?.available) && pkgs.length > 0,
+      version: data?.version,
+      built_at: data?.built_at,
+      packages: pkgs,
+    }
+  },
+  /** 管理端离线安装包直链地址（浏览器会话鉴权下载） */
+  packageDownloadUrl: (os: string, arch: string, format: string) =>
+    `/api/v1/traffic/agents/packages/${encodeURIComponent(os)}/${encodeURIComponent(arch)}/${encodeURIComponent(format)}`,
+  /** GET /traffic/agents/install-endpoint：自动探测 WDSP 可达 IP 接入地址与自签证书状态 */
+  installEndpoint: async (): Promise<TrafficAgentInstallEndpoint> => {
+    const data = await request<Partial<TrafficAgentInstallEndpoint>>(
+      '/traffic/agents/install-endpoint',
+    )
+    const httpsPort =
+      typeof data?.https_port === 'number' && data.https_port >= 1 && data.https_port <= 65535
+        ? data.https_port
+        : 8443
+    return {
+      recommended_url: typeof data?.recommended_url === 'string' ? data.recommended_url : '',
+      saved_url: typeof data?.saved_url === 'string' ? data.saved_url : '',
+      source: typeof data?.source === 'string' ? data.source : 'unresolved',
+      https_port: httpsPort,
+      self_signed_tls: Boolean(data?.self_signed_tls),
+      candidate_ips: Array.isArray(data?.candidate_ips) ? data.candidate_ips : [],
+      candidate_urls: Array.isArray(data?.candidate_urls) ? data.candidate_urls : [],
+    }
+  },
+  /** PUT /traffic/agents/install-endpoint：保存（或传空串清空）默认 WDSP 对接 IP/地址 */
+  saveInstallEndpoint: (serverUrl: string) =>
+    request<TrafficAgentInstallEndpoint>('/traffic/agents/install-endpoint', {
+      method: 'PUT',
+      body: { server_url: serverUrl },
+    }),
   /** GET /traffic/agents/summary：总数/在线/离线/降级/禁用汇总 */
   summary: () => request<TrafficAgentSummary>('/traffic/agents/summary'),
   /** GET /traffic/agents：Agent 分页列表（status/q 筛选） */

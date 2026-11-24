@@ -674,19 +674,55 @@ func TestHTTPEventsV2AssetClassification(t *testing.T) {
 		}
 	})
 
-	t.Run("普通 HTML 页面不再固定登记为高置信 API", func(t *testing.T) {
-		rec := validHTTPRecordV2()
-		rec.Request.Method = "GET"
-		rec.Request.URI = "/docs"
-		rec.Request.Headers = HTTPHeaderValues{"content-type": {"text/html"}}
-		rec.Request.Body = ""
-		rec.Request.BodyQuality = HTTPBodyQuality{}
-		rec.Response.Headers = HTTPHeaderValues{"content-type": {"text/html"}}
-		rec.Response.Body = ""
-		rec.Response.BodyQuality = HTTPBodyQuality{}
-		got := run(t, rec)
-		if got.IsAPI || got.Confidence != 0 {
-			t.Fatalf("HTML 页面被误登记为 API: %+v", got)
+	t.Run("普通 HTML 页面与静态资源不写入 API 资产表并记 SKIPPED_NON_API", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			uri  string
+			ct   string
+		}{
+			{"html", "/docs", "text/html"},
+			{"png", "/备案图标.png", "image/png"},
+			{"js", "/astro/page.BsuiZEAU.js", "application/javascript"},
+			{"zip", "/downloads/release.zip", "application/zip"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				rec := validHTTPRecordV2()
+				rec.ApplicationBindingID = &bindingID
+				rec.BindingVersion = &bindingVer
+				rec.Request.Method = "GET"
+				rec.Request.URI = tc.uri
+				rec.Request.Headers = HTTPHeaderValues{}
+				rec.Request.Body = ""
+				rec.Request.BodyQuality = HTTPBodyQuality{}
+				rec.Response.Headers = HTTPHeaderValues{"content-type": {tc.ct}}
+				rec.Response.Body = ""
+				rec.Response.BodyQuality = HTTPBodyQuality{}
+
+				store := newFakeMachineStore()
+				agentID := uuid.New()
+				cred := registerAgentV2(store, agentID)
+				store.registerWorkloadBinding(agentID, bindingUUID, bindingVer, nil)
+				upserter := &fakeDiscoveryUpserter{}
+				mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
+				rr := doMachine(t, mux, http.MethodPost, path(agentID), httpRecordsV2JSON(t, rec), cred)
+				if rr.Code != http.StatusAccepted {
+					t.Fatalf("status = %d, want 202 (body=%s)", rr.Code, rr.Body.String())
+				}
+				if len(upserter.inputs) != 0 {
+					t.Fatalf("%s 不应写入 api_endpoints，实际 upsert %d 次: %+v", tc.uri, len(upserter.inputs), upserter.inputs)
+				}
+				if len(store.assetSources) != 1 {
+					t.Fatalf("来源表应记录 1 条 SKIPPED_NON_API，实际 %d", len(store.assetSources))
+				}
+				for _, src := range store.assetSources {
+					if src.State != AssetLinkSkippedNonAPI {
+						t.Fatalf("State = %q, want %q", src.State, AssetLinkSkippedNonAPI)
+					}
+					if src.Classification == nil || src.Classification.IsAPI {
+						t.Fatalf("分类应为非 API: %+v", src.Classification)
+					}
+				}
+			})
 		}
 	})
 

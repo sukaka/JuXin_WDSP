@@ -22,17 +22,21 @@ import (
 	"github.com/jiuzhang-waf/wdsp-agent/internal/filter"
 )
 
-// ErrUnsupported 平台不支持 AF_PACKET 抓包（非 Linux 桩返回）。
-var ErrUnsupported = errors.New("capture: 该平台不支持 AF_PACKET 抓包（仅 Linux）")
+// ErrUnsupported 平台不支持当前抓包后端。
+var ErrUnsupported = errors.New("capture: 该平台不支持此抓包后端")
+
+// ErrStatsUnsupported 当前抓包后端不提供内核级收包/丢包统计（如 Windows Raw Socket）。
+var ErrStatsUnsupported = errors.New("capture: 当前后端不支持内核丢包统计")
 
 // Packet 解码后的单包交付件。
 //
 // 内存语义：Frame/Payload 在 NoCopy 解码下仅于回调期间有效，
 // 消费方如需跨 goroutine 保留必须自行拷贝。
 type Packet struct {
-	Ts      time.Time
-	Frame   []byte // 含 Ethernet 头的原始帧
-	OrigLen int    // 线上原始长度
+	Ts          time.Time
+	Frame       []byte // 原始捕获字节（以太网后端含 Ethernet 头；L3 Raw Socket 为 IPv4 报文）
+	NonEthernet bool   // Frame 不含二层以太网头（如 Windows Raw Socket / macOS DLT_NULL），RAW WDP1 跳过不伪造假头
+	OrigLen     int    // 线上原始长度
 	SrcIP   string
 	DstIP   string
 	SrcPort uint16
@@ -100,9 +104,10 @@ func DecodePacket(pkt gopacket.Packet, filt *filter.Filter, st *Stats) (Packet, 
 		st.Truncated.Add(1)
 	}
 	return Packet{
-		Ts:        ts,
-		Frame:     frame,
-		OrigLen:   ci.Length,
+		Ts:          ts,
+		Frame:       frame,
+		NonEthernet: pkt.Layer(layers.LayerTypeEthernet) == nil,
+		OrigLen:     ci.Length,
 		SrcIP:     src.String(),
 		DstIP:     dst.String(),
 		SrcPort:   uint16(tcp.SrcPort),

@@ -17,6 +17,7 @@
 package agents
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -29,6 +30,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/apiassets"
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
@@ -57,8 +59,11 @@ type MachineHandler struct {
 	store MachineRepository
 	ca    *AgentCA // traffic-agent CA（Phase 2-B；nil 时 PoP/证书签发不可用——仅测试或装配缺失场景）
 	// discovery API 资产联动入口（Phase 3 契约 §6；*apiassets.Store 实现，nil 时跳过联动）。
-	discovery      DiscoveryUpserter
+	discovery       DiscoveryUpserter
+	discoveryFilter func(ctx context.Context) apiassets.DiscoveryFilterConfig
 	bindings       WorkloadBindingStore
+	tokenChecker   EnrollmentTokenChecker
+	pkgStore       *PackageStore
 	apiObservation *apiObservationReceiver
 	replayCache    *popReplayCache
 	now            func() time.Time

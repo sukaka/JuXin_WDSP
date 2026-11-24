@@ -88,10 +88,11 @@ const (
 
 // 资产关联状态枚举（契约 §5，agent_http_asset_sources.association_state）。
 const (
-	AssetLinkLinked        = "LINKED"         // 端点 upsert 成功
-	AssetLinkUnassigned    = "UNASSIGNED"     // v2 记录未声明来源绑定，待管理面确认
-	AssetLinkQuotaRejected = "QUOTA_REJECTED" // 授权端点配额拒绝
-	AssetLinkFailed        = "FAILED"         // 其他关联失败（last_error 记类别原因）
+	AssetLinkLinked        = "LINKED"          // 端点 upsert 成功
+	AssetLinkUnassigned    = "UNASSIGNED"      // v2 记录未声明来源绑定，待管理面确认
+	AssetLinkQuotaRejected = "QUOTA_REJECTED"  // 授权端点配额拒绝
+	AssetLinkFailed        = "FAILED"          // 其他关联失败（last_error 记类别原因）
+	AssetLinkSkippedNonAPI = "SKIPPED_NON_API" // 命中非 API 或静态资源过滤规则，不写入 api_endpoints
 )
 
 // HTTPHeaderValues v2 headers/trailers 形态（契约 §2：数组保序保留重复值，

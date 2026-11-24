@@ -32,6 +32,7 @@ import { formatRelativeTime } from '../../utils/apm'
 import { hasPermission } from '../../utils/permission'
 import AgentDetailDrawer from './AgentDetailDrawer'
 import HealthScoreBadge from './HealthScoreBadge'
+import InstallGuidePanel from './InstallGuidePanel'
 import PolicyPanel from './PolicyPanel'
 import { TRAFFIC_AGENT_STATUS_META, formatMbps, formatRate } from './meta'
 
@@ -62,6 +63,8 @@ export default function TrafficAgentsPage() {
   const [tokenModalOpen, setTokenModalOpen] = useState(false)
   const [tokenForm] = Form.useForm<TokenFormValues>()
   const [createdToken, setCreatedToken] = useState<CreatedToken | null>(null)
+  const [guideModalOpen, setGuideModalOpen] = useState(false)
+  const [guideToken, setGuideToken] = useState<CreatedToken | null>(null)
 
   const [detailAgentId, setDetailAgentId] = useState<string | null>(null)
 
@@ -92,6 +95,22 @@ export default function TrafficAgentsPage() {
     onSuccess: (data) => {
       // 令牌原文仅此一次返回：留在 Modal 内一次性展示，关闭后丢弃
       setCreatedToken({ id: data.id, token: data.token, expires_at: data.expires_at })
+    },
+    onError,
+  })
+
+  const quickDeployMutation = useMutation({
+    mutationFn: () => {
+      const now = new Date()
+      const stamp = `${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
+      return trafficAgentsApi.createEnrollmentToken({
+        label: `quick-install-${stamp}`,
+        ttl_minutes: 60,
+      })
+    },
+    onSuccess: (data) => {
+      setGuideToken({ id: data.id, token: data.token, expires_at: data.expires_at })
+      setGuideModalOpen(true)
     },
     onError,
   })
@@ -341,18 +360,36 @@ export default function TrafficAgentsPage() {
     <Card
       title="流量采集 Agent 管理"
       extra={
-        canManage ? (
+        <Space>
+          {canManage ? (
+            <Button
+              type="primary"
+              loading={quickDeployMutation.isPending}
+              onClick={() => quickDeployMutation.mutate()}
+            >
+              一键部署 Agent
+            </Button>
+          ) : null}
           <Button
-            type="primary"
             onClick={() => {
-              setCreatedToken(null)
-              tokenForm.resetFields()
-              setTokenModalOpen(true)
+              setGuideToken(null)
+              setGuideModalOpen(true)
             }}
           >
-            创建注册令牌
+            安装向导与离线包
           </Button>
-        ) : undefined
+          {canManage ? (
+            <Button
+              onClick={() => {
+                setCreatedToken(null)
+                tokenForm.resetFields()
+                setTokenModalOpen(true)
+              }}
+            >
+              创建注册令牌
+            </Button>
+          ) : null}
+        </Space>
       }
     >
       <Tabs
@@ -363,8 +400,9 @@ export default function TrafficAgentsPage() {
       />
 
       <Modal
-        title="创建注册令牌"
+        title={createdToken ? '注册令牌已创建 — 跨平台安装指引' : '创建注册令牌'}
         open={tokenModalOpen}
+        width={createdToken ? 780 : 520}
         onCancel={closeTokenModal}
         footer={
           createdToken ? (
@@ -395,9 +433,12 @@ export default function TrafficAgentsPage() {
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               过期时间：{formatDateTime(createdToken.expires_at)}
             </Typography.Text>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              在目标主机执行：wdsp-agent enroll --server &lt;管理面地址&gt; --token &lt;令牌&gt;
-            </Typography.Text>
+            <InstallGuidePanel
+              token={createdToken.token}
+              tokenExpiresAt={createdToken.expires_at}
+              active={tokenModalOpen && createdToken !== null}
+              canManage={canManage}
+            />
           </Space>
         ) : (
           <Form<TokenFormValues>
@@ -422,6 +463,39 @@ export default function TrafficAgentsPage() {
             </Form.Item>
           </Form>
         )}
+      </Modal>
+
+      <Modal
+        title={guideToken ? '一键部署 Agent — 复制命令到客户端执行即可上线' : '跨平台 Agent 安装向导与离线包'}
+        open={guideModalOpen}
+        width={820}
+        onCancel={() => {
+          setGuideModalOpen(false)
+          setGuideToken(null)
+        }}
+        footer={
+          <Space>
+            <Button onClick={invalidateList}>刷新 Agent 列表</Button>
+            <Button
+              type="primary"
+              onClick={() => {
+                setGuideModalOpen(false)
+                setGuideToken(null)
+              }}
+            >
+              完成
+            </Button>
+          </Space>
+        }
+        destroyOnHidden
+      >
+        <InstallGuidePanel
+          token={guideToken?.token}
+          tokenExpiresAt={guideToken?.expires_at}
+          active={guideModalOpen}
+          canManage={canManage}
+          onTokenCreated={(t) => setGuideToken(t)}
+        />
       </Modal>
 
       <AgentDetailDrawer

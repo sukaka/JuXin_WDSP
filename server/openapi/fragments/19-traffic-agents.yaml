@@ -41,6 +41,64 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /traffic/agents/packages:
+    get:
+      operationId: trafficAgentPackagesList
+      tags: [traffic-agents]
+      summary: 跨平台 Agent 安装包清单
+      description: 返回服务端已挂载的 CentOS/Debian/macOS/Windows 安装包清单与 SHA-256 校验和；未挂载时返回 available=false。权限：`traffic.agents.view`。
+      responses:
+        '200': { description: 安装包清单, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentPackagesResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /traffic/agents/packages/{os}/{arch}/{format}:
+    get:
+      operationId: trafficAgentPackageDownload
+      tags: [traffic-agents]
+      summary: 下载跨平台 Agent 离线安装包
+      description: 流式下载目标平台安装包并附带 X-WDSP-SHA256 响应头，记录审计日志。权限：`traffic.agents.view`。
+      parameters:
+        - { name: os, in: path, required: true, schema: { type: string, enum: [linux, darwin, windows] } }
+        - { name: arch, in: path, required: true, schema: { type: string, enum: [amd64, arm64] } }
+        - { name: format, in: path, required: true, schema: { type: string, enum: [rpm, deb, pkg, targz, zip] } }
+      responses:
+        '200': { description: 安装包二进制流, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /traffic/agents/install-endpoint:
+    get:
+      operationId: trafficAgentInstallEndpointGet
+      tags: [traffic-agents]
+      summary: 自动探测 WDSP Agent 接入地址与候选 IP
+      description: 返回供客户端一键安装的 WDSP HTTPS 接入地址、宿主候选 IP 列表与自签证书标记。权限：`traffic.agents.view`。
+      responses:
+        '200': { description: 接入地址信息, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentInstallEndpoint' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      operationId: trafficAgentInstallEndpointUpdate
+      tags: [traffic-agents]
+      summary: 保存默认 WDSP Agent 对接地址（IP/域名）
+      description: 保存管理员指定的 WDSP 对接 IP 或 HTTPS 地址（传空串则清空恢复自动探测），非本机地址强制要求 https。权限：`traffic.agents.manage`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [server_url]
+              properties:
+                server_url: { type: string, maxLength: 256 }
+      responses:
+        '200': { description: 已更新的接入地址信息, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentInstallEndpoint' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /traffic/agents/summary:
     get:
       operationId: trafficAgentSummary
@@ -377,6 +435,50 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/InternalError' }
+
+  /agents/bootstrap/manifest:
+    get:
+      operationId: trafficAgentBootstrapManifest
+      tags: [traffic-agents]
+      security: []
+      summary: 机器引导：拉取安装包清单
+      description: 使用 Authorization Bearer 携带 ACTIVE 状态的一次性 Enrollment Token（只读校验不消耗令牌，禁止经 URL 参数传递）。
+      responses:
+        '200': { description: 安装包 manifest.json, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentPackageManifest' } } } }
+        '400': { description: 非法参数或 URL 泄露令牌 }
+        '401': { description: 注册令牌无效、已过期、已使用或已撤销 }
+        '404': { description: 服务端尚未挂载安装包 }
+
+  /agents/bootstrap/script/{os}:
+    get:
+      operationId: trafficAgentBootstrapScript
+      tags: [traffic-agents]
+      security: []
+      summary: 机器引导：拉取平台受控安装脚本
+      description: 需通过 Authorization Bearer 携带 ACTIVE 状态一次性 Enrollment Token（不消耗令牌）。响应头附带 X-WDSP-SHA256。
+      parameters:
+        - { name: os, in: path, required: true, schema: { type: string, enum: [linux, darwin, windows] } }
+      responses:
+        '200': { description: 安装脚本正文, content: { text/plain: { schema: { type: string } } } }
+        '400': { description: 非法平台参数 }
+        '401': { description: 注册令牌无效 }
+
+  /agents/bootstrap/packages/{os}/{arch}/{format}:
+    get:
+      operationId: trafficAgentBootstrapPackage
+      tags: [traffic-agents]
+      security: []
+      summary: 机器引导：拉取目标平台安装包
+      description: 需通过 Authorization Bearer 携带 ACTIVE 状态一次性 Enrollment Token（不消耗令牌）。响应头附带 X-WDSP-SHA256。
+      parameters:
+        - { name: os, in: path, required: true, schema: { type: string, enum: [linux, darwin, windows] } }
+        - { name: arch, in: path, required: true, schema: { type: string, enum: [amd64, arm64] } }
+        - { name: format, in: path, required: true, schema: { type: string, enum: [rpm, deb, pkg, targz, zip] } }
+      responses:
+        '200': { description: 安装包二进制流, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
+        '400': { description: 非法参数 }
+        '401': { description: 注册令牌无效 }
+        '404': { description: 安装包不可用 }
 
   /agents/enroll:
     post:
@@ -715,7 +817,7 @@ components:
             direction: { type: string, enum: [ingress, egress, both] }
             protocols: { type: array, minItems: 1, items: { type: string, enum: [tcp, udp] } }
             ports: { type: array, minItems: 1, maxItems: 64, uniqueItems: true, items: { type: integer, minimum: 1, maximum: 65535 } }
-            backend: { type: string, enum: [afpacket, ebpf, auto] }
+            backend: { type: string, enum: [auto, afpacket, ebpf, bpf, npcap, rawsocket] }
         capture_level: { type: string, enum: [L0, L1, L2, L3] }
         output: { type: object, required: [mode], properties: { mode: { type: string, enum: [FLOW, RAW, FLOW_RAW] } } }
         limits: { type: object, additionalProperties: true }
@@ -813,3 +915,48 @@ components:
         agent_cert_pem: { type: string }
         ca_cert_pem: { type: string }
         cert_expires_at: { type: string, format: date-time }
+    TrafficAgentPackageItem:
+      type: object
+      required: [os, distro, arch, format, filename, size, sha256]
+      properties:
+        os: { type: string, enum: [linux, darwin, windows] }
+        distro: { type: string }
+        arch: { type: string, enum: [amd64, arm64] }
+        format: { type: string, enum: [rpm, deb, pkg, targz, zip] }
+        filename: { type: string }
+        size: { type: integer, format: int64 }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    TrafficAgentPackageManifest:
+      type: object
+      required: [version, built_at, packages]
+      properties:
+        version: { type: string }
+        built_at: { type: string, format: date-time }
+        packages:
+          type: array
+          items: { $ref: '#/components/schemas/TrafficAgentPackageItem' }
+    TrafficAgentPackagesResponse:
+      type: object
+      required: [available, packages]
+      properties:
+        available: { type: boolean }
+        version: { type: string }
+        built_at: { type: string }
+        packages:
+          type: array
+          items: { $ref: '#/components/schemas/TrafficAgentPackageItem' }
+    TrafficAgentInstallEndpoint:
+      type: object
+      required: [recommended_url, saved_url, source, https_port, self_signed_tls, candidate_ips, candidate_urls]
+      properties:
+        recommended_url: { type: string }
+        saved_url: { type: string }
+        source: { type: string, enum: [saved, env, request_host, configured_host_ip, console_cert, host_interface, unresolved] }
+        https_port: { type: integer, minimum: 1, maximum: 65535 }
+        self_signed_tls: { type: boolean }
+        candidate_ips:
+          type: array
+          items: { type: string }
+        candidate_urls:
+          type: array
+          items: { type: string }

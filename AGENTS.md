@@ -112,6 +112,7 @@ Caddy 中间件顺序必须经过集成测试验证，不得凭经验随意调�
 - [分布式 Agent 流量采集与转发系统详细设计](docs/agents/WDSP_DISTRIBUTED_AGENT_DESIGN.md)
 - [分布式 Agent Phase 1 实施契约（server/agent/web 三方冻结）](docs/agents/WDSP_AGENT_PHASE1_CONTRACT.md)
 - [分布式 Agent Phase 2-5 实施契约](docs/agents/WDSP_AGENT_PHASE2_CONTRACT.md)（同目录 PHASE3/PHASE4/PHASE5）
+- [分布式 Agent 跨平台安装、服务化与原生抓包实施契约](docs/agents/WDSP_AGENT_CROSS_PLATFORM_INSTALL_CONTRACT.md)
 - [分布式 Agent 剩余工作交接文档](docs/agents/WDSP_AGENT_REMAINING_WORK.md)
 - [Bot 挑战配置与运维手册（P1-02）](docs/BOT_CHALLENGE_OPERATIONS.md)
 - [Bot 挑战强制验收矩阵 BOT-001~024](docs/WDSP_BOT_CHALLENGE_ACCEPTANCE_MATRIX.md)

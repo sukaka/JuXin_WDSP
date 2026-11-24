@@ -43,6 +43,14 @@ import {
   supportsHttpEventV2,
 } from './meta'
 
+const CAPTURE_BACKEND_LABELS: Record<string, string> = {
+  ebpf: 'eBPF / TCX (Linux)',
+  afpacket: 'AF_PACKET (Linux)',
+  bpf: '原生 BPF (macOS)',
+  npcap: 'Npcap 动态加载 (Windows)',
+  rawsocket: 'IPv4 Raw Socket (Windows 回退)',
+}
+
 const interfaceColumns: ColumnsType<TrafficAgentInterface> = [
   { title: '网卡', dataIndex: 'name', width: 110 },
   { title: 'MAC', dataIndex: 'mac', width: 150 },
@@ -399,6 +407,21 @@ export default function AgentDetailDrawer({
                       </Descriptions.Item>
                       <Descriptions.Item label="磁盘缓存">
                         {formatBytes(metrics?.buffer_bytes)}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="抓包后端" span={3}>
+                        <Space size={8} wrap>
+                          <span>
+                            {metrics?.capture_backend
+                              ? (CAPTURE_BACKEND_LABELS[metrics.capture_backend] ??
+                                metrics.capture_backend)
+                              : '未启用 / 仅控制通道'}
+                          </span>
+                          {metrics?.backend_fallback_reason ? (
+                            <Tooltip title={metrics.backend_fallback_reason}>
+                              <Tag color="orange">已自动回退</Tag>
+                            </Tooltip>
+                          ) : null}
+                        </Space>
                       </Descriptions.Item>
                     </Descriptions>
                   </div>

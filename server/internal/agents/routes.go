@@ -28,6 +28,12 @@ func RegisterAdminRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handl
 	mux.Handle("GET /api/v1/traffic/agents/enrollment-tokens", view(h.ListTokens))
 	mux.Handle("POST /api/v1/traffic/agents/enrollment-tokens/{id}/revoke", manage(h.RevokeToken))
 
+	// 跨平台安装包清单、WDSP 接入地址自动探测与离线下载（须先于 {agent_id} 语义声明）
+	mux.Handle("GET /api/v1/traffic/agents/packages", view(h.ListPackages))
+	mux.Handle("GET /api/v1/traffic/agents/packages/{os}/{arch}/{format}", view(h.DownloadPackage))
+	mux.Handle("GET /api/v1/traffic/agents/install-endpoint", view(h.GetInstallEndpoint))
+	mux.Handle("PUT /api/v1/traffic/agents/install-endpoint", manage(h.UpdateInstallEndpoint))
+
 	// Agent 查询（summary 须先于 {agent_id} 注册，Go 1.22 ServeMux 按特异性匹配，
 	// 固定段 summary 天然优先于通配 {agent_id}，顺序仅为可读性）
 	mux.Handle("GET /api/v1/traffic/agents/summary", view(h.Summary))
@@ -65,8 +71,11 @@ func RegisterAdminRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handl
 	mux.Handle("POST /api/v1/traffic/policies/{id}/rollback", manage(h.RollbackPolicy))
 }
 
-// RegisterMachineRoutes 注册机器端路由（无 authz——Bearer credential / 证书 PoP 认证，无 CSRF 面）。
+// RegisterMachineRoutes 注册机器端路由（无 authz——Bearer credential / 证书 PoP / ACTIVE 注册令牌认证，无 CSRF 面）。
 func RegisterMachineRoutes(mux *http.ServeMux, mh *MachineHandler) {
+	mux.Handle("GET /api/v1/agents/bootstrap/manifest", http.HandlerFunc(mh.BootstrapManifest))
+	mux.Handle("GET /api/v1/agents/bootstrap/script/{os}", http.HandlerFunc(mh.BootstrapScript))
+	mux.Handle("GET /api/v1/agents/bootstrap/packages/{os}/{arch}/{format}", http.HandlerFunc(mh.BootstrapPackage))
 	mux.Handle("POST /api/v1/agents/enroll", http.HandlerFunc(mh.Enroll))
 	mux.Handle("POST /api/v1/agents/{agent_id}/heartbeat", http.HandlerFunc(mh.Heartbeat))
 	mux.Handle("POST /api/v1/agents/{agent_id}/metrics", http.HandlerFunc(mh.Metrics))

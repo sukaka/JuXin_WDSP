@@ -1,13 +1,12 @@
-# wdsp-agent — 九章 WDSP 分布式流量采集边缘 Agent（Phase 1-5）
+# wdsp-agent — 九章 WDSP 分布式流量采集边缘 Agent（Phase 1-5 + 跨平台交付）
 
-旁路流量采集 Agent：在 Linux 主机上通过 AF_PACKET 或 eBPF/TC 只读抓包，提取五元组流元数据，
-经 TCP 双向重组还原 HTTP/1.1 请求/响应（状态码、时延、Header/Body，脱敏后）并经 HTTPS
-上报 WDSP 管理后端（TLS 仅标记可见性，不解密）。
+旁路流量采集 Agent：在 Linux（eBPF/TC、AF_PACKET）、macOS（原生只读 `/dev/bpf*`）与 Windows（宿主机 Npcap 只读加载 / Winsock IPv4 Raw Socket 回退）主机上旁路只读抓包，提取五元组流元数据，经 TCP 双向重组还原 HTTP/1.1 请求/响应（状态码、时延、Header/Body，脱敏后）并经 HTTPS 上报 WDSP 管理后端（TLS 仅标记可见性，不解密）。
 
 - 冻结契约：`docs/agents/WDSP_AGENT_PHASE1_CONTRACT.md`（§3 机器端点、§6 本地行为）、
   `docs/agents/WDSP_AGENT_PHASE2_CONTRACT.md`（§7-§12 机器身份证书与 PoP 认证）、
   `docs/agents/WDSP_AGENT_PHASE3_CONTRACT.md`（HTTP Sensor：采集等级/脱敏/Body 限制）、
-  `docs/agents/WDSP_AGENT_PHASE4_CONTRACT.md`（智能采集：定向提升/背压降级/策略采样）
+  `docs/agents/WDSP_AGENT_PHASE4_CONTRACT.md`（智能采集：定向提升/背压降级/策略采样）、
+  `docs/agents/WDSP_AGENT_CROSS_PLATFORM_INSTALL_CONTRACT.md`（四平台安装包、原生服务托管、macOS BPF 与 Windows Npcap/RawSocket 抓包）
 - 上游设计：`docs/agents/WDSP_DISTRIBUTED_AGENT_DESIGN.md`（TASK-001~009/012）
 
 ## 红线
@@ -50,7 +49,28 @@ go vet ./...
 go test ./... -count=1
 ```
 
-非 Linux 平台可编译运行，但抓包为桩模式（仅控制通道：注册/心跳/配置），用于开发调试。
+四平台（`linux`/`darwin`/`windows` × `amd64`/`arm64`）均为 `CGO_ENABLED=0` 纯 Go 编译，可使用 `packaging/wdsp-agent/build-packages.sh` 一键打包 `.rpm` / `.deb` / `.pkg` / `.tar.gz` / `.zip` 及 `manifest.json` / `SHA256SUMS`。
+
+## 抓包后端（跨平台）
+
+统一抽象为 `capture.Backend`（Start/Close/SetPorts/KernelStats），消费管线（解码过滤→flow→事件）完全一致，均严格只读（不含任何注包接口）：
+
+| 后端 | 平台 | 机制 | 要求 / 权限 |
+|------|------|------|-------------|
+| `ebpf` | Linux | TC 层 TCX link 逐网卡挂 ingress+egress，内核态 TCP/端口初筛，ring buffer 上送 | 内核 ≥ 6.6（TCX）、BTF（CO-RE）；`CAP_BPF` + `CAP_NET_ADMIN`（或 root） |
+| `afpacket` | Linux | AF_PACKET raw socket + 用户态端口/方向过滤 | 任意 Linux；`CAP_NET_RAW`（混杂需 `CAP_NET_ADMIN`） |
+| `bpf` | macOS | 纯 Go `O_RDONLY|O_NONBLOCK` 打开 `/dev/bpf*` + 内核 BPF IP/VLAN 过滤 | macOS；root（launchd Daemon）或 `access_bpf` 组 |
+| `npcap` | Windows | 动态只读加载宿主机已安装的 `%SystemRoot%\System32\Npcap\wpcap.dll`（不随包捆绑专有驱动） | 宿主机自行安装 Npcap；管理员/SYSTEM 服务 |
+| `rawsocket` | Windows | Winsock IPv4 Raw Socket（`SIO_RCVALL`），仅 IPv4、受本机防火墙影响、不进入 RAW 帧通道 | 管理员/SYSTEM 服务（Npcap 未安装时 `auto` 自动回退） |
+
+### 后端选择与回退（Fail-Open）
+
+配置 `capture.backend`：`auto | ebpf | afpacket | bpf | npcap | rawsocket`（默认 `auto`）。本地 `agent.json` `capture_backend` 显式值优先，其次服务端策略 `policy.capture.backend`：
+
+- Linux `auto`：`ebpf → afpacket → 仅控制通道（DEGRADED）`；
+- macOS `auto`：`bpf → 仅控制通道（DEGRADED）`；
+- Windows `auto`：`npcap → rawsocket → 仅控制通道（DEGRADED）`；
+- 任何初始化/权限/驱动缺失失败均自动回退并通过心跳上报实际 `capture_backend` 与 `backend_fallback_reason`，绝不退出进程或影响业务流量。
 
 ## 机器身份证书与 PoP 认证（Phase 2-B，契约 §7-§12）
 
@@ -98,28 +118,7 @@ go test ./... -count=1
 - **防降级**：服务端对"PoP 头存在但无效"一律 401 不降级；Agent 侧持有有效证书时
   绝不省略任何 PoP 头，证书过期时宁可完全不发（回退 Bearer）也不发残缺签名。
 
-## 抓包后端（Phase 2）
-
-两种后端，统一抽象为 `capture.Backend`（Start/Close/SetPorts/KernelStats），
-消费管线（解码过滤→flow→事件）完全一致：
-
-| 后端 | 机制 | 内核要求 | 权限 |
-|------|------|----------|------|
-| `afpacket` | AF_PACKET raw socket + 用户态端口/方向过滤 | 任意 Linux | `CAP_NET_RAW`（混杂需 `CAP_NET_ADMIN`） |
-| `ebpf` | TC 层 TCX link 逐网卡挂 ingress+egress，内核态 TCP/端口初筛，ring buffer 上送 | ≥ 6.6（TCX）、内核 BTF（CO-RE） | `CAP_BPF` + `CAP_NET_ADMIN`（或 root） |
-
-### 后端选择与回退（Fail-Open）
-
-配置 `capture.backend`：`afpacket | ebpf | auto`（默认 `auto`）。两处来源，
-本地 agent.json `capture_backend` 显式值优先，其次服务端策略
-`policy.capture.backend`（Phase 2 追加字段）：
-
-- `afpacket`：直接使用 AF_PACKET；
-- `ebpf` / `auto`：先尝试 eBPF，**任何**加载/挂载失败（无 BTF、权限不足、
-  内核 <6.6、TCX 不可用）自动回退 AF_PACKET，`slog.Warn` 记录原因，
-  并随心跳 metrics 上报 `capture_backend=afpacket` 与
-  `backend_fallback_reason`（omitempty 追加字段，服务端可忽略）。
-  进程绝不因 eBPF 失败退出或影响业务流量。
+## Linux 抓包后端细节（Phase 2）
 
 ### AF_PACKET 接收完整性与截断快速失败（D-06）
 
@@ -342,32 +341,41 @@ flow 事件行为。需要完整 HTTP 采集（L1+）的部署建议使用 AF_PA
 - `K8S_CLUSTER_NAME` 指定稳定集群名。Kubernetes API 客户端仅使用 Go 标准库，
   不引入 client-go。
 
-## 使用
+## 使用（CLI 与原生系统服务）
 
-权限按后端而定：AF_PACKET 需要 `CAP_NET_RAW`（混杂需 `CAP_NET_ADMIN`）；
-eBPF 需要 `CAP_BPF` + `CAP_NET_ADMIN`（或 root）。auto 模式下 eBPF 权限/内核
-不满足时自动回退 AF_PACKET（见「抓包后端」）。
+跨平台安装、注册、原生系统服务托管与卸载统一通过 `wdsp-agent` 子命令或一键安装脚本完成（详见 `docs/agents/WDSP_AGENT_CROSS_PLATFORM_INSTALL_CONTRACT.md`）：
+
+- **Linux（CentOS/RHEL/openEuler/Debian/Ubuntu）**：默认配置 `/etc/wdsp-agent/agent.json`，状态 `/var/lib/wdsp-agent`，服务 `systemd`（`wdsp-agent.service`）；
+- **macOS**：默认配置 `/Library/Application Support/WDSPAgent/agent.json`，状态 `/Library/Application Support/WDSPAgent`，日志 `/Library/Logs/WDSPAgent`，服务 `launchd`（`com.jiuzhang.wdsp-agent`）；
+- **Windows**：默认配置 `%ProgramData%\JiuZhang\WDSPAgent\agent.json`，状态 `%ProgramData%\JiuZhang\WDSPAgent`，服务 `SCM`（`WDSPAgent`，NTFS DACL 仅允许 `SYSTEM` 与 `Administrators` 访问凭据/私钥）。
 
 ```bash
-# 1. 注册（一次性 Enrollment Token，由 WDSP 管理端签发，形如 wdt_<64 hex>）
-#    enroll 自动生成机器身份密钥并上送 CSR（Phase 2-B），服务端签发证书后进入 PoP 模式
-sudo ./wdsp-agent enroll --server https://wdsp.example.com --token wdt_<64hex>
-# 自签证书实验环境可显式跳过证书校验（生产禁止）：
-#   --insecure-skip-verify
-# 状态目录（agent.key/agent.crt/ca.crt/buffer）可用 --state-dir 覆盖：
-#   --state-dir /var/lib/wdsp-agent
+# 1. 一键安装注册并托管为系统服务（支持 WDSP_ENROLL_TOKEN 环境变量或 --token-file，避免明文暴露命令行）
+WDSP_ENROLL_TOKEN=wdt_<64hex> sudo -E wdsp-agent install --server https://wdsp.example.com
+# 可选：--backend auto|ebpf|afpacket|bpf|npcap|rawsocket  --no-start  --skip-service  --force-reenroll  --insecure-skip-verify
 
-# 2. 运行
-sudo ./wdsp-agent run                 # 默认读 /etc/wdsp-agent/agent.json
+# 2. 查看运行状态 / 身份模式 / 生效抓包后端（支持 --json）
+wdsp-agent status
+wdsp-agent status --json
+
+# 3. 管理系统服务
+sudo wdsp-agent service start|stop|restart|status
+
+# 4. 卸载服务（保留配置，或附加 --purge 清理配置/状态/日志）
+sudo wdsp-agent uninstall [--purge]
+
+# 5. 手动前台注册与运行（容器/调试场景仍完全兼容）
+sudo ./wdsp-agent enroll --server https://wdsp.example.com --token-file /path/token.txt
 sudo ./wdsp-agent run --config /path/agent.json --state-dir /var/lib/wdsp-agent --debug
-
-# 3. 版本
 ./wdsp-agent version
 ```
 
-注册成功后写 `/etc/wdsp-agent/agent.json`（0600），包含 `server`/`agent_id`/`credential`
-（PoP 模式另有 `cert_expires_at`）；机器身份三件套写状态目录（见「机器身份证书」）。
-Phase 1 不交付 install/systemd，二进制直接运行或自行编写 unit 文件。
+### 四平台安装包构建
+
+```bash
+# 从仓库根目录生成 .rpm / .deb / .pkg / .tar.gz / .zip + manifest.json + SHA256SUMS
+bash packaging/wdsp-agent/build-packages.sh --version 2.4.0 --output dist/wdsp-agent-packages
+```
 
 ## 配置示例（agent.json）
 
@@ -414,13 +422,15 @@ limits/buffer → 热更新限速桶与缓存上限；`desired_state=DISABLED` �
 ## 目录结构
 
 ```
-cmd/agent/            CLI（enroll / run / version）
+cmd/agent/            CLI（install / uninstall / status / service / enroll / run / version）
 internal/
-  config/             agent.json 加载/保存（0600）、内置默认策略
+  config/             agent.json 加载/保存（POSIX 0600 / Windows NTFS DACL）、OS 默认路径、内置默认策略
+  fsperm/             跨平台敏感文件与目录权限收紧（Unix chmod + Windows 受保护 NTFS DACL）
+  service/            原生系统服务托管（Linux systemd / macOS launchd / Windows SCM）
   cert/               机器身份：P-256 密钥/CSR/证书 PEM 工具 + 轮换管理器（Phase 2-B）
   netif/              网卡发现（排除 lo，name/mac/ipv4/ipv6/mtu/speed）
-  capture/            抓包后端抽象（Backend/选择回退）+ AF_PACKET 后端（linux，eth_linux.go 自研 64KB 帧缓冲句柄）+ 非 linux 桩；平台无关解码过滤
-  ebpfcapture/        eBPF/TC 后端：tc_capture.c + bpf2go 生成产物（已提交）+ TCX 挂载/ringbuf 用户态
+  capture/            跨平台只读抓包后端抽象（Backend/选择回退）+ Linux AF_PACKET + macOS 原生 /dev/bpf* + Windows Npcap/IPv4 RawSocket；平台无关解码过滤
+  ebpfcapture/        Linux eBPF/TC 后端：tc_capture.c + bpf2go 生成产物（已提交）+ TCX 挂载/ringbuf 用户态
   filter/             端口集合 + ingress/egress/both 方向过滤（原子热更）
   flow/               五元组流跟踪（方向归一化、FIN/RST 关闭识别、空闲 90s 驱逐、表上限 65536；生效等级/采样按流驱动）
   httpparse/          HTTP/1.x 请求行+Host 嗅探（≤16KB）、TLS ClientHello 标记
@@ -432,8 +442,8 @@ internal/
   ratelimit/          出站数据通道令牌桶（默认 100Mbps）
   transport/          HTTPS 客户端（契约 §3 全部机器端点 + §9 rotate-cert）+ PoP 签名注入（§8）+ 指数退避
   control/            心跳循环、配置拉取与 ACK、启用/禁用、证书轮换检查触发
-  selfmon/            CPU/RSS 采样与 DEGRADED 状态机
-  agent/              编排层（数据通道、补传、自我保护、抓包管理）
+  selfmon/            跨平台 CPU/内存采样（Linux /proc、macOS getrusage+MemStats、Windows GetProcessTimes+WorkingSet）与 DEGRADED 状态机
+  agent/              编排层（数据通道、补传、自我保护、抓包管理、跨平台 OS/Kernel 探测）
 ```
 
 ## Phase 1 边界

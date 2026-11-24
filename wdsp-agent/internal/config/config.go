@@ -11,13 +11,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-)
 
-// 默认路径（契约 §6）。
-const (
-	DefaultConfigPath = "/etc/wdsp-agent/agent.json"
-	DefaultStateDir   = "/var/lib/wdsp-agent"
-	DefaultBufferDir  = DefaultStateDir + "/buffer"
+	"github.com/jiuzhang-waf/wdsp-agent/internal/fsperm"
 )
 
 // DefaultPorts 内置默认采集端口（契约 §6）。
@@ -89,7 +84,7 @@ type APIObservationConfig struct {
 
 func (c APIObservationConfig) EffectiveSocketPath() string {
 	if c.SocketPath == "" {
-		return "/run/wdsp-agent/api.sock"
+		return DefaultAPISocketPath
 	}
 	return c.SocketPath
 }
@@ -460,9 +455,9 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-// Save 原子写入 agent.json（tmp+rename），文件权限 0600，目录 0700。
+// Save 原子写入 agent.json（tmp+rename），Unix 权限 0600/目录 0700，Windows 受保护 NTFS DACL。
 func (c *Config) Save(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := fsperm.MkdirPrivate(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("创建配置目录: %w", err)
 	}
 	data, err := json.MarshalIndent(c, "", "  ")
@@ -476,8 +471,8 @@ func (c *Config) Save(path string) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("替换配置: %w", err)
 	}
-	// 显式修正权限（rename 保留 tmp 权限，防御 umask 异常场景）
-	if err := os.Chmod(path, 0o600); err != nil {
+	// 显式修正权限（rename 保留 tmp 权限，防御 umask 异常场景；Windows 施加受限 DACL）
+	if err := fsperm.SecureFile(path, 0o600); err != nil {
 		return fmt.Errorf("修正配置权限: %w", err)
 	}
 	return nil

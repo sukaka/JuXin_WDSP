@@ -53,9 +53,11 @@ type auditRecorder interface {
 
 // Handler 管理端点处理器。
 type Handler struct {
-	store  AdminRepository
-	audits auditRecorder // nil 时写操作不记审计（仅测试便利；生产装配必须注入）
-	now    func() time.Time
+	store       AdminRepository
+	audits      auditRecorder         // nil 时写操作不记审计（仅测试便利；生产装配必须注入）
+	pkgStore    *PackageStore         // 跨平台安装包分发目录（nil/空=不可用）
+	endpointCfg InstallEndpointConfig // WDSP 接入地址自动探测与默认地址配置
+	now         func() time.Time
 }
 
 // NewHandler 创建管理端点处理器。

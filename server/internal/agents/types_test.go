@@ -207,6 +207,22 @@ func TestValidatePolicyConfigJSON(t *testing.T) {
 			t.Error("应拒绝非法 direction")
 		}
 	})
+	t.Run("capture.backend 跨平台白名单", func(t *testing.T) {
+		for _, b := range []string{"", "auto", "afpacket", "ebpf", "bpf", "npcap", "rawsocket"} {
+			raw := mutate(func(m map[string]interface{}) {
+				m["capture"].(map[string]interface{})["backend"] = b
+			})
+			if err := ValidatePolicyConfigJSON(raw); err != nil {
+				t.Errorf("capture.backend=%q 应合法: %v", b, err)
+			}
+		}
+		rawBad := mutate(func(m map[string]interface{}) {
+			m["capture"].(map[string]interface{})["backend"] = "dpdk"
+		})
+		if err := ValidatePolicyConfigJSON(rawBad); err == nil {
+			t.Error("应拒绝非法 capture.backend=dpdk")
+		}
+	})
 	t.Run("output.mode 非法", func(t *testing.T) {
 		raw := mutate(func(m map[string]interface{}) {
 			m["output"].(map[string]interface{})["mode"] = "PCAP"

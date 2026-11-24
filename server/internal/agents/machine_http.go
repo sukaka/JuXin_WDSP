@@ -59,6 +59,19 @@ func (h *MachineHandler) SetDiscoveryUpserter(u DiscoveryUpserter) *MachineHandl
 	return h
 }
 
+// SetDiscoveryFilter 注入 API 资产发现过滤配置提供者（nil 时使用内置默认规则）。
+func (h *MachineHandler) SetDiscoveryFilter(fn func(ctx context.Context) apiassets.DiscoveryFilterConfig) *MachineHandler {
+	h.discoveryFilter = fn
+	return h
+}
+
+func (h *MachineHandler) currentDiscoveryFilter(ctx context.Context) apiassets.DiscoveryFilterConfig {
+	if h.discoveryFilter != nil {
+		return h.discoveryFilter(ctx)
+	}
+	return apiassets.DefaultDiscoveryFilterConfig()
+}
+
 // HTTPEvents POST /api/v1/agents/{agent_id}/http（Phase 3 契约 §3 + v2 契约 §1/§4）。
 func (h *MachineHandler) HTTPEvents(w http.ResponseWriter, r *http.Request) {
 	body, err := readMachineBody(w, r, machineHTTPMaxBody)
@@ -241,9 +254,10 @@ func classifyHTTPAssetV2(rec *HTTPRecordV2) classifier.Result {
 	var response *classifier.ResponseEvidence
 	if rec.Response != nil {
 		response = &classifier.ResponseEvidence{
-			Status:      rec.Response.Status,
-			ContentType: firstHTTPHeader(rec.Response.Headers, "content-type"),
-			Truncated:   rec.Response.BodyQuality.Truncated,
+			Status:             rec.Response.Status,
+			ContentType:        firstHTTPHeader(rec.Response.Headers, "content-type"),
+			ContentDisposition: firstHTTPHeader(rec.Response.Headers, "content-disposition"),
+			Truncated:          rec.Response.BodyQuality.Truncated,
 		}
 	}
 	return classifier.ClassifyWithResponse(parsed, response)
@@ -316,10 +330,17 @@ func (h *MachineHandler) linkHTTPAssets(ctx context.Context, agentID uuid.UUID, 
 			},
 			Now: now,
 		}
+		filterCfg := h.currentDiscoveryFilter(ctx)
+		effectiveIsAPI := item.IsAPI || classifier.IsStructuralProtocol(item.ProtocolType)
+		filtered, filterReason := filterCfg.ShouldFilterDiscovery(item.Method, tpl, effectiveIsAPI)
 		switch {
 		case item.RequireBinding && item.BindingID == nil:
 			// v2 未声明绑定：UNASSIGNED 待确认，不执行端点 upsert（v2 契约 §5.3）。
 			source.State = AssetLinkUnassigned
+		case filtered:
+			// 命中非 API 或静态资源排除规则：仅留来源关系（SKIPPED_NON_API），不污染 api_endpoints 与配额。
+			source.State = AssetLinkSkippedNonAPI
+			source.LastError = filterReason
 		default:
 			endpointID, linked := seenEndpoint[endpointKey]
 			if !linked {
@@ -330,7 +351,7 @@ func (h *MachineHandler) linkHTTPAssets(ctx context.Context, agentID uuid.UUID, 
 					ApplicationBindingID: item.BindingID,
 					Host:                 item.Host,
 					Confidence:           item.Confidence,
-					IsAPI:                item.IsAPI,
+					IsAPI:                effectiveIsAPI,
 					ProtocolType:         item.ProtocolType,
 				})
 				switch {

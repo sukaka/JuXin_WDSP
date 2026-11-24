@@ -28,12 +28,17 @@ func (f *fakeBackend) SetPorts(ports []uint16) {
 }
 func (f *fakeBackend) KernelStats() (uint32, uint32, error) { return 0, 0, nil }
 
-// withFactories 替换后端工厂并在测试结束恢复。
+// withFactories 替换 Linux 后端工厂并在测试结束恢复。
 func withFactories(t *testing.T, af, eb BackendFactory) {
 	t.Helper()
+	oldOS := platformOS
 	oldAF, oldEB := afpacketFactory, ebpfFactory
+	platformOS = "linux"
 	afpacketFactory, ebpfFactory = af, eb
-	t.Cleanup(func() { afpacketFactory, ebpfFactory = oldAF, oldEB })
+	t.Cleanup(func() {
+		platformOS = oldOS
+		afpacketFactory, ebpfFactory = oldAF, oldEB
+	})
 }
 
 func testCfg() BackendConfig {
@@ -48,12 +53,15 @@ func testCfg() BackendConfig {
 
 func TestNormalizeBackend(t *testing.T) {
 	for in, want := range map[string]string{
-		"afpacket": BackendAFPacket,
-		"ebpf":     BackendEBPF,
-		"auto":     BackendAuto,
-		"":         BackendAuto,
-		"EBPF":     BackendAuto, // 大小写不猜测，未知值一律 auto（Fail-Open）
-		"dpdk":     BackendAuto,
+		"afpacket":  BackendAFPacket,
+		"ebpf":      BackendEBPF,
+		"bpf":       BackendBPF,
+		"npcap":     BackendNpcap,
+		"rawsocket": BackendRawSocket,
+		"auto":      BackendAuto,
+		"":          BackendAuto,
+		"EBPF":      BackendAuto, // 大小写不猜测，未知值一律 auto（Fail-Open）
+		"dpdk":      BackendAuto,
 	} {
 		if got := NormalizeBackend(in); got != want {
 			t.Errorf("NormalizeBackend(%q)=%s, want %s", in, got, want)

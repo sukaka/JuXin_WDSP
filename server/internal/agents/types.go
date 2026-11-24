@@ -566,9 +566,9 @@ func (c *PolicyConfig) validate() error {
 		return errors.New("capture.direction 须为 ingress/egress/both 之一")
 	}
 	switch c.Capture.Backend {
-	case "", "afpacket", "ebpf", "auto":
+	case "", "afpacket", "ebpf", "bpf", "npcap", "rawsocket", "auto":
 	default:
-		return errors.New("capture.backend 须为 afpacket/ebpf/auto 之一")
+		return errors.New("capture.backend 须为 auto/afpacket/ebpf/bpf/npcap/rawsocket 之一")
 	}
 	switch c.CaptureLevel {
 	case "L0", "L1", "L2", "L3":
