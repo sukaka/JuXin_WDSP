@@ -4,6 +4,33 @@
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-11-24
+
+### 新增
+
+- **透明串接（`tproxyd`）与镜像旁路（`mirrorcap`）生产级交付及看门狗**：新增迁移 `000234_seed_tproxy_passthrough_allowlist`、`netmgrd` 透明网桥 3 条隔离 iptables 链与 2s fail-open 看门狗、`tproxyd` `/healthz` 探活与 `tproxy_passthrough_allowlist`（TLS SNI fail-closed 透传白名单设置与热刷新）、`tproxyd`/`mirrorcap` 容器镜像与 systemd/离线安装/完整升级/回滚全套交付及应用列表部署模式筛选与旁路提示。
+- **分布式流量 Agent 跨平台安装、原生服务化与多平台只读抓包**：覆盖 Linux（RPM/DEB + systemd）、macOS（LaunchDaemon + 只读 `/dev/bpf*`）、Windows（Windows Service + NTFS DACL + 动态只读 Npcap / IPv4 RawSocket 回退）；新增 `install`/`uninstall`/`status`/`service` 生命周期子命令、跨平台自监控采样、受 Token 鉴权的一键安装脚本分发与 SHA-256 校验，以及前端「安装引导」面板。
+- **网关连接与会话大屏及物理网口 IP 自动采集**：新增 `GatewayConnectionScreen` 大屏与 `runtimehealth/gateway_trend`（支持实时 10m 2s 采样与 1h/6h/24h 历史 30s 采样、降级标识及分应用实时负载），网关侧扩展 `/proc/loadavg`、FD 使用率、`/proc/net/tcp(6)` 状态分布与分应用 QPS/带宽/4xx/5xx 采集；新增迁移 `000233_gateway_node_interfaces_ip_addresses`，周期上报各物理网口全局单播 IPv4/IPv6（CIDR）并在网口管理页展示。
+- **API 资产发现噪声过滤、安全清理与 7 种新规范格式导入**：新增迁移 `000229_agent_http_asset_sources_skipped`、静态资源快筛与在线响应头二次定级，网关/镜像/Agent/Kafka 四路入口统一接入可配置过滤闸门，支持可视化排除规则配置、批量忽略及存量非 API/静态噪声安全清理（严格跳过已确认与建模资产）；API 规范导入新增 Protobuf（`.proto`）、WSDL、XSD、RAML、API Blueprint（`.apib`）、HAR（脱敏骨架）、AsyncAPI 与 ZIP 多文件归档解析及审计。
+- **微服务真实 RPC 调用图谱与 API 拓扑页重构**：新增迁移 `000231_service_rpc_graph_and_call_edges_cleanup` 与 `service_rpc_graph`，聚合 OTel 分布式追踪双端 Span 配对、云 API Sensor 数据流与分布式 Agent gRPC 观测且三路独立降级；API 拓扑页支持超阈值自动收敛为路径模块级视图、HTTP 方法语义配色及单接口/调用边上下游详情抽屉；新增行为策略与风险策略独立操作指南页。
+- **WAF 规则自动解析元数据与中文说明持久覆盖**：新增迁移 `000226_waf_rule_details`、`wafrules/parse_spec.go`、`details.go` 与 `rule_specs_zh.json`，同步 `.conf` 时自动提取 SecRule 结构化元数据并支持管理员在界面覆盖中文说明（不受后续 CRS 升级覆盖）；自定义规则加载顺序调整至 CRS 主规则之前并支持按 `target_variables` 自动推导执行阶段（phase 1/2）。
+- **三权分立角色治理与默认账号自动初始化**：新增迁移 `000232_role_rename_and_perm_rebalance` 与 `server/cmd/api/bootstrap.go`，`SECURITY_ADMIN` 更名为「运维管理员」，新增 `big_screen.runtime.read` 隔离运行监控与网关连接大屏，回收系统管理员 17 项残留业务权限并将 4 项原独有业务权限补授运维管理员；首次启动按缺失内置角色幂等自动初始化 `admin`/`operadmin`/`auditor` 账号。
+
+### 修复与加固
+
+- **完整离线升级与容器交付韧性**：完整离线升级支持 5 次交互密码输入，停在备份登录时可重新执行原命令在重新验签并核对配置与目标文件指纹后断点续传；移除 Web 镜像中 Caddy 的低端口绑定文件能力（`setcap -r /usr/bin/caddy`）并在打包阶段以 `cap_drop=ALL` 权限校验，修复升级后 Web 容器启动失败；自动识别并跨卷迁移 `gateway-certs`（按 `autosave.json` fail-closed 复核，异常在停容器前中止）；无 `CAP_DAC_OVERRIDE` 下通过共享组 `1000` 与 `0770`/`0640` 权限修复升级后 `netmgrd` 503；升级/回滚/安装/PCAP 切换自动保留 `api` 附加网络并接入同机 ClickHouse 网络，`CHManager` 改为 15 秒退避重连与配置保存强制重连，`check.sh` 新增 `--strict-clickhouse-network` 强校验。
+- **旁路镜像与采集器修复**：`mirrorcap` AF_PACKET 接收缓冲扩至 64KB（修复 1514B/VLAN/GRO 超帧截断）、4MB `SO_RCVBUFFORCE`、1s `SO_RCVTIMEO` 防 goroutine 泄漏与单协程 `Assembler` 消除竞争，自动建 `/tmp/coraza` 并覆写 `SecAuditEngine RelevantOnly`，镜像端口仅收集明文 HTTP 端口；修复 `gateway/pcapcapture` 适配 `mirrorcap.FlowMeta` 新增字段；运行时与站点发现采集器 `.errors` 自动落独立可写目录，过滤纯身份存在性 INFO 事件刷屏并按精确/泛域名 Host 自动回填应用归属。
+- **敏感检测误报、用途分类与报表/页面中文化**：新增迁移 `000227`/`000228`/`000230`，收紧 `phone`/`mobile`/`tel`/`email`/`mail` 词根边界，排除标准 HTTP/Client Hints 协议头与 URL 路径字面段误判，清理扫描探测跨境涉敏误报；幂等清理 18 条默认文件合规规则理由与 20 条用途分类默认说明中的内部术语和英文；重构用途分类页为纯中文紧凑清单（隐藏冗余维度与英文编码，新增查看/搜索/来源筛选）；读取层复用 3400+ 条 WAF 中文词表转换风险发现与报表英文标题，统一收敛多处发现处置抽屉。
+- **交互、拓扑、暴露面与 HA/网络协同修复**：修复 `api_call_edges` 历史 JOIN 扇出伪边并清理存量伪边；修复顶部告警铃铛按 `status=OPEN` 统计确认后立即消退；修复配置发布页回归门禁默认 OFF 态黄色条干扰、`SmartTable` 未设宽度列拖拽起始跳变、API 弱点页冗余编码与指派回填、API 模型成熟度页层级格式化；修复暴露面评估误判 `TRANSPARENT` 为旁路、解耦 `/api-security/nodes` 路由使全产品形态 HA 页可正常加载节点、HA 主备排除网桥成员口/镜像口、网络配置对齐 `br0~br99` 与严格 IPv4 CIDR 校验、健康检查支持 `proxy_protocol` 端口 `ss` 探测与容器 `Health` 判定。
+
+### 验证与边界
+
+- **网关与 Agent**：`gateway` 根模块本地编译、`GOOS=linux GOARCH=amd64` 交叉编译及全部包单测（`cmd/*`、`corazasemantics`、`havipd`、`internal/eventparser`、`mirrorcap`、`netmgrd`、`tproxyd`）通过；`gateway/pcapevidence`、`gateway/dynamic_security`（24/24 包）、`gateway/modules/jiuzhang_guard`（18/18 包，跳过需实时 Valkey 的 `*RealValkey` 用例）通过；`wdsp-agent` 全部 27 个有测包单测及 `linux/amd64`、`darwin/arm64`、`windows/amd64` 交叉编译通过。
+- **后端**：`cd server && go build ./...` 与 `go test -c ./tests` 编译通过；`./cmd/... ./internal/...` 115+ 个包全量回归中除未修改的既有失败 `internal/apifiles.TestFileAssetLineage`（1.8.1 已记录）外全部通过（含 `internal/upgrades` 升版至 `1.11.0` 后的复验、`internal/gatewayconfig` 与 `internal/apifiles` 合规迁移契约测试）；不将后端全仓记为全绿。
+- **前端**：`cd web && npm run typecheck && npm run lint && npm run build` 0 报错通过；全部 41 个变更/新增 Vitest 文件（348/348 用例）全绿（未变更的其余 185 个前端历史文件未重跑全量）。
+- **运维与打包**：全部变更 `.sh` 脚本 `bash -n` 语法检查通过；`ops/system/tests`（29/29）、`ops/healthcheck/check_test.py`（3/3）、`ops/upgrade/tests`（77/77，含 `test_full_upgrade.py` 16/16、`test_executor_readiness.py` 2/2、`test_mirrorcap_upgrade.py` 4/4、`test_tproxyd_upgrade.py` 5/5）及 `test/offline-package`（113/113，含 `test_install_offline_images.py` 6/6、`test_mirrorcap_delivery.py`、`test_tproxyd_delivery.py`、`test_pcap_delivery.py`）通过。
+- **未执行项（`NOT_RUN`）**：目标 Linux/amd64 宿主机实机安装、升级、回滚、真实迁移、容器镜像重建、外部客户端访问，以及需真实 PostgreSQL/Valkey 的集成测试（`server/tests` 实库运行、`behaviorstore/*RealValkey`）均为 `NOT_RUN`。
+
 ## [1.10.0] - 2026-11-23
 
 ### 新增
