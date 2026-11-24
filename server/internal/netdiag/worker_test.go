@@ -181,13 +181,23 @@ func TestDispatchWritesRequestFile(t *testing.T) {
 		params["filter_host"] != "example.com" {
 		t.Fatalf("params 不符: %v", params)
 	}
-	// 权限 0600
+	// 目录 0770（组 1000 可读写，适配无 CAP_DAC_OVERRIDE 的 netmgrd；无 other 权限）
+	for _, d := range []string{env.sidecar, diagDir(env.sidecar)} {
+		dinfo, err := os.Stat(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dinfo.Mode().Perm() != 0o770 {
+			t.Fatalf("目录 %s 权限应为 0770，实际 %o", d, dinfo.Mode().Perm())
+		}
+	}
+	// 请求文件权限 0640（同组 1000 只读消费，禁止 other 访问）
 	info, err := os.Stat(requestPath(env.sidecar, j.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("请求文件权限应为 0600，实际 %o", info.Mode().Perm())
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("请求文件权限应为 0640，实际 %o", info.Mode().Perm())
 	}
 }
 

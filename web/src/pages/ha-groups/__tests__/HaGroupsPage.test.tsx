@@ -23,8 +23,22 @@ vi.mock('../../../api/apiNodes', () => ({
   },
 }))
 
+vi.mock('../../../api/nodeInterfaces', () => ({
+  nodeInterfacesApi: {
+    list: vi.fn(),
+  },
+}))
+
+vi.mock('../../../api/networkConfig', () => ({
+  networkConfigApi: {
+    get: vi.fn(),
+  },
+}))
+
 import { haGroupsApi } from '../../../api/haGroups'
 import { apiNodesApi } from '../../../api/apiNodes'
+import { nodeInterfacesApi } from '../../../api/nodeInterfaces'
+import { networkConfigApi } from '../../../api/networkConfig'
 
 function makeUser(permissions: string[]): CurrentUser {
   return {
@@ -80,6 +94,11 @@ describe('HaGroupsPage', () => {
     vi.clearAllMocks()
     vi.mocked(apiNodesApi.list).mockResolvedValue(NODES as never)
     vi.mocked(haGroupsApi.list).mockResolvedValue({ items: [GROUP], status: null })
+    vi.mocked(nodeInterfacesApi.list).mockResolvedValue({ nodes: [] })
+    vi.mocked(networkConfigApi.get).mockResolvedValue({
+      desired: { bridges: [], ip_forward: false, routes: [] },
+      status: null,
+    })
     useAuthStore.setState({
       user: makeUser(['ha.read', 'ha.manage']),
       csrfToken: null,
@@ -202,5 +221,129 @@ describe('HaGroupsPage', () => {
     expect(screen.queryByRole('button', { name: /新建主备组/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '回切-ha-main' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '删除-ha-main' })).toBeDisabled()
+  })
+
+  it('明确提示本地边车同步边界，VIP 承载网卡自动排除网桥成员口并拦截手工填报桥接口 (P2-3 / P1-11)', async () => {
+    useAuthStore.setState({
+      user: makeUser(['ha.read', 'ha.manage', 'system_health.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+    vi.mocked(nodeInterfacesApi.list).mockResolvedValue({
+      nodes: [
+        {
+          node_name: 'gw-a',
+          interfaces: [
+            {
+              ifname: 'eth0',
+              mac: '00:11:22:33:44:01',
+              pci_path: '0000:01:00.0',
+              driver: 'igb',
+              media_type: 'TP',
+              link_speed: 1000,
+              operstate: 'up',
+              sort_order: 1,
+              role: 'MANAGEMENT',
+              present: true,
+            },
+            {
+              ifname: 'eth1',
+              mac: '00:11:22:33:44:02',
+              pci_path: '0000:01:00.1',
+              driver: 'igb',
+              media_type: 'TP',
+              link_speed: 1000,
+              operstate: 'up',
+              sort_order: 2,
+              role: 'TRAFFIC',
+              present: true,
+            },
+            {
+              ifname: 'eth2',
+              mac: '00:11:22:33:44:03',
+              pci_path: '0000:01:00.2',
+              driver: 'igb',
+              media_type: 'TP',
+              link_speed: 1000,
+              operstate: 'up',
+              sort_order: 3,
+              role: 'TRAFFIC',
+              present: true,
+            },
+            {
+              ifname: 'eth3',
+              mac: '00:11:22:33:44:04',
+              pci_path: '0000:01:00.3',
+              driver: 'ixgbe',
+              media_type: 'FIBRE',
+              link_speed: 10000,
+              operstate: 'up',
+              sort_order: 4,
+              role: 'MIRROR',
+              present: true,
+            },
+            {
+              ifname: 'eth4',
+              mac: '00:11:22:33:44:05',
+              pci_path: '0000:01:00.4',
+              driver: 'igb',
+              media_type: 'TP',
+              link_speed: 1000,
+              operstate: 'up',
+              sort_order: 5,
+              role: '',
+              present: true,
+            },
+          ],
+        },
+      ],
+    })
+    vi.mocked(networkConfigApi.get).mockResolvedValue({
+      default_node: 'gw-a',
+      desired: {
+        bridges: [{ name: 'br0', ports: ['eth1', 'eth2'] }],
+        ip_forward: false,
+        routes: [],
+      },
+      status: null,
+    })
+
+    renderPage()
+    // 明确说明仅写入本节点本地边车卷，不再承诺全节点自动扇出
+    expect(await screen.findByText(/仅下发至本网关节点本地边车卷/)).toBeInTheDocument()
+    expect(screen.queryByText(/全节点一致下发/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /新建主备组/ }))
+    const ifaceInput = await screen.findByPlaceholderText('如 eth0')
+    expect(screen.getByText(/已排除网桥成员口（eth1、eth2）/)).toBeInTheDocument()
+
+    // 展开 AutoComplete 下拉：仅含非桥接、非镜像的在线网口 eth0 / eth4
+    fireEvent.mouseDown(ifaceInput)
+    await waitFor(() =>
+      expect(
+        document.querySelectorAll('.ant-select-item-option-content').length,
+      ).toBeGreaterThan(0),
+    )
+    const opts = Array.from(document.querySelectorAll('.ant-select-item-option-content')).map(
+      (el) => el.textContent,
+    )
+    expect(opts).toContain('eth0（管理口）')
+    expect(opts).toContain('eth4')
+    expect(opts.some((t) => t?.includes('eth1'))).toBe(false)
+    expect(opts.some((t) => t?.includes('eth2'))).toBe(false)
+    expect(opts.some((t) => t?.includes('eth3'))).toBe(false)
+
+    // 手工输入桥成员口 eth1：出现告警且阻止表单提交
+    fireEvent.change(screen.getByPlaceholderText('如 ha-main'), { target: { value: 'ha-bridge' } })
+    fireEvent.change(ifaceInput, { target: { value: 'eth1' } })
+    expect(
+      await screen.findByText(/接口「eth1」已分配给网桥「br0」，不能作为 VIP 承载网卡/),
+    ).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '保存并下发' }))
+    expect(
+      await screen.findByText(/接口 eth1 为网桥 br0 成员口，不得作为 VIP 承载网卡/),
+    ).toBeInTheDocument()
+    expect(haGroupsApi.create).not.toHaveBeenCalled()
   })
 })

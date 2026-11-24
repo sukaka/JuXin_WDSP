@@ -78,10 +78,17 @@ func TestGateWafProductLocksAPISecurity(t *testing.T) {
 			t.Errorf("%s 应 403/%s，got %d/%s", p, CodeLicenseFeatureDenied, code, bizCode)
 		}
 	}
-	// Web 防护与共享底座能力不锁
-	for _, p := range []string{"/api/v1/applications", "/api/v1/l7-rules", "/api/v1/waf-rules"} {
+	// Web 防护与共享底座能力不锁；GET /api/v1/api-security/nodes 供 /ha-groups 只读拉取节点列表放行
+	for _, p := range []string{"/api/v1/applications", "/api/v1/l7-rules", "/api/v1/waf-rules", "/api/v1/api-security/nodes"} {
 		if code, _ := gateCode(t, h, p); code != http.StatusOK {
 			t.Errorf("waf 授权下 %s 应放行，got %d", p, code)
+		}
+	}
+	// 非 GET 或子路径（consistency / PATCH nodes/{id}）在 waf 授权下依然 403
+	for _, p := range []string{"/api/v1/api-security/nodes/consistency", "/api/v1/api-security/nodes/123"} {
+		code, bizCode := gateCode(t, h, p)
+		if code != http.StatusForbidden || bizCode != CodeLicenseFeatureDenied {
+			t.Errorf("waf 授权下 %s 应 403/%s，got %d/%s", p, CodeLicenseFeatureDenied, code, bizCode)
 		}
 	}
 }

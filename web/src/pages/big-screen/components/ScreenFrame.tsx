@@ -15,7 +15,15 @@ function useNow() {
 }
 
 /** 大屏全屏框架：顶部标题栏（返回/标题/时钟/切换）+ 内容区 */
-export default function ScreenFrame({ screen, children }: { screen: BigScreenDef; children: ReactNode }) {
+export default function ScreenFrame({
+  screen,
+  refreshIntervalMs = REFRESH_INTERVAL,
+  children,
+}: {
+  screen: BigScreenDef
+  refreshIntervalMs?: number
+  children: ReactNode
+}) {
   const navigate = useNavigate()
   const now = useNow()
   const screens = useAvailableScreens()
@@ -30,7 +38,7 @@ export default function ScreenFrame({ screen, children }: { screen: BigScreenDef
         </div>
         <div className="bs-header-title">{screen.title}</div>
         <div className="bs-header-side">
-          <span className="bs-refresh-hint">每 {REFRESH_INTERVAL / 1000}s 自动刷新</span>
+          <span className="bs-refresh-hint">每 {Math.round(refreshIntervalMs / 1000)}s 自动刷新</span>
           <span className="bs-clock">{now.format('YYYY-MM-DD HH:mm:ss')}</span>
         </div>
       </div>

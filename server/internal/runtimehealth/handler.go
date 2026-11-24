@@ -1,22 +1,61 @@
 package runtimehealth
 
 import (
+	"context"
 	"net/http"
 	"time"
 
+	"github.com/jiuzhang-waf/server/internal/gatewayconfig"
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
+type snapshotStore interface {
+	LatestAll(ctx context.Context) ([]Snapshot, error)
+	LatestByComponent(ctx context.Context, component string) (*Snapshot, error)
+	HistoryByComponent(ctx context.Context, component string, since time.Time, limit int) ([]Snapshot, error)
+}
+
+// GatewayRuntimeProvider abstracts read-only gateway runtime snapshot & history queries.
+type GatewayRuntimeProvider interface {
+	GetRuntimeSnapshot(ctx context.Context) (*gatewayconfig.GatewayRuntimeSnapshot, error)
+	GetRuntimeHistory(ctx context.Context) (*gatewayconfig.GatewayRuntimeHistory, error)
+}
+
+// AppMeta holds application code and display name resolved from applications table.
+type AppMeta struct {
+	Code string
+	Name string
+}
+
+// AppNameLookupFunc resolves application IDs to their code and display name.
+type AppNameLookupFunc func(ctx context.Context, appIDs []string) (map[string]AppMeta, error)
+
 // Handler 是运行监控处理器。
 type Handler struct {
-	store   *Store
-	storage *StorageProbe
-	now     func() time.Time
+	store           snapshotStore
+	storage         *StorageProbe
+	gatewayProvider GatewayRuntimeProvider
+	appNameLookup   AppNameLookupFunc
+	now             func() time.Time
 }
 
 // NewHandler 创建处理器。
 func NewHandler(store *Store, storage *StorageProbe) *Handler {
-	return &Handler{store: store, storage: storage, now: func() time.Time { return time.Now().UTC() }}
+	var st snapshotStore
+	if store != nil {
+		st = store
+	}
+	return &Handler{store: st, storage: storage, now: func() time.Time { return time.Now().UTC() }}
+}
+
+// SetGatewayRuntimeProvider 注入网关实时运行指标读取器（可选，nil 时自动降级查库）。
+func (h *Handler) SetGatewayRuntimeProvider(provider GatewayRuntimeProvider) {
+	h.gatewayProvider = provider
+}
+
+// SetAppNameLookup 注入应用 ID 到编码/名称的查询函数（可选，缺失或出错时降级用 app_id 本身）。
+func (h *Handler) SetAppNameLookup(fn AppNameLookupFunc) {
+	h.appNameLookup = fn
 }
 
 // OverallStatus 汇总整体状态：DOWN > DEGRADED > UNKNOWN > UP。

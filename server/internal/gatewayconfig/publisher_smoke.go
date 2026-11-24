@@ -106,6 +106,7 @@ type smokeTarget struct {
 	scheme       string // http / https
 	host         string // Host 头与 TLS SNI（应用域名；泛域名已替换为 smoke. 前缀）
 	port         int
+	transparent  bool // TRANSPARENT 模式需拨号透明回环端口并前置 PROXY v1 头
 	publishSmoke *GuardPublishSmoke
 }
 
@@ -330,7 +331,13 @@ func resolveSmokeTargets(appsData []AppData, guardCfg *GuardConfig) ([]smokeTarg
 				continue
 			}
 			// HTTP 跳 HTTPS 时 80 端口仅返回 308 静态重定向（不经 guard），须探 HTTPS
-			target := smokeTarget{appID: app.AppID, appCode: app.Code, host: host, publishSmoke: guardCfg.PublishSmoke}
+			target := smokeTarget{
+				appID:        app.AppID,
+				appCode:      app.Code,
+				host:         host,
+				transparent:  app.DeploymentMode == applications.DeployModeTransparent,
+				publishSmoke: guardCfg.PublishSmoke,
+			}
 			switch {
 			case d.HTTPSEnabled && d.HTTPSPort != nil && (d.RedirectHTTPToHTTPS || !d.HTTPEnabled || d.HTTPPort == nil):
 				target.scheme, target.port = "https", *d.HTTPSPort
@@ -362,8 +369,21 @@ func smokeableHostname(host string) string {
 // smokeDialAddress 探针拨号地址：显式注入 > 环境变量 > 默认回环。
 // 环境变量 GATEWAY_PUBLISH_SMOKE_ADDR 用于管理面与网关分主机部署
 // （值形如 http://10.0.0.5:8080 或 10.0.0.5:8080；仅取拨号地址，Host/SNI 仍用应用域名）。
-// 只提供主机（如 host.docker.internal）时跟随当前站点端口；显式 host:port 保留兼容。
+// 只提供主机（如 host.docker.internal）时跟随当前站点端口（TRANSPARENT 跟随透明回环端口）；
+// 显式 host:port 保留兼容。TRANSPARENT 默认拨号配置的透明回环地址（127.0.0.1:15080/15443）。
 func (p *Publisher) smokeDialAddress(t smokeTarget) string {
+	defaultAddr := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", t.port))
+	defaultPort := fmt.Sprintf("%d", t.port)
+	if t.transparent {
+		if t.scheme == "https" {
+			defaultAddr = p.effectiveTproxyTargetTLS()
+		} else {
+			defaultAddr = p.effectiveTproxyTarget()
+		}
+		if _, port, err := net.SplitHostPort(defaultAddr); err == nil && port != "" {
+			defaultPort = port
+		}
+	}
 	addr := p.smokeDialAddr
 	if addr == "" {
 		addr = os.Getenv("GATEWAY_PUBLISH_SMOKE_ADDR")
@@ -377,15 +397,30 @@ func (p *Publisher) smokeDialAddress(t smokeTarget) string {
 			if host, port, err := net.SplitHostPort(addr); err == nil && host != "" && port != "" {
 				return addr
 			}
-			return net.JoinHostPort(strings.Trim(addr, "[]"), fmt.Sprintf("%d", t.port))
+			return net.JoinHostPort(strings.Trim(addr, "[]"), defaultPort)
 		}
 	}
-	return net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", t.port))
+	return defaultAddr
+}
+
+// writeSmokeProxyV1Header 向透明模式回环连接前置合成 PROXY protocol v1 行，
+// 使 Caddy srv_transparent_http/srv_transparent_https 的 proxy_protocol listener wrapper
+// 正确解包后继续 HTTP 或 TLS 握手（dstPort 取应用真实业务端口）。
+func writeSmokeProxyV1Header(conn net.Conn, dstPort int) error {
+	if dstPort <= 0 || dstPort > 65535 {
+		dstPort = 80
+	}
+	line := fmt.Sprintf("PROXY TCP4 127.0.0.1 127.0.0.1 54321 %d\r\n", dstPort)
+	_ = conn.SetWriteDeadline(time.Now().Add(smokeRequestTimeout))
+	_, err := io.WriteString(conn, line)
+	_ = conn.SetWriteDeadline(time.Time{})
+	return err
 }
 
 // smokeClientFor 构造探针客户端：URL 主机名用应用域名（Host/SNI 正确路由进应用链），
-// 拨号重定向到数据面地址。TLS 跳过证书校验——探针验证的是防护行为，证书有效性
-// 属证书管理面职责；SNI 仍按域名发送以命中 tls_connection_policies。
+// 拨号重定向到数据面地址（TRANSPARENT 目标在 HTTP/TLS 握手前先写 PROXY v1 头）。
+// TLS 跳过证书校验——探针验证的是防护行为，证书有效性属证书管理面职责；
+// SNI 仍按域名发送以命中 tls_connection_policies。
 func (p *Publisher) smokeClientFor(t smokeTarget) *http.Client {
 	if p.smokeClient != nil {
 		return p.smokeClient
@@ -399,7 +434,17 @@ func (p *Publisher) smokeClientFor(t smokeTarget) *http.Client {
 		},
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				return dialer.DialContext(ctx, network, dialAddr)
+				conn, err := dialer.DialContext(ctx, network, dialAddr)
+				if err != nil {
+					return nil, err
+				}
+				if t.transparent {
+					if err := writeSmokeProxyV1Header(conn, t.port); err != nil {
+						_ = conn.Close()
+						return nil, err
+					}
+				}
+				return conn, nil
 			},
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // 探针语义见函数注释
 		},

@@ -2006,6 +2006,10 @@ components:
         node_name: { type: string, description: 网关节点名 }
         ifname: { type: string, description: 当前接口名（如 eth0/enp3s0f0） }
         mac: { type: string, description: MAC 地址 }
+        ip_addresses:
+          type: array
+          items: { type: string }
+          description: 网口当前绑定的全局单播 IPv4/IPv6 地址列表（CIDR 形式，IPv4 优先；空数组表示未配置或不可见）
         pci_path: { type: string, description: PCI 拓扑路径（如 0000:03:00.0） }
         driver: { type: string, description: 驱动（igb/ixgbe/i40e…） }
         media_type: { type: string, enum: [TP, FIBRE, UNKNOWN], description: 介质类型：TP 电口 / FIBRE 光口 / UNKNOWN 未识别 }

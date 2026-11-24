@@ -6,6 +6,7 @@ package apm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -261,5 +262,32 @@ func TestAPMSettingsPermissions(t *testing.T) {
 	RegisterSettingsRoutes(mux, injectPrincipal(), h)
 	if rr := doAPMSettingsReq(t, mux, "GET", "/api/v1/apm/settings", ""); rr.Code != 403 {
 		t.Errorf("no perm get = %d, want 403", rr.Code)
+	}
+}
+
+// TestAPMSettingsUpdateSameDSNReconnectsImmediately 首次建连失败进入冷却期后，
+// 再次提交相同 DSN 或切换开关时应绕过冷却立即重连。
+func TestAPMSettingsUpdateSameDSNReconnectsImmediately(t *testing.T) {
+	store := newFakeAPMSettingsStore()
+	dsn := "clickhouse://user:secret@clickhouse:9000/apm"
+	store.strings["apm:clickhouse_dsn"] = dsn
+	dialer := &fakeDialer{err: errors.New("no such host")}
+	mux, _ := newAPMSettingsTestMux(store, false, "", dialer, nil, "system_settings.read", "system_settings.update")
+
+	// 首次 GET 触发建连失败进入冷却
+	d := decodeData(t, doAPMSettingsReq(t, mux, "GET", "/api/v1/apm/settings", ""))
+	if d["ch_connected"] != false || dialer.calls != 1 {
+		t.Fatalf("首次失败应 ch_connected=false, calls=1; got %v/%d", d["ch_connected"], dialer.calls)
+	}
+
+	// 网络恢复后立即提交相同 DSN，必须绕过冷却立即连上
+	dialer.err = nil
+	rr := doAPMSettingsReq(t, mux, "PUT", "/api/v1/apm/settings", `{"clickhouse_dsn":"`+dsn+`"}`)
+	if rr.Code != 200 {
+		t.Fatalf("put same dsn = %d, body %s", rr.Code, rr.Body.String())
+	}
+	d = decodeData(t, rr)
+	if d["ch_connected"] != true || dialer.calls != 2 {
+		t.Fatalf("提交相同 DSN 应绕过冷却立即重连，ch_connected=%v calls=%d", d["ch_connected"], dialer.calls)
 	}
 }

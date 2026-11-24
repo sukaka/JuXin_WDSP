@@ -3,6 +3,7 @@ import {
   AimOutlined,
   AlertOutlined,
   ApartmentOutlined,
+  ClusterOutlined,
   GlobalOutlined,
   MonitorOutlined,
   RadarChartOutlined,
@@ -82,11 +83,21 @@ export const BIG_SCREENS: BigScreenDef[] = [
     accentGlow: 'rgba(179, 136, 255, 0.45)',
   },
   {
+    id: 'gateway-connections',
+    path: '/big-screen/gateway-connections',
+    title: '网关连接与会话',
+    description: '实时网关连接与会话态势：TCP 并发连接与新建速率、活跃/新建 HTTP 会话、实时 QPS、进出站带宽吞吐、状态码分布与系统资源负载。',
+    permissions: ['big_screen.runtime.read'],
+    icon: <ClusterOutlined />,
+    accent: '#26c6da',
+    accentGlow: 'rgba(38, 198, 218, 0.45)',
+  },
+  {
     id: 'runtime-ops',
     path: '/big-screen/runtime-ops',
     title: '系统运行监控',
     description: '平台运行健康：组件在线状态点阵、网关运行时长、发布与报告成功率、数据库存储与磁盘容量水位。',
-    permissions: ['system_health.read'],
+    permissions: ['big_screen.runtime.read'],
     icon: <MonitorOutlined />,
     accent: '#ffd54f',
     accentGlow: 'rgba(255, 213, 79, 0.45)',
@@ -105,9 +116,14 @@ export function filterBigScreens(
   })
 }
 
-/** 按登录用户权限与产品能力过滤可进入的大屏 */
+/** 按登录用户权限与产品能力过滤可进入的大屏（纯审计管理员恒为空） */
 export function useAvailableScreens(): BigScreenDef[] {
-  const permissions = useAuthStore((s) => s.user?.permissions)
+  const user = useAuthStore((s) => s.user)
   const apiDynamicProtection = useProductStore((s) => s.apiDynamicProtection)
-  return filterBigScreens(permissions, { apiDynamicProtection })
+  const roleCodes = user?.roles.map((r) => r.code) ?? []
+  const auditOnly =
+    roleCodes.includes('AUDIT_ADMIN') &&
+    !roleCodes.some((code) => code === 'SYSTEM_ADMIN' || code === 'SECURITY_ADMIN')
+  if (auditOnly) return []
+  return filterBigScreens(user?.permissions, { apiDynamicProtection })
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -13,6 +14,7 @@ type Record struct {
 	NodeName    string    `json:"node_name"`
 	IfName      string    `json:"ifname"`
 	MAC         string    `json:"mac"`
+	IPAddresses []string  `json:"ip_addresses"`
 	PCIPath     string    `json:"pci_path,omitempty"`
 	Driver      string    `json:"driver,omitempty"`
 	MediaType   string    `json:"media_type"`
@@ -28,10 +30,15 @@ func WriteSnapshot(path, nodeName string, ifs []Interface, now time.Time) (err e
 	if path == "" {
 		return fmt.Errorf("snapshot path required")
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return fmt.Errorf("open tmp snapshot: %w", err)
+	}
+	tmp := f.Name()
+	if err = f.Chmod(0o640); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("chmod tmp snapshot: %w", err)
 	}
 	// 失败路径清理临时文件（成功路径 f 已 Close 且 rename 走，Remove 落空无碍）
 	defer func() {
@@ -47,6 +54,7 @@ func WriteSnapshot(path, nodeName string, ifs []Interface, now time.Time) (err e
 			NodeName:    nodeName,
 			IfName:      ifi.IfName,
 			MAC:         ifi.MAC,
+			IPAddresses: ifi.IPAddresses,
 			PCIPath:     ifi.PCIPath,
 			Driver:      ifi.Driver,
 			MediaType:   ifi.MediaType,

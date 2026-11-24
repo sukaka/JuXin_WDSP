@@ -87,11 +87,18 @@ func TestCapabilityGRPCLevelFlip(t *testing.T) {
 	}
 }
 
-// 原子写：写后目录无 .tmp 残留，capability.json 存在且合法。
+// 原子写：写后目录无 .tmp 残留，capability.json 存在且合法，sidecars 目录为 0770（不因 umask 丧失组写位）。
 func TestCapabilityAtomicWriteNoTmp(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "sidecars")
 	h := &capReportHandle{dir: dir, stopJan: make(chan struct{}), janDone: make(chan struct{})}
 	h.update(capabilityInputs{NodeID: "gw-t1"})
+	dinfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dinfo.Mode().Perm() != 0o770 {
+		t.Fatalf("sidecars 目录权限应为 0770，实际 %o", dinfo.Mode().Perm())
+	}
 	m := readManifest(t, dir)
 	if msg := m.Validate(); msg != "" {
 		t.Fatalf("写盘清单契约校验失败: %s", msg)

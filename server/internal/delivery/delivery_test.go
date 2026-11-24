@@ -305,3 +305,32 @@ func TestCheckVulnerabilityScan(t *testing.T) {
 		}
 	})
 }
+
+func TestCheckNoDefaultPasswordAllThreeAdminEnvs(t *testing.T) {
+	t.Run("全未设置→PASS", func(t *testing.T) {
+		got := checkNoDefaultPassword(&RunContext{EnvGet: func(string) string { return "" }})
+		if got.Result != ResultPass {
+			t.Fatalf("result=%s(%s), want PASS", got.Result, got.Message)
+		}
+	})
+	for _, key := range []string{
+		"INITIAL_ADMIN_PASSWORD",
+		"INITIAL_OPER_ADMIN_PASSWORD",
+		"INITIAL_AUDIT_ADMIN_PASSWORD",
+	} {
+		t.Run("残留"+key+"→WARNING", func(t *testing.T) {
+			got := checkNoDefaultPassword(&RunContext{EnvGet: func(k string) string {
+				if k == key {
+					return "Temp@2026!Secret"
+				}
+				return ""
+			}})
+			if got.Result != ResultWarning {
+				t.Fatalf("key=%s result=%s(%s), want WARNING", key, got.Result, got.Message)
+			}
+			if !strings.Contains(got.Message, key) {
+				t.Errorf("message %q missing %s", got.Message, key)
+			}
+		})
+	}
+}

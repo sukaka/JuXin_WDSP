@@ -15,6 +15,8 @@ func init() {
 type connectionMetrics struct {
 	acceptedTotal atomic.Uint64
 	active        atomic.Int64
+	bytesInTotal  atomic.Uint64
+	bytesOutTotal atomic.Uint64
 }
 
 var globalConnectionMetrics = &connectionMetrics{}
@@ -65,10 +67,37 @@ type countingConn struct {
 	once    sync.Once
 }
 
+func (c *countingConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.metrics.bytesInTotal.Add(uint64(n))
+	}
+	return n, err
+}
+
+func (c *countingConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if n > 0 {
+		c.metrics.bytesOutTotal.Add(uint64(n))
+	}
+	return n, err
+}
+
 func (c *countingConn) Close() error {
 	err := c.Conn.Close()
 	c.once.Do(func() { c.metrics.active.Add(-1) })
 	return err
+}
+
+// NetConn exposes the underlying net.Conn so downstream wrappers (e.g. proxy_protocol / tls / syscall.Conn)
+// can inspect or unwrap the original TCP connection.
+func (c *countingConn) NetConn() net.Conn {
+	return c.Conn
+}
+
+// Unwrap exposes the underlying net.Conn following Go standard unwrapping conventions.
+func (c *countingConn) Unwrap() net.Conn {
+	return c.Conn
 }
 
 var (

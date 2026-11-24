@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
   App as AntdApp,
+  AutoComplete,
   Badge,
   Button,
   Card,
@@ -23,6 +24,8 @@ import { DeleteOutlined, EditOutlined, PlusOutlined, SwapOutlined } from '@ant-d
 import dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { haGroupsApi } from '../../api/haGroups'
+import { networkConfigApi } from '../../api/networkConfig'
+import { nodeInterfacesApi } from '../../api/nodeInterfaces'
 import TableRefreshControl from '../../components/TableRefreshControl'
 import { apiNodesApi } from '../../api/apiNodes'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
@@ -67,13 +70,66 @@ export default function HaGroupsPage() {
   const queryClient = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canManage = hasPermission(permissions, 'ha.manage')
+  const canReadInterfaces = canManage && hasPermission(permissions, 'system_health.read')
 
   const groupsQuery = useQuery({ queryKey: ['ha-groups'], queryFn: haGroupsApi.list })
   const nodesQuery = useQuery({ queryKey: ['api-nodes'], queryFn: apiNodesApi.list })
+  const interfacesQuery = useQuery({
+    queryKey: ['node-interfaces'],
+    queryFn: () => nodeInterfacesApi.list(),
+    enabled: canReadInterfaces,
+  })
+  const netConfigQuery = useQuery({
+    queryKey: ['network-config-default'],
+    queryFn: () => networkConfigApi.get(),
+    enabled: canReadInterfaces,
+  })
 
   const groups = useMemo(() => groupsQuery.data?.items ?? [], [groupsQuery.data])
   const status = groupsQuery.data?.status ?? null
   const nodes = useMemo(() => nodesQuery.data?.items ?? [], [nodesQuery.data])
+
+  /** 已加入网桥的成员口（ifname -> 网桥名）；HA VIP 承载网卡禁止选用网桥成员口 */
+  const bridgedPortMap = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const br of netConfigQuery.data?.desired?.bridges ?? []) {
+      for (const port of br.ports ?? []) {
+        map.set(port, br.name)
+      }
+    }
+    return map
+  }, [netConfigQuery.data])
+
+  /** 可选非桥接网口列表（自动排除网桥成员口与镜像口，保留自定义输入兜底） */
+  const ifaceOptions = useMemo(() => {
+    const allNodes = interfacesQuery.data?.nodes ?? []
+    const defaultNodeName = netConfigQuery.data?.default_node?.trim()
+    const orderedNodes = defaultNodeName
+      ? [
+          ...allNodes.filter((n) => n.node_name === defaultNodeName),
+          ...allNodes.filter((n) => n.node_name !== defaultNodeName),
+        ]
+      : allNodes
+    const seen = new Set<string>()
+    const options: { value: string; label: string }[] = []
+    const roleLabels: Record<string, string> = {
+      MANAGEMENT: '管理口',
+      TRAFFIC: '业务口',
+    }
+    for (const node of orderedNodes) {
+      for (const it of node.interfaces ?? []) {
+        if (!it.present || it.role === 'MIRROR' || bridgedPortMap.has(it.ifname)) continue
+        if (seen.has(it.ifname)) continue
+        seen.add(it.ifname)
+        const roleText = it.role && roleLabels[it.role] ? `（${roleLabels[it.role]}）` : ''
+        options.push({
+          value: it.ifname,
+          label: `${it.ifname}${roleText}`,
+        })
+      }
+    }
+    return options
+  }, [interfacesQuery.data, netConfigQuery.data, bridgedPortMap])
 
   const { rowSelection, batchDeleteButton } = useBatchDelete<HaGroup>({
     remove: (id) => haGroupsApi.remove(id),
@@ -86,6 +142,8 @@ export default function HaGroupsPage() {
   const [detailRecord, setDetailRecord] = useState<HaGroup | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [form] = Form.useForm<HaFormValues>()
+  const watchedIface = Form.useWatch('iface', form)
+  const bridgedConflict = watchedIface ? bridgedPortMap.get(watchedIface.trim()) : undefined
 
   const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['ha-groups'] })
   const onError = (e: unknown) => message.error(e instanceof ApiError ? e.message : '操作失败')
@@ -112,7 +170,7 @@ export default function HaGroupsPage() {
     mutationFn: (payload: { id?: string; body: HaGroupUpsert }) =>
       payload.id ? haGroupsApi.update(payload.id, payload.body) : haGroupsApi.create(payload.body),
     onSuccess: () => {
-      message.success(editing ? '主备组已更新并下发' : '主备组已创建并下发')
+      message.success(editing ? '主备组已更新并下发至本节点边车' : '主备组已创建并下发至本节点边车')
       setCreateOpen(false)
       setEditing(null)
       form.resetFields()
@@ -158,7 +216,13 @@ export default function HaGroupsPage() {
   }
 
   const submit = async () => {
-    const v = await form.validateFields()
+    let v: HaFormValues
+    try {
+      v = await form.validateFields()
+    } catch {
+      // 表单校验失败时 Ant Design 已在对应字段下展示错误文案，此处静默中止提交避免未捕获 Promise 拒绝
+      return
+    }
     const body: HaGroupUpsert = {
       name: v.name.trim(),
       state: v.state,
@@ -301,7 +365,7 @@ export default function HaGroupsPage() {
       <Card>
         <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
           <Typography.Text type="secondary">
-            主备高可用（VIP 漂移）：两台网关节点组成主备对，配置经发布通道全节点一致下发；网桥端口联动在「网络配置」页管理。
+            主备高可用（VIP 漂移）：两台网关节点组成主备对，当前保存仅下发至本网关节点本地边车卷（ha-vip.json），备节点需同步部署对应边车配置；网桥端口联动在「网络配置」页管理。
           </Typography.Text>
           {canManage && (
             <Space wrap>
@@ -316,8 +380,8 @@ export default function HaGroupsPage() {
           style={{ marginTop: 12 }}
           type="warning"
           showIcon
-          message="主备配置属高危操作"
-          description="VIP/优先级变更保存后立即下发执行，错误配置可能导致业务入口中断，请确认无误后再保存。"
+          message="主备配置属高危操作（仅写入本节点边车）"
+          description="VIP/优先级变更保存后将立即写入本网关节点本地边车（havipd）执行，不会自动扇出到远端备节点边车卷；错误配置可能导致业务入口中断，请确认无误后再保存。"
         />
       </Card>
 
@@ -427,10 +491,52 @@ export default function HaGroupsPage() {
             <Form.Item name="vrid" label="VRID（1~255）" rules={[{ required: true, message: '请输入 VRID' }]} style={{ width: 150 }}>
               <InputNumber min={1} max={255} style={{ width: '100%' }} />
             </Form.Item>
-            <Form.Item name="iface" label="VIP 承载网卡" rules={[{ required: true, message: '请输入网卡名' }]} style={{ width: 180 }}>
-              <Input placeholder="如 eth0" />
+            <Form.Item
+              name="iface"
+              label="VIP 承载网卡"
+              rules={[
+                { required: true, message: '请输入或选择网卡名' },
+                {
+                  validator: (_, value: string) => {
+                    const name = (value ?? '').trim()
+                    if (!name) return Promise.resolve()
+                    const bridge = bridgedPortMap.get(name)
+                    if (bridge) {
+                      return Promise.reject(
+                        new Error(`接口 ${name} 为网桥 ${bridge} 成员口，不得作为 VIP 承载网卡`),
+                      )
+                    }
+                    return Promise.resolve()
+                  },
+                },
+              ]}
+              extra={
+                bridgedPortMap.size > 0
+                  ? `已排除网桥成员口（${Array.from(bridgedPortMap.keys()).join('、')}）；多节点网卡名不同时支持手动输入。`
+                  : '可从非桥接网口中选择，多节点网卡名不同时支持手动输入（不得为网桥成员口）。'
+              }
+              style={{ width: 240 }}
+            >
+              <AutoComplete
+                options={ifaceOptions}
+                filterOption={(inputValue, option) =>
+                  String(option?.value ?? '')
+                    .toLowerCase()
+                    .includes(inputValue.trim().toLowerCase())
+                }
+              >
+                <Input placeholder="如 eth0" />
+              </AutoComplete>
             </Form.Item>
           </Space>
+          {bridgedConflict && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={`接口「${watchedIface?.trim()}」已分配给网桥「${bridgedConflict}」，不能作为 VIP 承载网卡，请选择非桥接网口。`}
+            />
+          )}
           <Form.Item name="vips" label="虚拟 IP（CIDR，可多个）" rules={[{ required: true, message: '至少 1 个 VIP' }]}>
             <Select mode="tags" placeholder="如 192.168.31.100/24，回车添加" open={false} suffixIcon={null} />
           </Form.Item>

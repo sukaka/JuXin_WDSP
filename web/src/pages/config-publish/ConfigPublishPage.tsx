@@ -35,6 +35,7 @@ import { formatDateTime, formatJson } from '../../utils/format'
 import { PUBLISH_FAILURE_CODE_LABELS } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import {
+  DEPLOYMENT_MODE_META,
   PROTECTION_MODE_META,
   PUBLISH_RESULT_META,
   TASK_STATUS_META,
@@ -58,6 +59,17 @@ export function SnapshotTable({ snapshot }: { snapshot: BusinessSnapshot | null 
       dataSource={snapshot.apps}
       columns={[
         { title: '应用编码', dataIndex: 'code' },
+        {
+          title: '部署模式',
+          dataIndex: 'deployment_mode',
+          width: 110,
+          render: (v?: string) =>
+            v ? (
+              <StatusTag value={v} map={DEPLOYMENT_MODE_META} />
+            ) : (
+              <Typography.Text type="secondary">-</Typography.Text>
+            ),
+        },
         {
           title: '防护模式',
           dataIndex: 'mode',
@@ -270,9 +282,7 @@ export default function ConfigPublishPage() {
       </Card>
 
       <Card title="配置操作">
-        <div style={{ marginBottom: 12 }}>
-          <RegressionGateNotice />
-        </div>
+        <RegressionGateNotice style={{ marginBottom: 12 }} />
         <Space wrap>
           {hasPermission(permissions, 'gateway_configs.preview') && (
             <Button

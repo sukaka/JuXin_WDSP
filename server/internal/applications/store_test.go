@@ -136,3 +136,44 @@ func TestUpdateUpstreamRejectsInvalidScheme(t *testing.T) {
 	// h2c 合法路径由 PG 契约覆盖（合法 scheme 会触达 db，本测试 Store{} 无实例；
 	// 此处仅断言拒绝分支文案未退化）
 }
+
+// UpdateDomain 与 AddDomain 同口径校验端口范围与至少启用 HTTP/HTTPS 之一（P1-7，在触达数据库前）。
+func TestUpdateDomainValidation(t *testing.T) {
+	s := &Store{}
+	intPtr := func(v int) *int { return &v }
+
+	cases := []struct {
+		name string
+		d    *Domain
+		want string
+	}{
+		{
+			name: "HTTP和HTTPS均未启用",
+			d:    &Domain{Hostname: "www.example.com", HTTPEnabled: false, HTTPSEnabled: false},
+			want: "至少启用HTTP或HTTPS之一",
+		},
+		{
+			name: "HTTP端口为0",
+			d:    &Domain{Hostname: "www.example.com", HTTPEnabled: true, HTTPPort: intPtr(0)},
+			want: "端口",
+		},
+		{
+			name: "HTTP端口超范围",
+			d:    &Domain{Hostname: "www.example.com", HTTPEnabled: true, HTTPPort: intPtr(70000)},
+			want: "端口",
+		},
+		{
+			name: "HTTPS端口超范围",
+			d:    &Domain{Hostname: "www.example.com", HTTPSEnabled: true, HTTPSPort: intPtr(65536)},
+			want: "端口",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := s.UpdateDomain(context.Background(), tc.d)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("UpdateDomain(%s) err = %v, want containing %q", tc.name, err, tc.want)
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // fakeCHConn 可关闭的假 ClickHouse 连接（验证重建时旧连接回收）。
@@ -187,5 +188,75 @@ func TestIngestLagSourceWithConn(t *testing.T) {
 	}
 	if ok {
 		t.Error("空表应 ok=false")
+	}
+}
+
+func TestCHManagerRetriesAfterCooldownAndRecovers(t *testing.T) {
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	d := &fakeDialer{err: errors.New("dial tcp: lookup clickhouse: no such host")}
+	m := newTestCHManager(&fakeRuntimeSettings{}, "clickhouse://clickhouse:9000/apm", d)
+	m.now = func() time.Time { return now }
+	m.retryInterval = 15 * time.Second
+	ctx := context.Background()
+
+	// 首次建连失败：降级为 nil
+	if q, h := m.Resolve(ctx); q != nil || h != nil {
+		t.Fatal("首次失败应降级返回 nil/nil")
+	}
+	if d.calls != 1 {
+		t.Fatalf("首次失败 dial 次数 = %d, want 1", d.calls)
+	}
+
+	// 冷却期内恢复了底层网络，Resolve 不应立即阻塞重试
+	d.err = nil
+	now = now.Add(10 * time.Second)
+	if q, _ := m.Resolve(ctx); q != nil {
+		t.Fatal("冷却期内应返回降级 nil，避免每次请求阻塞")
+	}
+	if d.calls != 1 {
+		t.Fatalf("冷却期内不应重复 dial，got %d", d.calls)
+	}
+
+	// 冷却期过后自动重试并恢复
+	now = now.Add(5 * time.Second)
+	q, h := m.Resolve(ctx)
+	if q == nil || h == nil {
+		t.Fatal("冷却期后应自动重试建连并恢复")
+	}
+	if d.calls != 2 {
+		t.Fatalf("恢复后 dial 次数 = %d, want 2", d.calls)
+	}
+	// 恢复后再次调用走缓存，不再重复建连
+	if q2, _ := m.Resolve(ctx); q2 != q || d.calls != 2 {
+		t.Fatalf("恢复后应命中缓存连接，dial=%d", d.calls)
+	}
+}
+
+func TestCHManagerReconnectAndRetryDisconnected(t *testing.T) {
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	d := &fakeDialer{err: errors.New("network unreachable")}
+	m := newTestCHManager(&fakeRuntimeSettings{}, "clickhouse://clickhouse:9000/apm", d)
+	m.now = func() time.Time { return now }
+	m.retryInterval = 15 * time.Second
+	ctx := context.Background()
+
+	// 首次失败进入冷却期
+	if q, _ := m.Resolve(ctx); q != nil || d.calls != 1 {
+		t.Fatalf("首次失败状态异常：q=%v calls=%d", q, d.calls)
+	}
+	// 冷却期内网络恢复：RetryDisconnected 立即绕过冷却建连
+	d.err = nil
+	q1, _ := m.RetryDisconnected(ctx)
+	if q1 == nil || d.calls != 2 {
+		t.Fatalf("RetryDisconnected 应绕过冷却恢复连接，q=%v calls=%d", q1, d.calls)
+	}
+	// 已连接状态下 RetryDisconnected 不打断现有连接
+	if q2, _ := m.RetryDisconnected(ctx); q2 != q1 || d.calls != 2 || d.conns[0].closed {
+		t.Fatalf("已连接时 RetryDisconnected 不应重建连接，calls=%d closed=%v", d.calls, d.conns[0].closed)
+	}
+	// Reconnect 显式重建会关闭旧连接并建新连接
+	q3, _ := m.Reconnect(ctx)
+	if q3 == nil || q3 == q1 || d.calls != 3 || !d.conns[0].closed || d.conns[1].closed {
+		t.Fatalf("Reconnect 应回收旧连接并建新连接，calls=%d oldClosed=%v", d.calls, d.conns[0].closed)
 	}
 }

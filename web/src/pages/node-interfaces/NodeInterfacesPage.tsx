@@ -80,7 +80,7 @@ export default function NodeInterfacesPage() {
         items: rows.map((r, i) => ({ ifname: r.ifname, sort_order: i + 1, role: r.role ?? '' })),
       }),
     onSuccess: () => {
-      message.success('排序已保存')
+      message.success('排序与角色已保存（镜像/发现网口配置已同步生效）')
       setEdit(null)
       void queryClient.invalidateQueries({ queryKey: ['node-interfaces'] })
     },
@@ -142,6 +142,25 @@ export default function NodeInterfacesPage() {
       render: (v: string) => <Typography.Text strong>{v}</Typography.Text>,
     },
     {
+      title: 'IP 地址',
+      dataIndex: 'ip_addresses',
+      width: 190,
+      render: (v?: string[]) => {
+        if (!v || v.length === 0) {
+          return <Typography.Text type="secondary">-</Typography.Text>
+        }
+        return (
+          <Space orientation="vertical" size={2}>
+            {v.map((ip) => (
+              <Typography.Text key={ip} code>
+                {ip}
+              </Typography.Text>
+            ))}
+          </Space>
+        )
+      },
+    },
+    {
       title: '介质类型',
       dataIndex: 'media_type',
       width: 100,
@@ -154,12 +173,19 @@ export default function NodeInterfacesPage() {
       title: '速率',
       dataIndex: 'link_speed',
       width: 110,
-      render: (v: number | undefined, record) =>
-        record.operstate?.toLowerCase() === 'down' || !v ? (
-          <Typography.Text type="secondary">断开</Typography.Text>
-        ) : (
-          `${v} Mb/s`
-        ),
+      render: (v: number | undefined, record) => {
+        const state = record.operstate?.toLowerCase()
+        if (state === 'down' || state === 'lowerlayerdown' || state === 'notpresent') {
+          return <Typography.Text type="secondary">断开</Typography.Text>
+        }
+        if (v && v > 0) {
+          return `${v} Mb/s`
+        }
+        if (state === 'up' || state === 'unknown') {
+          return <Typography.Text type="secondary">未知</Typography.Text>
+        }
+        return <Typography.Text type="secondary">断开</Typography.Text>
+      },
     },
     {
       title: 'MAC',
@@ -243,14 +269,15 @@ export default function NodeInterfacesPage() {
             columns={columns}
             dataSource={rows}
             pagination={false}
-            scroll={{ x: 1010 }}
+            scroll={{ x: 1200 }}
             rowClassName={(record) => (record.present ? '' : 'node-interface-offline')}
             onRow={(record) => ({ onDoubleClick: () => setDetailRecord(record), style: { cursor: 'pointer' } })}
             locale={{ emptyText: '暂无网口数据，请确认网关节点已上报' }}
           />
           <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 12 }}>
-            排序仅用于展示与部署配置引用顺序，不改写操作系统接口名；介质类型依赖宿主机 ethtool 采集，显示「未知」时需在宿主机运行
-            ops 脚本补全识别。
+            排序仅用于展示与部署配置引用顺序，不改写操作系统接口名；IP
+            地址展示网关所在网络命名空间的全局单播地址（宿主/裸机部署即宿主机实际 IP）；介质类型依赖宿主机 ethtool
+            采集，显示「未知」时需在宿主机运行 ops 脚本补全识别。
           </Typography.Paragraph>
         </>
       )}

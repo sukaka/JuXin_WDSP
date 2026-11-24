@@ -1,6 +1,7 @@
 package netconfig
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -15,13 +16,18 @@ import (
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
+// HAVRRPIfaceChecker 检查接口是否正被启用的主备组用作 VRRP 承载网卡（返回冲突组名；空串 = 未占用）。
+type HAVRRPIfaceChecker func(ctx context.Context, nodeName, iface string) (conflictGroup string, err error)
+
 // Handler 节点网络配置（网桥/路由牵引）处理器。
 type Handler struct {
-	store       Repository
-	ifaces      InterfaceLister
-	audits      *audits.Service
-	defaultNode string // 本网关节点名（cfg.WAF.GatewayNodeName）
-	sidecarDir  string // 边车配置目录（空用 DefaultSidecarDir）
+	store          Repository
+	ifaces         InterfaceLister
+	audits         *audits.Service
+	defaultNode    string // 本网关节点名（cfg.WAF.GatewayNodeName）
+	sidecarDir     string // 边车配置目录（空用 DefaultSidecarDir）
+	haIfaceChecker HAVRRPIfaceChecker
+	onChange       func(ctx context.Context)
 }
 
 // NewHandler 创建处理器（构造注入审计服务与默认节点名，语义同 nodeinterfaces）。
@@ -31,6 +37,40 @@ func NewHandler(store Repository, ifaces InterfaceLister, audit *audits.Service,
 
 // SetSidecarDir 覆盖边车配置目录（默认 DefaultSidecarDir；测试用临时目录）。
 func (h *Handler) SetSidecarDir(dir string) { h.sidecarDir = dir }
+
+// SetHAVRRPIfaceChecker 注入主备组 VRRP 接口冲突检查器（禁止将活跃 VRRP 承载网卡加入网桥）。
+func (h *Handler) SetHAVRRPIfaceChecker(fn HAVRRPIfaceChecker) *Handler {
+	h.haIfaceChecker = fn
+	return h
+}
+
+// SetOnChange 注册网络配置保存成功后的联动回调（如刷新 mirrorcap.json / tproxyd.json）。
+func (h *Handler) SetOnChange(fn func(ctx context.Context)) *Handler {
+	h.onChange = fn
+	return h
+}
+
+// RewriteSidecar 按当前数据库配置与系统设置（network:dns_servers/ntp_servers）重写默认节点 network.json。
+// 用于系统设置更新 DNS/NTP 后即时生效，无需人工重新保存网络配置。
+func (h *Handler) RewriteSidecar(ctx context.Context) error {
+	cfg, _, found, err := h.store.Get(ctx, h.defaultNode)
+	if err != nil {
+		return err
+	}
+	if !found {
+		cfg = DefaultConfig()
+	}
+	if sr, ok := h.store.(ServersReader); ok {
+		dns, ntp, err := sr.NetworkServers(ctx)
+		if err != nil {
+			slog.Warn("load network dns/ntp settings failed during rewrite", "node", h.defaultNode, "error", err)
+		} else {
+			cfg.DNSServers = dns
+			cfg.NTPServers = ntp
+		}
+	}
+	return writeNetworkJSON(h.dir(), cfg, time.Now().UTC())
+}
 
 func (h *Handler) dir() string {
 	if h.sidecarDir != "" {
@@ -83,7 +123,11 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	if nodeName == h.defaultNode {
 		status = readNetworkStatus(h.dir())
 	}
-	response.JSON(w, r, http.StatusOK, map[string]interface{}{"desired": desired, "status": status})
+	response.JSON(w, r, http.StatusOK, map[string]interface{}{
+		"desired":      desired,
+		"status":       status,
+		"default_node": h.defaultNode,
+	})
 }
 
 // updateRequest 是 PUT 请求体（契约同 network.json 配置段；node_name 可选，
@@ -139,6 +183,22 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
+	if h.haIfaceChecker != nil {
+		for _, b := range cfg.Bridges {
+			for _, port := range b.Ports {
+				conflictGroup, err := h.haIfaceChecker(r.Context(), nodeName, port)
+				if err != nil {
+					response.InternalError(w, r, err)
+					return
+				}
+				if conflictGroup != "" {
+					response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+						fmt.Sprintf("接口 %s 正被主备组 %s 用作 VRRP 承载网卡，禁止加入桥 %s", port, conflictGroup, b.Name))
+					return
+				}
+			}
+		}
+	}
 
 	// 审计 before 摘要（读取失败不阻断主流程，降级为空摘要并记日志）
 	before := ""
@@ -160,12 +220,16 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, fmt.Errorf("配置已保存，但下发边车配置失败: %w", err))
 		return
 	}
+	if h.onChange != nil {
+		h.onChange(r.Context())
+	}
 	h.recordAudit(r, p, nodeName, before, configSummary(cfg), audits.ResultSuccess, "")
 
 	desired := Desired{Config: cfg, UpdatedAt: &now}
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
-		"desired": desired,
-		"status":  readNetworkStatus(h.dir()),
+		"desired":      desired,
+		"status":       readNetworkStatus(h.dir()),
+		"default_node": h.defaultNode,
 	})
 }
 

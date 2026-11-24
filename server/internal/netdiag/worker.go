@@ -113,13 +113,29 @@ func (w *Worker) Run(ctx context.Context, interval time.Duration) {
 	}
 }
 
+// ensureSharedDiagDir 确保 sidecarDir 与 diag 子目录存在且为 0770（显式 Chmod 避免 umask 剥离组写位），
+// 使加入共享组 1000（无 CAP_DAC_OVERRIDE）的 netmgrd 可读写请求/结果文件，且不开放 other 权限。
+func ensureSharedDiagDir(sidecarDir string) error {
+	if err := os.MkdirAll(sidecarDir, 0o770); err != nil {
+		return err
+	}
+	if err := os.Chmod(sidecarDir, 0o770); err != nil {
+		return err
+	}
+	dir := diagDir(sidecarDir)
+	if err := os.MkdirAll(dir, 0o770); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o770)
+}
+
 func (w *Worker) tick(ctx context.Context) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			slog.Error("netdiag worker tick panic", "panic", rec)
 		}
 	}()
-	if err := os.MkdirAll(diagDir(w.sidecarDir), 0o750); err != nil {
+	if err := ensureSharedDiagDir(w.sidecarDir); err != nil {
 		slog.Error("netdiag worker: create diag dir failed", "error", err)
 		return
 	}
@@ -154,7 +170,7 @@ func (w *Worker) dispatch(ctx context.Context) {
 	}
 }
 
-// writeRequestFile 原子写请求文件（0600，tmp+rename）。
+// writeRequestFile 原子写请求文件（0640，tmp+rename；供同组 1000 且无 CAP_DAC_OVERRIDE 的 netmgrd 只读消费，禁止 other 访问）。
 func writeRequestFile(sidecarDir string, j *Job) error {
 	params := j.DecodeParams()
 	req := sidecarRequest{
@@ -178,7 +194,7 @@ func writeRequestFile(sidecarDir string, j *Job) error {
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(0o640); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("chmod request file: %w", err)
 	}

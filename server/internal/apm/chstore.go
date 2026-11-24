@@ -119,6 +119,7 @@ func OpenClickHouse(dsn string) (CHQuerier, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := conn.Ping(ctx); err != nil {
+		_ = conn.Close()
 		return nil, fmt.Errorf("ping ClickHouse: %w", err)
 	}
 	return chQuerier{conn: conn}, nil

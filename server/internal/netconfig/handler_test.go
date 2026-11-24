@@ -437,3 +437,75 @@ func TestUpdateSidecarWriteFailure(t *testing.T) {
 		t.Fatalf("失败路径 DB 未保存 found=%v err=%v", found, err)
 	}
 }
+
+func TestHandlerHAVRRPIfaceConflictOnChangeRewriteAndDefaultNode(t *testing.T) {
+	h, store, dir := newTestHandler(t)
+	h.SetHAVRRPIfaceChecker(func(_ context.Context, nodeName, iface string) (string, error) {
+		if nodeName == "gw-1" && iface == "eth3" {
+			return "ha-primary", nil
+		}
+		return "", nil
+	})
+	onChangeCalls := 0
+	h.SetOnChange(func(context.Context) { onChangeCalls++ })
+	mux := newTestMux(h, injectPrincipal)
+
+	// 1. 尝试把 HA VRRP 承载口 eth3 加入网桥 → 400
+	rr := doJSON(t, mux, http.MethodPut, "/api/v1/gateway/network-config", validBody())
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("HA VRRP conflict status = %d body=%s, want 400", rr.Code, rr.Body.String())
+	}
+	if onChangeCalls != 0 {
+		t.Fatalf("onChange must not fire on rejected save, got %d", onChangeCalls)
+	}
+
+	// 2. 放开检查器后保存成功 → 触发 onChange 且响应带 default_node
+	h.SetHAVRRPIfaceChecker(nil)
+	rr = doJSON(t, mux, http.MethodPut, "/api/v1/gateway/network-config", validBody())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("valid save status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if onChangeCalls != 1 {
+		t.Fatalf("onChange calls = %d, want 1", onChangeCalls)
+	}
+	data := decodeData(t, rr)
+	if data["default_node"] != "gw-1" {
+		t.Fatalf("default_node = %v, want gw-1", data["default_node"])
+	}
+
+	// 3. RewriteSidecar 合并最新 DNS/NTP 到 network.json
+	store.SetServers("223.5.5.5,114.114.114.114", "ntp.aliyun.com")
+	if err := h.RewriteSidecar(context.Background()); err != nil {
+		t.Fatalf("RewriteSidecar: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "network.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nf networkFile
+	if err := json.Unmarshal(raw, &nf); err != nil {
+		t.Fatal(err)
+	}
+	if len(nf.DNSServers) != 2 || nf.DNSServers[0] != "223.5.5.5" || len(nf.NTPServers) != 1 || nf.NTPServers[0] != "ntp.aliyun.com" {
+		t.Fatalf("RewriteSidecar network.json = %+v", nf)
+	}
+
+	// 4. GET 透传 network-status.json 中的 transparent 字段并携带 default_node
+	statusJSON := `{"ok":true,"transparent":{"state":"ACTIVE","enabled":true,"redirect_active":true,"ports":[80,443]}}`
+	if err := os.WriteFile(filepath.Join(dir, "network-status.json"), []byte(statusJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rr = doJSON(t, mux, http.MethodGet, "/api/v1/gateway/network-config", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET status=%d", rr.Code)
+	}
+	data = decodeData(t, rr)
+	if data["default_node"] != "gw-1" {
+		t.Fatalf("GET default_node = %v, want gw-1", data["default_node"])
+	}
+	statusMap, _ := data["status"].(map[string]any)
+	tpxMap, _ := statusMap["transparent"].(map[string]any)
+	if tpxMap == nil || tpxMap["state"] != "ACTIVE" {
+		t.Fatalf("GET status.transparent not passed through: %v", data["status"])
+	}
+}

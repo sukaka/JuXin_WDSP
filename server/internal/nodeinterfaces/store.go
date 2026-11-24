@@ -21,14 +21,17 @@ func NewStore(db *pgxpool.Pool) *Store {
 	return &Store{db: db}
 }
 
-const ifaceColumns = `id, node_name, ifname, mac, pci_path, driver, media_type, link_speed, operstate,
+const ifaceColumns = `id, node_name, ifname, mac, COALESCE(ip_addresses, '{}'::TEXT[]), pci_path, driver, media_type, link_speed, operstate,
        sort_order, role, present, first_seen_at, last_seen_at`
 
 func scanInterface(row pgx.Row) (Interface, error) {
 	var it Interface
-	err := row.Scan(&it.ID, &it.NodeName, &it.Ifname, &it.MAC, &it.PCIPath, &it.Driver,
+	err := row.Scan(&it.ID, &it.NodeName, &it.Ifname, &it.MAC, &it.IPAddresses, &it.PCIPath, &it.Driver,
 		&it.MediaType, &it.LinkSpeed, &it.Operstate, &it.SortOrder, &it.Role,
 		&it.Present, &it.FirstSeenAt, &it.LastSeenAt)
+	if it.IPAddresses == nil {
+		it.IPAddresses = []string{}
+	}
 	return it, err
 }
 
@@ -91,23 +94,38 @@ func (s *Store) ApplySnapshot(ctx context.Context, nodeName string, items []Snap
 	if err != nil {
 		return fmt.Errorf("load node interfaces: %w", err)
 	}
+	hasIP := make(map[string]bool, len(items))
+	for _, it := range items {
+		if it.IPAddresses != nil {
+			hasIP[it.Ifname] = true
+		}
+	}
 	merged := reconcile(nodeName, existing, items, seenAt)
 	for _, row := range merged {
 		// 冲突分支只刷新采集字段与 present/last_seen_at；
 		// sort_order/role/first_seen_at 属用户设定与历史，绝不由采集覆盖。
+		ipAddrs := cloneIPAddresses(row.IPAddresses)
 		_, err := tx.Exec(ctx, `
 INSERT INTO gateway_node_interfaces
-(node_name, ifname, mac, pci_path, driver, media_type, link_speed, operstate,
+(node_name, ifname, mac, ip_addresses, pci_path, driver, media_type, link_speed, operstate,
  sort_order, role, present, first_seen_at, last_seen_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 ON CONFLICT (node_name, ifname) DO UPDATE SET
-  mac = EXCLUDED.mac, pci_path = EXCLUDED.pci_path, driver = EXCLUDED.driver,
-  media_type = EXCLUDED.media_type, link_speed = EXCLUDED.link_speed,
+  mac = EXCLUDED.mac,
+  ip_addresses = CASE WHEN $15 THEN EXCLUDED.ip_addresses ELSE gateway_node_interfaces.ip_addresses END,
+  pci_path = EXCLUDED.pci_path, driver = EXCLUDED.driver,
+  media_type = CASE
+    WHEN EXCLUDED.media_type NOT IN ('', 'UNKNOWN')
+      OR gateway_node_interfaces.media_type IN ('', 'UNKNOWN')
+    THEN EXCLUDED.media_type
+    ELSE gateway_node_interfaces.media_type
+  END,
+  link_speed = EXCLUDED.link_speed,
   operstate = EXCLUDED.operstate, present = EXCLUDED.present,
   last_seen_at = EXCLUDED.last_seen_at`,
-			row.NodeName, row.Ifname, row.MAC, row.PCIPath, row.Driver, row.MediaType,
+			row.NodeName, row.Ifname, row.MAC, ipAddrs, row.PCIPath, row.Driver, row.MediaType,
 			row.LinkSpeed, row.Operstate, row.SortOrder, row.Role, row.Present,
-			row.FirstSeenAt, row.LastSeenAt)
+			row.FirstSeenAt, row.LastSeenAt, hasIP[row.Ifname])
 		if err != nil {
 			return fmt.Errorf("upsert interface %s/%s: %w", row.NodeName, row.Ifname, err)
 		}

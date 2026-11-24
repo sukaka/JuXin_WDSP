@@ -373,6 +373,9 @@ func (s *Service) Update(ctx context.Context, group, key string, value json.RawM
 	if err := validateCIDRList(group, key, valueType, value); err != nil {
 		return false, err
 	}
+	if err := validateTproxyPassthroughAllowlist(group, key, valueType, value); err != nil {
+		return false, err
+	}
 	res, err := s.db.Exec(ctx, `
 UPDATE system_settings SET setting_value = $1, updated_by = $2, updated_at = now(), version = version + 1
 WHERE setting_group = $3 AND setting_key = $4 AND version = $5`,
@@ -595,9 +598,10 @@ var settingStringMaxLen = map[string]int{
 	"block_response:html_body":    4096,
 	"block_response:json_code":    128,
 	"block_response:json_message": 512,
-	// network 组 DNS/NTP 服务器列表（逗号分隔原文总长上限）
-	"network:ntp_servers": 255,
-	"network:dns_servers": 255,
+	// network 组 DNS/NTP 服务器列表（逗号分隔原文总长上限）与透明模式 TLS SNI 透传白名单
+	"network:ntp_servers":                  255,
+	"network:dns_servers":                  255,
+	"network:tproxy_passthrough_allowlist": 4096,
 	// 暴露面引擎：公网 DNS 服务器列表同口径；合作方出口网段为逗号分隔 CIDR 列表
 	"exposure_engine:public_dns_servers":   255,
 	"exposure_engine:partner_egress_cidrs": 2048,
@@ -686,6 +690,82 @@ func validateServerList(group, key, valueType string, value json.RawMessage) err
 		return fmt.Errorf("value must be 逗号分隔的合法主机列表（%s:%s）: %v", group, key, err)
 	}
 	return nil
+}
+
+// validateTproxyPassthroughAllowlist 校验 network:tproxy_passthrough_allowlist：
+// 允许空串、逗号/分号/换行分隔的域名列表或 JSON 字符串数组，每项须为精确域名或
+// RFC 单级前导通配符（*.example.com），与 gateway/tproxyd 同口径。
+func validateTproxyPassthroughAllowlist(group, key, valueType string, value json.RawMessage) error {
+	if group != "network" || key != "tproxy_passthrough_allowlist" {
+		return nil
+	}
+	var parts []string
+	if valueType == "string" {
+		var raw string
+		if err := json.Unmarshal(value, &raw); err != nil {
+			return fmt.Errorf("value must be string")
+		}
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			return nil
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			if err := json.Unmarshal([]byte(trimmed), &parts); err != nil {
+				return fmt.Errorf("value must be 合法域名列表或 JSON 字符串数组（%s:%s）", group, key)
+			}
+		} else {
+			parts = strings.FieldsFunc(trimmed, func(r rune) bool {
+				return r == ',' || r == ';' || r == '\n' || r == '\r'
+			})
+		}
+	} else {
+		if err := json.Unmarshal(value, &parts); err != nil {
+			return fmt.Errorf("value must be 合法域名列表或 JSON 字符串数组（%s:%s）", group, key)
+		}
+	}
+	for _, p := range parts {
+		h := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(p), "."))
+		if h == "" {
+			continue
+		}
+		if !validTproxyHostName(h) {
+			return fmt.Errorf("value must be 合法域名或单级通配符 *.example.com（%s:%s）: 非法项 %q", group, key, p)
+		}
+	}
+	return nil
+}
+
+func validTproxyHostName(h string) bool {
+	if len(h) == 0 || len(h) > 253 {
+		return false
+	}
+	base := h
+	if strings.HasPrefix(h, "*.") {
+		base = h[2:]
+		if !strings.Contains(base, ".") {
+			return false
+		}
+	}
+	if len(base) == 0 || base[0] == '.' || base[len(base)-1] == '.' {
+		return false
+	}
+	prevDot := false
+	for _, r := range base {
+		if r == '.' {
+			if prevDot {
+				return false
+			}
+			prevDot = true
+			continue
+		}
+		prevDot = false
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // validateValueType 校验 JSON 值与声明类型一致。
@@ -801,8 +881,10 @@ var AllowedSettingKeys = map[string]bool{
 	"apm_diagnostics:kill_switch": true,
 	// 节点 DNS/NTP 服务器（种子见迁移 000162；保存/重写 sidecars/network.json 时
 	// netconfig 直查合并下发；逗号分隔主机列表校验见 validateServerList，
-	// 空串 = 继承宿主机现状不下发）
+	// 空串 = 继承宿主机现状不下发）及透明模式 TLS SNI 透传白名单（迁移 000234；
+	// 逗号/换行分隔或 JSON 字符串数组，支持 *.example.com 单级通配符）
 	"network:ntp_servers": true, "network:dns_servers": true,
+	"network:tproxy_passthrough_allowlist": true,
 	// 阶段5 §十五：CC 自动封禁共享出口（NAT）风险检查（种子见迁移 000153；
 	// 消费侧 temporaryblocks/natguard.go 带默认值与区间回落）
 	"cc_auto_block:nat_guard_enabled": true, "cc_auto_block:nat_identity_threshold": true,

@@ -136,30 +136,67 @@ func TestGenerateIncludesCustomRulesAndPolicyParams(t *testing.T) {
 
 func TestGeneratePostContribBlockingLast(t *testing.T) {
 	apps := sampleApps()
+	apps[0].RuleOverrideSecLang = []string{
+		`SecRule REQUEST_URI "@rx .*" "id:7200001,phase:1,pass,nolog,ctl:ruleRemoveById=7100001,tag:'jiuzhang-rule-override'"`,
+	}
 	g, err := Generate(GenerateInput{
 		Apps:        apps,
 		AdminSocket: "unix//var/run/caddy/admin.sock",
-		CustomRules: []string{`SecRule ARGS "@rx test" "id:7100001,phase:2,block,msg:'x'"`},
+		Exceptions: []ExceptionRule{
+			{
+				RuleID:    8000001,
+				SecLang:   `SecRule REQUEST_URI "@rx /ok" "id:8000001,phase:1,pass,nolog,ctl:ruleRemoveById=7100001"`,
+				ScopeType: "GLOBAL",
+			},
+		},
+		CustomRules: []string{`SecRule ARGS "@rx test" "id:7100001,phase:2,deny,status:403,log,msg:'x'"`},
 	})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	const blocking = "Include /etc/caddy/rules/jiuzhang/post-contrib-blocking.conf"
-	const contrib = "Include /etc/caddy/rules/contrib/*/*.conf"
+	const (
+		excMarker      = "id:8000001"
+		overrideMarker = "id:7200001"
+		customMarker   = "id:7100001"
+		crsRules       = "Include /etc/caddy/rules/crs/rules/*.conf"
+		contrib        = "Include /etc/caddy/rules/contrib/*/*.conf"
+		afterCRS       = "Include /etc/caddy/rules/exclusions/after-crs.conf"
+		staticCustom   = "Include /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf"
+		blocking       = "Include /etc/caddy/rules/jiuzhang/post-contrib-blocking.conf"
+	)
+
+	ordered := []struct {
+		name   string
+		needle string
+	}{
+		{"exceptions", excMarker},
+		{"ruleOverrides", overrideMarker},
+		{"customRules", customMarker},
+		{"crs/rules/*.conf", crsRules},
+		{"contrib", contrib},
+		{"after-crs.conf", afterCRS},
+		{"jiuzhang-custom.conf", staticCustom},
+		{"post-contrib-blocking.conf", blocking},
+	}
+
+	prevIdx := -1
+	prevName := ""
+	for _, item := range ordered {
+		idx := strings.Index(g.JSON, item.needle)
+		if idx < 0 {
+			t.Fatalf("%s (%q) missing in generated config", item.name, item.needle)
+		}
+		if idx <= prevIdx {
+			t.Errorf("ordering violation: %s (idx=%d) must appear after %s (idx=%d)", item.name, idx, prevName, prevIdx)
+		}
+		prevIdx = idx
+		prevName = item.name
+	}
+
 	blockIdx := strings.LastIndex(g.JSON, blocking)
-	if blockIdx < 0 {
-		t.Fatal("post-contrib-blocking.conf include missing")
-	}
-	if ci := strings.Index(g.JSON, contrib); ci < 0 || ci > blockIdx {
-		t.Error("post-contrib-blocking.conf must load after contrib rules")
-	}
-	// 必须是最后一条 Include（晚于管理面自定义规则等一切计分规则）
+	// 必须是最后一条 Include（晚于 contrib/插件/after-crs/静态自定义规则等一切计分规则）
 	if strings.LastIndex(g.JSON, "Include /etc/caddy/rules/") != blockIdx {
 		t.Error("post-contrib-blocking.conf must be the last Include in WAF directives")
-	}
-	// 管理面自定义规则在其之前
-	if ri := strings.LastIndex(g.JSON, "id:7100001"); ri < 0 || ri > blockIdx {
-		t.Error("management custom rules must load before post-contrib-blocking.conf")
 	}
 }
 
@@ -817,5 +854,160 @@ func TestApplyProxyOptionsXffDefaultOn(t *testing.T) {
 	on := xffSet(t, applyProxyOptions(mk(), &AppHeaderConfig{XffOverwrite: true}))
 	if len(on) != 1 || on[0] != "{http.request.remote.host}" {
 		t.Fatalf("explicit xff_overwrite=true must set XFF: %v", on)
+	}
+}
+
+// TestGenerateTransparentLoopbackServersAndListenerWrappers 验证 P0-1 修复：
+//   - TRANSPARENT 应用分流到专用回环 server（srv_transparent_http / srv_transparent_https），
+//     不与 REVERSE_PROXY 的公网 :80/:443 server 混杂或冲突；
+//   - srv_transparent_http 挂 proxy_protocol（allow 127.0.0.1/32）；
+//   - srv_transparent_https 挂 proxy_protocol + tls（proxy_protocol 必须在 tls 之前）；
+//   - 启用 SoftwareBypass 时 injectConnectionMetrics 前置 jiuzhang_connection_metrics，
+//     保持顺序 jiuzhang_connection_metrics -> proxy_protocol -> tls 且不覆盖、不重复；
+//   - TLS connection policies 在公网与透明 HTTPS server 间隔离。
+func TestGenerateTransparentLoopbackServersAndListenerWrappers(t *testing.T) {
+	revApp := AppData{
+		AppID:          "rev-1",
+		Code:           "rev-portal",
+		ProtectionMode: applications.ModeProtect,
+		DeploymentMode: applications.DeployModeReverseProxy,
+		Domains: []applications.Domain{{
+			ID: uuid.New(), Hostname: "rev.example.com", NormalizedHostname: "rev.example.com",
+			HTTPEnabled: true, HTTPPort: intPtr(80), HTTPSEnabled: true, HTTPSPort: intPtr(443), Status: "ACTIVE",
+		}},
+		Upstreams: []applications.Upstream{{
+			ID: uuid.New(), Name: "u-rev", Scheme: "http", Host: "192.0.2.1", NormalizedHost: "192.0.2.1",
+			Port: 8000, Weight: 1, Status: "ACTIVE", ConnectTimeoutMs: 3000, ResponseHeaderTimeoutMs: 10000,
+		}},
+		HasCert: true, CertID: "cert-rev", CertFileName: "rev.pem",
+	}
+	tpxApp := AppData{
+		AppID:          "tpx-1",
+		Code:           "tpx-portal",
+		ProtectionMode: applications.ModeProtect,
+		DeploymentMode: applications.DeployModeTransparent,
+		Domains: []applications.Domain{{
+			ID: uuid.New(), Hostname: "tpx.example.com", NormalizedHostname: "tpx.example.com",
+			HTTPEnabled: true, HTTPPort: intPtr(80), HTTPSEnabled: true, HTTPSPort: intPtr(443), Status: "ACTIVE",
+		}},
+		Upstreams: []applications.Upstream{{
+			ID: uuid.New(), Name: "u-tpx", Scheme: "http", Host: "192.0.2.2", NormalizedHost: "192.0.2.2",
+			Port: 8001, Weight: 1, Status: "ACTIVE", ConnectTimeoutMs: 3000, ResponseHeaderTimeoutMs: 10000,
+		}},
+		HasCert: true, CertID: "cert-tpx", CertFileName: "tpx.pem",
+	}
+
+	guard := testGuardConfig()
+	guard.SoftwareBypass = defaultSoftwareBypass()
+	g, err := Generate(GenerateInput{
+		Apps:        []AppData{revApp, tpxApp},
+		AdminSocket: "unix//var/run/caddy/admin.sock",
+		Guard:       guard,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	var cfg map[string]interface{}
+	if err := json.Unmarshal([]byte(g.JSON), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	servers := cfg["apps"].(map[string]interface{})["http"].(map[string]interface{})["servers"].(map[string]interface{})
+	if len(servers) != 4 {
+		t.Fatalf("expected 4 servers (srv0 :80, srv1 :443, srv_transparent_http, srv_transparent_https), got %d: %v", len(servers), servers)
+	}
+
+	// 1. 透明 HTTP server：监听 127.0.0.1:15080，wrapper 顺序 jiuzhang_connection_metrics -> proxy_protocol
+	tHTTP, ok := servers["srv_transparent_http"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("srv_transparent_http missing: %v", servers)
+	}
+	if listen := tHTTP["listen"].([]interface{}); len(listen) != 1 || listen[0] != "127.0.0.1:15080" {
+		t.Fatalf("srv_transparent_http listen = %v, want [127.0.0.1:15080]", listen)
+	}
+	httpWrappers := tHTTP["listener_wrappers"].([]interface{})
+	if len(httpWrappers) != 2 ||
+		httpWrappers[0].(map[string]interface{})["wrapper"] != "jiuzhang_connection_metrics" ||
+		httpWrappers[1].(map[string]interface{})["wrapper"] != "proxy_protocol" {
+		t.Fatalf("srv_transparent_http listener_wrappers = %v", httpWrappers)
+	}
+	allow := httpWrappers[1].(map[string]interface{})["allow"].([]interface{})
+	if len(allow) != 1 || allow[0] != "127.0.0.1/32" {
+		t.Fatalf("proxy_protocol allow = %v, want [127.0.0.1/32]", allow)
+	}
+
+	// 2. 透明 HTTPS server：监听 127.0.0.1:15443，wrapper 顺序 jiuzhang_connection_metrics -> proxy_protocol -> tls
+	tHTTPS, ok := servers["srv_transparent_https"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("srv_transparent_https missing: %v", servers)
+	}
+	if listen := tHTTPS["listen"].([]interface{}); len(listen) != 1 || listen[0] != "127.0.0.1:15443" {
+		t.Fatalf("srv_transparent_https listen = %v, want [127.0.0.1:15443]", listen)
+	}
+	httpsWrappers := tHTTPS["listener_wrappers"].([]interface{})
+	if len(httpsWrappers) != 3 ||
+		httpsWrappers[0].(map[string]interface{})["wrapper"] != "jiuzhang_connection_metrics" ||
+		httpsWrappers[1].(map[string]interface{})["wrapper"] != "proxy_protocol" ||
+		httpsWrappers[2].(map[string]interface{})["wrapper"] != "tls" {
+		t.Fatalf("srv_transparent_https listener_wrappers = %v", httpsWrappers)
+	}
+	// TLS 策略仅含 tpx.example.com（不混入 rev.example.com）
+	tPolicies := tHTTPS["tls_connection_policies"].([]interface{})
+	if len(tPolicies) != 1 {
+		t.Fatalf("srv_transparent_https tls_connection_policies = %v", tPolicies)
+	}
+	if sni := tPolicies[0].(map[string]interface{})["match"].(map[string]interface{})["sni"].([]interface{}); len(sni) != 1 || sni[0] != "tpx.example.com" {
+		t.Fatalf("srv_transparent_https sni = %v, want [tpx.example.com]", sni)
+	}
+
+	// 3. 公网反代 server（srv0 :80 / srv1 :443）：不含 proxy_protocol、不含 tpx 路由、TLS 仅含 rev.example.com
+	for _, key := range []string{"srv0", "srv1"} {
+		srv := servers[key].(map[string]interface{})
+		raw, _ := json.Marshal(srv)
+		if strings.Contains(string(raw), "tpx.example.com") {
+			t.Errorf("%s must not contain TRANSPARENT route: %s", key, raw)
+		}
+		if strings.Contains(string(raw), "proxy_protocol") {
+			t.Errorf("%s must not have proxy_protocol wrapper: %s", key, raw)
+		}
+	}
+
+	// 4. 无 SoftwareBypass 时仅输出 proxy_protocol (+ tls)，且支持自定义回环监听端口
+	gCustom, err := Generate(GenerateInput{
+		Apps:                   []AppData{tpxApp},
+		AdminSocket:            "unix//var/run/caddy/admin.sock",
+		TransparentHTTPListen:  "127.0.0.1:18080",
+		TransparentHTTPSListen: "127.0.0.1:18443",
+	})
+	if err != nil {
+		t.Fatalf("Generate custom: %v", err)
+	}
+	var cfgCustom map[string]interface{}
+	if err := json.Unmarshal([]byte(gCustom.JSON), &cfgCustom); err != nil {
+		t.Fatal(err)
+	}
+	cServers := cfgCustom["apps"].(map[string]interface{})["http"].(map[string]interface{})["servers"].(map[string]interface{})
+	cHTTP := cServers["srv_transparent_http"].(map[string]interface{})
+	cHTTPS := cServers["srv_transparent_https"].(map[string]interface{})
+	if cHTTP["listen"].([]interface{})[0] != "127.0.0.1:18080" || cHTTPS["listen"].([]interface{})[0] != "127.0.0.1:18443" {
+		t.Fatalf("custom listen mismatch: http=%v https=%v", cHTTP["listen"], cHTTPS["listen"])
+	}
+	if len(cHTTP["listener_wrappers"].([]interface{})) != 1 || len(cHTTPS["listener_wrappers"].([]interface{})) != 2 {
+		t.Fatalf("without software_bypass wrapper count mismatch: http=%v https=%v", cHTTP["listener_wrappers"], cHTTPS["listener_wrappers"])
+	}
+
+	// 5. injectConnectionMetrics 幂等：重复调用不产生重复 wrapper
+	testServers := map[string]interface{}{
+		"srv_transparent_https": mapT{
+			"listener_wrappers": []interface{}{
+				mapT{"wrapper": "proxy_protocol", "allow": []string{"127.0.0.1/32"}},
+				mapT{"wrapper": "tls"},
+			},
+		},
+	}
+	injectConnectionMetrics(testServers)
+	injectConnectionMetrics(testServers)
+	wrappers := testServers["srv_transparent_https"].(mapT)["listener_wrappers"].([]interface{})
+	if len(wrappers) != 3 {
+		t.Fatalf("injectConnectionMetrics must be idempotent, got %d wrappers: %v", len(wrappers), wrappers)
 	}
 }

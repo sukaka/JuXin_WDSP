@@ -34,6 +34,7 @@ const nodes: NodeInterfacesNode[] = [
       {
         ifname: 'eth0',
         mac: '00:11:22:33:44:01',
+        ip_addresses: ['192.168.10.2/24', '2408:8207::2/64'],
         pci_path: '0000:03:00.0',
         driver: 'igb',
         media_type: 'TP',
@@ -46,6 +47,7 @@ const nodes: NodeInterfacesNode[] = [
       {
         ifname: 'eth1',
         mac: '00:11:22:33:44:02',
+        ip_addresses: ['10.0.1.5/24'],
         pci_path: '0000:03:00.1',
         driver: 'igb',
         media_type: 'TP',
@@ -58,6 +60,7 @@ const nodes: NodeInterfacesNode[] = [
       {
         ifname: 'eth2',
         mac: '00:11:22:33:44:03',
+        ip_addresses: [],
         pci_path: '0000:04:00.0',
         driver: 'ixgbe',
         media_type: 'FIBRE',
@@ -70,6 +73,7 @@ const nodes: NodeInterfacesNode[] = [
       {
         ifname: 'eth3',
         mac: '00:11:22:33:44:04',
+        ip_addresses: [],
         pci_path: '0000:04:00.1',
         driver: 'ixgbe',
         media_type: 'FIBRE',
@@ -130,8 +134,11 @@ describe('NodeInterfacesPage', () => {
     // 节点 Tabs
     expect(screen.getByRole('tab', { name: 'node-1' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'node-2' })).toBeInTheDocument()
-    // 默认展示 node-1：接口名 / MAC / PCI / 驱动
+    // 默认展示 node-1：接口名 / IP 地址 / MAC / PCI / 驱动
     expect(screen.getByText('eth1')).toBeInTheDocument()
+    expect(screen.getByText('192.168.10.2/24')).toBeInTheDocument()
+    expect(screen.getByText('2408:8207::2/64')).toBeInTheDocument()
+    expect(screen.getByText('10.0.1.5/24')).toBeInTheDocument()
     expect(screen.getByText('00:11:22:33:44:01')).toBeInTheDocument()
     expect(screen.getByText('0000:03:00.0')).toBeInTheDocument()
     expect(screen.getAllByText('igb')).toHaveLength(2)
@@ -211,5 +218,41 @@ describe('NodeInterfacesPage', () => {
     expect(screen.queryByText('eth0')).not.toBeInTheDocument()
     // 本地修改已丢弃，未发起保存
     expect(nodeInterfacesApi.saveOrder).not.toHaveBeenCalled()
+  })
+
+  it('虚拟网卡在线但速率为 0 时显示「未知」而非「断开」，且展示主机 IP', async () => {
+    vi.mocked(nodeInterfacesApi.list).mockResolvedValue({
+      nodes: [
+        {
+          node_name: 'gateway-poc-01',
+          interfaces: [
+            {
+              ifname: 'eth0',
+              mac: '00:16:3e:6c:fd:83',
+              ip_addresses: ['172.16.0.10/24'],
+              pci_path: '',
+              driver: 'virtio_net',
+              media_type: 'UNKNOWN',
+              link_speed: 0,
+              operstate: 'up',
+              sort_order: 1,
+              role: '',
+              present: true,
+            },
+          ],
+        },
+      ],
+    })
+    useAuthStore.setState({
+      user: makeUser(['system_health.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    expect(await screen.findByText('eth0')).toBeInTheDocument()
+    expect(screen.getByText('172.16.0.10/24')).toBeInTheDocument()
+    expect(screen.queryByText('断开')).not.toBeInTheDocument()
+    // 介质类型与速率均为「未知」
+    expect(screen.getAllByText('未知')).toHaveLength(2)
   })
 })

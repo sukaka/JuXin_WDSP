@@ -23,11 +23,11 @@ describe('RuntimeOpsScreen & ScreenLobbyPage 中文化展示', () => {
     useAuthStore.setState({
       user: {
         id: 'u1',
-        username: 'ops',
-        display_name: '系统管理员',
+        username: 'operadmin',
+        display_name: '运维管理员',
         status: 'ACTIVE',
-        roles: [{ code: 'SYSTEM_ADMIN', name: '系统管理员' }],
-        permissions: ['system_health.read'],
+        roles: [{ code: 'SECURITY_ADMIN', name: '运维管理员' }],
+        permissions: ['big_screen.runtime.read'],
         must_change_password: false,
       } as CurrentUser,
       csrfToken: null,
@@ -105,7 +105,7 @@ describe('RuntimeOpsScreen & ScreenLobbyPage 中文化展示', () => {
     expect(screen.queryByText('UP')).not.toBeInTheDocument()
   })
 
-  it('ScreenLobbyPage：展示中文副标题「九章动态安全防护」', () => {
+  it('ScreenLobbyPage：展示中文副标题「九章动态安全防护」并对运维管理员展示系统运行监控与网关连接大屏', () => {
     render(
       <MemoryRouter>
         <ScreenLobbyPage />
@@ -113,5 +113,7 @@ describe('RuntimeOpsScreen & ScreenLobbyPage 中文化展示', () => {
     )
     expect(screen.getByText(/九章动态安全防护/)).toBeInTheDocument()
     expect(screen.queryByText(/JiuZhang Dynamic Security/)).not.toBeInTheDocument()
+    expect(screen.getByText('系统运行监控')).toBeInTheDocument()
+    expect(screen.getByText('网关连接与会话')).toBeInTheDocument()
   })
 })

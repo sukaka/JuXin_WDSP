@@ -69,8 +69,10 @@ func Gate(svc *Service) func(http.Handler) http.Handler {
 			}
 			switch st.Product {
 			case "waf":
-				// waf 授权不含 API 动态防护能力域（wdsp 包装配了 API 路由时此处实时门控）
-				if pathWithin(r.URL.Path, "/api/v1/api-security") {
+				// waf 授权不含 API 动态防护能力域（wdsp 包装配了 API 路由时此处实时门控）；
+				// 放行只读 GET /api/v1/api-security/nodes 供主备高可用（/ha-groups）拉取已登记网关节点列表。
+				if pathWithin(r.URL.Path, "/api/v1/api-security") &&
+					!(r.Method == http.MethodGet && r.URL.Path == "/api/v1/api-security/nodes") {
 					response.Error(w, r, http.StatusForbidden, CodeLicenseFeatureDenied,
 						"当前授权产品形态（waf）不含 API 动态防护能力")
 					return

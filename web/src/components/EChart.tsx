@@ -6,6 +6,7 @@ import {
   DataZoomComponent,
   GridComponent,
   LegendComponent,
+  MarkLineComponent,
   TooltipComponent,
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -17,6 +18,7 @@ import type {
   DataZoomComponentOption,
   GridComponentOption,
   LegendComponentOption,
+  MarkLineComponentOption,
   TooltipComponentOption,
 } from 'echarts/components'
 import { buildAccessibleSummary } from './EChartAccessibleSummary'
@@ -32,6 +34,7 @@ echarts.use([
   DataZoomComponent,
   GridComponent,
   LegendComponent,
+  MarkLineComponent,
   TooltipComponent,
   AriaComponent,
   CanvasRenderer,
@@ -49,6 +52,7 @@ export type EChartOption = ComposeOption<
   | YAXisComponentOption
   | GridComponentOption
   | LegendComponentOption
+  | MarkLineComponentOption
   | TooltipComponentOption
   | AriaComponentOption
 >

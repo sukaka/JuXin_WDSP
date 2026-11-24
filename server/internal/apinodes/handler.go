@@ -47,10 +47,16 @@ func NewHandler(store Repository) *Handler { return &Handler{store: store} }
 // SetAudits 注入操作审计记录器（生产由 app 装配 *audits.Service）。
 func (h *Handler) SetAudits(a auditRecorder) *Handler { h.audits = a; return h }
 
-// RegisterRoutes 注册路由（统一 /api/v1/api-security 前缀）。
+// RegisterRoutes 注册全部节点路由（统一 /api/v1/api-security 前缀）。
 func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h *Handler) {
 	mux.Handle("GET /api/v1/api-security/nodes",
 		authz(middleware.RequirePermission(PermRuntimeRead)(http.HandlerFunc(h.ListNodes))))
+	RegisterSyncRoutes(mux, authz, h)
+}
+
+// RegisterSyncRoutes 注册仅在 WDSP/API 动态防护形态启用的节点一致性与同步登记路由
+// （GET /api/v1/api-security/nodes 由装配层按全产品形态独立挂接供 /ha-groups 消费）。
+func RegisterSyncRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h *Handler) {
 	mux.Handle("GET /api/v1/api-security/nodes/consistency",
 		authz(middleware.RequirePermission(PermRuntimeRead)(http.HandlerFunc(h.Consistency))))
 	mux.Handle("PATCH /api/v1/api-security/nodes/{id}",

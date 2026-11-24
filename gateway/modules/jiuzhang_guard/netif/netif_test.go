@@ -2,10 +2,19 @@ package netif
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
+
+func stubInterfaceAddrs(t *testing.T, fn func() (map[string][]string, map[string]error, error)) {
+	t.Helper()
+	prev := interfaceAddrsLookup
+	interfaceAddrsLookup = fn
+	t.Cleanup(func() { interfaceAddrsLookup = prev })
+}
 
 // buildSysfsFixture 构造 sysfs 风格目录树：
 //
@@ -87,6 +96,11 @@ func findIface(t *testing.T, ifs []Interface, name string) Interface {
 }
 
 func TestCollectFiltersAndSysfsFallback(t *testing.T) {
+	stubInterfaceAddrs(t, func() (map[string][]string, map[string]error, error) {
+		return map[string][]string{
+			"eth0": {"192.168.1.10/24", "2408:8207::10/64"},
+		}, nil, nil
+	})
 	sysfsDir := buildSysfsFixture(t)
 	inv, err := Collect(sysfsDir, nil) // 无 ethtool：兜底路径
 	if err != nil {
@@ -107,6 +121,9 @@ func TestCollectFiltersAndSysfsFallback(t *testing.T) {
 	if eth0.MAC != "00:11:22:33:44:55" || eth0.OperState != "up" || eth0.LinkSpeed != 10000 {
 		t.Errorf("eth0 fields: %+v", eth0)
 	}
+	if !reflect.DeepEqual(eth0.IPAddresses, []string{"192.168.1.10/24", "2408:8207::10/64"}) {
+		t.Errorf("eth0 ip_addresses: %+v", eth0.IPAddresses)
+	}
 	if eth0.PCIPath != "0000:03:00.0" {
 		t.Errorf("eth0 pci: %q", eth0.PCIPath)
 	}
@@ -120,6 +137,9 @@ func TestCollectFiltersAndSysfsFallback(t *testing.T) {
 	enp := findIface(t, inv.Interfaces, "enp4s0")
 	if enp.LinkSpeed != 0 || enp.OperState != "down" {
 		t.Errorf("enp4s0 fields: %+v", enp)
+	}
+	if enp.IPAddresses == nil || len(enp.IPAddresses) != 0 {
+		t.Errorf("enp4s0 ip_addresses should be empty non-nil slice, got %#v", enp.IPAddresses)
 	}
 	if enp.Driver != "" || enp.PCIPath != "0000:04:00.0" {
 		t.Errorf("enp4s0 driver/pci: %+v", enp)
@@ -162,6 +182,9 @@ func (f fakeProber) Media(ifname string) (string, error) {
 }
 
 func TestCollectWithProber(t *testing.T) {
+	stubInterfaceAddrs(t, func() (map[string][]string, map[string]error, error) {
+		return map[string][]string{"eth0": {"10.0.0.5/24"}}, nil, nil
+	})
 	sysfsDir := buildSysfsFixture(t)
 	prober := fakeProber{m: map[string]fakeProbe{
 		"eth0":   {driver: "igb", bus: "0000:03:00.0", media: MediaTP},
@@ -231,6 +254,110 @@ func TestParseSupportedPorts(t *testing.T) {
 	for _, c := range cases {
 		if got := parseSupportedPorts(c.out); got != c.want {
 			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+}
+
+type rawAddr string
+
+func (r rawAddr) Network() string { return "ip+net" }
+func (r rawAddr) String() string  { return string(r) }
+
+func TestNormalizeNetAddrs(t *testing.T) {
+	mustIPNet := func(cidr string) *net.IPNet {
+		t.Helper()
+		ip, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ipNet.IP = ip
+		return ipNet
+	}
+	addrs := []net.Addr{
+		nil,
+		mustIPNet("2408:8207::20/64"),
+		mustIPNet("fe80::216:3eff:fe6c:fd83/64"), // IPv6 link-local：应过滤
+		mustIPNet("127.0.0.1/8"),                 // loopback：应过滤
+		mustIPNet("::1/128"),                     // IPv6 loopback：应过滤
+		mustIPNet("169.254.169.254/16"),          // IPv4 link-local：应过滤
+		mustIPNet("0.0.0.0/0"),                   // unspecified：应过滤
+		mustIPNet("224.0.0.1/32"),                // multicast：应过滤
+		mustIPNet("192.168.10.20/24"),
+		mustIPNet("10.0.0.5/24"),
+		mustIPNet("10.0.0.5/24"), // 重复：应去重
+		&net.IPAddr{IP: net.ParseIP("172.16.0.8")},
+		rawAddr("2001:db8::1/64"),
+		rawAddr("not-an-ip"),
+	}
+	got := normalizeNetAddrs(addrs)
+	want := []string{
+		"10.0.0.5/24",
+		"172.16.0.8",
+		"192.168.10.20/24",
+		"2001:db8::1/64",
+		"2408:8207::20/64",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("normalizeNetAddrs = %v, want %v", got, want)
+	}
+}
+
+func TestCollectAddrLookupDegradation(t *testing.T) {
+	sysfsDir := buildSysfsFixture(t)
+
+	// 单接口 Addrs() 失败：该口 IPAddresses 置 nil 并记 ProbeErrors，其他口正常填充
+	stubInterfaceAddrs(t, func() (map[string][]string, map[string]error, error) {
+		return map[string][]string{"eth0": {"192.168.1.10/24"}},
+			map[string]error{"enp4s0": errors.New("netlink timeout")}, nil
+	})
+	inv, err := Collect(sysfsDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.ProbeErrors) != 1 {
+		t.Fatalf("probe errors = %v, want 1", inv.ProbeErrors)
+	}
+	if got := findIface(t, inv.Interfaces, "eth0").IPAddresses; !reflect.DeepEqual(got, []string{"192.168.1.10/24"}) {
+		t.Errorf("eth0 ips = %v", got)
+	}
+	if got := findIface(t, inv.Interfaces, "enp4s0").IPAddresses; got != nil {
+		t.Errorf("enp4s0 ips should be nil on lookup error, got %#v", got)
+	}
+	if got := findIface(t, inv.Interfaces, "usb0").IPAddresses; got == nil || len(got) != 0 {
+		t.Errorf("usb0 ips should be empty non-nil slice, got %#v", got)
+	}
+
+	// 整体 net.Interfaces() 失败：不阻断清单采集，所有口 IPAddresses 置 nil 并记 ProbeErrors
+	stubInterfaceAddrs(t, func() (map[string][]string, map[string]error, error) {
+		return nil, nil, errors.New("net.Interfaces failed")
+	})
+	inv, err = Collect(sysfsDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.ProbeErrors) != 1 {
+		t.Fatalf("fatal lookup probe errors = %v, want 1", inv.ProbeErrors)
+	}
+	for _, ifi := range inv.Interfaces {
+		if ifi.IPAddresses != nil {
+			t.Errorf("%s ips should be nil on fatal lookup error, got %#v", ifi.IfName, ifi.IPAddresses)
+		}
+	}
+}
+
+func TestSystemInterfaceAddrsSmoke(t *testing.T) {
+	byName, _, err := systemInterfaceAddrs()
+	if err != nil {
+		t.Fatalf("systemInterfaceAddrs failed: %v", err)
+	}
+	for name, addrs := range byName {
+		if isVirtualName(name) {
+			t.Errorf("virtual interface %s should be skipped", name)
+		}
+		for _, a := range addrs {
+			if a == "" {
+				t.Errorf("empty addr on %s", name)
+			}
 		}
 	}
 }

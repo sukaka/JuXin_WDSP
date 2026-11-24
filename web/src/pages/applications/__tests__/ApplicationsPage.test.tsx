@@ -229,7 +229,7 @@ describe('ApplicationsPage 部署模式', () => {
     expect(body.deployment_mode).toBe('MIRROR')
   })
 
-  it('新建选择透明串接：出现模式说明且提交体含 deployment_mode=TRANSPARENT', async () => {
+  it('新建选择透明串接：出现 fail-closed 与源站/证书说明且提交体含 deployment_mode=TRANSPARENT', async () => {
     vi.stubGlobal('fetch', mockFetch([plainApp]))
     useAuthStore.setState({ user: makeUser(['applications.create']), csrfToken: null, initialized: true })
     renderPage()
@@ -237,12 +237,57 @@ describe('ApplicationsPage 部署模式', () => {
     const dialog = await openCreateDialog()
     fireEvent.mouseDown(within(dialog).getAllByRole('combobox')[1])
     fireEvent.click(await screen.findByText('透明串接'))
-    // 选中 TRANSPARENT 后展示部署说明
+    // 选中 TRANSPARENT 后准确说明 fail-closed TLS SNI 与源站/证书要求
     expect(await within(dialog).findByText(/二层桥接串接/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/fail-closed/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/不会自动透传/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/passthrough allowlist/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/已启用的源站服务器/)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/客户端与源站均无需改配置/)).not.toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: /确\s*定|^OK$/ }))
     await waitFor(() => expect(lastCreateCall()).toBeTruthy())
     const body = JSON.parse(String(lastCreateCall()![1]?.body)) as Record<string, unknown>
     expect(body.deployment_mode).toBe('TRANSPARENT')
+  })
+
+  it('工具栏按部署模式筛选：发起带 deployment_mode 的查询并兜底过滤列表项', async () => {
+    const transparentApp = makeApp({
+      id: 'app-4',
+      code: 'tproxy-app',
+      name: '串接应用',
+      deployment_mode: 'TRANSPARENT',
+    })
+    const fetchMock = mockFetch([routedApp, plainApp, transparentApp])
+    vi.stubGlobal('fetch', fetchMock)
+    useAuthStore.setState({ user: makeUser(['applications.read']), csrfToken: null, initialized: true })
+    renderPage()
+    expect(await screen.findByText('串接应用')).toBeInTheDocument()
+    expect(screen.getByText('门户应用')).toBeInTheDocument()
+
+    fireEvent.mouseDown(screen.getByLabelText('部署模式筛选'))
+    await waitFor(() =>
+      expect(
+        document.querySelectorAll(
+          '.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option-content',
+        ).length,
+      ).toBeGreaterThan(0),
+    )
+    const option = Array.from(
+      document.querySelectorAll(
+        '.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option-content',
+      ),
+    ).find((el) => el.textContent === '透明串接')
+    expect(option).toBeTruthy()
+    fireEvent.click(option as HTMLElement)
+
+    await waitFor(() => {
+      const urls = fetchMock.mock.calls.map((c) => String(c[0]))
+      expect(urls.some((u) => u.includes('deployment_mode=TRANSPARENT'))).toBe(true)
+    })
+    // 即使 mock 返回全量数据，客户端兜底过滤后仅展示透明串接应用
+    await waitFor(() => expect(screen.queryByText('门户应用')).not.toBeInTheDocument())
+    expect(screen.queryByText('订单接口')).not.toBeInTheDocument()
+    expect(screen.getByText('串接应用')).toBeInTheDocument()
   })
 })
 

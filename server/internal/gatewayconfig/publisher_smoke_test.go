@@ -1,11 +1,19 @@
 package gatewayconfig
 
 import (
+	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/hmac"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -868,5 +876,133 @@ func TestSmokeClientDoesNotFollowRedirect(t *testing.T) {
 	}
 	if hits.Load() != 1 {
 		t.Fatalf("smoke client must not follow redirect: hits=%d", hits.Load())
+	}
+}
+
+// proxyV1StripListener 模拟 Caddy proxy_protocol listener wrapper：每条新 TCP 连接必须以
+// 合法的 PROXY v1 行开头（读取并记录后将剩余字节流透传给上层 HTTP 或 TLS server）。
+type proxyV1StripListener struct {
+	net.Listener
+	mu        sync.Mutex
+	proxyLine string
+}
+
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+func (l *proxyV1StripListener) Accept() (net.Conn, error) {
+	for {
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		br := bufio.NewReader(conn)
+		line, err := br.ReadString('\n')
+		if err != nil {
+			_ = conn.Close()
+			continue
+		}
+		if !strings.HasPrefix(line, "PROXY TCP4 ") {
+			_ = conn.Close()
+			continue
+		}
+		l.mu.Lock()
+		l.proxyLine = line
+		l.mu.Unlock()
+		return &bufferedConn{Conn: conn, r: br}, nil
+	}
+}
+
+func (l *proxyV1StripListener) lastProxyLine() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.proxyLine
+}
+
+func selfSignedSmokeTLSCert(t *testing.T) tls.Certificate {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "tpx.example.com"},
+		DNSNames:     []string{"tpx.example.com"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv}
+}
+
+// TestRunPublishSmokeTransparentProxyV1 验证 P1-1 修复：
+// TRANSPARENT 探针拨号配置的透明回环端口（127.0.0.1:tproxyTarget / target_tls），
+// 并在 HTTP 请求与 TLS 握手前前置合成 PROXY TCP4 127.0.0.1 127.0.0.1 54321 <dstPort>\r\n 头。
+func TestRunPublishSmokeTransparentProxyV1(t *testing.T) {
+	t.Setenv("GATEWAY_PUBLISH_SMOKE_ADDR", "")
+
+	// 1. 透明 HTTP 探针
+	rawHTTP, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyHTTP := &proxyV1StripListener{Listener: rawHTTP}
+	httpSrv := &http.Server{Handler: authenticatedSmokeGateway()}
+	go func() { _ = httpSrv.Serve(proxyHTTP) }()
+	t.Cleanup(func() { _ = httpSrv.Close() })
+
+	// 2. 透明 HTTPS 探针（proxy_protocol 在 TLS 握手之前剥离）
+	rawHTTPS, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyHTTPS := &proxyV1StripListener{Listener: rawHTTPS}
+	tlsListener := tls.NewListener(proxyHTTPS, &tls.Config{
+		Certificates: []tls.Certificate{selfSignedSmokeTLSCert(t)},
+	})
+	httpsSrv := &http.Server{Handler: authenticatedSmokeGateway()}
+	go func() { _ = httpsSrv.Serve(tlsListener) }()
+	t.Cleanup(func() { _ = httpsSrv.Close() })
+
+	p := &Publisher{}
+	p.SetTproxyAddresses("0.0.0.0:15000", rawHTTP.Addr().String(), rawHTTPS.Addr().String())
+
+	httpPort, httpsPort := 80, 443
+	httpApp := AppData{
+		AppID: uuid.NewString(), Code: "tpx-http", ProtectionMode: applications.ModeProtect,
+		DeploymentMode: applications.DeployModeTransparent,
+		Domains: []applications.Domain{{
+			NormalizedHostname: "tpx.example.com", HTTPEnabled: true, HTTPPort: &httpPort,
+		}},
+	}
+	repHTTP := runSmokeTest(t, p, []AppData{httpApp}, &GuardConfig{})
+	if repHTTP.failed() || repHTTP.degraded || repHTTP.versionResult() != VersionSmokePass {
+		t.Fatalf("transparent HTTP smoke report = %+v, want SMOKE_PASS", repHTTP)
+	}
+	if got := proxyHTTP.lastProxyLine(); got != "PROXY TCP4 127.0.0.1 127.0.0.1 54321 80\r\n" {
+		t.Fatalf("transparent HTTP PROXY v1 line = %q", got)
+	}
+
+	httpsApp := AppData{
+		AppID: uuid.NewString(), Code: "tpx-https", ProtectionMode: applications.ModeProtect,
+		DeploymentMode: applications.DeployModeTransparent,
+		Domains: []applications.Domain{{
+			NormalizedHostname: "tpx.example.com", HTTPSEnabled: true, HTTPSPort: &httpsPort,
+		}},
+	}
+	repHTTPS := runSmokeTest(t, p, []AppData{httpsApp}, &GuardConfig{})
+	if repHTTPS.failed() || repHTTPS.degraded || repHTTPS.versionResult() != VersionSmokePass {
+		t.Fatalf("transparent HTTPS smoke report = %+v, want SMOKE_PASS", repHTTPS)
+	}
+	if got := proxyHTTPS.lastProxyLine(); got != "PROXY TCP4 127.0.0.1 127.0.0.1 54321 443\r\n" {
+		t.Fatalf("transparent HTTPS PROXY v1 line = %q", got)
 	}
 }

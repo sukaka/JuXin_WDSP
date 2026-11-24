@@ -94,6 +94,8 @@ export default function ApplicationDetailPage() {
 
   const app = detailQuery.data
   const hasHttps = app.domains.some((d) => d.https_enabled)
+  const isMirror = app.deployment_mode === 'MIRROR'
+  const isTransparent = app.deployment_mode === 'TRANSPARENT'
 
   return (
     <Space direction="vertical" size={16} style={{ display: 'flex' }}>
@@ -181,18 +183,36 @@ export default function ApplicationDetailPage() {
 
       <ApplicationAssetValueCard applicationId={app.id} />
 
+      {isMirror && (
+        <Alert
+          type="info"
+          showIcon
+          message="当前应用为镜像旁路模式（仅检测、不阻断、不转发）"
+          description="流量副本经镜像口送达 mirrorcap，仅分析配置域名对应的明文 HTTP/1.x 端口（HTTPS 流量无需证书，仅通过 TLS SNI 参与站点资产发现）。源站管理、代理与头合规、Bot 挑战、证书绑定等在线反代能力不适用于镜像旁路模式。"
+        />
+      )}
+
+      {isTransparent && (
+        <Alert
+          type="info"
+          showIcon
+          message="当前应用为透明串接模式（二层桥接在线检测与阻断）"
+          description="透明串接属在线阻断桥接模式，生效前需确认：（1）已在「网络配置」完成网桥配置；（2）在「域名管理」配置访问域名与真实目标端口（启用 HTTPS 时须在「证书绑定」上传对应证书）；（3）在「源站管理」配置至少 1 个已启用的源站服务器。同 IP 下未纳管的 HTTPS 站点按 fail-closed 策略处理，不会自动透传，需显式加入透明 TLS 透传白名单。"
+        />
+      )}
+
       <Card>
         <Tabs
           items={[
             {
               key: 'domains',
               label: `域名管理 (${app.domains.length})`,
-              children: <DomainsTab appId={app.id} />,
+              children: <DomainsTab appId={app.id} deploymentMode={app.deployment_mode} />,
             },
             {
               key: 'upstreams',
               label: `源站管理 (${app.upstreams.length})`,
-              children: <UpstreamsTab appId={app.id} />,
+              children: <UpstreamsTab appId={app.id} deploymentMode={app.deployment_mode} />,
             },
             {
               key: 'header-proxy',
@@ -227,7 +247,13 @@ export default function ApplicationDetailPage() {
                   {
                     key: 'certificates',
                     label: '证书绑定',
-                    children: hasHttps ? (
+                    children: isMirror ? (
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="镜像旁路模式不终结 TLS，无需绑定 HTTPS 证书（HTTPS 仅经 TLS SNI 被动发现站点，无法解密检测）"
+                      />
+                    ) : hasHttps ? (
                       <CertificatesTab application={app} />
                     ) : (
                       <Alert

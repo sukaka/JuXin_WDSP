@@ -203,6 +203,39 @@ func TestGenerateGuardRoutedDeploymentMode(t *testing.T) {
 	}
 }
 
+// TRANSPARENT（透明串接，P1-2）：PROXY protocol 已还原真实客户端对端 IP，
+// guard 必须下发 "deployment_mode":"TRANSPARENT" 且 trusted_proxies 为空数组（绝不信任
+// 127.0.0.1/32 或上游代理网段导致 X-Forwarded-For 伪造）。
+func TestGenerateGuardTransparentDeploymentMode(t *testing.T) {
+	cfg := testGuardConfig()
+	cfg.TrustedProxies = append(cfg.TrustedProxies, GuardProxy{
+		Name: "local", CIDR: "127.0.0.1/32", HeaderType: "X_FORWARDED_FOR", Priority: 1,
+	})
+	app := AppData{
+		AppID: "app-tpx-1", Code: "shop-tpx", ProtectionMode: applications.ModeProtect,
+		DeploymentMode: applications.DeployModeTransparent,
+		Domains:        []applications.Domain{{NormalizedHostname: "tpx.example.com", HTTPEnabled: true, HTTPPort: intPtr(80), Status: "ACTIVE"}},
+		Upstreams:      []applications.Upstream{{NormalizedHost: "192.0.2.1", Port: 8080, Status: "ACTIVE", Weight: 1}},
+	}
+	gen, err := Generate(GenerateInput{
+		Apps:        []AppData{app},
+		AdminSocket: "/var/run/caddy/admin.sock",
+		Guard:       cfg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gen.JSON, `"deployment_mode":"TRANSPARENT"`) {
+		t.Errorf("TRANSPARENT guard must emit deployment_mode=TRANSPARENT: %s", gen.JSON)
+	}
+	if !strings.Contains(gen.JSON, `"trusted_proxies":[]`) {
+		t.Errorf("TRANSPARENT guard must output empty trusted_proxies array: %s", gen.JSON)
+	}
+	if strings.Contains(gen.JSON, `"cidr":"127.0.0.1/32"`) || strings.Contains(gen.JSON, "10.0.0.0/8") {
+		t.Errorf("TRANSPARENT guard must not inject loopback or upstream trusted_proxies: %s", gen.JSON)
+	}
+}
+
 // debug_cc_counter 下发：true 显式注入，false/缺省与历史版本逐字节一致。
 func TestBuildGuardHandlerDebugCCCounter(t *testing.T) {
 	app := AppData{AppID: "app-x", Code: "shop", ProtectionMode: applications.ModeProtect}

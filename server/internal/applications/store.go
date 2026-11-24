@@ -259,11 +259,12 @@ func (s *Store) Count(ctx context.Context) (int64, error) {
 
 // ListFilter 是应用列表筛选。
 type ListFilter struct {
-	Keyword  string
-	Status   string
-	Mode     string
-	Page     int
-	PageSize int
+	Keyword        string
+	Status         string
+	Mode           string
+	DeploymentMode string
+	Page           int
+	PageSize       int
 }
 
 // List 分页查询应用。
@@ -290,6 +291,11 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Application, int64, e
 	if f.Mode != "" {
 		where += fmt.Sprintf(" AND protection_mode = $%d", argIdx)
 		args = append(args, f.Mode)
+		argIdx++
+	}
+	if f.DeploymentMode != "" {
+		where += fmt.Sprintf(" AND deployment_mode = $%d", argIdx)
+		args = append(args, f.DeploymentMode)
 		argIdx++
 	}
 	var total int64
@@ -400,8 +406,8 @@ func (s *Store) SoftDelete(ctx context.Context, id uuid.UUID) error {
 
 // ---------- 域名 ----------
 
-// AddDomain 添加域名（含校验与冲突检测）。
-func (s *Store) AddDomain(ctx context.Context, d *Domain) error {
+// validateDomainInput 校验域名主机名、端口范围及至少启用 HTTP/HTTPS 之一（新增与更新共用）。
+func validateDomainInput(d *Domain) error {
 	normalized, dtype, err := validation.ValidateHostname(d.Hostname)
 	if err != nil {
 		return err
@@ -420,6 +426,14 @@ func (s *Store) AddDomain(ctx context.Context, d *Domain) error {
 	}
 	if !d.HTTPEnabled && !d.HTTPSEnabled {
 		return fmt.Errorf("至少启用HTTP或HTTPS之一")
+	}
+	return nil
+}
+
+// AddDomain 添加域名（含校验与冲突检测）。
+func (s *Store) AddDomain(ctx context.Context, d *Domain) error {
+	if err := validateDomainInput(d); err != nil {
+		return err
 	}
 	// 冲突检测：相同规范化域名+端口+协议（跨应用）
 	conflict, err := s.checkDomainConflict(ctx, d, uuid.Nil)
@@ -515,14 +529,11 @@ FROM application_domains WHERE id = $1`, domainID)
 	return &d, nil
 }
 
-// UpdateDomain 更新域名。
+// UpdateDomain 更新域名（含与 AddDomain 同口径的主机名/端口/协议校验及冲突检测）。
 func (s *Store) UpdateDomain(ctx context.Context, d *Domain) error {
-	normalized, dtype, err := validation.ValidateHostname(d.Hostname)
-	if err != nil {
+	if err := validateDomainInput(d); err != nil {
 		return err
 	}
-	d.NormalizedHostname = normalized
-	d.DomainType = dtype
 	conflict, err := s.checkDomainConflict(ctx, d, d.ID)
 	if err != nil {
 		return err

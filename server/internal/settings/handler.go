@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -13,13 +14,21 @@ import (
 
 // Handler 是系统设置处理器。
 type Handler struct {
-	svc    *Service
-	audits *audits.Service
+	svc      *Service
+	audits   *audits.Service
+	onChange func(ctx context.Context, group, key string)
 }
 
 // NewHandler 创建处理器。
 func NewHandler(svc *Service, au *audits.Service) *Handler {
 	return &Handler{svc: svc, audits: au}
+}
+
+// SetOnChange 注册设置更新成功后的联动回调（如 network:dns_servers/ntp_servers 触发重写
+// network.json，network:tproxy_passthrough_allowlist 触发刷新 tproxyd.json）。
+func (h *Handler) SetOnChange(fn func(ctx context.Context, group, key string)) *Handler {
+	h.onChange = fn
+	return h
 }
 
 // List 列出系统设置（可按分组过滤）。
@@ -72,6 +81,10 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		response.InternalError(w, r, err)
 		return
+	}
+
+	if h.onChange != nil {
+		h.onChange(r.Context(), req.Group, req.Key)
 	}
 
 	before, _ := json.Marshal(map[string]interface{}{

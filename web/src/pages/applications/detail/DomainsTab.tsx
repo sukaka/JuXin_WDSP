@@ -54,7 +54,15 @@ function validateHostname(value: string): string | null {
   return null
 }
 
-export default function DomainsTab({ appId }: { appId: string }) {
+export default function DomainsTab({
+  appId,
+  deploymentMode,
+}: {
+  appId: string
+  deploymentMode?: string
+}) {
+  const isMirror = deploymentMode === 'MIRROR'
+  const isTransparent = deploymentMode === 'TRANSPARENT'
   const { message, modal } = AntdApp.useApp()
   const queryClient = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
@@ -64,6 +72,9 @@ export default function DomainsTab({ appId }: { appId: string }) {
   const [form] = Form.useForm<DomainFormValues>()
   const httpEnabled = Form.useWatch('http_enabled', form)
   const httpsEnabled = Form.useWatch('https_enabled', form)
+  const noProtocolEnabled =
+    (httpEnabled === false && !httpsEnabled) ||
+    (httpsEnabled === false && !httpEnabled)
 
   const listQuery = useQuery({
     queryKey: ['domains', appId],
@@ -225,6 +236,16 @@ export default function DomainsTab({ appId }: { appId: string }) {
         {batchDeleteButton}
       </Space>
 
+      {isTransparent && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="透明串接域名与目标端口说明"
+          description="请配置客户端真实访问的域名（支持精确域名或单层泛域名 *.example.com）与真实目标端口（如 HTTP 80 / HTTPS 443）；启用 HTTPS 时须在「证书绑定」上传证书，网关将按 TLS SNI 分流防护。"
+        />
+      )}
+
       {listQuery.isError ? (
         <Alert
           type="error"
@@ -256,6 +277,7 @@ export default function DomainsTab({ appId }: { appId: string }) {
           setEditing(null)
         }}
         onOk={() => form.submit()}
+        okButtonProps={{ disabled: noProtocolEnabled }}
         confirmLoading={saveMutation.isPending}
         destroyOnHidden
       >
@@ -270,7 +292,13 @@ export default function DomainsTab({ appId }: { appId: string }) {
             https_port: 443,
             redirect_http_to_https: false,
           }}
-          onFinish={(values) => saveMutation.mutate({ domainId: editing?.id ?? null, body: toBody(values) })}
+          onFinish={(values) => {
+            if (!values.http_enabled && !values.https_enabled) {
+              message.error('HTTP 与 HTTPS 至少启用一个')
+              return
+            }
+            saveMutation.mutate({ domainId: editing?.id ?? null, body: toBody(values) })
+          }}
         >
           <Form.Item
             name="hostname"
@@ -324,13 +352,29 @@ export default function DomainsTab({ appId }: { appId: string }) {
               <InputNumber min={1} max={65535} disabled={!httpsEnabled} style={{ width: 120 }} />
             </Form.Item>
           </Space>
-          {httpEnabled && httpsEnabled && (
+          {isMirror && httpsEnabled && (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="镜像旁路无法解密 HTTPS，勾选 HTTPS 无需绑定证书（仅用于站点 SNI 发现）；如需检测明文流量请启用 HTTP 端口。"
+            />
+          )}
+          {isTransparent && (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="透明串接请填写业务真实访问域名及真实目标端口（如 80 / 443）；启用 HTTPS 时须在「证书绑定」上传对应证书。"
+            />
+          )}
+          {!isMirror && httpEnabled && httpsEnabled && (
             <Form.Item name="redirect_http_to_https" valuePropName="checked">
               <Checkbox>HTTP 自动跳转 HTTPS</Checkbox>
             </Form.Item>
           )}
-          {!httpEnabled && !httpsEnabled && (
-            <Alert type="warning" showIcon message="HTTP 与 HTTPS 至少启用一个" />
+          {noProtocolEnabled && (
+            <Alert type="warning" showIcon message="HTTP 与 HTTPS 至少启用一个，否则无法提交保存" />
           )}
         </Form>
       </Modal>

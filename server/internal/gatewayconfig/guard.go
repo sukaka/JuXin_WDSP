@@ -1131,14 +1131,15 @@ type GuardConfig struct {
 
 // buildGuardHandler 构建单应用路由的 jiuzhang_guard 处理器 JSON。
 // publicPort 为路由所在监听的接入端口（302 Location 端口改写目标；0 表示不改写）。
-// 部署模式（docs/NETWORK_MODES_DESIGN.md §4.1）：ROUTED（路由牵引）下客户端直连本网关，
-// 不下发可信代理链（trusted_proxies 输出空数组），网关按直连对端识别真实客户端 IP，
-// 并附加 deployment_mode 字段便于事件/排障识别（网关模块对未知字段容忍）；
+// 部署模式（docs/NETWORK_MODES_DESIGN.md §4.1/§4.3）：ROUTED（路由牵引）下客户端直连本网关，
+// TRANSPARENT（透明串接）下由 tproxyd PROXY protocol v1 直接还原真实客户端对端 IP——
+// 两者均不下发可信代理链（trusted_proxies 输出空数组，避免 127.0.0.1/32 或上游网段被用于
+// X-Forwarded-For 伪造），并附加 deployment_mode 字段便于事件/排障识别；
 // REVERSE_PROXY（含缺省）输出与历史版本逐字节一致。
 func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 	trustedProxies := g.TrustedProxies
-	routed := app.DeploymentMode == applications.DeployModeRouted
-	if routed {
+	directPeer := app.DeploymentMode == applications.DeployModeRouted || app.DeploymentMode == applications.DeployModeTransparent
+	if directPeer {
 		trustedProxies = []GuardProxy{}
 	}
 	h := mapT{
@@ -1156,8 +1157,8 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 		"events_log":          g.EventsLog,
 		"gateway_node":        g.GatewayNode,
 	}
-	if routed {
-		h["deployment_mode"] = applications.DeployModeRouted
+	if directPeer {
+		h["deployment_mode"] = app.DeploymentMode
 	}
 	appAllow := []GuardRule{}
 	appDeny := []GuardRule{}

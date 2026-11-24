@@ -90,6 +90,15 @@ func TestSoftwareBypassCaddyIntegration(t *testing.T) {
 	if snapshot.Connections.AcceptedTotal == 0 || snapshot.SoftwareBypass.BypassedRequestsTotal == 0 {
 		t.Fatalf("connection/bypass snapshot = %+v", snapshot)
 	}
+	if snapshot.Connections.BytesInTotal == 0 || snapshot.Connections.BytesOutTotal == 0 {
+		t.Fatalf("connection bytes snapshot = %+v", snapshot.Connections)
+	}
+	if snapshot.HTTP.Status4xxTotal < 1 || snapshot.HTTP.Status2xxTotal < 2 {
+		t.Fatalf("http status counts = %+v, want 4xx>=1 and 2xx>=2", snapshot.HTTP)
+	}
+	if len(snapshot.Applications) != 1 || snapshot.Applications[0].AppID != "integration-app" || snapshot.Applications[0].BytesOutTotal == 0 {
+		t.Fatalf("applications snapshot = %+v", snapshot.Applications)
+	}
 
 	sampler.memory.Store(20)
 	time.Sleep(1100 * time.Millisecond)
@@ -99,6 +108,28 @@ func TestSoftwareBypassCaddyIntegration(t *testing.T) {
 	}
 	if snapshot := caddyRuntimeSnapshot(t, socket); snapshot.SoftwareBypass.Active {
 		t.Fatalf("bypass still active after recovery: %+v", snapshot.SoftwareBypass)
+	}
+
+	history := caddyRuntimeHistory(t, socket)
+	if history.IntervalSeconds != 2 || len(history.Points) < 3 {
+		t.Fatalf("runtime history = interval:%d points:%d", history.IntervalSeconds, len(history.Points))
+	}
+	sawBypassActive := false
+	for i, pt := range history.Points {
+		if pt.TakenAt.IsZero() {
+			t.Fatalf("history point %d missing taken_at", i)
+		}
+		if pt.SoftwareBypassActive {
+			sawBypassActive = true
+		}
+	}
+	if !sawBypassActive || history.Points[len(history.Points)-1].SoftwareBypassActive {
+		t.Fatalf("history software_bypass_active expected true then false: %+v", history.Points)
+	}
+
+	// Non-GET to /jiuzhang/runtime/history over Caddy Unix Admin Socket must return 405.
+	if status := caddyAdminPostStatus(t, socket, "/jiuzhang/runtime/history"); status != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /jiuzhang/runtime/history status = %d, want 405", status)
 	}
 }
 
@@ -133,14 +164,18 @@ func caddyRequest(t *testing.T, url, cookie string) int {
 	return response.StatusCode
 }
 
-func caddyRuntimeSnapshot(t *testing.T, socket string) RuntimeSnapshot {
-	t.Helper()
+func caddyAdminClient(socket string) *http.Client {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 		},
 	}
-	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	return &http.Client{Transport: transport, Timeout: 5 * time.Second}
+}
+
+func caddyRuntimeSnapshot(t *testing.T, socket string) RuntimeSnapshot {
+	t.Helper()
+	client := caddyAdminClient(socket)
 	response, err := client.Get("http://localhost/jiuzhang/runtime")
 	if err != nil {
 		t.Fatal(err)
@@ -154,6 +189,36 @@ func caddyRuntimeSnapshot(t *testing.T, socket string) RuntimeSnapshot {
 		t.Fatal(err)
 	}
 	return snapshot
+}
+
+func caddyRuntimeHistory(t *testing.T, socket string) RuntimeHistory {
+	t.Helper()
+	client := caddyAdminClient(socket)
+	response, err := client.Get("http://localhost/jiuzhang/runtime/history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("runtime history admin status = %d", response.StatusCode)
+	}
+	var history RuntimeHistory
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&history); err != nil {
+		t.Fatal(err)
+	}
+	return history
+}
+
+func caddyAdminPostStatus(t *testing.T, socket, path string) int {
+	t.Helper()
+	client := caddyAdminClient(socket)
+	response, err := client.Post("http://localhost"+path, "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
+	return response.StatusCode
 }
 
 func caddyIntegrationConfig(gatewayAddr, socket, upstreamAddr string) map[string]interface{} {

@@ -62,11 +62,12 @@ func (h *Handler) SetAdmissionCoverageProvider(fn func(ctx context.Context, appI
 // List 应用列表。
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	f := ListFilter{
-		Keyword:  r.URL.Query().Get("keyword"),
-		Status:   r.URL.Query().Get("status"),
-		Mode:     r.URL.Query().Get("protection_mode"),
-		Page:     queryInt(r, "page", 1),
-		PageSize: queryInt(r, "page_size", 20),
+		Keyword:        r.URL.Query().Get("keyword"),
+		Status:         r.URL.Query().Get("status"),
+		Mode:           r.URL.Query().Get("protection_mode"),
+		DeploymentMode: r.URL.Query().Get("deployment_mode"),
+		Page:           queryInt(r, "page", 1),
+		PageSize:       queryInt(r, "page_size", 20),
 	}
 	list, total, err := h.store.List(r.Context(), f)
 	if err != nil {

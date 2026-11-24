@@ -17,7 +17,7 @@ import {
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { DeleteOutlined, PlusOutlined, SaveOutlined, SettingOutlined } from '@ant-design/icons'
+import { DeleteOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { networkConfigApi } from '../../api/networkConfig'
@@ -27,7 +27,7 @@ import TableRefreshControl from '../../components/TableRefreshControl'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import { useAuthStore } from '../../stores/auth'
 import { hasPermission } from '../../utils/permission'
-import { isCIDRAddress, isValidIPLiteral } from '../../utils/stage5'
+import { isValidIPv4 } from '../../utils/stage5'
 import type {
   NetworkBridgeConfig,
   NetworkBridgeStatus,
@@ -59,6 +59,13 @@ const LINK_PAIR_STATE_META: Record<string, { label: string; color?: string }> = 
   SUPPRESSED: { label: '已抑制', color: 'red' },
 }
 
+/** 透明串接牵引运行状态展示（netmgrd transparent.state 取值） */
+const TRANSPARENT_STATE_META: Record<string, { label: string; color?: string }> = {
+  ACTIVE: { label: '牵引生效', color: 'green' },
+  INACTIVE: { label: '未启用' },
+  DEGRADED: { label: '已降级', color: 'red' },
+}
+
 /** 端口联动参数缺省值（与服务端/netmgrd 一致，开启时预填） */
 const DEFAULT_LINK_PAIR: NetworkLinkPairConfig = {
   enabled: true,
@@ -67,16 +74,29 @@ const DEFAULT_LINK_PAIR: NetworkLinkPairConfig = {
   max_flaps_per_hour: 20,
 }
 
-/** 网桥名校验：Linux 接口名（字母数字/下划线/连字符，最长 15 字符） */
-const BRIDGE_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,15}$/
+/** 网桥名校验：与后端 netconfig.go 一致，仅允许 br0 ~ br99 */
+const BRIDGE_NAME_PATTERN = /^br\d{1,2}$/
 
-/** 取最小未使用的 brN 编号作为新建网桥的建议名 */
+/** 严格 IPv4 CIDR 校验（与后端 netconfig.go net.ParseCIDR + To4 一致，拒绝 IPv6） */
+function isIPv4CIDR(raw: string): boolean {
+  const s = raw.trim()
+  const parts = s.split('/')
+  if (parts.length !== 2) return false
+  const [addr, bits] = parts
+  if (!isValidIPv4(addr)) return false
+  if (!/^\d+$/.test(bits) || (bits.length > 1 && bits[0] === '0')) return false
+  const n = Number(bits)
+  return n >= 0 && n <= 32
+}
+
+/** 取最小未使用的 br0~br99 编号作为新建网桥的建议名 */
 function suggestBridgeName(bridges: NetworkBridgeConfig[]): string {
   const used = new Set(bridges.map((b) => b.name))
-  for (let i = 0; ; i++) {
+  for (let i = 0; i <= 99; i++) {
     const name = `br${i}`
     if (!used.has(name)) return name
   }
+  return ''
 }
 
 /** 服务端 desired 允许缺省/null 字段，本地统一归一化为完整结构 */
@@ -125,12 +145,23 @@ export default function NetworkConfigPage() {
 
   const serverDesired = useMemo(() => normalizeDesired(configQuery.data?.desired), [configQuery.data])
   const status = configQuery.data?.status ?? null
+  // 服务端返回本网关默认节点名；缺省时回落首个上报节点（兼容旧版接口）
+  const defaultNode = configQuery.data?.default_node?.trim() || nodes[0]?.node_name || ''
+  const isNonDefaultNode = Boolean(currentNode && defaultNode && currentNode !== defaultNode)
+  const canEditCurrentNode = canUpdate && !isNonDefaultNode
+  const hasSuppressedLinkPair = useMemo(
+    () => (status?.link_pairs ?? []).some((lp) => lp.state === 'SUPPRESSED'),
+    [status],
+  )
 
   // 本地未保存的期望配置修改（仅跟踪当前节点；保存成功或放弃后清空）
   const [edit, setEdit] = useState<{ nodeName: string; desired: NetworkDesiredConfig } | null>(null)
   const desired = edit && edit.nodeName === currentNode ? edit.desired : serverDesired
   const dirty = edit != null && edit.nodeName === currentNode
-  const updateDesired = (next: NetworkDesiredConfig) => setEdit({ nodeName: currentNode, desired: next })
+  const updateDesired = (next: NetworkDesiredConfig) => {
+    if (!canEditCurrentNode) return
+    setEdit({ nodeName: currentNode, desired: next })
+  }
 
   // 新建网桥表单（bridgeName 为 null 表示未手动输入，展示自动建议名）
   const [bridgeName, setBridgeName] = useState<string | null>(null)
@@ -149,23 +180,42 @@ export default function NetworkConfigPage() {
     | null
   >(null)
 
-  /** 可选成员口：该节点在线（present）且非管理口，标注介质类型 */
+  /** 已分配给现有网桥的成员口映射（ifname -> 所属网桥名） */
+  const usedBridgePorts = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const b of desired.bridges) {
+      for (const p of b.ports) {
+        map.set(p, b.name)
+      }
+    }
+    return map
+  }, [desired.bridges])
+
+  /** 可选成员口：该节点在线（present）、非管理口且非镜像口；已加入其他网桥的端口禁用并标注 */
   const portOptions = useMemo(() => {
     const node = nodes.find((n) => n.node_name === currentNode)
     return (node?.interfaces ?? [])
-      .filter((it) => it.present && it.role !== 'MANAGEMENT')
+      .filter((it) => it.present && it.role !== 'MANAGEMENT' && it.role !== 'MIRROR')
       .map((it) => {
         const meta = MEDIA_TYPE_META[it.media_type] ?? MEDIA_TYPE_META.UNKNOWN
-        return { value: it.ifname, label: `${it.ifname}（${meta.label}）` }
+        const usedBy = usedBridgePorts.get(it.ifname)
+        return {
+          value: it.ifname,
+          label: usedBy
+            ? `${it.ifname}（${meta.label} · 已用于 ${usedBy}）`
+            : `${it.ifname}（${meta.label}）`,
+          disabled: Boolean(usedBy),
+        }
       })
-  }, [nodes, currentNode])
+  }, [nodes, currentNode, usedBridgePorts])
 
   const suggestedBridgeName = suggestBridgeName(desired.bridges)
 
   const addBridge = () => {
+    if (!canEditCurrentNode) return
     const name = (bridgeName ?? suggestedBridgeName).trim()
     if (!BRIDGE_NAME_PATTERN.test(name)) {
-      message.error('网桥名称仅允许字母、数字、下划线与连字符，且不超过 15 字符')
+      message.error('网桥名称仅允许 br0 ~ br99（如 br0、br1）')
       return
     }
     if (desired.bridges.some((b) => b.name === name)) {
@@ -176,17 +226,24 @@ export default function NetworkConfigPage() {
       message.error('成员口至少选择 2 个')
       return
     }
+    const conflictPort = bridgePorts.find((p) => usedBridgePorts.has(p))
+    if (conflictPort) {
+      message.error(`接口 ${conflictPort} 已分配给网桥 ${usedBridgePorts.get(conflictPort)}，不可重复加入`)
+      return
+    }
     updateDesired({ ...desired, bridges: [...desired.bridges, { name, ports: [...bridgePorts] }] })
     setBridgeName(null)
     setBridgePorts([])
   }
 
   const removeBridge = (name: string) => {
+    if (!canEditCurrentNode) return
     updateDesired({ ...desired, bridges: desired.bridges.filter((b) => b.name !== name) })
   }
 
   /** 开启/关闭/调整指定网桥的端口联动配置 */
   const setBridgeLinkPair = (name: string, lp: NetworkLinkPairConfig | null) => {
+    if (!canEditCurrentNode) return
     updateDesired({
       ...desired,
       bridges: desired.bridges.map((b) => (b.name === name ? { ...b, link_pair: lp } : b)),
@@ -194,14 +251,15 @@ export default function NetworkConfigPage() {
   }
 
   const addRoute = () => {
+    if (!canEditCurrentNode) return
     const dst = routeDst.trim()
     const via = routeVia.trim()
-    if (!isCIDRAddress(dst)) {
-      message.error('目的网段必须为合法 CIDR（如 10.10.0.0/16）')
+    if (!isIPv4CIDR(dst)) {
+      message.error('目的网段必须为合法 IPv4 CIDR（仅支持 IPv4，如 10.10.0.0/16）')
       return
     }
-    if (!isValidIPLiteral(via)) {
-      message.error('下一跳必须为合法 IP 地址（不支持域名/端口/协议前缀）')
+    if (!isValidIPv4(via)) {
+      message.error('下一跳必须为合法 IPv4 地址（仅支持 IPv4，不支持 IPv6/域名/端口）')
       return
     }
     if (desired.routes.some((r) => r.dst === dst)) {
@@ -214,6 +272,7 @@ export default function NetworkConfigPage() {
   }
 
   const removeRoute = (dst: string) => {
+    if (!canEditCurrentNode) return
     updateDesired({ ...desired, routes: desired.routes.filter((r) => r.dst !== dst) })
   }
 
@@ -231,9 +290,13 @@ export default function NetworkConfigPage() {
 
   /** 保存前二次确认（高危：保存即下发网关节点执行，错误配置可致流量中断） */
   const confirmSave = () => {
+    if (!canEditCurrentNode) return
+    const isResetSuppressed = !dirty && hasSuppressedLinkPair
     modal.confirm({
       title: '高风险操作确认',
-      content: `保存将把当前期望配置（网桥 ${desired.bridges.length} 个、静态路由 ${desired.routes.length} 条、内核三层转发${desired.ip_forward ? '开启' : '关闭'}）下发到节点「${currentNode}」立即执行，错误配置可能导致业务流量中断。确定保存吗？`,
+      content: isResetSuppressed
+        ? `当前存在处于抑制态（SUPPRESSED）的端口联动网桥，重新保存将刷新配置时间戳并下发到节点「${currentNode}」立即执行（网桥 ${desired.bridges.length} 个、静态路由 ${desired.routes.length} 条、内核三层转发${desired.ip_forward ? '开启' : '关闭'}），以复位端口联动抑制态。确定重新下发吗？`
+        : `保存将把当前期望配置（网桥 ${desired.bridges.length} 个、静态路由 ${desired.routes.length} 条、内核三层转发${desired.ip_forward ? '开启' : '关闭'}）下发到节点「${currentNode}」立即执行，错误配置可能导致业务流量中断。确定保存吗？`,
       okText: '确认保存',
       cancelText: '取消',
       okButtonProps: { danger: true },
@@ -299,7 +362,7 @@ export default function NetworkConfigPage() {
             <Switch
               size="small"
               checked={enabled}
-              disabled={!canUpdate || (!enabled && record.ports.length !== 2)}
+              disabled={!canEditCurrentNode || (!enabled && record.ports.length !== 2)}
               onChange={(v) =>
                 setBridgeLinkPair(record.name, v ? { ...DEFAULT_LINK_PAIR } : null)
               }
@@ -318,6 +381,7 @@ export default function NetworkConfigPage() {
                         min={200}
                         max={10000}
                         step={100}
+                        disabled={!canEditCurrentNode}
                         value={lp.hold_down_ms}
                         onChange={(v) => updateParam({ hold_down_ms: v ?? 1000 })}
                         aria-label={`故障判定-${record.name}`}
@@ -330,6 +394,7 @@ export default function NetworkConfigPage() {
                         min={1000}
                         max={60000}
                         step={500}
+                        disabled={!canEditCurrentNode}
                         value={lp.hold_up_ms}
                         onChange={(v) => updateParam({ hold_up_ms: v ?? 5000 })}
                         aria-label={`恢复判定-${record.name}`}
@@ -341,6 +406,7 @@ export default function NetworkConfigPage() {
                         size="small"
                         min={1}
                         max={200}
+                        disabled={!canEditCurrentNode}
                         value={lp.max_flaps_per_hour}
                         onChange={(v) => updateParam({ max_flaps_per_hour: v ?? 20 })}
                         aria-label={`每小时联动上限-${record.name}`}
@@ -376,7 +442,7 @@ export default function NetworkConfigPage() {
           danger
           icon={<DeleteOutlined />}
           aria-label={`删除网桥-${record.name}`}
-          disabled={!canUpdate}
+          disabled={!canEditCurrentNode}
           onClick={() => removeBridge(record.name)}
         />
       ),
@@ -407,7 +473,7 @@ export default function NetworkConfigPage() {
           danger
           icon={<DeleteOutlined />}
           aria-label={`删除路由-${record.dst}`}
-          disabled={!canUpdate}
+          disabled={!canEditCurrentNode}
           onClick={() => removeRoute(record.dst)}
         />
       ),
@@ -476,11 +542,20 @@ export default function NetworkConfigPage() {
             <Button
               type="primary"
               icon={<SaveOutlined />}
-              disabled={!dirty}
+              disabled={!canEditCurrentNode || (!dirty && !hasSuppressedLinkPair)}
               loading={saveMutation.isPending}
               onClick={confirmSave}
             >
               保存配置
+            </Button>
+          )}
+          {canEditCurrentNode && hasSuppressedLinkPair && !dirty && (
+            <Button
+              icon={<ReloadOutlined />}
+              loading={saveMutation.isPending}
+              onClick={confirmSave}
+            >
+              重新下发 / 复位抑制
             </Button>
           )}
           <TableRefreshControl
@@ -489,6 +564,22 @@ export default function NetworkConfigPage() {
             onRefresh={() => Promise.all([configQuery.refetch(), interfacesQuery.refetch()])}
           />
         </Space>
+        {isNonDefaultNode && (
+          <Alert
+            style={{ marginTop: 12 }}
+            type="info"
+            showIcon
+            message={`当前节点「${currentNode}」仅支持只读查看`}
+            description={`网络配置依赖本机网关边车共享卷下发，当前版本仅支持编辑并下发本网关节点「${defaultNode}」的配置。`}
+            action={
+              nodes.some((n) => n.node_name === defaultNode) ? (
+                <Button size="small" type="link" onClick={() => switchNode(defaultNode)}>
+                  切换到本网关节点
+                </Button>
+              ) : undefined
+            }
+          />
+        )}
         <Alert
           style={{ marginTop: 12 }}
           type="warning"
@@ -527,27 +618,29 @@ export default function NetworkConfigPage() {
               <Input
                 style={{ width: 160 }}
                 value={bridgeName ?? suggestedBridgeName}
+                disabled={!canEditCurrentNode}
                 onChange={(e) => setBridgeName(e.target.value)}
                 aria-label="网桥名称"
               />
               <Select
                 mode="multiple"
                 style={{ minWidth: 280 }}
-                placeholder="选择成员口（至少 2 个，不含管理口）"
+                placeholder="选择成员口（至少 2 个，不含管理口/镜像口）"
+                disabled={!canEditCurrentNode}
                 value={bridgePorts}
                 options={portOptions}
                 onChange={(values: string[]) => setBridgePorts(values)}
                 aria-label="成员口"
               />
-              <Button icon={<PlusOutlined />} onClick={addBridge}>
+              <Button icon={<PlusOutlined />} disabled={!canEditCurrentNode} onClick={addBridge}>
                 新建网桥
               </Button>
             </Space>
           )}
           <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 12 }}>
-            网桥用于透明串接等二层部署模式；成员口仅可选该节点在线且未分配为管理口的物理网口。
+            网桥用于透明串接等二层部署模式（桥名仅允许 br0 ~ br99）；成员口仅可选该节点在线、未分配为管理口或镜像口且未加入其他网桥的物理网口。
             开启端口联动后：任一成员口链路故障时将联动断开配对口，引导上游设备切换链路；
-            故障恢复后配对口自动恢复连通；联动频率超限将进入抑制态（保存一次配置或重启 netmgrd 复位）。
+            故障恢复后配对口自动恢复连通；联动频率超限将进入抑制态（点击「重新下发 / 复位抑制」或重启 netmgrd 复位）。
           </Typography.Paragraph>
         </Card>
       )}
@@ -559,7 +652,7 @@ export default function NetworkConfigPage() {
               <Typography.Text>内核三层转发</Typography.Text>
               <Switch
                 checked={desired.ip_forward}
-                disabled={!canUpdate}
+                disabled={!canEditCurrentNode}
                 onChange={(v) => updateDesired({ ...desired, ip_forward: v })}
                 aria-label="内核三层转发"
               />
@@ -581,25 +674,27 @@ export default function NetworkConfigPage() {
               <Space wrap>
                 <Input
                   style={{ width: 220 }}
-                  placeholder="目的网段 CIDR，如 10.10.0.0/16"
+                  placeholder="IPv4 目的网段 CIDR，如 10.10.0.0/16"
+                  disabled={!canEditCurrentNode}
                   value={routeDst}
                   onChange={(e) => setRouteDst(e.target.value)}
                   aria-label="目的网段"
                 />
                 <Input
                   style={{ width: 200 }}
-                  placeholder="下一跳网关，如 172.30.10.2"
+                  placeholder="IPv4 下一跳网关，如 172.30.10.2"
+                  disabled={!canEditCurrentNode}
                   value={routeVia}
                   onChange={(e) => setRouteVia(e.target.value)}
                   aria-label="下一跳"
                 />
-                <Button icon={<PlusOutlined />} onClick={addRoute}>
+                <Button icon={<PlusOutlined />} disabled={!canEditCurrentNode} onClick={addRoute}>
                   添加路由
                 </Button>
               </Space>
             )}
             <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
-              路由牵引模式下，客户端/交换机将目的网段路由指向本节点，需开启内核三层转发并规划回程路由，避免三角传输。
+              路由牵引模式下，客户端/交换机将目的网段路由指向本节点，需开启内核三层转发并规划回程路由，避免三角传输（静态路由仅支持 IPv4）。
             </Typography.Paragraph>
           </Space>
         </Card>
@@ -608,7 +703,16 @@ export default function NetworkConfigPage() {
       {!configQuery.isError && (
         <Card title="执行状态">
           {status == null ? (
-            <Alert type="info" showIcon message="节点尚未上报执行状态" />
+            isNonDefaultNode ? (
+              <Alert
+                type="info"
+                showIcon
+                message="非本网关节点暂不支持通过本地边车卷读取执行状态"
+                description={`当前执行状态仅采集本网关节点「${defaultNode}」的本地边车状态文件（network-status.json）。`}
+              />
+            ) : (
+              <Alert type="info" showIcon message="节点尚未上报执行状态" />
+            )
           ) : (
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
               <Space wrap>
@@ -629,6 +733,70 @@ export default function NetworkConfigPage() {
                 <Typography.Text strong>内核三层转发：</Typography.Text>
                 {stateTag(status.ip_forward ?? 'skipped')}
               </div>
+              {status.transparent &&
+                (() => {
+                  const tp = status.transparent
+                  // 未启用（INACTIVE 或 enabled=false）时 netmgrd 未执行探活，不展示未探测的红色异常标签
+                  const showProbeHealth = tp.state !== 'INACTIVE' && tp.enabled !== false
+                  const meta = TRANSPARENT_STATE_META[tp.state] ?? {
+                    label: tp.state || '未知',
+                  }
+                  return (
+                    <Card size="small" title="透明串接牵引">
+                      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                        <Space wrap size={8}>
+                          <Tag color={meta.color}>{meta.label}</Tag>
+                          {showProbeHealth && typeof tp.redirect_active === 'boolean' && (
+                            <Tag color={tp.redirect_active ? 'green' : 'default'}>
+                              {tp.redirect_active ? 'REDIRECT 已生效' : 'REDIRECT 未生效'}
+                            </Tag>
+                          )}
+                          {(tp.bridges?.length ?? 0) > 0 && (
+                            <Typography.Text type="secondary">
+                              网桥：{tp.bridges?.join('、')}
+                            </Typography.Text>
+                          )}
+                          {(tp.ports?.length ?? 0) > 0 && (
+                            <Typography.Text type="secondary">
+                              牵引端口：{tp.ports?.join(', ')}
+                            </Typography.Text>
+                          )}
+                          {tp.listen_port ? (
+                            <Typography.Text type="secondary">
+                              监听端口：{tp.listen_port}
+                            </Typography.Text>
+                          ) : null}
+                          {showProbeHealth && typeof tp.tproxyd_healthy === 'boolean' && (
+                            <Tag color={tp.tproxyd_healthy ? 'green' : 'red'}>
+                              tproxyd {tp.tproxyd_healthy ? '正常' : '异常'}
+                            </Tag>
+                          )}
+                          {showProbeHealth && typeof tp.caddy_healthy === 'boolean' && (
+                            <Tag color={tp.caddy_healthy ? 'green' : 'red'}>
+                              Caddy {tp.caddy_healthy ? '正常' : '异常'}
+                            </Tag>
+                          )}
+                          {showProbeHealth && typeof tp.bridge_nf_ready === 'boolean' && (
+                            <Tag color={tp.bridge_nf_ready ? 'green' : 'red'}>
+                              br_netfilter {tp.bridge_nf_ready ? '就绪' : '未就绪'}
+                            </Tag>
+                          )}
+                          {tp.updated_at && (
+                            <Typography.Text type="secondary">
+                              更新时间：{dayjs(tp.updated_at).format('YYYY-MM-DD HH:mm:ss')}
+                            </Typography.Text>
+                          )}
+                        </Space>
+                        {tp.message &&
+                          (tp.state === 'DEGRADED' ? (
+                            <Alert type="error" showIcon message={tp.message} />
+                          ) : (
+                            <Typography.Text type="secondary">{tp.message}</Typography.Text>
+                          ))}
+                      </Space>
+                    </Card>
+                  )
+                })()}
               <Table<NetworkBridgeStatus>
                 rowKey="name"
                 size="small"
@@ -656,6 +824,14 @@ export default function NetworkConfigPage() {
               {(status.link_pairs?.length ?? 0) > 0 && (
                 <>
                   <Typography.Text strong>端口联动</Typography.Text>
+                  {hasSuppressedLinkPair && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message="存在处于抑制态（SUPPRESSED）的端口联动网桥"
+                      description="可点击上方「重新下发 / 复位抑制」或「保存配置」刷新配置时间戳以复位抑制态。"
+                    />
+                  )}
                   <Table<NetworkLinkPairStatus>
                     rowKey="bridge"
                     size="small"

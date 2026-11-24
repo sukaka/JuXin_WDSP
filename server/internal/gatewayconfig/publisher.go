@@ -212,10 +212,19 @@ type Publisher struct {
 	guard         GuardProvider
 	appConfigs    AppConfigsProvider
 	// 镜像/透明边车配置（docs/NETWORK_MODES_DESIGN.md §4.2/§4.3）：
-	// gatewayNode 为网关节点名；mirrorIfaces 提供镜像口清单；sidecarDir 为共享卷目录（空用默认）。
-	gatewayNode  string
-	mirrorIfaces MirrorInterfacesProvider
-	sidecarDir   string
+	// gatewayNode 为网关节点名；mirrorIfaces 提供镜像口清单；sidecarDir 为共享卷目录（空用默认）；
+	// sidecar*Log 为网关侧输出日志路径（裸机可覆写为安装根内路径，容器默认 /var/log/caddy/...）。
+	gatewayNode         string
+	mirrorIfaces        MirrorInterfacesProvider
+	bridgePorts         BridgePortsProvider
+	sidecarDir          string
+	sidecarEventsLog    string
+	sidecarAuditLog     string
+	sidecarDiscoveryLog string
+	tproxyListen        string
+	tproxyTarget        string
+	tproxyTargetTLS     string
+	tproxyPassthrough   func(ctx context.Context) (string, error)
 	// W18-SYNC 多节点扇出（§200）：nodeSync 提供登记次要节点与结果回填；
 	// syncAlerter 为失败告警出口。均为 nil 时退化为单网关发布（既有行为）。
 	nodeSync    NodeSyncStore
@@ -310,6 +319,31 @@ func (p *Publisher) SetSidecarConfig(gatewayNode string, ifaces MirrorInterfaces
 // SetSidecarDir 覆盖边车配置目录（默认 DefaultSidecarDir；测试用临时目录）。
 func (p *Publisher) SetSidecarDir(dir string) {
 	p.sidecarDir = dir
+}
+
+// SetSidecarLogPaths 注入下发到 mirrorcap.json 的网关侧日志路径（空串沿用 mirrorcap 默认）。
+func (p *Publisher) SetSidecarLogPaths(eventsLog, auditLog, discoveryLog string) {
+	p.sidecarEventsLog = eventsLog
+	p.sidecarAuditLog = auditLog
+	p.sidecarDiscoveryLog = discoveryLog
+}
+
+// SetBridgePortsProvider 注入节点网桥成员口查询（用于透明模式站点被动发现补齐）。
+func (p *Publisher) SetBridgePortsProvider(bp BridgePortsProvider) {
+	p.bridgePorts = bp
+}
+
+// SetTproxyAddresses 注入透明串接模式 tproxyd 监听与下游 Caddy 回环目标地址（空串沿用默认值）。
+func (p *Publisher) SetTproxyAddresses(listen, target, targetTLS string) {
+	p.tproxyListen = strings.TrimSpace(listen)
+	p.tproxyTarget = strings.TrimSpace(target)
+	p.tproxyTargetTLS = strings.TrimSpace(targetTLS)
+}
+
+// SetTproxyPassthroughAllowlistProvider 注入透明模式 TLS SNI 透传白名单设置读取器
+// （通常绑定 system_settings 的 network:tproxy_passthrough_allowlist 键）。
+func (p *Publisher) SetTproxyPassthroughAllowlistProvider(fn func(ctx context.Context) (string, error)) {
+	p.tproxyPassthrough = fn
 }
 
 // SetNodeSyncStore 注入多节点同步目标仓储（W18-SYNC §200；nil 时发布不扇出）。
@@ -690,25 +724,34 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	// 步骤2：生成候选配置
 	p.updateTaskStep(ctx, taskID, TaskGenerating, "生成候选配置", 25)
 	gen, err := Generate(GenerateInput{
-		Apps:           appsData,
-		AdminSocket:    p.caddy.SocketPath(),
-		Exceptions:     exceptionRules,
-		CustomRules:    customSecLang,
-		Guard:          guardCfg,
-		GatewayTracing: p.gatewayTracing,
+		Apps:                   appsData,
+		AdminSocket:            p.caddy.SocketPath(),
+		Exceptions:             exceptionRules,
+		CustomRules:            customSecLang,
+		Guard:                  guardCfg,
+		GatewayTracing:         p.gatewayTracing,
+		TransparentHTTPListen:  p.effectiveTproxyTarget(),
+		TransparentHTTPSListen: p.effectiveTproxyTargetTLS(),
 	})
 	if err != nil {
 		p.finishTask(ctx, taskID, TaskFailed, "GENERATE_FAILED", err.Error(), nil)
 		return
 	}
 
-	// 步骤3：配置校验
+	// 步骤3：配置校验（含透明模式源站与 tproxyd.json 边车契约校验）
 	p.updateTaskStep(ctx, taskID, TaskValidating, "校验配置", 40)
+	tproxySidecar, err := p.validateTransparentConfig(ctx, appsData)
+	if err != nil {
+		p.saveFailedCandidate(gen, snapshot, err)
+		p.finishTask(ctx, taskID, TaskFailed, "VALIDATE_FAILED", err.Error(), nil)
+		return
+	}
 	if err := p.caddy.ValidateConfig(ctx, gen.JSON); err != nil {
 		p.saveFailedCandidate(gen, snapshot, err)
 		p.finishTask(ctx, taskID, TaskFailed, "VALIDATE_FAILED", err.Error(), nil)
 		return
 	}
+	snapshot["tproxyd"] = tproxySidecar
 
 	// 步骤4：保存版本（不可变）
 	version, err := p.saveVersion(ctx, gen, snapshot, in, taskID)
@@ -886,8 +929,26 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		p.finishTask(ctx, taskID, TaskFailed, "LOCK_LOST", err.Error(), &version.ID)
 		return
 	}
-	// 镜像/透明边车配置（附加产物：写失败只记日志，不回滚已加载的 Caddy 配置）
-	p.writeSidecarConfigs(ctx, appsData)
+	// 镜像/透明边车配置（附加产物：写失败只记日志，不回滚已加载的 Caddy 配置）。
+	//   - mirrorcap.json 不依赖 Caddy 路由，局部发布（len(in.AppIDs)>0）仍按全部活动应用生成，
+	//     避免局部发布反代应用时误关镜像边车；
+	//   - tproxyd.json 强依赖 Caddy 透明回环路由，必须严格按本次实际加载进 Caddy 的有效应用集
+	//     （appsData）生成，杜绝局部发布导致 Caddy 与 tproxyd.json 分裂。
+	mirrorcapApps := appsData
+	if len(in.AppIDs) > 0 && p.apps != nil {
+		if allApps, _, serr := p.buildSnapshot(ctx, nil); serr == nil {
+			if !licenseValid {
+				for i := range allApps {
+					allApps[i].ProtectionMode = applications.ModeBypass
+				}
+			}
+			mirrorcapApps = allApps
+		} else {
+			slog.Warn("load full apps snapshot for mirrorcap sidecar config failed, falling back to publish slice", "error", serr)
+		}
+	}
+	p.writeMirrorcapSidecarConfig(ctx, mirrorcapApps)
+	p.writeTproxydSidecarConfig(ctx, appsData)
 	// W18-SYNC §200：主节点全链路成功后，同一份最终配置扇出到登记次要节点
 	// （逐节点回填 last_sync_*；次要节点失败不阻断主发布——记录并告警）。
 	p.SyncConfigToNodes(ctx, gen.JSON, version.ID)
@@ -1206,7 +1267,7 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 			}
 			ad.RuleOverrideSecLang = lines
 		}
-		// 证书（HTTPS 应用）
+		// 证书（HTTPS 应用；MIRROR 镜像旁路不终结 TLS、不加载证书，跳过强制证书校验）
 		hasHTTPS := false
 		for _, d := range domains {
 			if d.HTTPSEnabled {
@@ -1214,7 +1275,7 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 				break
 			}
 		}
-		if hasHTTPS {
+		if hasHTTPS && app.DeploymentMode != applications.DeployModeMirror {
 			cert, err := p.certs.GetApplicationCertificate(ctx, app.ID)
 			if err != nil {
 				return nil, nil, fmt.Errorf("应用 %s 查询证书失败: %w", app.Code, err)
@@ -1234,7 +1295,8 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 		appsData = append(appsData, ad)
 		snapshot["apps"] = append(snapshot["apps"].([]map[string]interface{}), map[string]interface{}{
 			"code": app.Code, "mode": app.ProtectionMode,
-			"domains": len(domains), "upstreams": len(upstreams),
+			"deployment_mode": app.DeploymentMode,
+			"domains":         len(domains), "upstreams": len(upstreams),
 		})
 	}
 	return appsData, snapshot, nil
@@ -1409,6 +1471,11 @@ func (p *Publisher) Rollback(ctx context.Context, in RollbackInput) (*PublishTas
 		}
 		p.finishTask(ctx, task.ID, TaskFailed, "LOCK_LOST", err.Error(), &in.VersionID)
 		return p.GetTask(ctx, task.ID)
+	}
+	// 主节点已完成回滚与当前版本切换：优先同步刷新主节点 mirrorcap/tproxyd 边车配置
+	// （不得因次要节点扇出失败而跳过主节点边车恢复，附加产物失败仅记日志）。
+	if err := p.restoreSidecarsAfterRollback(context.Background(), version); err != nil {
+		slog.Warn("refresh sidecar configs after rollback failed", "version", in.VersionID, "error", err)
 	}
 	// 显式回退也必须把已验证的恢复配置扇出到次要节点；否则主节点已切回旧版本，
 	// 次要节点仍可能继续提供被回退的版本。扇出沿用发布成功后的逐节点记录/告警语义，

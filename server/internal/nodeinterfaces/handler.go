@@ -1,8 +1,10 @@
 package nodeinterfaces
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -13,15 +15,32 @@ import (
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
+// BridgePortChecker 检查节点上指定接口是否已作为网桥成员口（返回所属桥名；空串 = 未入桥）。
+type BridgePortChecker func(ctx context.Context, nodeName, ifname string) (bridgeName string, err error)
+
 // Handler 网口管理处理器。
 type Handler struct {
-	store  Repository
-	audits *audits.Service
+	store         Repository
+	audits        *audits.Service
+	onChange      func(ctx context.Context)
+	bridgeChecker BridgePortChecker
 }
 
 // NewHandler 创建处理器（构造注入审计服务，语义同 customrules）。
 func NewHandler(store Repository, audit *audits.Service) *Handler {
 	return &Handler{store: store, audits: audit}
+}
+
+// SetOnChange 注册网口角色/排序变更后的联动回调（如刷新 mirrorcap.json 边车配置）。
+func (h *Handler) SetOnChange(fn func(ctx context.Context)) *Handler {
+	h.onChange = fn
+	return h
+}
+
+// SetBridgePortChecker 注入网桥成员口检查器：禁止将已加入网桥的接口设为 MANAGEMENT 或 MIRROR 角色。
+func (h *Handler) SetBridgePortChecker(fn BridgePortChecker) *Handler {
+	h.bridgeChecker = fn
+	return h
 }
 
 // RegisterRoutes 注册网口管理接口（权限：读 system_health.read，排序/角色 system_settings.update，
@@ -97,6 +116,18 @@ func (h *Handler) UpdateOrder(w http.ResponseWriter, r *http.Request) {
 				"role 取值非法（允许 MANAGEMENT/TRAFFIC/MIRROR 或空串）")
 			return
 		}
+		if h.bridgeChecker != nil && (it.Role == RoleManagement || it.Role == RoleMirror) {
+			bridgeName, err := h.bridgeChecker(r.Context(), req.NodeName, it.Ifname)
+			if err != nil {
+				response.InternalError(w, r, err)
+				return
+			}
+			if bridgeName != "" {
+				response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+					fmt.Sprintf("接口 %s 已加入网桥 %s，禁止设为 %s 角色（请先从网桥移除）", it.Ifname, bridgeName, it.Role))
+				return
+			}
+		}
 	}
 
 	// 审计 before 摘要（读取失败不阻断主流程，降级为空摘要并记日志）
@@ -117,6 +148,9 @@ func (h *Handler) UpdateOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.onChange != nil {
+		h.onChange(r.Context())
+	}
 	groups, err := h.store.ListGrouped(r.Context(), req.NodeName)
 	if err != nil {
 		response.InternalError(w, r, err)

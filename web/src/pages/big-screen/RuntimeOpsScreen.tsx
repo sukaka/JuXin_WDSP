@@ -21,7 +21,7 @@ const columnStyle = { display: 'flex', flexDirection: 'column', gap: 12, minHeig
 
 const bytesToGB = (bytes?: number | null) => (bytes ?? 0) / 1024 ** 3
 
-/** 系统运行监控大屏（system_health.read；运行总览无权限时静默降级） */
+/** 系统运行监控大屏（big_screen.runtime.read；运行总览无权限时静默降级） */
 export default function RuntimeOpsScreen() {
   const healthQuery = useQuery({
     queryKey: ['big-screen', 'runtime-health'],

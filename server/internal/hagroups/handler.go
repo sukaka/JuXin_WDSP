@@ -32,14 +32,20 @@ type NodeLister interface {
 	Names(ctx context.Context, nodeIDs []string) (map[string]string, error)
 }
 
+// BridgePortChecker 检查指定节点集合上某接口是否为网桥成员口（返回冲突节点名与桥名；空串 = 未入桥）。
+type BridgePortChecker func(ctx context.Context, nodeNames []string, iface string) (conflictNode, bridgeName string, err error)
+
+var errBridgePortCheckInternal = errors.New("check bridge port conflict failed")
+
 // Handler 主备组处理器。
 type Handler struct {
-	store      Repository
-	nodes      NodeLister
-	enc        Encryptor // nil = 未装配加密服务
-	audits     *audits.Service
-	sidecarDir string
-	now        func() time.Time
+	store         Repository
+	nodes         NodeLister
+	enc           Encryptor // nil = 未装配加密服务
+	audits        *audits.Service
+	sidecarDir    string
+	now           func() time.Time
+	bridgeChecker BridgePortChecker
 }
 
 // NewHandler 创建处理器。
@@ -49,6 +55,12 @@ func NewHandler(store Repository, nodes NodeLister, enc Encryptor, audit *audits
 
 // SetSidecarDir 覆盖边车目录（测试用临时目录）。
 func (h *Handler) SetSidecarDir(dir string) { h.sidecarDir = dir }
+
+// SetBridgePortChecker 注入网桥成员口冲突检查器（禁止将网桥成员口用作 HA VRRP 承载网卡）。
+func (h *Handler) SetBridgePortChecker(fn BridgePortChecker) *Handler {
+	h.bridgeChecker = fn
+	return h
+}
 
 func (h *Handler) dir() string {
 	if h.sidecarDir != "" {
@@ -107,6 +119,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	g, err := h.validate(r, &in)
 	if err != nil {
+		if errors.Is(err, errBridgePortCheckInternal) {
+			response.InternalError(w, r, err)
+			return
+		}
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
@@ -154,6 +170,10 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	g, err := h.validate(r, &in)
 	if err != nil {
+		if errors.Is(err, errBridgePortCheckInternal) {
+			response.InternalError(w, r, err)
+			return
+		}
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
@@ -359,6 +379,21 @@ func (h *Handler) validate(r *http.Request, in *UpsertInput) (*Group, error) {
 	}
 	for i := range g.Members {
 		g.Members[i].NodeName = names[g.Members[i].NodeID]
+	}
+	if h.bridgeChecker != nil {
+		memberNodes := make([]string, 0, len(g.Members))
+		for _, m := range g.Members {
+			if m.NodeName != "" {
+				memberNodes = append(memberNodes, m.NodeName)
+			}
+		}
+		conflictNode, bridgeName, err := h.bridgeChecker(r.Context(), memberNodes, g.Iface)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errBridgePortCheckInternal, err)
+		}
+		if bridgeName != "" {
+			return nil, fmt.Errorf("接口 %s 在节点 %s 上已作为网桥 %s 成员口，禁止用作 HA VRRP 承载网卡", g.Iface, conflictNode, bridgeName)
+		}
 	}
 	return g, nil
 }

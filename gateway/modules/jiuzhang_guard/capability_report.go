@@ -186,9 +186,15 @@ func (h *capReportHandle) writeOnce() {
 		caddy.Log().Error("capability manifest marshal failed")
 		return
 	}
-	if err := os.MkdirAll(h.dir, 0o755); err != nil {
+	if err := os.MkdirAll(h.dir, 0o770); err != nil {
 		caddy.Log().Error("capability sidecar dir create failed")
 		return
+	}
+	// 容器入口启用 umask 077 以保护 admin.sock，会导致 MkdirAll 产出的 sidecars 目录变为 0700；
+	// 显式 chmod 0770 让同组 1000 的 netmgrd（cap_drop ALL、无 CAP_DAC_OVERRIDE）可读写 sidecars，
+	// capability.json 自身仍受 umask 077 约束保持 0600，不向同组暴露。
+	if err := os.Chmod(h.dir, 0o770); err != nil {
+		caddy.Log().Warn("capability sidecar dir chmod failed")
 	}
 	tmp := filepath.Join(h.dir, capFileName+".tmp")
 	if err := os.WriteFile(tmp, raw, 0o644); err != nil {

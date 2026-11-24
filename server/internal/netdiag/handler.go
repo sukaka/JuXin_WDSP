@@ -231,17 +231,22 @@ func (h *Handler) Stop(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"message": "停止请求已受理"})
 }
 
-// writeStopFlag 原子写停止标记文件（空文件 stop-<jobUUID>）。
+// writeStopFlag 原子写停止标记文件（空文件 stop-<jobUUID>，0640 供同组 netmgrd 消费）。
 func (h *Handler) writeStopFlag(id uuid.UUID) error {
-	dir := diagDir(h.sidecarDir)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := ensureSharedDiagDir(h.sidecarDir); err != nil {
 		return err
 	}
+	dir := diagDir(h.sidecarDir)
 	tmp, err := os.CreateTemp(dir, ".stop-*.tmp")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
+	if err := tmp.Chmod(0o640); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
 		return err

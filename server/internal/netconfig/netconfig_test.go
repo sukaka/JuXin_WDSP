@@ -231,3 +231,30 @@ func TestMemStoreRoundTrip(t *testing.T) {
 		t.Fatalf("roundtrip = %+v", got)
 	}
 }
+
+func TestValidateRejectsMirrorPortInBridge(t *testing.T) {
+	ifaces := append(testIfaces(), nodeinterfaces.Interface{
+		Ifname: "eth5", Role: nodeinterfaces.RoleMirror, Present: true,
+	})
+	cfg := Config{
+		Bridges: []Bridge{{Name: "br0", Ports: []string{"eth2", "eth5"}}},
+	}
+	err := Validate(&cfg, ifaces)
+	if err == nil || !strings.Contains(err.Error(), "MIRROR") {
+		t.Fatalf("Validate(MIRROR port in bridge) err = %v, want MIRROR rejection", err)
+	}
+}
+
+func TestParseNetworkStatusWithTransparent(t *testing.T) {
+	raw := []byte(`{"ok":true,"node":"gw-1","transparent":{"state":"ACTIVE","enabled":true,"redirect_active":true,"listen_port":15000,"ports":[80,443],"bridges":["br0"],"tproxyd_healthy":true,"caddy_healthy":true,"bridge_nf_ready":true,"message":"ok"}}`)
+	st, err := ParseNetworkStatus(raw)
+	if err != nil {
+		t.Fatalf("ParseNetworkStatus: %v", err)
+	}
+	if st == nil || !st.OK || st.Transparent == nil {
+		t.Fatalf("parsed status = %+v", st)
+	}
+	if st.Transparent.State != "ACTIVE" || !st.Transparent.RedirectActive || st.Transparent.ListenPort != 15000 {
+		t.Fatalf("transparent status = %+v", st.Transparent)
+	}
+}

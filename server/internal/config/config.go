@@ -31,6 +31,8 @@ type Config struct {
 	SystemOps SystemOpsConfig
 	// ContainerOps 容器运维 sidecar（containeropsd）通道配置
 	ContainerOps ContainerOpsConfig
+	// TrafficAgents 分布式流量采集 Agent 跨平台安装包分发配置
+	TrafficAgents TrafficAgentsConfig
 	// RequestPCAP 默认空配置即关闭；三个路径配置完整时才加载证据服务。
 	RequestPCAP RequestPCAPConfig
 	// Product 产品 edition 与 WDSP/API 能力开关（阶段8）
@@ -49,6 +51,25 @@ type ContainerOpsConfig struct {
 	// Socket containeropsd 本地 Unix Socket 路径；环境变量 CONTAINEROPS_SOCKET，
 	// 默认空 = 功能不可用（裸机/未部署 sidecar 形态），接口返回明确 503，不伪造空列表
 	Socket string
+}
+
+// TrafficAgentsConfig 分布式流量采集 Agent 安装包分发与接入地址配置。
+type TrafficAgentsConfig struct {
+	// PackagesDir 多平台 Agent 安装包目录（含 manifest.json 与各平台安装包）；
+	// 环境变量 TRAFFIC_AGENT_PACKAGES_DIR，默认 /app/runtime/agent-packages。
+	PackagesDir string
+	// PublicURL 可选显式配置的 WDSP 对接地址（如 https://192.168.10.20:8443）；
+	// 环境变量 TRAFFIC_AGENT_PUBLIC_URL。
+	PublicURL string
+	// ConsoleHTTPSPort 管理控制台 HTTPS 端口（用于按宿主 IP 自动拼装接入地址）；
+	// 环境变量 WEB_HTTPS_PORT，默认 8443。
+	ConsoleHTTPSPort int
+	// HostIPs 宿主机非回环 IP 列表（逗号分隔，容器部署由安装脚本写入 .env 透传）；
+	// 环境变量 WDSP_HOST_IPS。
+	HostIPs []string
+	// ConsoleCertFile 可选控制台公开证书路径（只读 SAN IP 与自签标记，不读取私钥）；
+	// 环境变量 CONSOLE_CERT_FILE，默认 /etc/caddy/console-certs/console.crt。
+	ConsoleCertFile string
 }
 
 type RequestPCAPConfig struct {
@@ -157,6 +178,8 @@ type WAFConfig struct {
 	CRSVersion string
 	// AuditLogPath Coraza 审计日志路径（事件采集）
 	AuditLogPath string
+	// AuditLogGateway 网关侧 Coraza 审计日志路径（下发 mirrorcap 边车用，裸机可自定义）
+	AuditLogGateway string
 	// GatewayNodeName 网关节点标识
 	GatewayNodeName string
 	// GuardEventsLog jiuzhang_guard 访问控制事件日志路径（API 侧采集，阶段5）
@@ -191,6 +214,8 @@ type WAFConfig struct {
 	NodeIfacesLog string
 	// SiteDiscoveryLog 站点资产被动发现日志路径（API 侧采集；网关 mirrorcap 按窗口聚合写入）
 	SiteDiscoveryLog string
+	// SiteDiscoveryLogGateway 网关侧站点发现日志路径（下发 mirrorcap 边车用，裸机可自定义）
+	SiteDiscoveryLogGateway string
 	// CollectorFlushBatch 采集器批量 flush 阈值（处理记录数，W20 批量化修复；
 	// 作用于 API 运行时事件与全量访问日志采集器，默认值与采集器内建默认一致）
 	CollectorFlushBatch int
@@ -214,6 +239,12 @@ type GatewayConfig struct {
 	// 开启时发布配置在每个路由链首注入 tracing handler；
 	// exporter/采样由网关进程 OTEL_* 环境变量控制（见 docs/APM_DATA_PLANE_DEPLOYMENT.md）。
 	TracingEnabled bool
+	// TproxyListenGateway 透明串接模式 tproxyd 牵引监听地址（环境变量 GATEWAY_TPROXY_LISTEN，默认 0.0.0.0:15000）。
+	TproxyListenGateway string
+	// TproxyTargetGateway 透明串接模式 tproxyd 下游 Caddy HTTP 回环监听地址（环境变量 GATEWAY_TPROXY_TARGET，默认 127.0.0.1:15080）。
+	TproxyTargetGateway string
+	// TproxyTargetTLSGateway 透明串接模式 tproxyd 下游 Caddy HTTPS/TLS 回环监听地址（环境变量 GATEWAY_TPROXY_TARGET_TLS，默认 127.0.0.1:15443）。
+	TproxyTargetTLSGateway string
 }
 
 // ValkeyAddress 返回 guard 配置发布使用的 Valkey 地址。
@@ -294,10 +325,18 @@ type CacheConfig struct {
 type SecurityConfig struct {
 	// CookieSecure 生产环境必须为 true（仅 HTTPS 下发 Cookie）
 	CookieSecure bool
-	// InitialAdminPassword 初始管理员密码（可选注入；为空则启动时生成一次性随机密码）
+	// InitialAdminPassword 初始系统管理员密码（可选注入；为空则启动时生成一次性随机密码）
 	InitialAdminPassword string
-	// InitialAdminUsername 初始管理员用户名，默认 jiuzhang_admin
+	// InitialAdminUsername 初始系统管理员用户名，默认 admin
 	InitialAdminUsername string
+	// InitialOperAdminPassword 初始运维管理员密码（可选注入；为空则启动时生成一次性随机密码）
+	InitialOperAdminPassword string
+	// InitialOperAdminUsername 初始运维管理员用户名，默认 operadmin
+	InitialOperAdminUsername string
+	// InitialAuditAdminPassword 初始审计管理员密码（可选注入；为空则启动时生成一次性随机密码）
+	InitialAuditAdminPassword string
+	// InitialAuditAdminUsername 初始审计管理员用户名，默认 auditor
+	InitialAuditAdminUsername string
 	// CORSAllowedOrigins 允许的来源（开发环境为空时允许 vite dev server）
 	CORSAllowedOrigins []string
 	// TrustedProxyCIDRs 管理面可信反向代理网段；仅来自这些网段的转发头会被解析
@@ -399,22 +438,30 @@ func Load() (*Config, error) {
 			DB:       getEnvInt("VALKEY_DB", 0),
 		},
 		Security: SecurityConfig{
-			CookieSecure:         getEnvBool("COOKIE_SECURE", false),
-			InitialAdminPassword: os.Getenv("INITIAL_ADMIN_PASSWORD"),
-			InitialAdminUsername: getEnv("INITIAL_ADMIN_USERNAME", "jiuzhang_admin"),
-			CORSAllowedOrigins:   getEnvList("CORS_ALLOWED_ORIGINS"),
-			TrustedProxyCIDRs:    getEnvList("MANAGEMENT_TRUSTED_PROXY_CIDRS"),
+			CookieSecure:              getEnvBool("COOKIE_SECURE", false),
+			InitialAdminPassword:      os.Getenv("INITIAL_ADMIN_PASSWORD"),
+			InitialAdminUsername:      getEnv("INITIAL_ADMIN_USERNAME", "admin"),
+			InitialOperAdminPassword:  os.Getenv("INITIAL_OPER_ADMIN_PASSWORD"),
+			InitialOperAdminUsername:  getEnv("INITIAL_OPER_ADMIN_USERNAME", "operadmin"),
+			InitialAuditAdminPassword: os.Getenv("INITIAL_AUDIT_ADMIN_PASSWORD"),
+			InitialAuditAdminUsername: getEnv("INITIAL_AUDIT_ADMIN_USERNAME", "auditor"),
+			CORSAllowedOrigins:        getEnvList("CORS_ALLOWED_ORIGINS"),
+			TrustedProxyCIDRs:         getEnvList("MANAGEMENT_TRUSTED_PROXY_CIDRS"),
 		},
 		Gateway: GatewayConfig{
-			AdminSocket:    getEnv("CADDY_ADMIN_SOCKET", "/var/run/caddy/admin.sock"),
-			DataDir:        getEnv("GATEWAY_DATA_DIR", "runtime"),
-			ValkeyAddr:     getEnv("GATEWAY_VALKEY_ADDR", ""),
-			TracingEnabled: getEnvBool("GATEWAY_TRACING_ENABLED", false),
+			AdminSocket:            getEnv("CADDY_ADMIN_SOCKET", "/var/run/caddy/admin.sock"),
+			DataDir:                getEnv("GATEWAY_DATA_DIR", "runtime"),
+			ValkeyAddr:             getEnv("GATEWAY_VALKEY_ADDR", ""),
+			TracingEnabled:         getEnvBool("GATEWAY_TRACING_ENABLED", false),
+			TproxyListenGateway:    getEnv("GATEWAY_TPROXY_LISTEN", "0.0.0.0:15000"),
+			TproxyTargetGateway:    getEnv("GATEWAY_TPROXY_TARGET", "127.0.0.1:15080"),
+			TproxyTargetTLSGateway: getEnv("GATEWAY_TPROXY_TARGET_TLS", "127.0.0.1:15443"),
 		},
 		WAF: WAFConfig{
 			CRSDir:                getEnv("WAF_CRS_DIR", "gateway/rules/crs/rules"),
 			CRSVersion:            getEnv("WAF_CRS_VERSION", "4.28.0"),
-			AuditLogPath:          getEnv("WAF_AUDIT_LOG", "runtime/logs/stage1/coraza-audit.log"),
+			AuditLogPath:            getEnv("WAF_AUDIT_LOG", "runtime/logs/stage1/coraza-audit.log"),
+			AuditLogGateway:         getEnv("GATEWAY_AUDIT_LOG", "/var/log/caddy/coraza-audit.log"),
 			GatewayNodeName:       getEnv("GATEWAY_NODE_NAME", "gateway-poc-01"),
 			GuardEventsLog:        getEnv("WAF_GUARD_EVENTS_LOG", "runtime/logs/guard-events.log"),
 			GuardEventsLogGateway: getEnv("GATEWAY_GUARD_EVENTS_LOG", "/var/log/caddy/guard-events.log"),
@@ -434,8 +481,9 @@ func Load() (*Config, error) {
 			CoverageObsLog:        getEnv("WAF_COVERAGE_OBS_LOG", "/var/log/caddy/coverage-observations.jsonl"),
 			CoverageObsLogGateway: getEnv("GATEWAY_COVERAGE_OBS_LOG", "/var/log/caddy/coverage-observations.jsonl"),
 			CoverageSampleN:       getEnvInt("WAF_COVERAGE_SAMPLE_N", 10),
-			NodeIfacesLog:         getEnv("WAF_NODE_IFACES_LOG", "runtime/logs/node-interfaces.jsonl"),
-			SiteDiscoveryLog:      getEnv("WAF_SITE_DISCOVERY_LOG", "runtime/logs/site-discovery.jsonl"),
+			NodeIfacesLog:           getEnv("WAF_NODE_IFACES_LOG", "runtime/logs/node-interfaces.jsonl"),
+			SiteDiscoveryLog:        getEnv("WAF_SITE_DISCOVERY_LOG", "runtime/logs/site-discovery.jsonl"),
+			SiteDiscoveryLogGateway: getEnv("GATEWAY_SITE_DISCOVERY_LOG", "/var/log/caddy/site-discovery.jsonl"),
 			// 采集器批量/周期 flush 阈值（W20；默认值与 apiruntime/accesslogs 采集器内建默认一致）
 			CollectorFlushBatch:    getEnvInt("WAF_COLLECTOR_FLUSH_BATCH", 2000),
 			CollectorFlushInterval: getEnvDuration("WAF_COLLECTOR_FLUSH_INTERVAL", 2*time.Second),
@@ -488,6 +536,13 @@ func Load() (*Config, error) {
 		ContainerOps: ContainerOpsConfig{
 			Socket: getEnv("CONTAINEROPS_SOCKET", ""),
 		},
+		TrafficAgents: TrafficAgentsConfig{
+			PackagesDir:      getEnv("TRAFFIC_AGENT_PACKAGES_DIR", "/app/runtime/agent-packages"),
+			PublicURL:        strings.TrimSpace(os.Getenv("TRAFFIC_AGENT_PUBLIC_URL")),
+			ConsoleHTTPSPort: clampPort(getEnvInt("WEB_HTTPS_PORT", 8443), 8443),
+			HostIPs:          getEnvList("WDSP_HOST_IPS"),
+			ConsoleCertFile:  getEnv("CONSOLE_CERT_FILE", "/etc/caddy/console-certs/console.crt"),
+		},
 	}
 	if err := cfg.DB.Validate(); err != nil {
 		return nil, err
@@ -536,6 +591,13 @@ func getEnvInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+func clampPort(port, def int) int {
+	if port < 1 || port > 65535 {
+		return def
+	}
+	return port
 }
 
 func getEnvBool(key string, def bool) bool {

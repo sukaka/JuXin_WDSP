@@ -78,17 +78,40 @@ const (
 	MetricAccessLogStaleSecs              = "access_log_stale_seconds"
 	MetricCPUUsagePercent                 = "cpu_usage_percent"
 	MetricMemoryUsagePercent              = "memory_usage_percent"
+	MetricMemoryUsedBytes                 = "memory_used_bytes"
+	MetricMemoryTotalBytes                = "memory_total_bytes"
+	MetricLoad1                           = "load1"
+	MetricLoad5                           = "load5"
+	MetricLoad15                          = "load15"
+	MetricFDOpen                          = "fd_open"
+	MetricFDMax                           = "fd_max"
 	MetricResourceSampledAt               = "resource_sampled_at"
 	MetricResourceSampleError             = "resource_sample_error"
 	MetricRuntimeMetricsError             = "runtime_metrics_error"
 	MetricTCPConnectionsActive            = "tcp_connections_active"
 	MetricTCPConnectionsAcceptedTotal     = "tcp_connections_accepted_total"
 	MetricTCPConnectionsAcceptedPerSecond = "tcp_connections_accepted_per_second"
+	MetricBytesInTotal                    = "bytes_in_total"
+	MetricBytesOutTotal                   = "bytes_out_total"
+	MetricBytesInPerSecond                = "bytes_in_per_second"
+	MetricBytesOutPerSecond               = "bytes_out_per_second"
+	MetricTCPStates                       = "tcp_states"
 	MetricHTTPRequestsInFlight            = "http_requests_in_flight"
 	MetricHTTPRequestsTotal               = "http_requests_total"
+	MetricHTTPRequestsPerSecond           = "http_requests_per_second"
 	MetricHTTPSessionsActive              = "http_sessions_active"
 	MetricHTTPSessionsNewTotal            = "http_sessions_new_total"
+	MetricHTTPSessionsNewPerSecond        = "http_sessions_new_per_second"
 	MetricHTTPSessionsOverflowTotal       = "http_sessions_overflow_total"
+	MetricStatus2xxTotal                  = "status_2xx_total"
+	MetricStatus3xxTotal                  = "status_3xx_total"
+	MetricStatus4xxTotal                  = "status_4xx_total"
+	MetricStatus5xxTotal                  = "status_5xx_total"
+	MetricStatus2xxPerSecond              = "status_2xx_per_second"
+	MetricStatus3xxPerSecond              = "status_3xx_per_second"
+	MetricStatus4xxPerSecond              = "status_4xx_per_second"
+	MetricStatus5xxPerSecond              = "status_5xx_per_second"
+	MetricApplications                    = "applications"
 	MetricSoftwareBypassEnabled           = "software_bypass_enabled"
 	MetricSoftwareBypassActive            = "software_bypass_active"
 	MetricSoftwareBypassReason            = "software_bypass_reason"
@@ -180,6 +203,34 @@ ORDER BY taken_at DESC LIMIT 1`, component)
 		return scanSnapshot(rows)
 	}
 	return nil, rows.Err()
+}
+
+const maxHistorySnapshots = 4000
+
+// HistoryByComponent 按时间正序查询指定组件自 since 起的历史快照（上限 4000 防 OOM）。
+func (s *Store) HistoryByComponent(ctx context.Context, component string, since time.Time, limit int) ([]Snapshot, error) {
+	if limit <= 0 || limit > maxHistorySnapshots {
+		limit = maxHistorySnapshots
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT id, taken_at, component, status, latency_ms, metrics, message
+FROM system_health_snapshots
+WHERE component = $1 AND taken_at >= $2
+ORDER BY taken_at ASC
+LIMIT $3`, component, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Snapshot, 0)
+	for rows.Next() {
+		snap, err := scanSnapshot(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *snap)
+	}
+	return out, rows.Err()
 }
 
 // DeleteOlderThan 清理历史快照（保留窗口外的数据），返回删除行数。

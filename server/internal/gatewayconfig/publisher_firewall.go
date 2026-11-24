@@ -2,8 +2,10 @@ package gatewayconfig
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,8 +36,11 @@ func (p *Publisher) SetFirewallEnsurer(ensurer FirewallEnsurer) {
 	p.firewallEnsurer = ensurer
 }
 
-// listenerTCPPorts 与 Generate 的监听生成条件保持一致：MIRROR 不生成站点，
-// BYPASS 仍生成监听站点，只有协议启用且端口非空时才收集。
+// listenerTCPPorts 与 Generate 的对外监听生成条件保持一致：
+//   - MIRROR 不生成内联站点；
+//   - TRANSPARENT 仅在内部回环（127.0.0.1:15080/15443）监听（桥接流量由 netmgrd 管理专用
+//     iptables REDIRECT/INPUT 链，绝不在宿主机 firewalld DEFAULT_ZONE 放行内部回环或透明端口）；
+//   - BYPASS 仍生成公网监听站点，只有协议启用且端口非空时才收集。
 func listenerTCPPorts(apps []AppData) []int {
 	seen := make(map[int]struct{})
 	ports := make([]int, 0)
@@ -50,7 +55,7 @@ func listenerTCPPorts(apps []AppData) []int {
 		ports = append(ports, *port)
 	}
 	for _, app := range apps {
-		if app.DeploymentMode == applications.DeployModeMirror {
+		if app.DeploymentMode == applications.DeployModeMirror || app.DeploymentMode == applications.DeployModeTransparent {
 			continue
 		}
 		for _, domain := range app.Domains {
@@ -60,6 +65,76 @@ func listenerTCPPorts(apps []AppData) []int {
 	}
 	sort.Ints(ports)
 	return ports
+}
+
+// isLoopbackListenAddr 判定 Caddy 监听地址是否绑定在回环地址（127.0.0.0/8、::1、localhost）。
+// 回环地址仅本机进程可达（如透明模式 127.0.0.1:15080/15443），绝不应在宿主机默认防火墙区域开放。
+func isLoopbackListenAddr(addr string) bool {
+	trimmed := strings.TrimSpace(addr)
+	trimmed = strings.TrimPrefix(trimmed, "tcp/")
+	trimmed = strings.TrimPrefix(trimmed, "tcp4/")
+	trimmed = strings.TrimPrefix(trimmed, "tcp6/")
+	host, _, err := net.SplitHostPort(trimmed)
+	if err != nil {
+		return false
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
+}
+
+// extractPublicTCPPortsFromConfig 从候选 Caddy JSON 的 apps.http.servers.*.listen 中提取
+// 非回环 TCP 监听端口（跳过 127.0.0.1/::1/localhost 回环监听）。
+// 若 configJSON 不是带 apps.http.servers 的 Caddy JSON，返回 (nil, false) 供调用方回退。
+func extractPublicTCPPortsFromConfig(configJSON string) ([]int, bool) {
+	var parsed struct {
+		Apps *struct {
+			HTTP *struct {
+				Servers map[string]struct {
+					Listen []string `json:"listen"`
+				} `json:"servers"`
+			} `json:"http"`
+		} `json:"apps"`
+	}
+	if err := json.Unmarshal([]byte(configJSON), &parsed); err != nil || parsed.Apps == nil || parsed.Apps.HTTP == nil {
+		return nil, false
+	}
+	seen := make(map[int]struct{})
+	ports := make([]int, 0)
+	for _, srv := range parsed.Apps.HTTP.Servers {
+		for _, rawAddr := range srv.Listen {
+			if isLoopbackListenAddr(rawAddr) {
+				continue
+			}
+			addr := strings.TrimSpace(rawAddr)
+			addr = strings.TrimPrefix(addr, "tcp/")
+			addr = strings.TrimPrefix(addr, "tcp4/")
+			addr = strings.TrimPrefix(addr, "tcp6/")
+			_, portStr, err := net.SplitHostPort(addr)
+			if err != nil {
+				continue
+			}
+			port, err := strconv.Atoi(portStr)
+			if err != nil || port < 1 || port > 65535 {
+				continue
+			}
+			if _, dup := seen[port]; dup {
+				continue
+			}
+			seen[port] = struct{}{}
+			ports = append(ports, port)
+		}
+	}
+	sort.Ints(ports)
+	return ports, true
 }
 
 func firewallEnsureSummary(ports []int) string {
@@ -82,7 +157,10 @@ func (p *Publisher) loadGatewayConfigWithFirewall(
 	apps []AppData,
 	in PublishInput,
 ) (string, []int, error) {
-	ports := listenerTCPPorts(apps)
+	ports, ok := extractPublicTCPPortsFromConfig(configJSON)
+	if !ok {
+		ports = listenerTCPPorts(apps)
+	}
 	if p.firewallEnsurer != nil {
 		if err := p.firewallEnsurer(ports, in.RequestedBy, in.RequestID); err != nil {
 			return "", nil, fmt.Errorf("%w: %v", errFirewallEnsureFailed, err)

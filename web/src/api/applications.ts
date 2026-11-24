@@ -18,6 +18,7 @@ export interface ApplicationListParams {
   keyword?: string
   status?: string
   protection_mode?: string
+  deployment_mode?: string
   page: number
   page_size: number
 }

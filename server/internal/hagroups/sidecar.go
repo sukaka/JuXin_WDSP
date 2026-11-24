@@ -72,10 +72,13 @@ func buildHaVipFile(g *Group, authPass string, unicastPeers []string, now time.T
 	}
 }
 
-// writeHaVipJSON 原子写 ha-vip.json（0600：含 VRRP 认证串明文）。
+// writeHaVipJSON 原子写 ha-vip.json（0600：含 VRRP 认证串明文；目录保持 0770 供同组边车使用）。
 func writeHaVipJSON(dir string, f haVipFile) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o770); err != nil {
 		return fmt.Errorf("创建边车配置目录失败: %w", err)
+	}
+	if err := os.Chmod(dir, 0o770); err != nil {
+		return fmt.Errorf("设置边车配置目录权限失败: %w", err)
 	}
 	buf, err := json.Marshal(f)
 	if err != nil {

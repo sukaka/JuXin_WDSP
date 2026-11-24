@@ -425,3 +425,38 @@ func TestDelete(t *testing.T) {
 		t.Fatal("DB 应已删除")
 	}
 }
+
+func TestCreateAndUpdateRejectBridgedVRRPIface(t *testing.T) {
+	h, _, _ := newTestHandler(t, fakeEnc{})
+	h.SetBridgePortChecker(func(_ context.Context, nodeNames []string, iface string) (string, string, error) {
+		if iface == "eth2" {
+			return "node-a", "br0", nil
+		}
+		return "", "", nil
+	})
+	mux := newTestMux(h)
+
+	// 1. 创建时使用网桥成员口 eth2 → 400
+	body := validBody()
+	body["iface"] = "eth2"
+	rr := doJSON(t, mux, http.MethodPost, "/api/v1/ha/groups", body)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("create with bridged iface status=%d body=%s, want 400", rr.Code, rr.Body.String())
+	}
+
+	// 2. 使用非桥接口 eth0 创建成功
+	rr = doJSON(t, mux, http.MethodPost, "/api/v1/ha/groups", validBody())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create with non-bridged iface status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	id := haGroupID(t, mux)
+
+	// 3. 更新为网桥成员口 eth2 → 400
+	upd := validBody()
+	upd["iface"] = "eth2"
+	upd["version"] = 1
+	rr = doJSON(t, mux, http.MethodPatch, fmt.Sprintf("/api/v1/ha/groups/%s", id), upd)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("update to bridged iface status=%d body=%s, want 400", rr.Code, rr.Body.String())
+	}
+}

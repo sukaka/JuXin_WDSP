@@ -18,6 +18,55 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+func TestLoadInitialAdminsDefaultsAndEnvOverride(t *testing.T) {
+	t.Setenv("POSTGRES_PASSWORD", "test-postgres-password")
+	t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+	t.Setenv("INITIAL_ADMIN_USERNAME", "")
+	t.Setenv("INITIAL_ADMIN_PASSWORD", "")
+	t.Setenv("INITIAL_OPER_ADMIN_USERNAME", "")
+	t.Setenv("INITIAL_OPER_ADMIN_PASSWORD", "")
+	t.Setenv("INITIAL_AUDIT_ADMIN_USERNAME", "")
+	t.Setenv("INITIAL_AUDIT_ADMIN_PASSWORD", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() defaults error = %v", err)
+	}
+	if cfg.Security.InitialAdminUsername != "admin" ||
+		cfg.Security.InitialOperAdminUsername != "operadmin" ||
+		cfg.Security.InitialAuditAdminUsername != "auditor" {
+		t.Fatalf("default initial admin usernames = (%q, %q, %q), want (admin, operadmin, auditor)",
+			cfg.Security.InitialAdminUsername,
+			cfg.Security.InitialOperAdminUsername,
+			cfg.Security.InitialAuditAdminUsername)
+	}
+	if cfg.Security.InitialAdminPassword != "" ||
+		cfg.Security.InitialOperAdminPassword != "" ||
+		cfg.Security.InitialAuditAdminPassword != "" {
+		t.Fatalf("default initial passwords must be empty")
+	}
+
+	t.Setenv("INITIAL_ADMIN_USERNAME", "sys_custom")
+	t.Setenv("INITIAL_ADMIN_PASSWORD", "Sys@Pass123456!")
+	t.Setenv("INITIAL_OPER_ADMIN_USERNAME", "oper_custom")
+	t.Setenv("INITIAL_OPER_ADMIN_PASSWORD", "Oper@Pass123456!")
+	t.Setenv("INITIAL_AUDIT_ADMIN_USERNAME", "audit_custom")
+	t.Setenv("INITIAL_AUDIT_ADMIN_PASSWORD", "Audit@Pass123456!")
+
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() override error = %v", err)
+	}
+	if cfg.Security.InitialAdminUsername != "sys_custom" ||
+		cfg.Security.InitialAdminPassword != "Sys@Pass123456!" ||
+		cfg.Security.InitialOperAdminUsername != "oper_custom" ||
+		cfg.Security.InitialOperAdminPassword != "Oper@Pass123456!" ||
+		cfg.Security.InitialAuditAdminUsername != "audit_custom" ||
+		cfg.Security.InitialAuditAdminPassword != "Audit@Pass123456!" {
+		t.Fatalf("env override mismatch: %+v", cfg.Security)
+	}
+}
+
 func TestGatewayValkeyAddressFallsBackToCache(t *testing.T) {
 	cache := CacheConfig{Host: "valkey", Port: 6379}
 	if got := (GatewayConfig{}).ValkeyAddress(cache); got != "valkey:6379" {
@@ -382,4 +431,40 @@ func TestMS1EnvNormalizationAndAllowlist(t *testing.T) {
 			t.Fatal("Load() accepted unrecognized APP_ENV=staging")
 		}
 	})
+}
+
+func TestLoadGatewayTproxyDefaultsAndEnvOverride(t *testing.T) {
+	t.Setenv("POSTGRES_PASSWORD", "test-postgres-password")
+	t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+	t.Setenv("GATEWAY_TPROXY_LISTEN", "")
+	t.Setenv("GATEWAY_TPROXY_TARGET", "")
+	t.Setenv("GATEWAY_TPROXY_TARGET_TLS", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() defaults error = %v", err)
+	}
+	if cfg.Gateway.TproxyListenGateway != "0.0.0.0:15000" {
+		t.Errorf("TproxyListenGateway = %q, want 0.0.0.0:15000", cfg.Gateway.TproxyListenGateway)
+	}
+	if cfg.Gateway.TproxyTargetGateway != "127.0.0.1:15080" {
+		t.Errorf("TproxyTargetGateway = %q, want 127.0.0.1:15080", cfg.Gateway.TproxyTargetGateway)
+	}
+	if cfg.Gateway.TproxyTargetTLSGateway != "127.0.0.1:15443" {
+		t.Errorf("TproxyTargetTLSGateway = %q, want 127.0.0.1:15443", cfg.Gateway.TproxyTargetTLSGateway)
+	}
+
+	t.Setenv("GATEWAY_TPROXY_LISTEN", "0.0.0.0:16000")
+	t.Setenv("GATEWAY_TPROXY_TARGET", "127.0.0.1:16080")
+	t.Setenv("GATEWAY_TPROXY_TARGET_TLS", "127.0.0.1:16443")
+
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() override error = %v", err)
+	}
+	if cfg.Gateway.TproxyListenGateway != "0.0.0.0:16000" ||
+		cfg.Gateway.TproxyTargetGateway != "127.0.0.1:16080" ||
+		cfg.Gateway.TproxyTargetTLSGateway != "127.0.0.1:16443" {
+		t.Fatalf("tproxy env override mismatch: %+v", cfg.Gateway)
+	}
 }

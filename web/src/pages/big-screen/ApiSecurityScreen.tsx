@@ -7,6 +7,7 @@ import {
   API_ENDPOINT_STATUS_META,
   API_FINDING_SEVERITY_META,
   API_LEARNING_STATUS_META,
+  formatApiFindingTitle,
 } from '../../utils/stage8'
 import { BIG_SCREENS, REFRESH_INTERVAL } from './screens'
 import ScreenFrame from './components/ScreenFrame'
@@ -103,11 +104,18 @@ export default function ApiSecurityScreen() {
   )
 
   const tickerItems: TickerItem[] = useMemo(() => {
-    const toItem = (f: { id: string; severity: string; last_seen_at: string; title: string }): TickerItem => ({
+    const toItem = (f: {
+      id: string
+      severity: string
+      last_seen_at: string
+      title: string
+      finding_type?: string
+      detail?: unknown
+    }): TickerItem => ({
       key: f.id,
       color: SEVERITY_COLORS[f.severity] ?? '#8a97a8',
       time: dayjs(f.last_seen_at).format('MM-DD HH:mm'),
-      content: f.title,
+      content: formatApiFindingTitle(f.title, { findingType: f.finding_type, detail: f.detail }) || f.title,
       tail: (
         <span style={{ color: SEVERITY_COLORS[f.severity] ?? '#8a97a8', flexShrink: 0 }}>
           {API_FINDING_SEVERITY_META[f.severity]?.label ?? f.severity}

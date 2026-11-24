@@ -301,3 +301,33 @@ func TestScalarString(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateTproxyPassthroughAllowlist(t *testing.T) {
+	if !AllowedSettingKeys["network:tproxy_passthrough_allowlist"] {
+		t.Fatal("network:tproxy_passthrough_allowlist must be in AllowedSettingKeys")
+	}
+	valid := []string{
+		`""`,
+		`"partner.example.com"`,
+		`"partner.example.com, *.other.example.com"`,
+		`"a.example.com\n*.b.example.com"`,
+		`"[\"a.example.com\",\"*.b.example.com\"]"`,
+	}
+	for _, v := range valid {
+		if err := validateTproxyPassthroughAllowlist("network", "tproxy_passthrough_allowlist", "string", json.RawMessage(v)); err != nil {
+			t.Errorf("validateTproxyPassthroughAllowlist(%s) unexpected error: %v", v, err)
+		}
+	}
+	invalid := []string{
+		`"*"`,
+		`"*.com"`,
+		`"*.*.example.com"`,
+		`"bad host.com"`,
+		`"[not-json"`,
+	}
+	for _, v := range invalid {
+		if err := validateTproxyPassthroughAllowlist("network", "tproxy_passthrough_allowlist", "string", json.RawMessage(v)); err == nil {
+			t.Errorf("validateTproxyPassthroughAllowlist(%s) should fail", v)
+		}
+	}
+}

@@ -170,6 +170,9 @@ func Validate(cfg *Config, ifaces []nodeinterfaces.Interface) error {
 			if it.Role == nodeinterfaces.RoleManagement {
 				return fmt.Errorf("接口 %s 为管理口（role=MANAGEMENT），禁止加入桥", p)
 			}
+			if it.Role == nodeinterfaces.RoleMirror {
+				return fmt.Errorf("接口 %s 为镜像口（role=MIRROR），禁止加入桥", p)
+			}
 			if prev, dup := usedPort[p]; dup {
 				if prev == b.Name {
 					return fmt.Errorf("桥 %s 成员口重复: %s", b.Name, p)
@@ -259,6 +262,19 @@ func validateLinkPair(b *Bridge) error {
 // 作为 PUT 校验的数据源。
 type InterfaceLister interface {
 	ListGrouped(ctx context.Context, nodeName string) ([]nodeinterfaces.NodeInterfaces, error)
+}
+
+// BridgePortMap 返回配置中所有网桥成员口到所属桥名的映射。
+func BridgePortMap(cfg Config) map[string]string {
+	out := make(map[string]string)
+	for _, b := range cfg.Bridges {
+		for _, p := range b.Ports {
+			if p = strings.TrimSpace(p); p != "" {
+				out[p] = b.Name
+			}
+		}
+	}
+	return out
 }
 
 // Repository 期望配置仓储接口（*Store 与 *MemStore 实现）。

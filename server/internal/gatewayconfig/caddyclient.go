@@ -380,6 +380,34 @@ func (c *CaddyClient) GetRuntimeSnapshot(ctx context.Context) (*GatewayRuntimeSn
 	return &snapshot, nil
 }
 
+// GetRuntimeHistory reads high-resolution runtime trend points from the admin-only gateway history endpoint.
+func (c *CaddyClient) GetRuntimeHistory(ctx context.Context) (*GatewayRuntimeHistory, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/jiuzhang/runtime/history", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get gateway runtime history: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read gateway runtime history: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("gateway runtime history endpoint returned %d: %s", resp.StatusCode, truncateString(string(body), 200))
+	}
+	var history GatewayRuntimeHistory
+	if err := json.Unmarshal(body, &history); err != nil {
+		return nil, fmt.Errorf("decode gateway runtime history: %w", err)
+	}
+	if history.Points == nil {
+		history.Points = []GatewayRuntimeHistoryPoint{}
+	}
+	return &history, nil
+}
+
 // GetConfigHash 获取当前配置的规范化哈希（发布内容一致性验证与健康指标共用）。
 // 规范化指键序/空白不敏感（Go encoding/json 对 map 键排序），容忍 Caddy /config/
 // 返回与 /load 原文之间的格式差异；语义不一致（内容真实不同）才会得到不同哈希。

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jiuzhang-waf/server/internal/applications"
@@ -54,9 +55,9 @@ func TestBuildMirrorcapSidecar(t *testing.T) {
 	if !reflect.DeepEqual(sc.Interfaces, []string{"eth2", "eth3"}) {
 		t.Errorf("interfaces = %v", sc.Interfaces)
 	}
-	// 仅取 MIRROR 应用域名监听端口（去重排序；rev/tpx 不计入）
-	if !reflect.DeepEqual(sc.Ports, []int{8080, 8443}) {
-		t.Errorf("ports = %v, want [8080 8443]", sc.Ports)
+	// 仅取 MIRROR 应用的明文 HTTP 端口（排除 HTTPS 端口 8443，避免破坏 443/8443 TLS SNI 站点发现）
+	if !reflect.DeepEqual(sc.Ports, []int{8080}) {
+		t.Errorf("ports = %v, want [8080]", sc.Ports)
 	}
 	// discovery 块随主配置输出
 	if !sc.Discovery.Enabled || len(sc.Discovery.Interfaces) != 3 {
@@ -168,17 +169,17 @@ func TestBuildTproxydSidecar(t *testing.T) {
 	if !sc.Enabled {
 		t.Error("tproxyd should be enabled when TRANSPARENT app exists")
 	}
-	if sc.Listen != "127.0.0.1:15000" || sc.Target != "127.0.0.1:8080" {
-		t.Errorf("listen/target = %q/%q", sc.Listen, sc.Target)
+	if sc.Listen != DefaultTproxydListen || sc.Target != DefaultTproxydTarget {
+		t.Errorf("listen/target = %q/%q, want %q/%q", sc.Listen, sc.Target, DefaultTproxydListen, DefaultTproxydTarget)
 	}
 	if !reflect.DeepEqual(sc.Ports, []int{443, 8081}) {
 		t.Errorf("ports = %v, want [443 8081]", sc.Ports)
 	}
-	if sc.TargetTLS != "127.0.0.1:8443" {
-		t.Errorf("target_tls = %q", sc.TargetTLS)
+	if sc.TargetTLS != DefaultTproxydTargetTLS {
+		t.Errorf("target_tls = %q, want %q", sc.TargetTLS, DefaultTproxydTargetTLS)
 	}
-	// SNI 防护清单自动派生自 TRANSPARENT 应用域名（去重排序、空域名不计入）
-	want := []string{"api.test.com", "fallback.test.com", "www.test.com"}
+	// SNI 防护清单仅收集启用了 HTTPS 的 TRANSPARENT 域名（纯 HTTP 域名不进入 protect_hosts）
+	want := []string{"api.test.com"}
 	if !reflect.DeepEqual(sc.ProtectHosts, want) {
 		t.Errorf("protect_hosts = %v, want %v", sc.ProtectHosts, want)
 	}
@@ -189,8 +190,8 @@ func TestBuildTproxydSidecarDisabledWithoutTransparentApp(t *testing.T) {
 	if sc.Enabled {
 		t.Error("tproxyd should be disabled without TRANSPARENT app")
 	}
-	if !reflect.DeepEqual(sc.Ports, []int{80}) {
-		t.Errorf("ports = %v, want default [80]", sc.Ports)
+	if sc.Ports == nil || len(sc.Ports) != 0 {
+		t.Errorf("ports = %v, want empty array []", sc.Ports)
 	}
 	if !reflect.DeepEqual(sc.ProtectHosts, []string{}) {
 		t.Errorf("protect_hosts = %v, want []", sc.ProtectHosts)
@@ -282,7 +283,7 @@ func TestPublisherWriteSidecarConfigs(t *testing.T) {
 	}
 	if !mc.Enabled || mc.Node != "gw-test-01" ||
 		!reflect.DeepEqual(mc.Interfaces, []string{"eth2"}) ||
-		!reflect.DeepEqual(mc.Ports, []int{8080, 8443}) {
+		!reflect.DeepEqual(mc.Ports, []int{8080}) {
 		t.Errorf("mirrorcap.json = %+v", mc)
 	}
 	// discovery：MIRROR 应用 + TRANSPARENT 应用 → eth2 镜像口 + eth0 流量口（TRANSPARENT）
@@ -299,18 +300,19 @@ func TestPublisherWriteSidecarConfigs(t *testing.T) {
 	if err := json.Unmarshal(buf, &tp); err != nil {
 		t.Fatalf("tproxyd.json invalid: %v", err)
 	}
-	if !tp.Enabled || tp.Listen != "127.0.0.1:15000" || tp.Target != "127.0.0.1:8080" ||
+	if !tp.Enabled || tp.Listen != DefaultTproxydListen || tp.Target != DefaultTproxydTarget ||
 		!reflect.DeepEqual(tp.Ports, []int{443, 8081}) {
 		t.Errorf("tproxyd.json = %+v", tp)
 	}
-	// SNI 防护清单自动派生自 TRANSPARENT 应用域名（去重排序）
-	wantHosts := []string{"api.test.com", "fallback.test.com", "www.test.com"}
-	if tp.TargetTLS != "127.0.0.1:8443" || !reflect.DeepEqual(tp.ProtectHosts, wantHosts) {
+	// SNI 防护清单仅包含启用 HTTPS 的 TRANSPARENT 域名
+	wantHosts := []string{"api.test.com"}
+	if tp.TargetTLS != DefaultTproxydTargetTLS || !reflect.DeepEqual(tp.ProtectHosts, wantHosts) {
 		t.Errorf("tproxyd.json sni dispatch = %+v, want hosts %v", tp, wantHosts)
 	}
 }
 
-// 接口清单查询失败：不静默（记日志）且仍写出边车文件，interfaces 落空数组，discovery 随之 disabled。
+// 接口清单查询失败：不静默（记日志）且仍写出有效边车文件——无可用镜像口时 enabled=false
+// （避免产出 mirrorcap.json 非法导致 mirrorcap 拒收整份文件连带冻结 discovery），interfaces 落空数组。
 func TestPublisherWriteSidecarConfigsInterfaceError(t *testing.T) {
 	dir := t.TempDir()
 	p := &Publisher{}
@@ -327,11 +329,69 @@ func TestPublisherWriteSidecarConfigsInterfaceError(t *testing.T) {
 	if err := json.Unmarshal(buf, &mc); err != nil {
 		t.Fatalf("mirrorcap.json invalid: %v", err)
 	}
-	if !mc.Enabled || mc.Interfaces == nil || len(mc.Interfaces) != 0 {
-		t.Errorf("mirrorcap.json = %+v, want enabled with empty interfaces", mc)
+	if mc.Enabled || mc.Interfaces == nil || len(mc.Interfaces) != 0 {
+		t.Errorf("mirrorcap.json = %+v, want disabled with empty interfaces", mc)
 	}
 	if mc.Discovery.Enabled || len(mc.Discovery.Interfaces) != 0 {
 		t.Errorf("discovery = %+v, want disabled with empty interfaces", mc.Discovery)
+	}
+}
+
+// 回归验证：
+// 1. MIRROR 应用仅启用 HTTPS 时：mirrorcap 检测不启用（不把 443 塞进 HTTP 检测端口），但发现保持启用（TLS SNI）；
+// 2. MIRROR 应用防护模式为 OFF/BYPASS 时：mirrorcap 检测关闭；
+// 3. 域名列表与自定义网关日志路径（裸机场景）正确写入 mirrorcap.json。
+func TestBuildMirrorcapSidecarEdgeCasesAndLogPaths(t *testing.T) {
+	httpsOnly := []AppData{{
+		Code: "mir-https", DeploymentMode: applications.DeployModeMirror, ProtectionMode: applications.ModeObserve,
+		Domains: []applications.Domain{{NormalizedHostname: "sec.example.com", HTTPSEnabled: true, HTTPSPort: intPtr(443)}},
+	}}
+	disc := buildMirrorcapDiscovery(httpsOnly, []string{"eth2"}, nil)
+	sc := buildMirrorcapSidecar(httpsOnly, "gw-01", []string{"eth2"}, disc)
+	if sc.Enabled {
+		t.Fatalf("HTTPS-only MIRROR app should not enable plaintext HTTP detection: %+v", sc)
+	}
+	if !sc.Discovery.Enabled {
+		t.Fatalf("HTTPS-only MIRROR app should still enable TLS SNI discovery: %+v", sc.Discovery)
+	}
+
+	bypassMirror := []AppData{{
+		Code: "mir-bypass", DeploymentMode: applications.DeployModeMirror, ProtectionMode: applications.ModeBypass,
+		Domains: []applications.Domain{{NormalizedHostname: "a.example.com", HTTPEnabled: true, HTTPPort: intPtr(80)}},
+	}}
+	scBypass := buildMirrorcapSidecar(bypassMirror, "gw-01", []string{"eth2"}, buildMirrorcapDiscovery(bypassMirror, []string{"eth2"}, nil))
+	if scBypass.Enabled {
+		t.Fatalf("BYPASS MIRROR app should disable detection: %+v", scBypass)
+	}
+
+	dir := t.TempDir()
+	p := &Publisher{}
+	p.SetSidecarConfig("gw-bm-01", fakeMirrorIfaces{ifaces: []string{"eth2"}})
+	p.SetSidecarDir(dir)
+	p.SetSidecarLogPaths("/opt/jz/logs/api-runtime-events.log", "/opt/jz/logs/coraza-audit.log", "/opt/jz/logs/site-discovery.jsonl")
+	apps := []AppData{{
+		Code: "mir-http", DeploymentMode: applications.DeployModeMirror, ProtectionMode: applications.ModeObserve,
+		Domains: []applications.Domain{
+			{NormalizedHostname: "b.example.com", HTTPEnabled: true, HTTPPort: intPtr(8080)},
+			{NormalizedHostname: "a.example.com", HTTPEnabled: true, HTTPPort: intPtr(80), HTTPSEnabled: true, HTTPSPort: intPtr(443)},
+			{NormalizedHostname: "tls.example.com", HTTPSEnabled: true, HTTPSPort: intPtr(443)},
+		},
+	}}
+	p.writeSidecarConfigs(context.Background(), apps)
+	raw, err := os.ReadFile(filepath.Join(dir, "mirrorcap.json"))
+	if err != nil {
+		t.Fatalf("read mirrorcap.json: %v", err)
+	}
+	var got MirrorcapSidecar
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !got.Enabled || !reflect.DeepEqual(got.Ports, []int{80, 8080}) ||
+		!reflect.DeepEqual(got.Domains, []string{"a.example.com", "b.example.com"}) ||
+		got.EventsLog != "/opt/jz/logs/api-runtime-events.log" ||
+		got.AuditLog != "/opt/jz/logs/coraza-audit.log" ||
+		got.Discovery.Log != "/opt/jz/logs/site-discovery.jsonl" {
+		t.Fatalf("unexpected mirrorcap.json: %+v", got)
 	}
 }
 
@@ -358,9 +418,164 @@ func TestPublisherWriteSidecarConfigsAllDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read tproxyd.json: %v", err)
 	}
-	want = `{"enabled":false,"listen":"127.0.0.1:15000","target":"127.0.0.1:8080","ports":[80],` +
-		`"target_tls":"127.0.0.1:8443","protect_hosts":[]}` + "\n"
+	want = `{"enabled":false,"listen":"0.0.0.0:15000","target":"127.0.0.1:15080","ports":[],` +
+		`"target_tls":"127.0.0.1:15443","protect_hosts":[],"passthrough_allowlist":[]}` + "\n"
 	if string(buf) != want {
 		t.Errorf("tproxyd.json = %q, want %q", buf, want)
+	}
+}
+
+type fakeBridgePorts struct {
+	ports []string
+	err   error
+}
+
+func (f fakeBridgePorts) ListBridgePorts(context.Context, string) ([]string, error) {
+	return f.ports, f.err
+}
+
+func TestTproxydSidecarBypassHTTPOnlyWildcardAndAllowlist(t *testing.T) {
+	// 1. OFF / BYPASS（含授权失效强制 BYPASS）完全禁用 tproxyd 牵引
+	for _, mode := range []string{applications.ModeOff, applications.ModeBypass} {
+		apps := []AppData{{
+			Code: "tpx-" + mode, DeploymentMode: applications.DeployModeTransparent, ProtectionMode: mode,
+			Domains: []applications.Domain{{
+				NormalizedHostname: "app.example.com", HTTPEnabled: true, HTTPPort: intPtr(80),
+				HTTPSEnabled: true, HTTPSPort: intPtr(443), Status: "ACTIVE",
+			}},
+		}}
+		sc := buildTproxydSidecar(apps)
+		if sc.Enabled || len(sc.Ports) != 0 || len(sc.ProtectHosts) != 0 {
+			t.Fatalf("mode %s should disable tproxyd completely: %+v", mode, sc)
+		}
+	}
+
+	// 2. 纯 HTTP 透明应用：enabled=true、ports=[80]、protect_hosts=[]（不误触发 TLS SNI 嗅探）
+	httpOnly := []AppData{{
+		Code: "tpx-http", DeploymentMode: applications.DeployModeTransparent, ProtectionMode: applications.ModeProtect,
+		Domains: []applications.Domain{{
+			NormalizedHostname: "plain.example.com", HTTPEnabled: true, HTTPPort: intPtr(80), Status: "ACTIVE",
+		}},
+	}}
+	scHTTP := buildTproxydSidecar(httpOnly)
+	if !scHTTP.Enabled || !reflect.DeepEqual(scHTTP.Ports, []int{80}) || len(scHTTP.ProtectHosts) != 0 {
+		t.Fatalf("HTTP-only transparent sidecar = %+v", scHTTP)
+	}
+
+	// 3. 通配符域名 *.example.com + passthrough_allowlist（支持逗号/换行与 JSON 数组）+ 自定义地址
+	dir := t.TempDir()
+	p := &Publisher{}
+	p.SetSidecarDir(dir)
+	p.SetSidecarConfig("gw-01", fakeMirrorIfaces{})
+	p.SetBridgePortsProvider(fakeBridgePorts{ports: []string{"eth2", "eth3"}})
+	p.SetTproxyAddresses("0.0.0.0:16000", "127.0.0.1:16080", "127.0.0.1:16443")
+	p.SetTproxyPassthroughAllowlistProvider(func(context.Context) (string, error) {
+		return "Pass.Other.com,\n*.partner.example.com., pass.other.com", nil
+	})
+	wildcardApp := []AppData{{
+		Code: "tpx-wild", DeploymentMode: applications.DeployModeTransparent, ProtectionMode: applications.ModeProtect,
+		Domains: []applications.Domain{
+			{NormalizedHostname: "*.example.com", HTTPSEnabled: true, HTTPSPort: intPtr(443), Status: "ACTIVE"},
+			{NormalizedHostname: "disabled.example.com", HTTPSEnabled: true, HTTPSPort: intPtr(8443), Status: "DISABLED"},
+		},
+		Upstreams: []applications.Upstream{{NormalizedHost: "192.0.2.1", Port: 443, Status: "ACTIVE"}},
+	}}
+	sc, err := p.validateTransparentConfig(context.Background(), wildcardApp)
+	if err != nil {
+		t.Fatalf("validateTransparentConfig: %v", err)
+	}
+	if sc.Listen != "0.0.0.0:16000" || sc.Target != "127.0.0.1:16080" || sc.TargetTLS != "127.0.0.1:16443" {
+		t.Fatalf("custom tproxy addrs = %+v", sc)
+	}
+	if !reflect.DeepEqual(sc.ProtectHosts, []string{"*.example.com"}) {
+		t.Fatalf("protect_hosts = %v, want [*.example.com]", sc.ProtectHosts)
+	}
+	if !reflect.DeepEqual(sc.PassthroughAllowlist, []string{"*.partner.example.com", "pass.other.com"}) {
+		t.Fatalf("passthrough_allowlist = %v", sc.PassthroughAllowlist)
+	}
+
+	// JSON 数组格式解析、空串返回非 nil 空数组、清空设置后显式输出 "passthrough_allowlist":[] 以覆盖 env 基线，以及非法域名拒绝
+	emptyHosts, err := ParseTproxyPassthroughAllowlist("")
+	if err != nil || emptyHosts == nil || len(emptyHosts) != 0 {
+		t.Fatalf("ParseTproxyPassthroughAllowlist(\"\") = %#v, %v; want non-nil empty slice", emptyHosts, err)
+	}
+	p.SetTproxyPassthroughAllowlistProvider(func(context.Context) (string, error) {
+		return "", nil
+	})
+	p.writeTproxydSidecarConfig(context.Background(), wildcardApp)
+	rawCleared, err := os.ReadFile(filepath.Join(dir, "tproxyd.json"))
+	if err != nil {
+		t.Fatalf("read cleared tproxyd.json: %v", err)
+	}
+	if !strings.Contains(string(rawCleared), `"passthrough_allowlist":[]`) {
+		t.Fatalf("cleared tproxyd.json must explicitly emit empty array to override env fallback, got: %s", rawCleared)
+	}
+	arrHosts, err := ParseTproxyPassthroughAllowlist(`["a.example.com", "*.b.example.com"]`)
+	if err != nil || !reflect.DeepEqual(arrHosts, []string{"*.b.example.com", "a.example.com"}) {
+		t.Fatalf("JSON array parse = %v, %v", arrHosts, err)
+	}
+	for _, bad := range []string{"*", "*.com", "*.*.example.com", "bad host.com", "[not-json"} {
+		if _, err := ParseTproxyPassthroughAllowlist(bad); err == nil {
+			t.Errorf("ParseTproxyPassthroughAllowlist(%q) should fail", bad)
+		}
+	}
+
+	// 4. 透明应用 0 活动源站必须被校验拒绝
+	noUpstreamApp := []AppData{{
+		Code: "tpx-empty", DeploymentMode: applications.DeployModeTransparent, ProtectionMode: applications.ModeProtect,
+		Domains: []applications.Domain{{NormalizedHostname: "a.example.com", HTTPEnabled: true, HTTPPort: intPtr(80), Status: "ACTIVE"}},
+	}}
+	if _, err := p.validateTransparentConfig(context.Background(), noUpstreamApp); err == nil {
+		t.Fatal("TRANSPARENT app with enabled domain and 0 active upstreams must fail validation")
+	}
+
+	// 5. 网桥成员口并入 mirrorcap.json 透明站点发现
+	p.writeMirrorcapSidecarConfig(context.Background(), wildcardApp)
+	rawMC, err := os.ReadFile(filepath.Join(dir, "mirrorcap.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mc MirrorcapSidecar
+	if err := json.Unmarshal(rawMC, &mc); err != nil {
+		t.Fatal(err)
+	}
+	wantDisc := []DiscoveryInterface{{Name: "eth2", Mode: "TRANSPARENT"}, {Name: "eth3", Mode: "TRANSPARENT"}}
+	if !mc.Discovery.Enabled || !reflect.DeepEqual(mc.Discovery.Interfaces, wantDisc) {
+		t.Fatalf("bridge ports should populate transparent discovery: %+v", mc.Discovery)
+	}
+
+	// 6. 回滚恢复 tproxyd.json：有 snapshot.tproxyd 按快照恢复；历史无透明 server 版本自动关闭
+	snapJSON, _ := json.Marshal(map[string]any{
+		"tproxyd": TproxydSidecar{
+			Enabled: true, Listen: "0.0.0.0:15000", Target: "127.0.0.1:15080",
+			TargetTLS: "127.0.0.1:15443", Ports: []int{443}, ProtectHosts: []string{"old.example.com"},
+		},
+	})
+	if err := p.restoreSidecarsAfterRollback(context.Background(), &ConfigVersion{BusinessSnapshot: string(snapJSON)}); err != nil {
+		t.Fatalf("restoreSidecarsAfterRollback(snapshot): %v", err)
+	}
+	rawTP, _ := os.ReadFile(filepath.Join(dir, "tproxyd.json"))
+	var restored TproxydSidecar
+	if err := json.Unmarshal(rawTP, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if !restored.Enabled || !reflect.DeepEqual(restored.ProtectHosts, []string{"old.example.com"}) ||
+		restored.PassthroughAllowlist == nil || len(restored.PassthroughAllowlist) != 0 ||
+		!strings.Contains(string(rawTP), `"passthrough_allowlist":[]`) {
+		t.Fatalf("restored snapshot tproxyd = %+v, raw = %s", restored, rawTP)
+	}
+
+	if err := p.restoreSidecarsAfterRollback(context.Background(), &ConfigVersion{
+		BusinessSnapshot:  `{"apps":[{"code":"rev"}]}`,
+		ConfigurationJSON: `{"apps":{"http":{"servers":{"srv0":{"listen":[":80"]}}}}}`,
+	}); err != nil {
+		t.Fatalf("restoreSidecarsAfterRollback(legacy): %v", err)
+	}
+	rawTP, _ = os.ReadFile(filepath.Join(dir, "tproxyd.json"))
+	if err := json.Unmarshal(rawTP, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.Enabled || len(restored.Ports) != 0 || len(restored.ProtectHosts) != 0 {
+		t.Fatalf("legacy non-transparent rollback must disable tproxyd: %+v", restored)
 	}
 }

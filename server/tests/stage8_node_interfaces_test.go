@@ -42,9 +42,9 @@ func TestStage8NodeInterfaces(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "node-interfaces.jsonl")
 	collected := time.Date(2026, 8, 17, 10, 0, 0, 0, time.UTC)
 	snapshot := strings.Join([]string{
-		`{"node_name":"` + node + `","ifname":"eth0","mac":"00:11:22:33:44:00","pci_path":"0000:03:00.0","driver":"igb","media_type":"TP","link_speed":1000,"operstate":"up","collected_at":"` + collected.Format(time.RFC3339Nano) + `"}`,
-		`{"node_name":"` + node + `","ifname":"eth1","mac":"00:11:22:33:44:01","pci_path":"0000:03:00.1","driver":"ixgbe","media_type":"FIBRE","link_speed":10000,"operstate":"up","collected_at":"` + collected.Format(time.RFC3339Nano) + `"}`,
-		`{"node_name":"` + node + `","ifname":"eth2","mac":"00:11:22:33:44:02","pci_path":"0000:03:00.2","driver":"ixgbe","media_type":"FIBRE","link_speed":10000,"operstate":"down","collected_at":"` + collected.Format(time.RFC3339Nano) + `"}`,
+		`{"node_name":"` + node + `","ifname":"eth0","mac":"00:11:22:33:44:00","ip_addresses":["192.168.10.2/24","2408:8207::2/64"],"pci_path":"0000:03:00.0","driver":"igb","media_type":"TP","link_speed":1000,"operstate":"up","collected_at":"` + collected.Format(time.RFC3339Nano) + `"}`,
+		`{"node_name":"` + node + `","ifname":"eth1","mac":"00:11:22:33:44:01","ip_addresses":["10.0.0.10/24"],"pci_path":"0000:03:00.1","driver":"ixgbe","media_type":"FIBRE","link_speed":10000,"operstate":"up","collected_at":"` + collected.Format(time.RFC3339Nano) + `"}`,
+		`{"node_name":"` + node + `","ifname":"eth2","mac":"00:11:22:33:44:02","ip_addresses":[],"pci_path":"0000:03:00.2","driver":"ixgbe","media_type":"FIBRE","link_speed":10000,"operstate":"down","collected_at":"` + collected.Format(time.RFC3339Nano) + `"}`,
 	}, "\n") + "\n"
 	if err := os.WriteFile(logPath, []byte(snapshot), 0o600); err != nil {
 		t.Fatal(err)
@@ -76,6 +76,14 @@ func TestStage8NodeInterfaces(t *testing.T) {
 	if ifaces[0].(map[string]interface{})["media_type"] != "TP" ||
 		ifaces[1].(map[string]interface{})["media_type"] != "FIBRE" {
 		t.Fatalf("media_type = %v/%v", ifaces[0], ifaces[1])
+	}
+	eth0IPs, _ := ifaces[0].(map[string]interface{})["ip_addresses"].([]interface{})
+	if len(eth0IPs) != 2 || eth0IPs[0] != "192.168.10.2/24" || eth0IPs[1] != "2408:8207::2/64" {
+		t.Fatalf("eth0 ip_addresses = %#v", ifaces[0].(map[string]interface{})["ip_addresses"])
+	}
+	eth2IPs, okEth2IPs := ifaces[2].(map[string]interface{})["ip_addresses"].([]interface{})
+	if !okEth2IPs || len(eth2IPs) != 0 {
+		t.Fatalf("eth2 ip_addresses = %#v, want []", ifaces[2].(map[string]interface{})["ip_addresses"])
 	}
 	// 不过滤时该节点也在分组内
 	result = s5OK(t, env.get(t, "/api/v1/gateway/interfaces", cookies), "list all nodes")
@@ -113,17 +121,29 @@ func TestStage8NodeInterfaces(t *testing.T) {
 		t.Fatalf("audit rows = %d, want 1", n)
 	}
 
-	// ---------- 第二轮快照：eth1 消失保留 present=false、eth3 新口排末尾、用户设定不被覆盖 ----------
+	// ---------- 第二轮快照：eth1 消失保留 present=false、eth3 新口排末尾、用户设定不被覆盖、旧上报端省略 IP 不覆盖已有值 ----------
 	snapshot2 := strings.Join([]string{
-		`{"node_name":"` + node + `","ifname":"eth2","mac":"00:11:22:33:44:02","pci_path":"0000:03:00.2","driver":"ixgbe","media_type":"FIBRE","link_speed":10000,"operstate":"up","collected_at":"` + collected.Format(time.RFC3339Nano) + `"}`,
+		`{"node_name":"` + node + `","ifname":"eth2","mac":"00:11:22:33:44:02","ip_addresses":["172.16.0.2/24"],"pci_path":"0000:03:00.2","driver":"ixgbe","media_type":"FIBRE","link_speed":10000,"operstate":"up","collected_at":"` + collected.Format(time.RFC3339Nano) + `"}`,
 		`{"node_name":"` + node + `","ifname":"eth0","mac":"00:11:22:33:44:00","pci_path":"0000:03:00.0","driver":"igb","media_type":"TP","link_speed":1000,"operstate":"up","collected_at":"` + collected.Format(time.RFC3339Nano) + `"}`,
-		`{"node_name":"` + node + `","ifname":"eth3","mac":"00:11:22:33:44:03","pci_path":"0000:03:00.3","driver":"i40e","media_type":"FIBRE","link_speed":25000,"operstate":"up","collected_at":"` + collected.Format(time.RFC3339Nano) + `"}`,
+		`{"node_name":"` + node + `","ifname":"eth3","mac":"00:11:22:33:44:03","ip_addresses":["10.0.0.3/24"],"pci_path":"0000:03:00.3","driver":"i40e","media_type":"FIBRE","link_speed":25000,"operstate":"up","collected_at":"` + collected.Format(time.RFC3339Nano) + `"}`,
 	}, "\n") + "\n"
 	if err := os.WriteFile(logPath, []byte(snapshot2), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := collector.CollectOnce(context.Background()); err != nil {
 		t.Fatalf("collect round2: %v", err)
+	}
+	if n := s8Count(t, env,
+		`SELECT count(*) FROM gateway_node_interfaces WHERE node_name = $1 AND ifname = 'eth0' AND ip_addresses = ARRAY['192.168.10.2/24','2408:8207::2/64']::TEXT[]`, node); n != 1 {
+		t.Fatal("eth0 旧上报省略 ip_addresses 时未保留已有 IP")
+	}
+	if n := s8Count(t, env,
+		`SELECT count(*) FROM gateway_node_interfaces WHERE node_name = $1 AND ifname = 'eth2' AND ip_addresses = ARRAY['172.16.0.2/24']::TEXT[]`, node); n != 1 {
+		t.Fatal("eth2 ip_addresses 未更新")
+	}
+	if n := s8Count(t, env,
+		`SELECT count(*) FROM gateway_node_interfaces WHERE node_name = $1 AND ifname = 'eth3' AND ip_addresses = ARRAY['10.0.0.3/24']::TEXT[]`, node); n != 1 {
+		t.Fatal("eth3 ip_addresses 未落库")
 	}
 	if n := s8Count(t, env,
 		`SELECT count(*) FROM gateway_node_interfaces WHERE node_name = $1 AND ifname = 'eth1' AND NOT present`, node); n != 1 {

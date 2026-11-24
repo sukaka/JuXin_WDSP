@@ -284,3 +284,71 @@ describe('UpstreamsTab 编辑/创建全字段保留 (B9-4)', () => {
     })
   })
 })
+
+describe('UpstreamsTab 透明串接无源站告警 (P1-13)', () => {
+  beforeEach(() => {
+    useAuthStore.setState({
+      user: makeUser(['upstreams.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function renderWithItems(items: unknown[], deploymentMode?: string) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/applications/app-1/upstreams')) {
+          return Promise.resolve(
+            jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { items } }),
+          )
+        }
+        return Promise.reject(new Error(`unexpected url: ${url}`))
+      }),
+    )
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={qc}>
+        <AntdApp>
+          <UpstreamsTab appId="app-1" deploymentMode={deploymentMode} />
+        </AntdApp>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('TRANSPARENT 且 0 个源站时展示 502 告警提示', async () => {
+    renderWithItems([], 'TRANSPARENT')
+    expect(
+      await screen.findByText('透明串接模式尚未配置已启用的源站服务器'),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/返回 502/)).toBeInTheDocument()
+  })
+
+  it('TRANSPARENT 且所有源站均已停用时仍展示 502 告警提示', async () => {
+    renderWithItems([{ ...upstreamItem, status: 'DISABLED' }], 'TRANSPARENT')
+    expect(await screen.findByText('主源站')).toBeInTheDocument()
+    expect(
+      screen.getByText('透明串接模式尚未配置已启用的源站服务器'),
+    ).toBeInTheDocument()
+  })
+
+  it('TRANSPARENT 且存在已启用源站时不展示告警', async () => {
+    renderWithItems([upstreamItem], 'TRANSPARENT')
+    expect(await screen.findByText('主源站')).toBeInTheDocument()
+    expect(
+      screen.queryByText('透明串接模式尚未配置已启用的源站服务器'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('REVERSE_PROXY 且 0 个源站时不展示透明串接专属告警', async () => {
+    renderWithItems([], 'REVERSE_PROXY')
+    await waitFor(() =>
+      expect(screen.queryByText('透明串接模式尚未配置已启用的源站服务器')).not.toBeInTheDocument(),
+    )
+  })
+})

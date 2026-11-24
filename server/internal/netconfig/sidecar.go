@@ -24,6 +24,42 @@ const (
 	networkStatusFileName = "network-status.json"
 )
 
+// TransparentStatus 是 network-status.json 中可选的透明牵引状态 DTO（netmgrd 回写）。
+type TransparentStatus struct {
+	State          string   `json:"state"`
+	Enabled        bool     `json:"enabled"`
+	RedirectActive bool     `json:"redirect_active"`
+	ListenPort     int      `json:"listen_port"`
+	Ports          []int    `json:"ports,omitempty"`
+	Bridges        []string `json:"bridges,omitempty"`
+	TproxydHealthy bool     `json:"tproxyd_healthy"`
+	CaddyHealthy   bool     `json:"caddy_healthy"`
+	BridgeNFReady  bool     `json:"bridge_nf_ready"`
+	Message        string   `json:"message,omitempty"`
+	UpdatedAt      string   `json:"updated_at,omitempty"`
+}
+
+// NetworkStatus 是 sidecars/network-status.json 的结构化视图（含可选透明牵引状态）。
+type NetworkStatus struct {
+	OK          bool               `json:"ok"`
+	Node        string             `json:"node,omitempty"`
+	Message     string             `json:"message,omitempty"`
+	AppliedAt   string             `json:"applied_at,omitempty"`
+	Transparent *TransparentStatus `json:"transparent,omitempty"`
+}
+
+// ParseNetworkStatus 将 network-status.json 原始字节解析为强类型 NetworkStatus DTO。
+func ParseNetworkStatus(raw json.RawMessage) (*NetworkStatus, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var st NetworkStatus
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return nil, err
+	}
+	return &st, nil
+}
+
 // networkFile 是 sidecars/network.json 内容契约（netmgrd 消费；
 // Bridges/Routes 恒为数组，空数组而非 null；DNSServers/NTPServers 可选，
 // 空设置缺省不出现 = netmgrd 继承宿主机现状）。
@@ -37,7 +73,8 @@ type networkFile struct {
 }
 
 // writeNetworkJSON 原子写 network.json（同目录临时文件 + rename；目录不存在则创建）。
-// 文件 0644 / 目录 0755：内容无敏感信息，且需跨容器（网关侧 netmgrd）可读。
+// 文件 0644 / 目录 0770（显式 Chmod 避免 umask 剥离组写位）：供加入共享组 1000（无 CAP_DAC_OVERRIDE）
+// 的 netmgrd 读取 network.json 并原子回写 network-status.json，同时不开放 other 权限。
 func writeNetworkJSON(dir string, cfg Config, updatedAt time.Time) error {
 	cfg.normalize()
 	payload := networkFile{
@@ -48,8 +85,11 @@ func writeNetworkJSON(dir string, cfg Config, updatedAt time.Time) error {
 		NTPServers: cfg.NTPServers,
 		UpdatedAt:  updatedAt.UTC().Format(time.RFC3339),
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o770); err != nil {
 		return fmt.Errorf("创建边车配置目录失败: %w", err)
+	}
+	if err := os.Chmod(dir, 0o770); err != nil {
+		return fmt.Errorf("设置边车配置目录权限失败: %w", err)
 	}
 	buf, err := json.Marshal(payload)
 	if err != nil {

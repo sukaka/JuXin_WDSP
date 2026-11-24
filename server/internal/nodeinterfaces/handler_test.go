@@ -106,8 +106,11 @@ func TestRoutesPermission(t *testing.T) {
 func TestListGrouped(t *testing.T) {
 	store := NewMemStore()
 	seen := time.Date(2026, 8, 17, 10, 0, 0, 0, time.UTC)
+	eth1 := snap("eth1", "FIBRE", 10000)
+	eth1.IPAddresses = []string{"10.0.1.10/24", "2408:8207::10/64"}
+	eth0 := snap("eth0", "TP", 1000)
 	if err := store.ApplySnapshot(context.Background(), "gw-1",
-		[]SnapshotItem{snap("eth1", "FIBRE", 10000), snap("eth0", "TP", 1000)}, seen); err != nil {
+		[]SnapshotItem{eth1, eth0}, seen); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandler(store, nil)
@@ -129,6 +132,14 @@ func TestListGrouped(t *testing.T) {
 	}
 	if ifaces[0].(map[string]any)["present"] != true {
 		t.Fatalf("present = %v", ifaces[0])
+	}
+	ips0, ok0 := ifaces[0].(map[string]any)["ip_addresses"].([]any)
+	if !ok0 || len(ips0) != 2 || ips0[0] != "10.0.1.10/24" || ips0[1] != "2408:8207::10/64" {
+		t.Fatalf("eth1 ip_addresses = %#v", ifaces[0].(map[string]any)["ip_addresses"])
+	}
+	ips1, ok1 := ifaces[1].(map[string]any)["ip_addresses"].([]any)
+	if !ok1 || len(ips1) != 0 {
+		t.Fatalf("eth0 ip_addresses should be JSON empty array [], got %#v", ifaces[1].(map[string]any)["ip_addresses"])
 	}
 
 	rr = doJSON(t, mux, http.MethodGet, "/api/v1/gateway/interfaces?node_name=gw-x", nil)
@@ -228,5 +239,61 @@ func TestUpdateOrderSuccess(t *testing.T) {
 	}
 	if list[0].Interfaces[1].Role != "MANAGEMENT" {
 		t.Fatalf("eth0 = %+v, want role=MANAGEMENT（未被本次提交触及）", list[0].Interfaces[1])
+	}
+}
+
+func TestHandlerUpdateOrderTriggersOnChangeCallback(t *testing.T) {
+	store := NewMemStore()
+	_ = store.ApplySnapshot(context.Background(), "gw-1", []SnapshotItem{
+		{NodeName: "gw-1", Ifname: "eth2", MAC: "00:11:22:33:44:55"},
+	}, time.Now())
+	called := 0
+	h := NewHandler(store, nil).SetOnChange(func(context.Context) { called++ })
+	mux := newTestMux(h, injectPrincipal)
+
+	rr := doJSON(t, mux, http.MethodPut, "/api/v1/gateway/interfaces/order", map[string]any{
+		"node_name": "gw-1",
+		"items":     []any{map[string]any{"ifname": "eth2", "sort_order": 1, "role": "MIRROR"}},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if called != 1 {
+		t.Fatalf("onChange called = %d, want 1", called)
+	}
+}
+
+func TestHandlerUpdateOrderRejectsManagementOrMirrorOnBridgedPort(t *testing.T) {
+	store := NewMemStore()
+	_ = store.ApplySnapshot(context.Background(), "gw-1", []SnapshotItem{
+		{NodeName: "gw-1", Ifname: "eth2", MAC: "00:11:22:33:44:55"},
+		{NodeName: "gw-1", Ifname: "eth3", MAC: "00:11:22:33:44:56"},
+	}, time.Now())
+	h := NewHandler(store, nil).SetBridgePortChecker(func(_ context.Context, nodeName, ifname string) (string, error) {
+		if nodeName == "gw-1" && ifname == "eth2" {
+			return "br0", nil
+		}
+		return "", nil
+	})
+	mux := newTestMux(h, injectPrincipal)
+
+	for _, forbiddenRole := range []string{RoleManagement, RoleMirror} {
+		rr := doJSON(t, mux, http.MethodPut, "/api/v1/gateway/interfaces/order", map[string]any{
+			"node_name": "gw-1",
+			"items":     []any{map[string]any{"ifname": "eth2", "sort_order": 1, "role": forbiddenRole}},
+		})
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("setting %s on bridged port status=%d body=%s, want 400", forbiddenRole, rr.Code, rr.Body.String())
+		}
+	}
+	// 设为 TRAFFIC 或空串允许
+	for _, allowedRole := range []string{RoleTraffic, ""} {
+		rr := doJSON(t, mux, http.MethodPut, "/api/v1/gateway/interfaces/order", map[string]any{
+			"node_name": "gw-1",
+			"items":     []any{map[string]any{"ifname": "eth2", "sort_order": 1, "role": allowedRole}},
+		})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("setting %q on bridged port status=%d body=%s, want 200", allowedRole, rr.Code, rr.Body.String())
+		}
 	}
 }

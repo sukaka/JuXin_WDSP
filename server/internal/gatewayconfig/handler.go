@@ -35,19 +35,29 @@ func (h *Handler) Preview(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
-	gen, err := Generate(GenerateInput{Apps: appsData, AdminSocket: pub.caddy.SocketPath(), GatewayTracing: pub.gatewayTracing})
+	gen, err := Generate(GenerateInput{
+		Apps:                   appsData,
+		AdminSocket:            pub.caddy.SocketPath(),
+		GatewayTracing:         pub.gatewayTracing,
+		TransparentHTTPListen:  pub.effectiveTproxyTarget(),
+		TransparentHTTPSListen: pub.effectiveTproxyTargetTLS(),
+	})
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
 	}
-	h.recordAudit(r, p, "gateway_configs", "preview", "gateway_config", "", "gateway", "", "", audits.ResultSuccess, audits.RiskLow)
-	response.JSON(w, r, http.StatusOK, map[string]interface{}{
+	payload := map[string]interface{}{
 		"configuration_hash": gen.Hash,
 		"server_count":       gen.ServerCount,
 		"route_count":        gen.RouteCount,
 		"business_snapshot":  snapshot,
 		"config_preview":     gen.JSON,
-	})
+	}
+	if tproxySidecar, tErr := pub.buildTproxydSidecarFor(r.Context(), appsData); tErr == nil {
+		payload["tproxyd_preview"] = tproxySidecar
+	}
+	h.recordAudit(r, p, "gateway_configs", "preview", "gateway_config", "", "gateway", "", "", audits.ResultSuccess, audits.RiskLow)
+	response.JSON(w, r, http.StatusOK, payload)
 }
 
 // Validate 配置校验。
@@ -59,10 +69,23 @@ func (h *Handler) Validate(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusOK, response.CodeInvalidArgument, err.Error())
 		return
 	}
-	gen, err := Generate(GenerateInput{Apps: appsData, AdminSocket: pub.caddy.SocketPath(), GatewayTracing: pub.gatewayTracing})
+	gen, err := Generate(GenerateInput{
+		Apps:                   appsData,
+		AdminSocket:            pub.caddy.SocketPath(),
+		GatewayTracing:         pub.gatewayTracing,
+		TransparentHTTPListen:  pub.effectiveTproxyTarget(),
+		TransparentHTTPSListen: pub.effectiveTproxyTargetTLS(),
+	})
 	if err != nil {
 		response.JSON(w, r, http.StatusOK, map[string]interface{}{
 			"valid": false, "error": err.Error(),
+		})
+		return
+	}
+	if _, err := pub.validateTransparentConfig(r.Context(), appsData); err != nil {
+		h.recordAudit(r, p, "gateway_configs", "validate", "gateway_config", "", "gateway", "", "failed: "+err.Error(), audits.ResultFailure, audits.RiskLow)
+		response.JSON(w, r, http.StatusOK, map[string]interface{}{
+			"valid": false, "error": err.Error(), "configuration_hash": gen.Hash,
 		})
 		return
 	}

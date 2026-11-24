@@ -35,6 +35,7 @@ func (m *MemStore) ListGrouped(_ context.Context, nodeName string) ([]NodeInterf
 		if _, ok := byNode[row.NodeName]; !ok {
 			nodes = append(nodes, row.NodeName)
 		}
+		row.IPAddresses = cloneIPAddresses(row.IPAddresses)
 		byNode[row.NodeName] = append(byNode[row.NodeName], row)
 	}
 	sort.Strings(nodes)

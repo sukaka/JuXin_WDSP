@@ -37,8 +37,16 @@ func TestWriteSnapshotAtomicRewrite(t *testing.T) {
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 
 	ifs := []Interface{
-		{IfName: "eth0", MAC: "00:11:22:33:44:55", PCIPath: "0000:03:00.0", Driver: "ixgbe", MediaType: MediaFibre, LinkSpeed: 10000, OperState: "up"},
-		{IfName: "eth1", MAC: "00:11:22:33:44:66", MediaType: MediaUnknown, LinkSpeed: 0, OperState: "down"},
+		{
+			IfName: "eth0", MAC: "00:11:22:33:44:55",
+			IPAddresses: []string{"192.168.10.2/24", "2408:8207::1/64"},
+			PCIPath:     "0000:03:00.0", Driver: "ixgbe", MediaType: MediaFibre, LinkSpeed: 10000, OperState: "up",
+		},
+		{
+			IfName: "eth1", MAC: "00:11:22:33:44:66",
+			IPAddresses: []string{},
+			MediaType:   MediaUnknown, LinkSpeed: 0, OperState: "down",
+		},
 	}
 	if err := WriteSnapshot(path, "node-1", ifs, now); err != nil {
 		t.Fatal(err)
@@ -49,9 +57,13 @@ func TestWriteSnapshotAtomicRewrite(t *testing.T) {
 	}
 	r := recs[0]
 	if r.NodeName != "node-1" || r.IfName != "eth0" || r.MAC != "00:11:22:33:44:55" ||
+		len(r.IPAddresses) != 2 || r.IPAddresses[0] != "192.168.10.2/24" || r.IPAddresses[1] != "2408:8207::1/64" ||
 		r.PCIPath != "0000:03:00.0" || r.Driver != "ixgbe" || r.MediaType != MediaFibre ||
 		r.LinkSpeed != 10000 || r.OperState != "up" || !r.CollectedAt.Equal(now) {
 		t.Errorf("record fields: %+v", r)
+	}
+	if recs[1].IPAddresses == nil || len(recs[1].IPAddresses) != 0 {
+		t.Errorf("eth1 empty ip_addresses should unmarshal as non-nil empty slice, got %#v", recs[1].IPAddresses)
 	}
 
 	// 临时文件不留存（原子 rename 成功）

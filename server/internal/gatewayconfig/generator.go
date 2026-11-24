@@ -34,7 +34,7 @@ type GenerateInput struct {
 	CertFileDir string
 	// Exceptions 启用的例外策略规则（SecLang 文本，加入 before-crs 加载段）。
 	Exceptions []ExceptionRule
-	// CustomRules 启用的自定义规则 SecLang（CRS 之后加载，替代仅静态 include）。
+	// CustomRules 启用的自定义规则 SecLang（位于例外与规则覆盖之后、CRS 主规则之前加载）。
 	CustomRules []string
 	// Guard 阶段5访问控制/CC 配置（nil 表示不注入 jiuzhang_guard 处理器，兼容阶段3/4）。
 	Guard *GuardConfig
@@ -45,6 +45,12 @@ type GenerateInput struct {
 	// 控制（默认 OTLP http/protobuf → 127.0.0.1:4318，parentbased_always_on 即 100% 头采；
 	// 错误/慢请求/WAF 高风险的尾采样在中央 Collector 决策，见 docs/APM_DATA_PLANE_DEPLOYMENT.md）。
 	GatewayTracing bool
+	// TransparentHTTPListen 透明串接模式专用 HTTP 回环监听地址（与 tproxyd.json target 同步，
+	// 缺省 127.0.0.1:15080；避免与业务/控制台 8080 端口冲突）。
+	TransparentHTTPListen string
+	// TransparentHTTPSListen 透明串接模式专用 HTTPS 回环监听地址（与 tproxyd.json target_tls 同步，
+	// 缺省 127.0.0.1:15443；避免与控制台 8443 端口冲突）。
+	TransparentHTTPSListen string
 }
 
 // AppData 是单个应用的完整数据。
@@ -182,9 +188,25 @@ func marshalDeterministic(v interface{}) ([]byte, error) {
 
 func injectConnectionMetrics(servers map[string]interface{}) {
 	for _, raw := range servers {
-		if server, ok := raw.(mapT); ok {
-			server["listener_wrappers"] = []interface{}{mapT{"wrapper": "jiuzhang_connection_metrics"}}
+		server, ok := raw.(mapT)
+		if !ok {
+			continue
 		}
+		existing, _ := server["listener_wrappers"].([]interface{})
+		hasMetrics := false
+		for _, w := range existing {
+			if wm, ok := w.(mapT); ok && wm["wrapper"] == "jiuzhang_connection_metrics" {
+				hasMetrics = true
+				break
+			}
+		}
+		if hasMetrics {
+			continue
+		}
+		merged := make([]interface{}, 0, len(existing)+1)
+		merged = append(merged, mapT{"wrapper": "jiuzhang_connection_metrics"})
+		merged = append(merged, existing...)
+		server["listener_wrappers"] = merged
 	}
 }
 
@@ -241,9 +263,14 @@ type routeEntry struct {
 }
 
 // buildServers 按监听端口分组构建 servers。
+// TRANSPARENT（透明串接）应用分流到专用内部回环 server（srv_transparent_http /
+// srv_transparent_https，挂 proxy_protocol / tls listener_wrappers），与公网反代/路由
+// 站点（srv0/srv1...）完全隔离，避免端口冲突且确保 tproxyd PROXY v1 正常解包。
 func buildServers(in GenerateInput) (map[string]interface{}, int) {
-	httpServers := map[string][]routeEntry{}  // listen addr -> routes
-	httpsServers := map[string][]routeEntry{} // listen addr -> routes
+	httpServers := map[string][]routeEntry{}  // listen addr -> routes (REVERSE_PROXY/ROUTED)
+	httpsServers := map[string][]routeEntry{} // listen addr -> routes (REVERSE_PROXY/ROUTED)
+	var transparentHTTPRoutes []routeEntry
+	var transparentHTTPSRoutes []routeEntry
 
 	for _, app := range in.Apps {
 		// MIRROR（镜像旁路）应用不生成内联站点路由：其流量经镜像口到达 mirrorcap 采集器，
@@ -251,12 +278,12 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 		if app.DeploymentMode == applications.DeployModeMirror {
 			continue
 		}
+		isTransparent := app.DeploymentMode == applications.DeployModeTransparent
 		for _, d := range app.Domains {
 			hosts := []string{d.NormalizedHostname}
 			// 泛域名 Caddy 用 *.example.com 形式（Caddy 支持通配符 host matcher）
-			route := mapT{}
 			if d.HTTPEnabled && d.HTTPPort != nil {
-				addr := fmt.Sprintf(":%d", *d.HTTPPort)
+				var entries []routeEntry
 				// HTTP 跳 HTTPS：仅返回 308 重定向，绝不下发路径转发路由绕过 HTTPS 强制跳转
 				if d.RedirectHTTPToHTTPS && d.HTTPSEnabled {
 					location := "https://{http.request.host}{http.request.uri}"
@@ -270,24 +297,34 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 								"headers": mapT{"Location": []string{location}}},
 						},
 					}
-					httpServers[addr] = append(httpServers[addr], routeEntry{appCode: app.Code, route: r})
+					entries = append(entries, routeEntry{appCode: app.Code, route: r})
 				} else {
 					r := mapT{
 						"match":  []interface{}{mapT{"host": hosts}},
 						"handle": buildHandles(in, app, d, *d.HTTPPort),
 					}
-					httpServers[addr] = append(httpServers[addr], pathRouteEntries(in, app, hosts, *d.HTTPPort)...)
-					httpServers[addr] = append(httpServers[addr], routeEntry{appCode: app.Code, route: r})
+					entries = append(entries, pathRouteEntries(in, app, hosts, *d.HTTPPort)...)
+					entries = append(entries, routeEntry{appCode: app.Code, route: r})
+				}
+				if isTransparent {
+					transparentHTTPRoutes = append(transparentHTTPRoutes, entries...)
+				} else {
+					addr := fmt.Sprintf(":%d", *d.HTTPPort)
+					httpServers[addr] = append(httpServers[addr], entries...)
 				}
 			}
 			if d.HTTPSEnabled && d.HTTPSPort != nil {
-				addr := fmt.Sprintf(":%d", *d.HTTPSPort)
-				route = mapT{
+				route := mapT{
 					"match":  []interface{}{mapT{"host": hosts}},
 					"handle": buildHandles(in, app, d, *d.HTTPSPort),
 				}
-				httpsServers[addr] = append(httpsServers[addr], pathRouteEntries(in, app, hosts, *d.HTTPSPort)...)
-				httpsServers[addr] = append(httpsServers[addr], routeEntry{appCode: app.Code, route: route})
+				entries := append(pathRouteEntries(in, app, hosts, *d.HTTPSPort), routeEntry{appCode: app.Code, route: route})
+				if isTransparent {
+					transparentHTTPSRoutes = append(transparentHTTPSRoutes, entries...)
+				} else {
+					addr := fmt.Sprintf(":%d", *d.HTTPSPort)
+					httpsServers[addr] = append(httpsServers[addr], entries...)
+				}
 			}
 		}
 	}
@@ -296,7 +333,7 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 	routeCount := 0
 	serverIdx := 0
 
-	// HTTP servers
+	// HTTP servers（REVERSE_PROXY / ROUTED）
 	for _, addr := range sortedKeys(httpServers) {
 		entries := httpServers[addr]
 		// 路由按应用编码排序（确定性）；stable 保持同应用内路径转发先于默认路由
@@ -315,7 +352,8 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 		}
 		serverIdx++
 	}
-	// HTTPS servers（带证书）
+	// HTTPS servers（REVERSE_PROXY / ROUTED，带证书）
+	publicTLSPolicies := buildTLSPoliciesForMode(in, false)
 	for _, addr := range sortedKeys(httpsServers) {
 		entries := httpsServers[addr]
 		sort.SliceStable(entries, func(i, j int) bool { return entries[i].appCode < entries[j].appCode })
@@ -332,12 +370,68 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 			"errors":          buildErrorRoutes(in),
 		}
 		// TLS 连接策略：按域名关联证书
-		tlsPolicies := buildTLSPolicies(in)
-		if len(tlsPolicies) > 0 {
-			server["tls_connection_policies"] = tlsPolicies
+		if len(publicTLSPolicies) > 0 {
+			server["tls_connection_policies"] = publicTLSPolicies
 		}
 		servers[fmt.Sprintf("srv%d", serverIdx)] = server
 		serverIdx++
+	}
+
+	// 透明串接专用回环 HTTP server（仅接收本机 tproxyd PROXY v1 转发）
+	if len(transparentHTTPRoutes) > 0 {
+		sort.SliceStable(transparentHTTPRoutes, func(i, j int) bool {
+			return transparentHTTPRoutes[i].appCode < transparentHTTPRoutes[j].appCode
+		})
+		routes := make([]interface{}, 0, len(transparentHTTPRoutes))
+		for _, e := range transparentHTTPRoutes {
+			routes = append(routes, e.route)
+			routeCount++
+		}
+		listenAddr := strings.TrimSpace(in.TransparentHTTPListen)
+		if listenAddr == "" {
+			listenAddr = DefaultTproxydTarget
+		}
+		servers["srv_transparent_http"] = mapT{
+			"listen":          []string{listenAddr},
+			"routes":          routes,
+			"automatic_https": mapT{"disable": true},
+			"logs":            mapT{"default_logger_name": "access"},
+			"errors":          buildErrorRoutes(in),
+			"listener_wrappers": []interface{}{
+				mapT{"wrapper": "proxy_protocol", "allow": []string{"127.0.0.1/32"}},
+			},
+		}
+	}
+
+	// 透明串接专用回环 HTTPS server（proxy_protocol 必须位于 tls 之前以先剥离 PROXY v1 头）
+	if len(transparentHTTPSRoutes) > 0 {
+		sort.SliceStable(transparentHTTPSRoutes, func(i, j int) bool {
+			return transparentHTTPSRoutes[i].appCode < transparentHTTPSRoutes[j].appCode
+		})
+		routes := make([]interface{}, 0, len(transparentHTTPSRoutes))
+		for _, e := range transparentHTTPSRoutes {
+			routes = append(routes, e.route)
+			routeCount++
+		}
+		listenAddr := strings.TrimSpace(in.TransparentHTTPSListen)
+		if listenAddr == "" {
+			listenAddr = DefaultTproxydTargetTLS
+		}
+		server := mapT{
+			"listen":          []string{listenAddr},
+			"routes":          routes,
+			"automatic_https": mapT{"disable": true},
+			"logs":            mapT{"default_logger_name": "access"},
+			"errors":          buildErrorRoutes(in),
+			"listener_wrappers": []interface{}{
+				mapT{"wrapper": "proxy_protocol", "allow": []string{"127.0.0.1/32"}},
+				mapT{"wrapper": "tls"},
+			},
+		}
+		if tlsPolicies := buildTLSPoliciesForMode(in, true); len(tlsPolicies) > 0 {
+			server["tls_connection_policies"] = tlsPolicies
+		}
+		servers["srv_transparent_https"] = server
 	}
 	return servers, routeCount
 }
@@ -437,11 +531,16 @@ func buildCertFilePairs(in GenerateInput) []interface{} {
 	return pairs
 }
 
-// buildTLSPolicies 构建 TLS 连接策略（证书文件引用）：按证书 tag 分组，每组一条策略——
-// SNI 命中该组域名时由 certificate_selection.any_tag 选中 load_files 以同一 tag 加载的
-// 证书，使每个域名关联到本应用的证书。any_tag 在 Caddy v2.11.4 为 []string
-// （modules/caddytls/certselection.go），输出字符串会在 /load 直接失败。
+// buildTLSPolicies 构建 TLS 连接策略（证书文件引用）：默认用于公网 HTTPS server。
 func buildTLSPolicies(in GenerateInput) []interface{} {
+	return buildTLSPoliciesForMode(in, false)
+}
+
+// buildTLSPoliciesForMode 按透明/非透明模式隔离构建 TLS 连接策略：按证书 tag 分组，
+// 每组一条策略——SNI 命中该组域名时由 certificate_selection.any_tag 选中 load_files 以
+// 同一 tag 加载的证书，使每个域名关联到本应用的证书。any_tag 在 Caddy v2.11.4 为 []string
+// （modules/caddytls/certselection.go），输出字符串会在 /load 直接失败。
+func buildTLSPoliciesForMode(in GenerateInput, transparentOnly bool) []interface{} {
 	groups := map[string][]string{} // cert tag -> sni domains
 	for _, app := range in.Apps {
 		if !app.HasCert || app.CertFileName == "" {
@@ -449,6 +548,10 @@ func buildTLSPolicies(in GenerateInput) []interface{} {
 		}
 		// MIRROR 应用无内联站点路由，不为其域名生成 TLS 连接策略
 		if app.DeploymentMode == applications.DeployModeMirror {
+			continue
+		}
+		isTransparent := app.DeploymentMode == applications.DeployModeTransparent
+		if isTransparent != transparentOnly {
 			continue
 		}
 		tag := certTag(app)
@@ -507,7 +610,8 @@ func exceptionAppliesToApp(ex ExceptionRule, app AppData) bool {
 
 // buildWAFDirectivesWithPolicy 构建带策略参数、例外、规则覆盖与自定义规则的 WAF SecLang 指令。
 // 阶段4：策略参数（PL/阈值）注入 crs-setup；例外与规则覆盖放 CRS 之前；
-// 自定义规则放 CRS 之后（与静态 jiuzhang-custom 一并加载）。
+// 管理面自定义规则放例外与规则覆盖之后、CRS 主规则之前（确保 phase:2 自定义阻断规则优先于
+// CRS 949 生效，且仍受其前例外与规则覆盖控制）；静态 jiuzhang-custom 与 contrib 包保持在 CRS 之后。
 func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []ExceptionRule, customRules, ruleOverrides []string) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("SecRuleEngine %s\n", ruleEngine))
@@ -564,13 +668,9 @@ func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []E
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("Include /etc/caddy/rules/crs/rules/*.conf\n")
-	// 第三方与自建规则包（阶段：规则量扩展，放 CRS 主规则之后）
-	b.WriteString("Include /etc/caddy/rules/contrib/*/*.conf\n")
-	b.WriteString("Include /etc/caddy/rules/crs/plugins/*/plugins/*-after.conf\n")
-	b.WriteString("Include /etc/caddy/rules/exclusions/after-crs.conf\n")
-	b.WriteString("Include /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf\n")
-	// 管理面启用的自定义规则（确定性：按调用方已排序的切片顺序写出）
+	// 管理面启用的自定义规则（确定性：按调用方已排序的切片顺序写出）。
+	// 置于例外与规则覆盖之后、CRS 主规则之前：既保留例外与规则覆盖对自定义规则的摘除优先级，
+	// 又避免 phase:2 自定义阻断规则被 CRS 949 阻断评估提前抢占。
 	for _, line := range customRules {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -581,8 +681,14 @@ func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []E
 			b.WriteString("\n")
 		}
 	}
+	b.WriteString("Include /etc/caddy/rules/crs/rules/*.conf\n")
+	// 第三方与自建规则包（阶段：规则量扩展，放 CRS 主规则之后）
+	b.WriteString("Include /etc/caddy/rules/contrib/*/*.conf\n")
+	b.WriteString("Include /etc/caddy/rules/crs/plugins/*/plugins/*-after.conf\n")
+	b.WriteString("Include /etc/caddy/rules/exclusions/after-crs.conf\n")
+	b.WriteString("Include /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf\n")
 	// 二次阻断评估：必须始终是最后一条 Include（晚于一切计分规则）。
-	// CRS 949 阻断评估在 crs/rules/ 内部完成，晚于它执行的 contrib/插件/自定义
+	// CRS 949 阻断评估在 crs/rules/ 内部完成，晚于它执行的 contrib/插件/after-crs
 	// 计分规则需由该文件重新汇总分数并阻断。
 	b.WriteString("Include /etc/caddy/rules/jiuzhang/post-contrib-blocking.conf\n")
 	return b.String()

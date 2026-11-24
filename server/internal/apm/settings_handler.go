@@ -136,8 +136,14 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		changedKeys = append(changedKeys, settingsKeyClickHouseDSN)
 	}
 
-	// 写后立即按新生效 DSN 重建连接（热生效，无需重启）
-	h.ch.Resolve(r.Context())
+	// 写后立即按新生效 DSN 刷新/重建连接（热生效，无需重启）：
+	// 显式提交 clickhouse_dsn 时无视冷却强制重建（即使 DSN 文本未变也可立即重连）；
+	// 仅切总开关时若当前处于断连冷却，绕过冷却重试但不打断已有健康连接。
+	if req.ClickHouseDSN != nil {
+		h.ch.Reconnect(r.Context())
+	} else {
+		h.ch.RetryDisconnected(r.Context())
+	}
 
 	if h.audits != nil {
 		afterJSON, _ := json.Marshal(after)

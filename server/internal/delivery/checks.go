@@ -151,7 +151,7 @@ func checkHTTPSConfig(rc *RunContext) ItemResult {
 	return c.pass(fmt.Sprintf("当前环境 %s，生产部署时须启用 COOKIE_SECURE", rc.Cfg.Env), nil)
 }
 
-// checkThreeRoleAccounts 三权账号：系统/安全/审计管理员角色各至少一名启用用户。
+// checkThreeRoleAccounts 三权账号：系统/运维/审计管理员角色各至少一名启用用户。
 func checkThreeRoleAccounts(rc *RunContext) ItemResult {
 	c := findCheck("three_role_accounts")
 	rows, err := rc.DB.Query(rc.Ctx, `
@@ -468,11 +468,22 @@ func checkVulnerabilityScan(rc *RunContext) ItemResult {
 	return c.pass("扫描能力齐备，高危漏洞登记无未修复发现", details)
 }
 
-// checkNoDefaultPassword INITIAL_ADMIN_PASSWORD 不应在交付环境中注入（初始口令仅首次打印）。
+// checkNoDefaultPassword 初始管理员口令环境变量不应在交付环境中长期注入（初始口令仅首次使用）。
 func checkNoDefaultPassword(rc *RunContext) ItemResult {
 	c := findCheck("no_default_password")
-	if v := strings.TrimSpace(rc.env("INITIAL_ADMIN_PASSWORD")); v != "" {
-		return c.warn("INITIAL_ADMIN_PASSWORD 仍在环境中注入，初始化完成后应移除该变量", nil)
+	var injected []string
+	for _, key := range []string{
+		"INITIAL_ADMIN_PASSWORD",
+		"INITIAL_OPER_ADMIN_PASSWORD",
+		"INITIAL_AUDIT_ADMIN_PASSWORD",
+	} {
+		if strings.TrimSpace(rc.env(key)) != "" {
+			injected = append(injected, key)
+		}
+	}
+	if len(injected) > 0 {
+		return c.warn(strings.Join(injected, "、")+" 仍在环境中注入，初始化完成后应移除相关变量",
+			map[string]interface{}{"env_vars": injected})
 	}
 	return c.pass("初始管理员口令未硬编码注入", nil)
 }

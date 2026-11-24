@@ -121,27 +121,76 @@ SELECT setting_key, setting_value FROM system_settings WHERE setting_group = $1`
 	return softwareBypassFromSettings(values)
 }
 
+// GatewayTCPStates mirrors /proc/net/tcp(6) state counts reported by the gateway.
+type GatewayTCPStates struct {
+	Established int `json:"established"`
+	TimeWait    int `json:"time_wait"`
+	CloseWait   int `json:"close_wait"`
+	SynRecv     int `json:"syn_recv"`
+	FinWait     int `json:"fin_wait"`
+	Listen      int `json:"listen"`
+	Other       int `json:"other"`
+}
+
+// GatewayRuntimeApplication mirrors per-application live load stats reported by the gateway.
+type GatewayRuntimeApplication struct {
+	AppID                 string  `json:"app_id"`
+	RequestsInFlight      int64   `json:"requests_in_flight"`
+	RequestsTotal         uint64  `json:"requests_total"`
+	RequestsPerSecond     float64 `json:"requests_per_second"`
+	BypassedRequestsTotal uint64  `json:"bypassed_requests_total"`
+	BytesInTotal          uint64  `json:"bytes_in_total"`
+	BytesOutTotal         uint64  `json:"bytes_out_total"`
+	BytesInPerSecond      float64 `json:"bytes_in_per_second"`
+	BytesOutPerSecond     float64 `json:"bytes_out_per_second"`
+	Status4xxTotal        uint64  `json:"status_4xx_total"`
+	Status5xxTotal        uint64  `json:"status_5xx_total"`
+}
+
 // GatewayRuntimeSnapshot mirrors the read-only gateway admin runtime contract.
 type GatewayRuntimeSnapshot struct {
 	Node      string    `json:"node"`
 	TakenAt   time.Time `json:"taken_at"`
 	Resources struct {
-		CPUPercent    *float64  `json:"cpu_percent"`
-		MemoryPercent *float64  `json:"memory_percent"`
-		SampledAt     time.Time `json:"sampled_at"`
-		Error         string    `json:"error"`
+		CPUPercent       *float64  `json:"cpu_percent"`
+		MemoryPercent    *float64  `json:"memory_percent"`
+		MemoryUsedBytes  *uint64   `json:"memory_used_bytes"`
+		MemoryTotalBytes *uint64   `json:"memory_total_bytes"`
+		Load1            *float64  `json:"load1"`
+		Load5            *float64  `json:"load5"`
+		Load15           *float64  `json:"load15"`
+		FDOpen           *int      `json:"fd_open"`
+		FDMax            *uint64   `json:"fd_max"`
+		FDUsagePercent   *float64  `json:"fd_usage_percent"`
+		SampledAt        time.Time `json:"sampled_at"`
+		Error            string    `json:"error"`
 	} `json:"resources"`
 	Connections struct {
-		Active            int64   `json:"active"`
-		AcceptedTotal     uint64  `json:"accepted_total"`
-		AcceptedPerSecond float64 `json:"accepted_per_second"`
+		Active            int64             `json:"active"`
+		AcceptedTotal     uint64            `json:"accepted_total"`
+		AcceptedPerSecond float64           `json:"accepted_per_second"`
+		BytesInTotal      uint64            `json:"bytes_in_total"`
+		BytesOutTotal     uint64            `json:"bytes_out_total"`
+		BytesInPerSecond  float64           `json:"bytes_in_per_second"`
+		BytesOutPerSecond float64           `json:"bytes_out_per_second"`
+		TCPStates         *GatewayTCPStates `json:"tcp_states"`
 	} `json:"connections"`
 	HTTP struct {
-		RequestsInFlight      int64  `json:"requests_in_flight"`
-		RequestsTotal         uint64 `json:"requests_total"`
-		SessionsActive        int    `json:"sessions_active"`
-		SessionsNewTotal      uint64 `json:"sessions_new_total"`
-		SessionsOverflowTotal uint64 `json:"sessions_overflow_total"`
+		RequestsInFlight      int64   `json:"requests_in_flight"`
+		RequestsTotal         uint64  `json:"requests_total"`
+		RequestsPerSecond     float64 `json:"requests_per_second"`
+		SessionsActive        int     `json:"sessions_active"`
+		SessionsNewTotal      uint64  `json:"sessions_new_total"`
+		SessionsNewPerSecond  float64 `json:"sessions_new_per_second"`
+		SessionsOverflowTotal uint64  `json:"sessions_overflow_total"`
+		Status2xxTotal        uint64  `json:"status_2xx_total"`
+		Status3xxTotal        uint64  `json:"status_3xx_total"`
+		Status4xxTotal        uint64  `json:"status_4xx_total"`
+		Status5xxTotal        uint64  `json:"status_5xx_total"`
+		Status2xxPerSecond    float64 `json:"status_2xx_per_second"`
+		Status3xxPerSecond    float64 `json:"status_3xx_per_second"`
+		Status4xxPerSecond    float64 `json:"status_4xx_per_second"`
+		Status5xxPerSecond    float64 `json:"status_5xx_per_second"`
 	} `json:"http"`
 	SoftwareBypass struct {
 		Enabled                bool       `json:"enabled"`
@@ -156,4 +205,34 @@ type GatewayRuntimeSnapshot struct {
 		TransitionsTotal       uint64     `json:"transitions_total"`
 		BypassedRequestsTotal  uint64     `json:"bypassed_requests_total"`
 	} `json:"software_bypass"`
+	Applications []GatewayRuntimeApplication `json:"applications"`
+}
+
+// GatewayRuntimeHistoryPoint mirrors a single high-resolution sample from GET /jiuzhang/runtime/history.
+type GatewayRuntimeHistoryPoint struct {
+	TakenAt                         time.Time `json:"taken_at"`
+	CPUPercent                      *float64  `json:"cpu_percent"`
+	MemoryPercent                   *float64  `json:"memory_percent"`
+	Load1                           *float64  `json:"load1"`
+	FDUsagePercent                  *float64  `json:"fd_usage_percent"`
+	TCPConnectionsActive            int64     `json:"tcp_connections_active"`
+	TCPConnectionsAcceptedPerSecond float64   `json:"tcp_connections_accepted_per_second"`
+	BytesInPerSecond                float64   `json:"bytes_in_per_second"`
+	BytesOutPerSecond               float64   `json:"bytes_out_per_second"`
+	HTTPRequestsInFlight            int64     `json:"http_requests_in_flight"`
+	HTTPRequestsPerSecond           float64   `json:"http_requests_per_second"`
+	HTTPSessionsActive              int       `json:"http_sessions_active"`
+	HTTPSessionsNewPerSecond        float64   `json:"http_sessions_new_per_second"`
+	Status2xxPerSecond              float64   `json:"status_2xx_per_second"`
+	Status3xxPerSecond              float64   `json:"status_3xx_per_second"`
+	Status4xxPerSecond              float64   `json:"status_4xx_per_second"`
+	Status5xxPerSecond              float64   `json:"status_5xx_per_second"`
+	SoftwareBypassActive            bool      `json:"software_bypass_active"`
+}
+
+// GatewayRuntimeHistory mirrors GET /jiuzhang/runtime/history response.
+type GatewayRuntimeHistory struct {
+	Node            string                       `json:"node"`
+	IntervalSeconds int                          `json:"interval_seconds"`
+	Points          []GatewayRuntimeHistoryPoint `json:"points"`
 }

@@ -4,6 +4,7 @@ import { BarChart, GaugeChart, LineChart, PieChart, RadarChart } from 'echarts/c
 import {
   GridComponent,
   LegendComponent,
+  MarkLineComponent,
   PolarComponent,
   RadarComponent,
   TitleComponent,
@@ -21,6 +22,7 @@ echarts.use([
   RadarChart,
   GridComponent,
   LegendComponent,
+  MarkLineComponent,
   TooltipComponent,
   TitleComponent,
   PolarComponent,

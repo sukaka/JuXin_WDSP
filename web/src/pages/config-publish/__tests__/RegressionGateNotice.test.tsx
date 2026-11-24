@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { App as AntdApp } from 'antd'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -101,10 +101,19 @@ describe('RegressionGateNotice', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('OFF/OBSERVE/ENFORCE 三态文案如实展示并给出安全回归入口', async () => {
+  it('OFF 默认关闭态不渲染提示条', async () => {
+    grant(['security_regression.read'])
+    const fetchMock = mockPolicyFetch(makePolicy('OFF'))
+    vi.stubGlobal('fetch', fetchMock)
+    const { container } = renderWithProviders(<RegressionGateNotice style={{ marginBottom: 12 }} />)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(container.querySelector('.ant-alert')).toBeNull()
+    expect(container.textContent).toBe('')
+  })
+
+  it('OBSERVE/ENFORCE 启用态如实展示并给出安全回归入口', async () => {
     grant(['security_regression.read'])
     const cases: Array<[string, RegExp]> = [
-      ['OFF', /回归门禁未强制：本次发布不检查回归证据/],
       ['OBSERVE', /回归门禁观察中：发布时计算并记录门禁结论，但不阻断不合规发布/],
       ['ENFORCE', /回归门禁强制中：缺少绑定当前候选指纹且核验通过的回归证据时，发布将被拒绝/],
     ]

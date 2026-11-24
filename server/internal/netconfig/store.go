@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -55,4 +56,28 @@ ON CONFLICT (node_name) DO UPDATE SET config = EXCLUDED.config, updated_at = now
 		return fmt.Errorf("保存节点网络配置失败: %w", err)
 	}
 	return nil
+}
+
+// BridgePortOwner 查询指定节点上接口所属的网桥名（未入桥或节点无网络配置返回空串）。
+func (s *Store) BridgePortOwner(ctx context.Context, nodeName, ifname string) (string, error) {
+	cfg, _, found, err := s.Get(ctx, nodeName)
+	if err != nil || !found {
+		return "", err
+	}
+	return BridgePortMap(cfg)[ifname], nil
+}
+
+// ListBridgePorts 返回指定节点所有已配置网桥的成员口名（去重排序，供透明模式站点发现使用）。
+func (s *Store) ListBridgePorts(ctx context.Context, nodeName string) ([]string, error) {
+	cfg, _, found, err := s.Get(ctx, nodeName)
+	if err != nil || !found {
+		return nil, err
+	}
+	pm := BridgePortMap(cfg)
+	ports := make([]string, 0, len(pm))
+	for p := range pm {
+		ports = append(ports, p)
+	}
+	sort.Strings(ports)
+	return ports, nil
 }

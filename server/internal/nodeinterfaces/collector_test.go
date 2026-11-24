@@ -121,3 +121,52 @@ func TestCollectOnce_FullRebuild(t *testing.T) {
 		t.Fatalf("eth2 = %+v, want present 且排末尾", byName["eth2"])
 	}
 }
+
+// 混合宿主：mirrorcap 写 TP/FIBRE 后，gateway 写 UNKNOWN 覆写同一文件，采集结果保留已有介质类型不抖动。
+func TestCollectOnce_HybridReportersPreserveMediaType(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "node-interfaces.jsonl")
+	store := NewMemStore()
+	c := NewCollector(store, "test-hybrid", logPath)
+
+	// mirrorcap 上报明确介质与 IP 地址
+	mirrorSnap := strings.Join([]string{
+		`{"node_name":"gw-1","ifname":"eth0","ip_addresses":["192.168.1.10/24","2408:8207::1/64"],"media_type":"TP","link_speed":1000,"operstate":"up","collected_at":"2026-08-17T10:00:00Z"}`,
+		`{"node_name":"gw-1","ifname":"eth1","ip_addresses":[],"media_type":"FIBRE","link_speed":10000,"operstate":"up","collected_at":"2026-08-17T10:00:00Z"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(logPath, []byte(mirrorSnap), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CollectOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// gateway（无 ethtool 且旧版未写 ip_addresses）覆写同一快照文件报 UNKNOWN
+	gatewaySnap := strings.Join([]string{
+		`{"node_name":"gw-1","ifname":"eth0","media_type":"UNKNOWN","link_speed":1000,"operstate":"up","collected_at":"2026-08-17T10:01:00Z"}`,
+		`{"node_name":"gw-1","ifname":"eth1","media_type":"","link_speed":10000,"operstate":"up","collected_at":"2026-08-17T10:01:00Z"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(logPath, []byte(gatewaySnap), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CollectOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	groups, err := store.ListGrouped(context.Background(), "gw-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || len(groups[0].Interfaces) != 2 {
+		t.Fatalf("groups = %+v", groups)
+	}
+	if groups[0].Interfaces[0].MediaType != MediaTP || groups[0].Interfaces[1].MediaType != MediaFibre {
+		t.Fatalf("media flapped: %+v", groups[0].Interfaces)
+	}
+	if got := groups[0].Interfaces[0].IPAddresses; len(got) != 2 || got[0] != "192.168.1.10/24" || got[1] != "2408:8207::1/64" {
+		t.Fatalf("eth0 ip_addresses should be preserved against legacy reporter, got %+v", got)
+	}
+	if got := groups[0].Interfaces[1].IPAddresses; got == nil || len(got) != 0 {
+		t.Fatalf("eth1 ip_addresses want empty non-nil slice, got %#v", got)
+	}
+}

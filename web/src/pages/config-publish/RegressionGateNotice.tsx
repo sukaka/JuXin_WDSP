@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Alert, Space, Typography } from 'antd'
@@ -13,11 +14,13 @@ import {
 } from '../../utils/securityRegression'
 
 /**
- * 配置发布入口的回归门禁状态（WDSP P1-04 R4a，任务书 §8「在现有配置发布入口
- * 展示…对应回归→发布结果」）。无 security_regression.read 权限时不渲染
- * （门禁状态属回归证据域，不向无权账号泄露）；加载失败如实提示，不静默吞错。
+ * 配置发布入口的回归门禁状态（WDSP P1-04）。
+ * - 无 security_regression.read 权限时不渲染（不向无权账号泄露且不发请求）；
+ * - 门禁为默认 OFF 时不展示黄色警示条，避免干扰常规配置发布；
+ * - 仅在 OBSERVE / ENFORCE 启用态展示当前门禁提示与安全回归入口；
+ * - 策略加载失败如实提示，不静默吞错。
  */
-export default function RegressionGateNotice() {
+export default function RegressionGateNotice({ style }: { style?: CSSProperties }) {
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canRead = hasPermission(permissions, 'security_regression.read')
   const policyQuery = useQuery({
@@ -29,6 +32,7 @@ export default function RegressionGateNotice() {
   if (policyQuery.isError) {
     return (
       <Alert
+        style={style}
         type="warning"
         showIcon
         message="回归门禁策略状态加载失败"
@@ -39,24 +43,20 @@ export default function RegressionGateNotice() {
     )
   }
   const policy = policyQuery.data
-  if (!policy) return null
+  if (!policy || (policy.mode !== 'OBSERVE' && policy.mode !== 'ENFORCE')) return null
   const banner =
     policy.mode === 'ENFORCE'
       ? {
           type: 'success' as const,
           text: '回归门禁强制中：缺少绑定当前候选指纹且核验通过的回归证据时，发布将被拒绝',
         }
-      : policy.mode === 'OBSERVE'
-        ? {
-            type: 'info' as const,
-            text: '回归门禁观察中：发布时计算并记录门禁结论，但不阻断不合规发布',
-          }
-        : {
-            type: 'warning' as const,
-            text: '回归门禁未强制：本次发布不检查回归证据',
-          }
+      : {
+          type: 'info' as const,
+          text: '回归门禁观察中：发布时计算并记录门禁结论，但不阻断不合规发布',
+        }
   return (
     <Alert
+      style={style}
       type={banner.type}
       showIcon
       message={

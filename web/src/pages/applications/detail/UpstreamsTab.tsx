@@ -141,7 +141,14 @@ function TestResultView({ result }: { result: UpstreamTestResult }) {
   )
 }
 
-export default function UpstreamsTab({ appId }: { appId: string }) {
+export default function UpstreamsTab({
+  appId,
+  deploymentMode,
+}: {
+  appId: string
+  deploymentMode?: string
+}) {
+  const isTransparent = deploymentMode === 'TRANSPARENT'
   const { message, modal } = AntdApp.useApp()
   const queryClient = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
@@ -419,6 +426,14 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
   ]
 
   const modalOpen = createOpen || editing !== null
+  const activeUpstreamCount = (listQuery.data?.items ?? []).filter(
+    (u) => u.status === 'ACTIVE',
+  ).length
+  const showTransparentNoUpstreamWarning =
+    isTransparent &&
+    !listQuery.isLoading &&
+    !listQuery.isError &&
+    activeUpstreamCount === 0
 
   return (
     <>
@@ -438,6 +453,16 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
         )}
         {batchDeleteButton}
       </Space>
+
+      {showTransparentNoUpstreamWarning && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="透明串接模式尚未配置已启用的源站服务器"
+          description="透明串接模式下，受保护流量在网关检测后经 Caddy 反向代理转发至已启用的源站服务器（不会按原始目的地址直连回源）。当前已启用源站数为 0，发布后受保护请求将返回 502，请至少新增并启用 1 个源站。"
+        />
+      )}
 
       {listQuery.isError ? (
         <Alert

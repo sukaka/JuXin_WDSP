@@ -38,6 +38,7 @@ interface Filters {
   keyword?: string
   status?: string
   protection_mode?: string
+  deployment_mode?: string
 }
 
 const CODE_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/
@@ -56,11 +57,10 @@ const DEPLOYMENT_MODE_HINTS: Record<string, string> = {
   ROUTED:
     '路由牵引：流量经三层路由送达本网关节点后转发源站；该模式下按直连对端识别真实客户端 IP，需在宿主机开启 ip_forward 并配置路由（见部署文档）',
   MIRROR:
-    '镜像旁路：流量副本经镜像口到达节点，只检测不阻断。需在节点部署 mirrorcap 组件，并在『系统运维 → 网口管理』把镜像口角色设为「镜像」。',
+    '镜像旁路：流量副本经镜像口到达节点，仅检测明文 HTTP 流量且绝不阻断（HTTPS 无需证书，仅通过 TLS SNI 参与站点发现）。请在『系统运维 → 网口管理』把镜像口角色设为「镜像」（保存后自动同步至 mirrorcap）。',
   TRANSPARENT:
-    '透明串接：二层桥接串接 + 流量牵引到本节点检测，可正常阻断。需先完成桥接与牵引安装（见部署文档），客户端与源站均无需改配置。' +
-    'HTTPS 多虚拟主机说明：网关按 TLS SNI 域名自动分流，防护清单即本应用的域名，无需额外配置——仅本应用域名在网关上终结检测（需为本应用上传证书）；' +
-    '若源站同一 IP 上还运行未纳入管理的其它站点，其加密流量端到端透传、不检测，也无需在网关部署它们的证书。',
+    '透明串接：二层桥接串接 + 流量牵引到本节点在线检测与阻断。需先在「网络配置」完成网桥配置，并为受保护域名配置真实目标端口、已启用的源站服务器及 HTTPS 证书（若启用 HTTPS）。' +
+    'TLS SNI 分流采用默认拒绝（fail-closed）策略：若源站同一 IP 上运行未纳入管理的其它 HTTPS 站点，其流量不会自动透传，必须显式加入透明 TLS 透传白名单（passthrough allowlist）后才会端到端透传。',
 }
 
 export default function ApplicationsPage() {
@@ -80,6 +80,7 @@ export default function ApplicationsPage() {
     keyword: searchParams.get('keyword') || undefined,
     status: searchParams.get('status') || undefined,
     protection_mode: searchParams.get('protection_mode') || undefined,
+    deployment_mode: searchParams.get('deployment_mode') || undefined,
   }
   const page = parsePage(searchParams.get('page'), 1)
   const pageSize = parsePage(searchParams.get('page_size'), 20)
@@ -97,12 +98,31 @@ export default function ApplicationsPage() {
   const [editForm] = Form.useForm<Omit<CreateApplicationBody, 'code'>>()
   const createDeploymentMode = Form.useWatch('deployment_mode', createForm)
   const editDeploymentMode = Form.useWatch('deployment_mode', editForm)
+  const createProtectionMode = Form.useWatch('protection_mode', createForm)
+  const editProtectionMode = Form.useWatch('protection_mode', editForm)
 
   const listQuery = useQuery({
     queryKey: ['applications', filters, page, pageSize],
     queryFn: () =>
       applicationsApi.list({ ...filters, page, page_size: pageSize }),
   })
+
+  // 服务端按 deployment_mode 筛选后返回精确页数据；同时保留客户端兜底过滤，兼容旧服务端/静态 mock
+  const rawItems = listQuery.data?.items
+  const displayedItems =
+    rawItems && filters.deployment_mode
+      ? rawItems.filter(
+          (item) =>
+            (item.deployment_mode || 'REVERSE_PROXY') === filters.deployment_mode,
+        )
+      : rawItems
+  const displayedTotal =
+    rawItems &&
+    displayedItems &&
+    filters.deployment_mode &&
+    displayedItems.length !== rawItems.length
+      ? displayedItems.length
+      : (listQuery.data?.total ?? 0)
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ['applications'] })
@@ -458,6 +478,17 @@ export default function ApplicationsPage() {
             updateListQuery({ protection_mode: v, page: undefined })
           }}
         />
+        <Select
+          placeholder="部署模式"
+          aria-label="部署模式筛选"
+          allowClear
+          style={{ width: 140 }}
+          value={filters.deployment_mode}
+          options={deploymentModeOptions}
+          onChange={(v) => {
+            updateListQuery({ deployment_mode: v, page: undefined })
+          }}
+        />
         {batchDeleteButton}
       </Space>
 
@@ -479,7 +510,7 @@ export default function ApplicationsPage() {
           rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
-          dataSource={listQuery.data?.items}
+          dataSource={displayedItems}
           scroll={{ x: 1300 }}
           onRow={(record) => ({
             onDoubleClick: () => navigate(`/applications/${record.id}`),
@@ -488,7 +519,7 @@ export default function ApplicationsPage() {
           pagination={{
             current: page,
             pageSize,
-            total: listQuery.data?.total ?? 0,
+            total: displayedTotal,
             showSizeChanger: true,
             showTotal: (t) => `共 ${t} 条`,
             onChange: (p, ps) => {
@@ -572,6 +603,15 @@ export default function ApplicationsPage() {
           >
             <Select options={deploymentModeOptions} />
           </Form.Item>
+          {createDeploymentMode === 'MIRROR' &&
+            createProtectionMode === 'PROTECT' && (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message="镜像旁路模式无法阻断流量，即使选择「防护」也仅以观察模式输出告警；选择「关闭」或「透传」将停用该应用的镜像检测。"
+              />
+            )}
         </Form>
       </Modal>
 
@@ -638,6 +678,15 @@ export default function ApplicationsPage() {
           >
             <Select options={deploymentModeOptions} />
           </Form.Item>
+          {editDeploymentMode === 'MIRROR' &&
+            editProtectionMode === 'PROTECT' && (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message="镜像旁路模式无法阻断流量，即使选择「防护」也仅以观察模式输出告警；选择「关闭」或「透传」将停用该应用的镜像检测。"
+              />
+            )}
         </Form>
       </Modal>
     </Card>
