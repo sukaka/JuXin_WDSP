@@ -1,0 +1,255 @@
+{
+  "corpus_version": "1.0.0",
+  "source": "self_synthetic",
+  "license": "internal-compliance-synthetic",
+  "description": "聚信压测工具遵循 NetSecOPEN / RFC 9411 Security-under-Load 口径的自研非破坏性合规语料集（覆盖 OWASP Top 10 基础攻击、编码逃逸变种、高易误报正常业务样本）。仅允许用于自有或明确授权的隔离测试环境。",
+  "cases": [
+    {
+      "case_id": "ATK-SQLI-01",
+      "group": "attack",
+      "category": "sqli",
+      "method": "GET",
+      "path": "/v1/sec-test/items/1?id=1%27%20UNION%20SELECT%201,2,3--",
+      "description": "经典 SQLi UNION SELECT"
+    },
+    {
+      "case_id": "ATK-SQLI-02",
+      "group": "attack",
+      "category": "sqli",
+      "method": "POST",
+      "path": "/v1/sec-test/login",
+      "headers": { "Content-Type": "application/json" },
+      "body": "{\"username\":\"admin' OR '1'='1' --\",\"password\":\"probe\"}",
+      "description": "JSON Body 布尔注入"
+    },
+    {
+      "case_id": "ATK-XSS-01",
+      "group": "attack",
+      "category": "xss",
+      "method": "GET",
+      "path": "/v1/sec-test/search?q=%3Cscript%3Ealert(1)%3C/script%3E",
+      "description": "反射型 XSS script 标签"
+    },
+    {
+      "case_id": "ATK-XSS-02",
+      "group": "attack",
+      "category": "xss",
+      "method": "POST",
+      "path": "/v1/sec-test/comment",
+      "headers": { "Content-Type": "application/x-www-form-urlencoded" },
+      "body": "content=%3Cimg%20src%3Dx%20onerror%3Dalert(document.cookie)%3E",
+      "description": "表单 XSS img onerror"
+    },
+    {
+      "case_id": "ATK-CMDI-01",
+      "group": "attack",
+      "category": "cmdi",
+      "method": "GET",
+      "path": "/v1/sec-test/ping?host=127.0.0.1;cat%20/etc/passwd",
+      "description": "OS 命令注入分号拼接"
+    },
+    {
+      "case_id": "ATK-LFI-01",
+      "group": "attack",
+      "category": "lfi",
+      "method": "GET",
+      "path": "/v1/sec-test/download?file=../../../../etc/passwd",
+      "description": "路径穿越读取 /etc/passwd"
+    },
+    {
+      "case_id": "ATK-SSTI-01",
+      "group": "attack",
+      "category": "ssti",
+      "method": "GET",
+      "path": "/v1/sec-test/render?tpl=%7B%7B7*7%7D%7D%24%7Bjndi:ldap://127.0.0.1/a%7D",
+      "description": "模板注入 / JNDI 特征"
+    },
+    {
+      "case_id": "ATK-XXE-01",
+      "group": "attack",
+      "category": "xxe",
+      "method": "POST",
+      "path": "/v1/sec-test/xml",
+      "headers": { "Content-Type": "application/xml" },
+      "body": "<?xml version=\"1.0\"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><req>&xxe;</req>",
+      "description": "XML 外部实体注入 XXE"
+    },
+    {
+      "case_id": "ATK-SSRF-01",
+      "group": "attack",
+      "category": "ssrf",
+      "method": "GET",
+      "path": "/v1/sec-test/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+      "description": "云元数据 SSRF 探测"
+    },
+    {
+      "case_id": "ATK-PHP-01",
+      "group": "attack",
+      "category": "rce",
+      "method": "GET",
+      "path": "/v1/sec-test/index.php?cmd=system('id')&eval=phpinfo()",
+      "description": "PHP 代码执行特征"
+    },
+    {
+      "case_id": "ATK-API-SENS-01",
+      "group": "attack",
+      "category": "api_sensitive",
+      "method": "GET",
+      "path": "/v1/sec-test/orders/1?password=wdsp_synthetic_probe&api_key=sk_test_123456",
+      "description": "WDSP API 敏感字段明文出现在 Query（传统纯 WAF 可能不拦，分项报告清晰呈现差异）"
+    },
+    {
+      "case_id": "ATK-PROTO-01",
+      "group": "attack",
+      "category": "protocol",
+      "method": "GET",
+      "path": "/v1/sec-test/info",
+      "headers": { "User-Agent": "sqlmap/1.8.2#stable (https://sqlmap.org)" },
+      "description": "扫描器特征 User-Agent"
+    },
+    {
+      "case_id": "EVA-SQLI-01",
+      "group": "evasion",
+      "category": "evasion_sqli",
+      "method": "GET",
+      "path": "/v1/sec-test/items/1?id=1%27%20/*!50000UNION*/%20/*!50000SELECT*/%201,2,3--",
+      "description": "MySQL 内联注释分割 SQLi 逃逸"
+    },
+    {
+      "case_id": "EVA-LFI-01",
+      "group": "evasion",
+      "category": "evasion_lfi",
+      "method": "GET",
+      "path": "/v1/sec-test/download?file=%252e%252e%252f%252e%252e%252f%252e%252e%252fetc%252fpasswd",
+      "description": "双重 URL 编码路径穿越逃逸"
+    },
+    {
+      "case_id": "EVA-XSS-01",
+      "group": "evasion",
+      "category": "evasion_xss",
+      "method": "GET",
+      "path": "/v1/sec-test/search?q=%3CsVg/OnLoAd=confirm(1)%3E",
+      "description": "大小写混淆 SVG onload XSS 逃逸"
+    },
+    {
+      "case_id": "EVA-CMDI-01",
+      "group": "evasion",
+      "category": "evasion_cmdi",
+      "method": "GET",
+      "path": "/v1/sec-test/ping?host=127.0.0.1%0a/bin/cat%20/etc/passwd",
+      "description": "换行符注入命令执行逃逸"
+    },
+    {
+      "case_id": "EVA-SQLI-02",
+      "group": "evasion",
+      "category": "evasion_sqli",
+      "method": "GET",
+      "path": "/v1/sec-test/items/1?id=1%27%09uNiOn%09SeLeCt%091,version(),3%23",
+      "description": "Tab 分隔 + 大小写混淆 SQLi"
+    },
+    {
+      "case_id": "EVA-XSS-02",
+      "group": "evasion",
+      "category": "evasion_xss",
+      "method": "GET",
+      "path": "/v1/sec-test/redirect?next=JaVaScRiPt:alert(1)",
+      "description": "伪协议大小写混淆 XSS"
+    },
+    {
+      "case_id": "BEN-01",
+      "group": "benign",
+      "category": "benign_web",
+      "method": "GET",
+      "path": "/static/1k.bin",
+      "description": "普通静态资源访问"
+    },
+    {
+      "case_id": "BEN-02",
+      "group": "benign",
+      "category": "benign_api_get",
+      "method": "GET",
+      "path": "/v1/sec-test/orders/10086?page=1&size=20&sort=created_desc",
+      "description": "正常分页查询 REST API"
+    },
+    {
+      "case_id": "BEN-03",
+      "group": "benign",
+      "category": "benign_unicode",
+      "method": "POST",
+      "path": "/v1/sec-test/articles",
+      "headers": { "Content-Type": "application/json" },
+      "body": "{\"title\":\"九章网络安全技术白皮书2026\",\"author\":\"张磊\",\"summary\":\"本文介绍高性能反向代理与零信任架构在政务云中的实践经验。\"}",
+      "description": "中文 Unicode 业务 JSON 提交"
+    },
+    {
+      "case_id": "BEN-04",
+      "group": "benign",
+      "category": "benign_base64",
+      "method": "POST",
+      "path": "/v1/sec-test/profile",
+      "headers": { "Content-Type": "application/json" },
+      "body": "{\"avatar_meta\":\"eyJ3aWR0aCI6MTI4LCJoZWlnaHQiOjEyOCwiZm9ybWF0IjoicG5nIn0=\",\"locale\":\"zh-CN\"}",
+      "description": "合法 Base64 元数据参数（易误报测试）"
+    },
+    {
+      "case_id": "BEN-05",
+      "group": "benign",
+      "category": "benign_search_symbols",
+      "method": "GET",
+      "path": "/v1/sec-test/search?q=C%2B%2B%20100%25%20A%26B%20price%20%28CNY%29",
+      "description": "含特殊符号的合法搜索（C++ / 100% / A&B / 括号）"
+    },
+    {
+      "case_id": "BEN-06",
+      "group": "benign",
+      "category": "benign_tech_doc",
+      "method": "POST",
+      "path": "/v1/sec-test/docs",
+      "headers": { "Content-Type": "application/json" },
+      "body": "{\"section\":\"database-guide\",\"note\":\"Use index scan instead of full table scan when filtering orders by user_id and created_at.\"}",
+      "description": "合法数据库优化文档文本"
+    },
+    {
+      "case_id": "BEN-07",
+      "group": "benign",
+      "category": "benign_rich_text",
+      "method": "POST",
+      "path": "/v1/sec-test/richtext",
+      "headers": { "Content-Type": "application/json" },
+      "body": "{\"html\":\"<p>欢迎使用<strong>九章智能防护系统</strong>，版本 1.11.1。</p><ul><li>低延迟</li><li>高可用</li></ul>\"}",
+      "description": "合法无害富文本 HTML 片段（易误报测试）"
+    },
+    {
+      "case_id": "BEN-08",
+      "group": "benign",
+      "category": "benign_form",
+      "method": "POST",
+      "path": "/v1/sec-test/feedback",
+      "headers": { "Content-Type": "application/x-www-form-urlencoded" },
+      "body": "name=Alice&email=alice%40example.com&company=JiuZhang+Tech&rating=5",
+      "description": "常规 URL 编码表单提交"
+    },
+    {
+      "case_id": "BEN-09",
+      "group": "benign",
+      "category": "benign_long_json",
+      "method": "POST",
+      "path": "/v1/sec-test/batch",
+      "headers": { "Content-Type": "application/json" },
+      "body": "{\"batch_id\":\"B-20261124-001\",\"records\":[{\"id\":1,\"status\":\"OK\"},{\"id\":2,\"status\":\"OK\"},{\"id\":3,\"status\":\"PENDING\"}],\"tags\":[\"prod\",\"cn-east\",\"v2\"]}",
+      "description": "嵌套数组 JSON 批量业务提交"
+    },
+    {
+      "case_id": "BEN-10",
+      "group": "benign",
+      "category": "benign_headers",
+      "method": "GET",
+      "path": "/v1/sec-test/health",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*"
+      },
+      "description": "标准浏览器请求头访问"
+    }
+  ]
+}
