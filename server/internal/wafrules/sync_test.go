@@ -221,3 +221,41 @@ SecRule ARGS "@rx x" "id:1004001,phase:2,block,msg:'真实消息',tag:'attack-xs
 		t.Errorf("name = %q, want 真实消息", rules[0].Name)
 	}
 }
+
+// 回归：CRS 4.x 真实标签（attack-reputation-scanner / attack-injection-php /
+// attack-multipart-header / OWASP_CRS/METHOD-ENFORCEMENT）及 attack-injection-generic
+// 不得被后续 OWASP_CRS/ATTACK-GENERIC 覆盖为 OTHER。
+func TestParseCRS4RealTags(t *testing.T) {
+	rules, failed, err := ParseCRSRules(`
+SecRule REQUEST_HEADERS:User-Agent "@pmFromFile scanners-user-agents.data" "id:913100,phase:1,block,msg:'Found User-Agent associated with security scanner',tag:'attack-reputation-scanner',tag:'OWASP_CRS/SCANNER-DETECTION',severity:'CRITICAL'"
+
+SecRule ARGS "@rx php" "id:933100,phase:2,block,msg:'PHP Injection',tag:'attack-injection-php',tag:'OWASP_CRS/ATTACK-PHP',severity:'CRITICAL'"
+
+SecRule REQUEST_METHOD "!@within GET" "id:911100,phase:1,block,msg:'Method is not allowed by policy',tag:'attack-generic',tag:'OWASP_CRS/METHOD-ENFORCEMENT',severity:'CRITICAL'"
+
+SecRule ARGS "@rx multipart" "id:922100,phase:2,block,msg:'Multipart charset',tag:'attack-multipart-header',tag:'OWASP_CRS/MULTIPART-ATTACK',severity:'CRITICAL'"
+
+SecRule ARGS "@rx generic" "id:934100,phase:2,block,msg:'Node.js Injection',tag:'attack-injection-generic',tag:'OWASP_CRS/ATTACK-GENERIC',severity:'CRITICAL'"
+`, "TEST.conf", SourceCRS)
+	if err != nil || len(failed) > 0 {
+		t.Fatalf("ParseCRSRules err=%v failed=%v", err, failed)
+	}
+	wants := []struct {
+		id         int
+		attackType string
+	}{
+		{913100, "SCANNER_DETECTION"},
+		{933100, "PHP_INJECTION"},
+		{911100, "PROTOCOL_VIOLATION"},
+		{922100, "PROTOCOL_VIOLATION"},
+		{934100, "REMOTE_CODE_EXECUTION"},
+	}
+	if len(rules) != len(wants) {
+		t.Fatalf("parsed %d rules, want %d", len(rules), len(wants))
+	}
+	for i, w := range wants {
+		if rules[i].RuleID != w.id || rules[i].AttackType != w.attackType {
+			t.Errorf("rule[%d] = (%d, %q), want (%d, %q)", i, rules[i].RuleID, rules[i].AttackType, w.id, w.attackType)
+		}
+	}
+}

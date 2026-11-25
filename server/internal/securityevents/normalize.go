@@ -18,20 +18,38 @@ import (
 	"github.com/jiuzhang-waf/server/internal/wafrules"
 )
 
-// 攻击类型映射
+// 攻击类型映射（覆盖 OWASP CRS 4.x 与 CUSTOM_PACK 全部攻击标签）
 var attackTypeByTag = map[string]string{
-	"attack-sqli":              "SQL_INJECTION",
-	"attack-xss":               "XSS",
-	"attack-rce":               "COMMAND_INJECTION",
-	"attack-lfi":               "LOCAL_FILE_INCLUSION",
-	"attack-rfi":               "REMOTE_FILE_INCLUSION",
-	"attack-php":               "PHP_INJECTION",
-	"attack-java":              "JAVA_INJECTION",
-	"attack-protocol":          "PROTOCOL_VIOLATION",
-	"attack-fixation":          "SESSION_FIXATION",
-	"attack-scanner":           "SCANNER_DETECTION",
-	"attack-disclosure":        "INFORMATION_DISCLOSURE",
-	"attack-injection-generic": "REMOTE_CODE_EXECUTION",
+	"attack-sqli":                    "SQL_INJECTION",
+	"attack-xss":                     "XSS",
+	"attack-rce":                     "COMMAND_INJECTION",
+	"attack-lfi":                     "LOCAL_FILE_INCLUSION",
+	"attack-rfi":                     "REMOTE_FILE_INCLUSION",
+	"attack-php":                     "PHP_INJECTION",
+	"attack-injection-php":           "PHP_INJECTION",
+	"attack-java":                    "JAVA_INJECTION",
+	"attack-injection-java":          "JAVA_INJECTION",
+	"attack-protocol":                "PROTOCOL_VIOLATION",
+	"attack-multipart-header":        "PROTOCOL_VIOLATION",
+	"attack-deprecated-header":       "PROTOCOL_VIOLATION",
+	"attack-fixation":                "SESSION_FIXATION",
+	"attack-scanner":                 "SCANNER_DETECTION",
+	"attack-reputation-scanner":      "SCANNER_DETECTION",
+	"attack-disclosure":              "INFORMATION_DISCLOSURE",
+	"attack-injection-generic":       "REMOTE_CODE_EXECUTION",
+	"attack-ssrf":                    "SSRF",
+	"attack-xxe":                     "XXE_INJECTION",
+	"attack-dos":                     "DOS",
+	"attack-mass-assignment":         "MASS_ASSIGNMENT",
+	"attack-deserialization":         "DESERIALIZATION",
+	"attack-ssti":                    "SSTI",
+	"attack-upload":                  "FILE_UPLOAD",
+	"OWASP_CRS/METHOD-ENFORCEMENT":   "PROTOCOL_VIOLATION",
+	"OWASP_CRS/PROTOCOL-ENFORCEMENT": "PROTOCOL_VIOLATION",
+	"OWASP_CRS/PROTOCOL-ATTACK":      "PROTOCOL_VIOLATION",
+	"OWASP_CRS/MULTIPART-ATTACK":     "PROTOCOL_VIOLATION",
+	"OWASP_CRS/SCANNER-DETECTION":    "SCANNER_DETECTION",
+	"OWASP_CRS/WEB-SHELLS":           "WEBSHELL",
 }
 
 // customRuleAttackTypes 自定义规则攻击类型词表（与前端 ATTACK_TYPE_META 一致；
@@ -49,11 +67,14 @@ var customRuleAttackTypes = map[string]bool{
 	"SSTI": true, "DOS": true, "MASS_ASSIGNMENT": true,
 }
 
-// attackTypeFromTag 解析标签对应的攻击类型：OWASP attack-* 标签走映射表；
-// 自定义规则的原始攻击类型标签按词表恒等命中。
+// attackTypeFromTag 解析标签对应的攻击类型：OWASP/CUSTOM_PACK 攻击标签走映射表；
+// webshell/ 前缀归为 WEBSHELL；自定义规则的原始攻击类型标签按词表恒等命中。
 func attackTypeFromTag(tag string) (string, bool) {
 	if at, ok := attackTypeByTag[tag]; ok {
 		return at, true
+	}
+	if strings.HasPrefix(tag, "webshell/") {
+		return "WEBSHELL", true
 	}
 	if customRuleAttackTypes[tag] {
 		return tag, true
@@ -209,7 +230,7 @@ type MatchInfo struct {
 
 var (
 	kvPattern          = regexp.MustCompile(`\[([a-zA-Z_]+) "((?:[^"\\]|\\.)*)"\]`)
-	scorePattern       = regexp.MustCompile(`Total Score: (\d+)`)
+	scorePattern       = regexp.MustCompile(`(?:Total Score:\s*|总分[：:]\s*)(\d+)`)
 	matchedDataPattern = regexp.MustCompile(`^Matched Data: (.*?) found within ([A-Z_]+(?::[^\s:]+)?): (.*)$`)
 )
 

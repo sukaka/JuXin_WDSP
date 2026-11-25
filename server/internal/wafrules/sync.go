@@ -82,25 +82,36 @@ var tagPattern = regexp.MustCompile(`\btag\s*:\s*'((?:[^'\\]|\\.)*)'`)
 
 // attackTypeByTag 标签到攻击类型的映射。
 var attackTypeByTag = map[string]string{
-	"attack-sqli":              "SQL_INJECTION",
-	"attack-xss":               "XSS",
-	"attack-rce":               "COMMAND_INJECTION",
-	"attack-lfi":               "LOCAL_FILE_INCLUSION",
-	"attack-rfi":               "REMOTE_FILE_INCLUSION",
-	"attack-php":               "PHP_INJECTION",
-	"attack-java":              "JAVA_INJECTION",
-	"attack-protocol":          "PROTOCOL_VIOLATION",
-	"attack-fixation":          "SESSION_FIXATION",
-	"attack-scanner":           "SCANNER_DETECTION",
-	"attack-disclosure":        "INFORMATION_DISCLOSURE",
-	"attack-injection-generic": "REMOTE_CODE_EXECUTION",
-	"attack-ssrf":              "SSRF",
-	"attack-xxe":               "XXE_INJECTION",
-	"attack-dos":               "DOS",
-	"attack-mass-assignment":   "MASS_ASSIGNMENT",
-	"attack-deserialization":   "DESERIALIZATION",
-	"attack-ssti":              "SSTI",
-	"attack-upload":            "FILE_UPLOAD",
+	"attack-sqli":                    "SQL_INJECTION",
+	"attack-xss":                     "XSS",
+	"attack-rce":                     "COMMAND_INJECTION",
+	"attack-lfi":                     "LOCAL_FILE_INCLUSION",
+	"attack-rfi":                     "REMOTE_FILE_INCLUSION",
+	"attack-php":                     "PHP_INJECTION",
+	"attack-injection-php":           "PHP_INJECTION",
+	"attack-java":                    "JAVA_INJECTION",
+	"attack-injection-java":          "JAVA_INJECTION",
+	"attack-protocol":                "PROTOCOL_VIOLATION",
+	"attack-multipart-header":        "PROTOCOL_VIOLATION",
+	"attack-deprecated-header":       "PROTOCOL_VIOLATION",
+	"attack-fixation":                "SESSION_FIXATION",
+	"attack-scanner":                 "SCANNER_DETECTION",
+	"attack-reputation-scanner":      "SCANNER_DETECTION",
+	"attack-disclosure":              "INFORMATION_DISCLOSURE",
+	"attack-injection-generic":       "REMOTE_CODE_EXECUTION",
+	"attack-ssrf":                    "SSRF",
+	"attack-xxe":                     "XXE_INJECTION",
+	"attack-dos":                     "DOS",
+	"attack-mass-assignment":         "MASS_ASSIGNMENT",
+	"attack-deserialization":         "DESERIALIZATION",
+	"attack-ssti":                    "SSTI",
+	"attack-upload":                  "FILE_UPLOAD",
+	"OWASP_CRS/METHOD-ENFORCEMENT":   "PROTOCOL_VIOLATION",
+	"OWASP_CRS/PROTOCOL-ENFORCEMENT": "PROTOCOL_VIOLATION",
+	"OWASP_CRS/PROTOCOL-ATTACK":      "PROTOCOL_VIOLATION",
+	"OWASP_CRS/MULTIPART-ATTACK":     "PROTOCOL_VIOLATION",
+	"OWASP_CRS/SCANNER-DETECTION":    "SCANNER_DETECTION",
+	"OWASP_CRS/WEB-SHELLS":           "WEBSHELL",
 }
 
 // ParseCRSFile 解析单个规则文件，提取规则元数据（source 标记入库 rule_source）。
@@ -252,12 +263,17 @@ func parseOneRule(text, fileName, source string, commentBlock []string) (*Rule, 
 				break
 			}
 		}
-		// OWASP_CRS/ATTACK-XXX 标签
-		for _, t := range tags {
-			if strings.HasPrefix(t, "OWASP_CRS/ATTACK-") {
-				at := strings.TrimPrefix(t, "OWASP_CRS/ATTACK-")
-				rule.AttackType = mapAttackCategory(at)
-				break
+		// OWASP_CRS/ATTACK-XXX 标签（仅在尚未识别时兜底，避免 ATTACK-GENERIC 等
+		// 覆盖前序精确攻击标签如 attack-injection-generic）
+		if rule.AttackType == "OTHER" {
+			for _, t := range tags {
+				if strings.HasPrefix(t, "OWASP_CRS/ATTACK-") {
+					at := strings.TrimPrefix(t, "OWASP_CRS/ATTACK-")
+					if mapped := mapAttackCategory(at); mapped != "OTHER" {
+						rule.AttackType = mapped
+						break
+					}
+				}
 			}
 		}
 	} else {

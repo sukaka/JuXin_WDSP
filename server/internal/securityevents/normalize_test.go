@@ -297,3 +297,65 @@ func TestParseAuditLineChineseRuleNames(t *testing.T) {
 		t.Errorf("match[1] = %q / %q", evt.Matches[1].RuleName, evt.Matches[1].Message)
 	}
 }
+
+// 回归：CRS 4.x 与 CUSTOM_PACK 扩展标签映射、webshell/ 前缀及九章二次阻断评估中文总分提取。
+func TestParseAuditLineCRS4TagsAndChineseTotalScore(t *testing.T) {
+	tagCases := []struct {
+		name string
+		tag  string
+		want string
+	}{
+		{"CRS 913100 扫描器", "attack-reputation-scanner", "SCANNER_DETECTION"},
+		{"CRS 933 PHP 注入", "attack-injection-php", "PHP_INJECTION"},
+		{"CRS 944 Java 注入", "attack-injection-java", "JAVA_INJECTION"},
+		{"CRS 922 multipart", "attack-multipart-header", "PROTOCOL_VIOLATION"},
+		{"CRS 922 废弃头", "attack-deprecated-header", "PROTOCOL_VIOLATION"},
+		{"CRS 911 方法限制", "OWASP_CRS/METHOD-ENFORCEMENT", "PROTOCOL_VIOLATION"},
+		{"CUSTOM_PACK SSRF", "attack-ssrf", "SSRF"},
+		{"CUSTOM_PACK XXE", "attack-xxe", "XXE_INJECTION"},
+		{"CUSTOM_PACK DoS", "attack-dos", "DOS"},
+		{"CUSTOM_PACK 批量赋值", "attack-mass-assignment", "MASS_ASSIGNMENT"},
+		{"CUSTOM_PACK 反序列化", "attack-deserialization", "DESERIALIZATION"},
+		{"CUSTOM_PACK 模板注入", "attack-ssti", "SSTI"},
+		{"CUSTOM_PACK 文件上传", "attack-upload", "FILE_UPLOAD"},
+		{"CUSTOM_PACK WebShell 前缀", "webshell/chopper", "WEBSHELL"},
+	}
+	for _, tc := range tagCases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := `[client \"192.0.2.1\"] Coraza: Warning. test [id \"913100\"] [msg \"test\"] [severity \"critical\"] [tag \"` + tc.tag + `\"]`
+			evt, err := ParseAuditLine([]byte(buildAuditLine(msg)), "node-01")
+			if err != nil {
+				t.Fatalf("ParseAuditLine: %v", err)
+			}
+			if evt.AttackType != tc.want {
+				t.Errorf("tag %q -> attack_type = %q, want %q", tc.tag, evt.AttackType, tc.want)
+			}
+		})
+	}
+
+	// 九章二次阻断评估（9000102/9000104）中文「总分：N」提取，以及 /xmlrpc.php 中
+	// WARNING 级 1000805 压过 NOTICE 级无攻击标签 1000718。
+	env930 := `[client \"45.148.10.119\"] Coraza: Warning. Restricted File Access Attempt [id \"930130\"] [msg \"Restricted File Access Attempt\"] [severity \"critical\"] [tag \"attack-lfi\"]`
+	env1000506 := `[client \"45.148.10.119\"] Coraza: Warning. Sensitive path [id \"1000506\"] [msg \"Sensitive path: environment file exposure\"] [severity \"critical\"] [tag \"attack-disclosure\"]`
+	block9000102 := `[client \"45.148.10.119\"] Coraza: Access denied (phase 1). 九章二次阻断评估：阶段 1 入站异常评分超过阈值（总分：10） [id \"9000102\"] [msg \"九章二次阻断评估：阶段 1 入站异常评分超过阈值（总分：10）\"] [severity \"critical\"] [tag \"jiuzhang-custom\"] [tag \"anomaly-evaluation\"]`
+	evt, err := ParseAuditLine([]byte(buildAuditLine(env930, env1000506, block9000102)), "node-01")
+	if err != nil {
+		t.Fatalf("ParseAuditLine: %v", err)
+	}
+	if evt.AttackType != "LOCAL_FILE_INCLUSION" {
+		t.Errorf("attack_type = %q, want LOCAL_FILE_INCLUSION", evt.AttackType)
+	}
+	if evt.AnomalyScore != 10 {
+		t.Errorf("anomaly_score = %d, want 10（须解析中文总分）", evt.AnomalyScore)
+	}
+
+	phpInfo := `[client \"45.148.10.119\"] Coraza: Warning. script [id \"1000718\"] [msg \"Info: direct script extension access (pass+log)\"] [severity \"notice\"] [tag \"CUSTOM_PACK\"]`
+	xmlrpcWarn := `[client \"45.148.10.119\"] Coraza: Warning. xmlrpc [id \"1000805\"] [msg \"WordPress user enum or xmlrpc endpoint\"] [severity \"warning\"] [tag \"attack-disclosure\"]`
+	evtXML, err := ParseAuditLine([]byte(buildAuditLine(phpInfo, xmlrpcWarn)), "node-01")
+	if err != nil {
+		t.Fatalf("ParseAuditLine(xmlrpc): %v", err)
+	}
+	if evtXML.AttackType != "INFORMATION_DISCLOSURE" || evtXML.Severity != "LOW" {
+		t.Errorf("xmlrpc attack_type/severity = %q/%q, want INFORMATION_DISCLOSURE/LOW", evtXML.AttackType, evtXML.Severity)
+	}
+}
