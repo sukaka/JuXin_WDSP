@@ -19,6 +19,9 @@ import html
 import json
 import math
 import os
+import shutil
+import subprocess
+import tempfile
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -28,6 +31,20 @@ MODE_LABELS = {
     "emix": "混合尺寸网页与文件",
     "cps": "每秒新建加密连接",
     "cc": "高并发长连接保持",
+    "throughput": "大包过检吞吐",
+}
+
+L4_MODE_LABELS = {
+    "direct_baseline": "整机线速基线（4层直连）",
+    "transparent_bridge": "透明串接（二层桥转发）",
+    "routed_forward": "路由牵引（三层转发）",
+    "software_bypass": "软件直通旁路（Bypass）",
+}
+
+L4_DIRECTION_LABELS = {
+    "forward": "单向转发",
+    "reverse": "反向接收",
+    "bidir": "双向全双工",
 }
 
 SCENARIO_LABELS = {
@@ -221,6 +238,128 @@ def analyze_metrics_csv(csv_path: str) -> Dict[str, object]:
     }
 
 
+def _fmt_pps(pps: Optional[float]) -> str:
+    if pps is None or pps <= 0:
+        return "—"
+    if pps >= 1_000_000:
+        return f"{pps / 1_000_000:.2f} Mpps"
+    if pps >= 1_000:
+        return f"{pps / 1_000:.1f} Kpps"
+    return f"{pps:.0f} pps"
+
+
+def analyze_l4_json(label: str, json_path: str) -> Dict[str, object]:
+    """解析 l4-throughput.py 标准 JSON，或兼容直接传入的 iperf3 -J 原始 JSON。"""
+    with open(json_path, "r", encoding="utf-8") as f:
+        d = json.load(f)
+
+    # 兼容原始 iperf3 -J 结构
+    if "end" in d and "start" in d and "summary" not in d:
+        tstart = (d.get("start") or {}).get("test_start") or {}
+        end = d.get("end") or {}
+        proto = str(tstart.get("protocol") or "TCP").lower()
+        is_bidir = bool(tstart.get("bidir")) or ("sum_received_bidir_reverse" in end)
+        is_rev = bool(tstart.get("reverse")) and not is_bidir
+        direction = "bidir" if is_bidir else ("reverse" if is_rev else "forward")
+        streams = int(tstart.get("num_streams") or 1)
+        pkt_len = int(tstart.get("blksize") or (d.get("start") or {}).get("tcp_mss_default") or 1448)
+        dur = float(tstart.get("duration") or 0.0)
+        cpu_u = end.get("cpu_utilization_percent") or {}
+        if proto == "udp":
+            sf = end.get("sum_received") or end.get("sum") or {}
+            bps = float(sf.get("bits_per_second") or 0.0)
+            pkts = int(sf.get("packets") or 0)
+            lost = int(sf.get("lost_packets") or 0)
+            loss_pct = round((lost / float(pkts) * 100.0), 4) if pkts > 0 else float(sf.get("lost_percent") or 0.0)
+            gbps = round(bps / 1e9, 3)
+            return {
+                "label": label,
+                "proto": "UDP",
+                "direction": direction,
+                "direction_cn": L4_DIRECTION_LABELS.get(direction, direction),
+                "mode": "direct_baseline",
+                "mode_cn": L4_MODE_LABELS["direct_baseline"],
+                "streams": streams,
+                "packet_len_bytes": pkt_len,
+                "duration_sec": dur,
+                "tx_gbps": gbps,
+                "rx_gbps": gbps,
+                "throughput_gbps": gbps,
+                "retransmits": 0,
+                "retrans_pct": None,
+                "udp_loss_pct": loss_pct,
+                "udp_jitter_ms": round(float(sf.get("jitter_ms") or 0.0), 3),
+                "pps": round(pkts / dur, 1) if dur > 0 and pkts > 0 else None,
+                "client_cpu_pct": round(float(cpu_u.get("host_total")), 2) if "host_total" in cpu_u else None,
+                "server_cpu_pct": round(float(cpu_u.get("remote_total")), 2) if "remote_total" in cpu_u else None,
+                "zero_loss_pass": gbps > 0 and loss_pct <= 0.1,
+            }
+        sr = end.get("sum_received") or end.get("sum_sent") or {}
+        ss = end.get("sum_sent") or {}
+        bps = float(sr.get("bits_per_second") or 0.0)
+        retrans = int(ss.get("retransmits") or 0)
+        if is_bidir:
+            rr = end.get("sum_received_bidir_reverse") or end.get("sum_sent_bidir_reverse") or {}
+            rs = end.get("sum_sent_bidir_reverse") or {}
+            rbps = float(rr.get("bits_per_second") or 0.0)
+            retrans += int(rs.get("retransmits") or 0)
+            tx_g, rx_g, tot_g = round(bps / 1e9, 3), round(rbps / 1e9, 3), round((bps + rbps) / 1e9, 3)
+        else:
+            tx_g = round(float(ss.get("bits_per_second") or bps) / 1e9, 3)
+            rx_g = round(bps / 1e9, 3)
+            tot_g = rx_g
+        return {
+            "label": label,
+            "proto": "TCP",
+            "direction": direction,
+            "direction_cn": L4_DIRECTION_LABELS.get(direction, direction),
+            "mode": "direct_baseline",
+            "mode_cn": L4_MODE_LABELS["direct_baseline"],
+            "streams": streams,
+            "packet_len_bytes": pkt_len,
+            "duration_sec": dur,
+            "tx_gbps": tx_g,
+            "rx_gbps": rx_g,
+            "throughput_gbps": tot_g,
+            "retransmits": retrans,
+            "retrans_pct": 0.0 if retrans == 0 else None,
+            "udp_loss_pct": None,
+            "udp_jitter_ms": None,
+            "pps": None,
+            "client_cpu_pct": round(float(cpu_u.get("host_total")), 2) if "host_total" in cpu_u else None,
+            "server_cpu_pct": round(float(cpu_u.get("remote_total")), 2) if "remote_total" in cpu_u else None,
+            "zero_loss_pass": tot_g > 0,
+        }
+
+    cfg = d.get("config") or {}
+    s = d.get("summary") or {}
+    proto = str(cfg.get("proto") or "tcp").upper()
+    direction = str(cfg.get("direction") or "forward")
+    mode = str(cfg.get("mode") or "direct_baseline")
+    return {
+        "label": label,
+        "proto": proto,
+        "direction": direction,
+        "direction_cn": str(cfg.get("direction_cn") or L4_DIRECTION_LABELS.get(direction, direction)),
+        "mode": mode,
+        "mode_cn": str(cfg.get("mode_cn") or L4_MODE_LABELS.get(mode, mode)),
+        "streams": int(cfg.get("streams") or 1),
+        "packet_len_bytes": int(cfg.get("packet_len_bytes") or 0),
+        "duration_sec": _to_float(cfg.get("duration_sec")),
+        "tx_gbps": _to_float(s.get("tx_gbps")),
+        "rx_gbps": _to_float(s.get("rx_gbps")),
+        "throughput_gbps": _to_float(s.get("throughput_gbps")),
+        "retransmits": int(s.get("retransmits") or 0),
+        "retrans_pct": _to_float(s.get("retrans_pct")),
+        "udp_loss_pct": _to_float(s.get("udp_loss_pct")),
+        "udp_jitter_ms": _to_float(s.get("udp_jitter_ms")),
+        "pps": _to_float(s.get("pps")),
+        "client_cpu_pct": _to_float(s.get("client_cpu_pct")),
+        "server_cpu_pct": _to_float(s.get("server_cpu_pct")),
+        "zero_loss_pass": bool(s.get("zero_loss_pass")),
+    }
+
+
 def analyze_l7bench_json(label: str, json_path: str) -> Dict[str, object]:
     """解析 l7bench 输出的稳态隔离 JSON 报告。"""
     with open(json_path, "r", encoding="utf-8") as f:
@@ -232,22 +371,40 @@ def analyze_l7bench_json(label: str, json_path: str) -> Dict[str, object]:
     cc = d.get("concurrent_connections") or {}
 
     url = str(cfg.get("target_base_url") or "")
-    if url.lower().startswith("https://"):
+    path = str(cfg.get("path") or "")
+    mode = str(cfg.get("mode") or "unknown")
+    is_https = url.lower().startswith("https://")
+    if is_https:
         ver = str(cfg.get("tls_version") or "自动")
-        ver_label = f"HTTPS（TLS {ver}）" if ver != "auto" else "HTTPS 加密"
+        ver_label = f"HTTPS (TLS {ver})" if ver != "auto" else "HTTPS"
         if cfg.get("tls_cipher") and "RSA" in str(cfg.get("tls_cipher")).upper():
-            ver_label += " · RSA 证书"
+            ver_label += "·RSA"
         elif cfg.get("tls_cipher") and "ECDSA" in str(cfg.get("tls_cipher")).upper():
-            ver_label += " · 椭圆曲线证书"
-        ver_label += " · 会话复用" if cfg.get("tls_resume") else " · 完整握手"
+            ver_label += "·ECDSA"
+        ver_label += "·复用" if cfg.get("tls_resume") else "·完整握手"
         proto = ver_label
     else:
-        proto = "HTTP（明文）"
+        proto = "HTTP (明文)"
+
+    path_l = path.lower()
+    large_body = any(tok in path_l for tok in ("64k", "128k", "256k", "512k", "1m"))
+    goodput = _to_float(s.get("goodput_gbps")) or 0.0
+    est_bw = _to_float(s.get("throughput_est_gbps")) or goodput
+    is_l7_throughput = (mode in ("emix", "throughput")) or large_body or (mode == "tps" and est_bw >= 0.25)
+
+    if mode == "tps" and large_body:
+        size_tag = "1MB" if "1m" in path_l else ("256KB" if "256k" in path_l else ("64KB" if "64k" in path_l else "大包"))
+        mode_cn = f"7层大包吞吐（{size_tag}）"
+    else:
+        mode_cn = MODE_LABELS.get(mode, mode)
 
     return {
         "label": label,
-        "mode": cfg.get("mode", "unknown"),
-        "mode_cn": MODE_LABELS.get(str(cfg.get("mode", "")), str(cfg.get("mode", "未知"))),
+        "mode": mode,
+        "mode_cn": mode_cn,
+        "path": path,
+        "is_https": is_https,
+        "is_l7_throughput": is_l7_throughput,
         "proto": proto,
         "local_ip_count": cfg.get("local_ip_count", 0),
         "steady_sec": (d.get("steady_window") or {}).get("duration_seconds"),
@@ -405,24 +562,64 @@ def _plain_memory_verdict(slope: Optional[float]) -> str:
     return f"呈持续上涨趋势（每小时 +{slope:.2f} MB，需排查内存泄漏）"
 
 
+def _compute_throughput_highlights(
+    l4_arms: List[Dict[str, object]],
+    l7_arms: List[Dict[str, object]],
+) -> Dict[str, float]:
+    l4_uni = max([float(a.get("throughput_gbps") or 0) for a in l4_arms if a.get("direction") != "bidir"] + [0.0])
+    l4_bidir = max([float(a.get("throughput_gbps") or 0) for a in l4_arms if a.get("direction") == "bidir"] + [0.0])
+    l4_max = max(l4_uni, l4_bidir)
+    l7_http = max(
+        [float(a.get("throughput_est_gbps") or a.get("goodput_gbps") or 0) for a in l7_arms if not a.get("is_https")] + [0.0]
+    )
+    l7_https = max(
+        [float(a.get("throughput_est_gbps") or a.get("goodput_gbps") or 0) for a in l7_arms if a.get("is_https")] + [0.0]
+    )
+    l7_emix = max(
+        [float(a.get("throughput_est_gbps") or a.get("goodput_gbps") or 0) for a in l7_arms if a.get("mode") == "emix"] + [0.0]
+    )
+    l7_max = max(l7_http, l7_https, l7_emix)
+    return {
+        "l4_uni": l4_uni,
+        "l4_bidir": l4_bidir,
+        "l4_max": l4_max,
+        "l7_http": l7_http,
+        "l7_https": l7_https,
+        "l7_emix": l7_emix,
+        "l7_max": l7_max,
+    }
+
+
 def _build_executive_summary(summary: Dict[str, object]) -> str:
+    l4_arms: List[Dict[str, object]] = summary.get("l4_arms") or []  # type: ignore[assignment]
     l7_arms: List[Dict[str, object]] = summary.get("l7bench_arms") or []  # type: ignore[assignment]
     arms: List[Dict[str, object]] = summary.get("arms") or []  # type: ignore[assignment]
     sec = summary.get("security_scorecard")
     metrics = summary.get("metrics") or {}
     reconcile = summary.get("reconcile")
 
+    tp = _compute_throughput_highlights(l4_arms, l7_arms)
     parts: List[str] = []
+    if tp["l4_max"] > 0:
+        l4_desc = f"4 层传输层吞吐最高达 {tp['l4_max']:.2f} Gbps"
+        if tp["l4_uni"] > 0 and tp["l4_bidir"] > 0:
+            l4_desc = f"4 层传输层单向吞吐 {tp['l4_uni']:.2f} Gbps、双向吞吐 {tp['l4_bidir']:.2f} Gbps"
+        parts.append(l4_desc)
+
     best_rps = max([float(a.get("achieved_rps") or 0) for a in l7_arms] + [float(a.get("achieved_rps") or 0) for a in arms] + [0])
-    best_gbps = max([float(a.get("throughput_est_gbps") or 0) for a in l7_arms] + [0])
     best_cc = max([int(a.get("cc_steady_min") or 0) for a in l7_arms if a.get("mode") == "cc"] + [0])
-    if best_rps > 0:
-        cap = f"单机无损基线可达每秒 {best_rps:,.0f} 次业务请求"
-        if best_gbps >= 0.1:
-            cap += f"、最高过检带宽 {best_gbps:.2f} Gbps"
+    if best_rps > 0 or tp["l7_max"] > 0:
+        cap_items: List[str] = []
+        if tp["l7_max"] >= 0.1:
+            if tp["l7_http"] >= 0.2 and tp["l7_https"] >= 0.2:
+                cap_items.append(f"7 层全防护过检吞吐 HTTP {tp['l7_http']:.2f} Gbps / HTTPS {tp['l7_https']:.2f} Gbps")
+            else:
+                cap_items.append(f"7 层全防护最高过检吞吐 {tp['l7_max']:.2f} Gbps")
+        if best_rps > 0:
+            cap_items.append(f"无损请求速率 {best_rps:,.0f} 次/秒")
         if best_cc > 0:
-            cap += f"、稳定保持 {best_cc:,} 个并发在线连接"
-        parts.append(cap)
+            cap_items.append(f"稳定并发 {best_cc:,} 个在线连接")
+        parts.append("，".join(cap_items))
 
     if sec:
         sc = sec.get("scorecard") or {}
@@ -453,6 +650,7 @@ def render_markdown_report(summary: Dict[str, object]) -> str:
     env_name = summary["env_name"]
     demo_banner = bool(summary.get("demo_banner"))
     fp = summary.get("fingerprint") or {}
+    l4_arms: List[Dict[str, object]] = summary.get("l4_arms") or []  # type: ignore[assignment]
     l7_arms: List[Dict[str, object]] = summary.get("l7bench_arms") or []  # type: ignore[assignment]
     bs_runs: List[Dict[str, object]] = summary.get("binary_searches") or []  # type: ignore[assignment]
     sec = summary.get("security_scorecard")
@@ -512,8 +710,57 @@ def render_markdown_report(summary: Dict[str, object]) -> str:
     else:
         lines += ["`本次未测`（未提供环境配置指纹文件）", ""]
 
+    l7_tp_arms = [a for a in l7_arms if a.get("is_l7_throughput")]
     lines += [
-        "## 2. 核心性能指标汇总（稳态运行窗口）",
+        "## 2. 4 层与 7 层吞吐能力对比",
+        "",
+        "> 口径说明：**4 层吞吐**反映网卡与内核在传输层（TCP/UDP）的转发及直通能力；**7 层吞吐**反映开启应用层 WAF 与 API 全防护后的实际业务过检带宽（分 HTTP 大包、HTTPS 大包与混合尺寸网页三档）。",
+        "",
+    ]
+    if l4_arms or l7_tp_arms:
+        if l4_arms:
+            lines += [
+                "### 2.1 4 层传输层吞吐明细（TCP / UDP）",
+                "",
+                "| 测试项目 | 转发路径 / 模式 | 协议与方向 | 并发流数 / 包长 | 吞吐速率 (Gbps) | 估算包转发率 | 重传 / 丢包率 | 双端 CPU (发/收) | 基线判定 |",
+                "|---|---|---|---:|---:|---:|---:|---:|---|",
+            ]
+            for a in l4_arms:
+                loss_str = (
+                    f"丢包 {_fmt(a.get('udp_loss_pct'), '%')}"
+                    if a.get("proto") == "UDP"
+                    else f"重传 {a.get('retransmits', 0)} 次"
+                )
+                cpu_str = f"{_fmt(a.get('client_cpu_pct'), '%')} / {_fmt(a.get('server_cpu_pct'), '%')}"
+                pkt_str = f"{a.get('streams', 1)} 流 / {a.get('packet_len_bytes') or '—'} B"
+                verdict = "达标基线" if a.get("zero_loss_pass") else "未达标"
+                lines.append(
+                    f"| `{a['label']}` | {a['mode_cn']} | {a['proto']} · {a['direction_cn']} | {pkt_str} | "
+                    f"**{_fmt(a.get('throughput_gbps'))}** | {_fmt_pps(a.get('pps'))} | {loss_str} | {cpu_str} | **{verdict}** |"
+                )
+            lines.append("")
+        else:
+            lines += ["4 层传输层吞吐：`本次未测`（未提供 4 层测试数据）", ""]
+
+        if l7_tp_arms:
+            lines += [
+                "### 2.2 7 层应用层过检吞吐汇总（全防护）",
+                "",
+                "| 测试项目 | 流量模型 | 协议与加密 | 有效载荷吞吐 (Gbps) | 估算总带宽 (Gbps) | 每秒请求数 | 99% 耗时 (ms) | 基线判定 |",
+                "|---|---|---|---:|---:|---:|---:|---|",
+            ]
+            for a in l7_tp_arms:
+                verdict = "达标基线" if a.get("zero_loss_pass") else "过载超限"
+                lines.append(
+                    f"| `{a['label']}` | {a['mode_cn']} | {a['proto']} | {_fmt(a['goodput_gbps'])} | "
+                    f"**{_fmt(a['throughput_est_gbps'])}** | {_fmt(a['achieved_rps'])} | {_fmt(a['ttlb_p99_ms'])} | **{verdict}** |"
+                )
+            lines.append("")
+    else:
+        lines += ["`本次未测`（未提供 4 层或 7 层吞吐数据）", ""]
+
+    lines += [
+        "## 3. 7 层核心性能指标汇总（稳态运行窗口）",
         "",
         "> 指标说明：以下数据均采集自系统平稳运行阶段（已剔除启动预热与收尾阶段）；**99% 请求耗时**反映绝大多数请求的响应速度（低于 50 毫秒属于优良业务体验区间）。",
         "",
@@ -541,7 +788,7 @@ def render_markdown_report(summary: Dict[str, object]) -> str:
         lines += ["`本次未测`（未提供核心性能测试数据）", ""]
 
     lines += [
-        "## 3. 单机容量上限探测（无损基线收敛）",
+        "## 4. 单机容量上限探测（无损基线收敛）",
         "",
         "> 方法说明：通过自动二分试探，在满足“零报错、延迟不超标”的前提下收敛出单机最高稳定基线，并在基线点执行长稳态复核。",
         "",
@@ -570,7 +817,7 @@ def render_markdown_report(summary: Dict[str, object]) -> str:
         lines += ["`本次未测`（未提供容量上限探测数据）", ""]
 
     lines += [
-        "## 4. 高负载安全防护效能评估",
+        "## 5. 高负载安全防护效能评估",
         "",
         "> 验证目标：在业务高负载背景下同步回放多类攻击与易误报正常请求，验证防护能力在高并发压力下不衰减、不误报。",
         "",
@@ -597,23 +844,6 @@ def render_markdown_report(summary: Dict[str, object]) -> str:
         ]
     else:
         lines += ["`本次未测`（未提供安全防护效能数据）", ""]
-
-    lines += ["## 5. 混合业务专项压测明细", ""]
-    if arms:
-        lines += [
-            "| 测试项目 | 测试场景 | 总请求数 | 实际每秒请求 | 中位 / 95% / 99% 耗时 (ms) | 正常报错率 | 正常误报率 | 攻击拦截率 | 5xx / 断连数 |",
-            "|---|---|---:|---:|---|---:|---:|---:|---:|",
-        ]
-        for a in arms:
-            lines.append(
-                f"| `{a['label']}` | {a['scenario_cn']} | {a['total_requests']:,} | {_fmt(a['achieved_rps'])} | "
-                f"{_fmt(a['p50_ms'])} / {_fmt(a['p95_ms'])} / {_fmt(a['p99_ms'])} | "
-                f"{_fmt(a['normal_unexpected_err_pct'], '%')} | {_fmt(a['normal_false_positive_pct'], '%')} | "
-                f"{_fmt(a['attack_blocked_pct'], '%')} | {a['status_5xx']} / {a['transport_errors']} |"
-            )
-        lines.append("")
-    else:
-        lines += ["`本次未测`（未提供混合业务压测数据）", ""]
 
     lines += ["## 6. 长时间连续运行稳定性验证", ""]
     if metrics and metrics.get("samples", 0) > 0:
@@ -652,10 +882,93 @@ def render_markdown_report(summary: Dict[str, object]) -> str:
     else:
         lines += ["`本次未测`（未提供安全日志完整性核对数据）", ""]
 
+    lines += ["## 8. 混合业务专项压测明细", ""]
+    if arms:
+        lines += [
+            "| 测试项目 | 测试场景 | 总请求数 | 实际每秒请求 | 中位 / 95% / 99% 耗时 (ms) | 正常报错率 | 正常误报率 | 攻击拦截率 | 5xx / 断连数 |",
+            "|---|---|---:|---:|---|---:|---:|---:|---:|",
+        ]
+        for a in arms:
+            lines.append(
+                f"| `{a['label']}` | {a['scenario_cn']} | {a['total_requests']:,} | {_fmt(a['achieved_rps'])} | "
+                f"{_fmt(a['p50_ms'])} / {_fmt(a['p95_ms'])} / {_fmt(a['p99_ms'])} | "
+                f"{_fmt(a['normal_unexpected_err_pct'], '%')} | {_fmt(a['normal_false_positive_pct'], '%')} | "
+                f"{_fmt(a['attack_blocked_pct'], '%')} | {a['status_5xx']} / {a['transport_errors']} |"
+            )
+        lines.append("")
+    else:
+        lines += ["`本次未测`（未提供混合业务压测数据）", ""]
+
     return "\n".join(lines)
 
 
 # -------------------- 离线单文件 HTML + 内联 SVG 图表渲染（专业通俗中文） --------------------
+
+def _svg_throughput_bars(l4_arms: List[Dict[str, object]], l7_arms: List[Dict[str, object]]) -> str:
+    """绘制 4 层传输层吞吐 vs 7 层应用层过检吞吐横向对比条形图。"""
+    items: List[Tuple[str, str, float, str, str]] = []
+    for a in l4_arms:
+        gbps = float(a.get("throughput_gbps") or 0.0)
+        if gbps <= 0:
+            continue
+        sub = f"4层 {a.get('proto')} · {a.get('direction_cn')}"
+        items.append((str(a["label"]), sub, gbps, "#4f46e5", f"{gbps:.2f} Gbps"))
+    for a in l7_arms:
+        if not a.get("is_l7_throughput"):
+            continue
+        gbps = float(a.get("throughput_est_gbps") or a.get("goodput_gbps") or 0.0)
+        if gbps <= 0:
+            continue
+        color = "#0d9488" if not a.get("is_https") else "#2563eb"
+        raw_mode = str(a.get("mode_cn") or "")
+        mode_short = raw_mode[2:] if raw_mode.startswith("7层") else raw_mode
+        sub = f"7层 {'HTTPS加密' if a.get('is_https') else 'HTTP明文'} · {mode_short}"
+        good = float(a.get("goodput_gbps") or gbps)
+        val_txt = f"{gbps:.2f} Gbps（有效 {good:.2f}G）"
+        items.append((str(a["label"]), sub, gbps, color, val_txt))
+
+    if not items:
+        return ""
+
+    w = 1200
+    row_h = 34
+    pad_l, pad_r, pad_t, pad_b = 250, 175, 42, 24
+    h = pad_t + len(items) * row_h + pad_b
+    plot_w = w - pad_l - pad_r
+    max_v = max([it[2] for it in items] + [1.0])
+    # 取干净的刻度上限
+    step = 2.0 if max_v > 10 else (1.0 if max_v > 3 else 0.5)
+    max_scale = math.ceil((max_v * 1.12) / step) * step
+
+    parts = [
+        f'<svg viewBox="0 0 {w} {h}" class="chart-svg" role="img" aria-label="4层与7层吞吐对比图">',
+        f'<text x="20" y="22" class="chart-title">4 层传输层 vs 7 层全防护吞吐能力对比（单位：Gbps，数值越高承载能力越强）</text>',
+        '<g class="legend">'
+        f'<rect x="{w-420}" y="11" width="10" height="10" rx="2" fill="#4f46e5"/><text x="{w-405}" y="20" class="axis-lbl">4层传输吞吐</text>'
+        f'<rect x="{w-305}" y="11" width="10" height="10" rx="2" fill="#0d9488"/><text x="{w-290}" y="20" class="axis-lbl">7层HTTP全防护</text>'
+        f'<rect x="{w-170}" y="11" width="10" height="10" rx="2" fill="#2563eb"/><text x="{w-155}" y="20" class="axis-lbl">7层HTTPS全防护</text>'
+        '</g>',
+    ]
+
+    for i in range(5):
+        xv = max_scale * i / 4.0
+        xx = pad_l + (xv / max_scale) * plot_w
+        parts.append(f'<line x1="{xx:.1f}" y1="{pad_t-4}" x2="{xx:.1f}" y2="{h-pad_b}" stroke="#e2e8f0" stroke-dasharray="3,3"/>')
+        parts.append(f'<text x="{xx:.1f}" y="{h-7}" text-anchor="middle" class="axis-lbl">{xv:.1f}G</text>')
+
+    for idx, (label, sub, val, color, val_txt) in enumerate(items):
+        cy = pad_t + idx * row_h
+        bar_h = 18
+        by = cy + (row_h - bar_h) / 2.0
+        bw = max(4.0, (val / max_scale) * plot_w)
+        parts.append(f'<text x="{pad_l - 12}" y="{by + 9:.1f}" text-anchor="end" class="val-lbl">{_esc(label[:20])}</text>')
+        parts.append(f'<text x="{pad_l - 12}" y="{by + 21:.1f}" text-anchor="end" class="sub-lbl">{_esc(sub[:28])}</text>')
+        parts.append(f'<rect x="{pad_l}" y="{by:.1f}" width="{bw:.1f}" height="{bar_h}" rx="3" fill="{color}"/>')
+        parts.append(f'<text x="{pad_l + bw + 8:.1f}" y="{by + 13:.1f}" class="val-lbl">{_esc(val_txt)}</text>')
+
+    parts.append("</svg>")
+    return "\n".join(parts)
+
 
 def _svg_latency_bars(l7_arms: List[Dict[str, object]]) -> str:
     if not l7_arms:
@@ -717,11 +1030,11 @@ def _svg_binary_search(bs_runs: List[Dict[str, object]]) -> str:
     if not target_run:
         return ""
     trials = target_run["trials"]
-    w, h = 1200, 245
-    pad_l, pad_r, pad_t, pad_b = 68, 34, 36, 42
+    w, h = 1200, 250
+    pad_l, pad_r, pad_t, pad_b = 76, 54, 42, 42
     plot_w = w - pad_l - pad_r
     plot_h = h - pad_t - pad_b
-    max_y = max([float(t.get("target") or 1.0) for t in trials] + [100.0]) * 1.1
+    max_y = max([float(t.get("target") or 1.0) for t in trials] + [100.0]) * 1.15
     n = len(trials)
     mode_cn = MODE_LABELS.get(str(target_run.get("mode", "")), str(target_run.get("mode", "")))
 
@@ -729,25 +1042,32 @@ def _svg_binary_search(bs_runs: List[Dict[str, object]]) -> str:
         f'<svg viewBox="0 0 {w} {h}" class="chart-svg" role="img" aria-label="容量上限自动探测曲线">',
         f'<text x="{pad_l}" y="22" class="chart-title">容量上限自动探测曲线（{_esc(target_run.get("label"))} · {_esc(mode_cn)}）</text>',
         '<g class="legend">'
-        f'<circle cx="{w-268}" cy="15" r="5" fill="#16a34a"/><text x="{w-258}" y="19" class="axis-lbl">达标基线（通过）</text>'
-        f'<circle cx="{w-134}" cy="15" r="5" fill="#dc2626"/><text x="{w-124}" y="19" class="axis-lbl">过载超限（回退）</text>'
+        f'<circle cx="{w-274}" cy="15" r="5" fill="#16a34a"/><text x="{w-264}" y="19" class="axis-lbl">达标基线（通过）</text>'
+        f'<circle cx="{w-138}" cy="15" r="5" fill="#dc2626"/><text x="{w-128}" y="19" class="axis-lbl">过载超限（回退）</text>'
         '</g>',
     ]
     for i in range(5):
         yv = max_y * i / 4.0
         yy = pad_t + plot_h - (yv / max_y) * plot_h
         parts.append(f'<line x1="{pad_l}" y1="{yy:.1f}" x2="{w-pad_r}" y2="{yy:.1f}" stroke="#e2e8f0" stroke-dasharray="3,3"/>')
-        parts.append(f'<text x="{pad_l-8}" y="{yy+4:.1f}" text-anchor="end" class="axis-lbl">{yv:.0f}</text>')
+        parts.append(f'<text x="{pad_l-10}" y="{yy+4:.1f}" text-anchor="end" class="axis-lbl">{yv:.0f}</text>')
 
     conv = target_run.get("converged_max_lossless")
     if isinstance(conv, (int, float)) and max_y > 0:
         cy = pad_t + plot_h - (float(conv) / max_y) * plot_h
         parts.append(f'<line x1="{pad_l}" y1="{cy:.1f}" x2="{w-pad_r}" y2="{cy:.1f}" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="6,4"/>')
-        parts.append(f'<text x="{w-pad_r-4}" y="{cy-6:.1f}" text-anchor="end" fill="#15803d" class="val-lbl">无损稳定基线: {conv:,.0f}/秒</text>')
+        # 放于右下方空白区并加白底描边，避免与各轮上方数值标签重叠
+        parts.append(
+            f'<text x="{w - pad_r - 6:.1f}" y="{cy + 16:.1f}" text-anchor="end" fill="#15803d" '
+            f'class="val-lbl" style="paint-order:stroke;stroke:#ffffff;stroke-width:4px;">无损稳定基线：{conv:,.0f}/秒</text>'
+        )
 
+    # 数据点横向左右各留 32px 内边距，避免首点与纵轴刻度重叠
+    inner_l = pad_l + 32
+    inner_w = max(10.0, plot_w - 64)
     pts = []
     for i, t in enumerate(trials):
-        xx = pad_l + (plot_w * i / max(1, n - 1)) if n > 1 else pad_l + plot_w / 2.0
+        xx = inner_l + (inner_w * i / max(1, n - 1)) if n > 1 else inner_l + inner_w / 2.0
         yy = pad_t + plot_h - (float(t.get("target") or 0.0) / max_y) * plot_h
         pts.append((xx, yy, t))
 
@@ -758,7 +1078,11 @@ def _svg_binary_search(bs_runs: List[Dict[str, object]]) -> str:
     for i, (xx, yy, t) in enumerate(pts):
         color = "#16a34a" if t.get("passed") else "#dc2626"
         parts.append(f'<circle cx="{xx:.1f}" cy="{yy:.1f}" r="5.5" fill="{color}" stroke="#ffffff" stroke-width="1.5"/>')
-        parts.append(f'<text x="{xx:.1f}" y="{yy-9:.1f}" text-anchor="middle" class="val-lbl">{float(t.get("target") or 0):.0f}</text>')
+        lbl_y = yy - 10 if yy > pad_t + 16 else yy + 18
+        parts.append(
+            f'<text x="{xx:.1f}" y="{lbl_y:.1f}" text-anchor="middle" class="val-lbl" '
+            f'style="paint-order:stroke;stroke:#ffffff;stroke-width:3px;">{float(t.get("target") or 0):.0f}</text>'
+        )
         parts.append(f'<text x="{xx:.1f}" y="{h-16}" text-anchor="middle" class="axis-lbl">第{i+1}轮</text>')
 
     parts.append("</svg>")
@@ -829,6 +1153,7 @@ def render_html_report(summary: Dict[str, object]) -> str:
     env_name = str(summary["env_name"])
     demo_banner = bool(summary.get("demo_banner"))
     fp = summary.get("fingerprint") or {}
+    l4_arms: List[Dict[str, object]] = summary.get("l4_arms") or []  # type: ignore[assignment]
     l7_arms: List[Dict[str, object]] = summary.get("l7bench_arms") or []  # type: ignore[assignment]
     bs_runs: List[Dict[str, object]] = summary.get("binary_searches") or []  # type: ignore[assignment]
     sec = summary.get("security_scorecard")
@@ -836,32 +1161,64 @@ def render_html_report(summary: Dict[str, object]) -> str:
     metrics = summary.get("metrics") or {}
     reconcile = summary.get("reconcile")
 
+    tp = _compute_throughput_highlights(l4_arms, l7_arms)
     best_rps = max([float(a.get("achieved_rps") or 0) for a in l7_arms] + [float(a.get("achieved_rps") or 0) for a in arms] + [0])
-    best_gbps = max([float(a.get("throughput_est_gbps") or 0) for a in l7_arms] + [0])
     best_cps = max([float(a.get("achieved_cps") or 0) for a in l7_arms if a.get("mode") == "cps"] + [0])
     best_cc = max([int(a.get("cc_steady_min") or 0) for a in l7_arms if a.get("mode") == "cc"] + [0])
     sec_catch = (sec.get("scorecard") or {}).get("overall_threat_catch_rate_pct") if sec else None
     sec_fp = (sec.get("scorecard") or {}).get("false_positive_rate_pct") if sec else None
     rec_ok = (reconcile.get("reconciliation") or {}).get("passed") if reconcile else None
+    rec_cnt = (reconcile.get("reconciliation") or {}).get("gateway_unique_count") if reconcile else None
     rss_slope = metrics.get("gw_mem_steady_slope_mib_per_hour") if metrics else None
     soak_hours = metrics.get("duration_hours") if metrics else None
 
-    if rec_ok is True:
-        soak_val = f"{soak_hours:.0f}小时稳态 · 日志零丢失" if soak_hours else "日志零丢失"
-    elif rec_ok is False:
-        soak_val = "日志核对异常"
-    elif soak_hours:
-        soak_val = f"连续运行 {soak_hours:.0f} 小时"
+    if tp["l4_max"] > 0:
+        l4_card_val = f"{tp['l4_max']:.2f} Gbps"
+        if tp["l4_uni"] > 0 and tp["l4_bidir"] > 0:
+            l4_card_sub = f"单向 {tp['l4_uni']:.2f}G · 双向 {tp['l4_bidir']:.2f}G"
+        else:
+            l4_card_sub = "TCP/UDP 传输层转发与线速基线"
     else:
-        soak_val = "本次未测"
+        l4_card_val = "本次未测"
+        l4_card_sub = "传输层 TCP/UDP 转发吞吐"
+
+    if tp["l7_max"] > 0:
+        l7_card_val = f"{tp['l7_max']:.2f} Gbps"
+        if tp["l7_http"] >= 0.2 and tp["l7_https"] >= 0.2:
+            l7_card_sub = f"HTTP {tp['l7_http']:.2f}G · HTTPS {tp['l7_https']:.2f}G（全防护）"
+        else:
+            l7_card_sub = "开启全部防护后的过检带宽"
+    else:
+        l7_card_val = "本次未测"
+        l7_card_sub = "开启全部防护后的过检带宽"
+
+    soak_card_val = f"{soak_hours:.0f} 小时零重启" if soak_hours else "本次未测"
+    if rss_slope is not None and abs(rss_slope) <= 1.0:
+        soak_card_sub = f"内存平稳（{rss_slope:+.3f} MB/时，无泄漏）"
+    elif rss_slope is not None:
+        soak_card_sub = f"内存斜率 {rss_slope:+.2f} MB/时"
+    else:
+        soak_card_sub = "长时间连续运行资源稳定性"
+
+    if rec_ok is True:
+        rec_card_val = "零丢失 · 零重复"
+        rec_card_sub = f"{rec_cnt:,} 条告警全集入库核对通过"
+    elif rec_ok is False:
+        rec_card_val = "日志核对异常"
+        rec_card_sub = "存在丢失或重复记录，请排查"
+    else:
+        rec_card_val = "本次未测"
+        rec_card_sub = "安全日志落盘与入库完整性核对"
 
     kpi_cards = [
-        ("无损峰值请求速率", f"{best_rps:,.0f} 次/秒" if best_rps > 0 else "本次未测", "稳态零报错、延迟达标基线"),
-        ("最高过检防护带宽", f"{best_gbps:.2f} Gbps" if best_gbps > 0 else "本次未测", "开启全部防护后的吞吐能力"),
+        ("4 层传输层吞吐", l4_card_val, l4_card_sub),
+        ("7 层应用层吞吐", l7_card_val, l7_card_sub),
+        ("7 层无损峰值请求", f"{best_rps:,.0f} 次/秒" if best_rps > 0 else "本次未测", "稳态零报错、延迟达标基线"),
         ("每秒新建加密连接", f"{best_cps:,.0f} 个/秒" if best_cps > 0 else "本次未测", "HTTPS 完整握手并发建连能力"),
         ("稳定并发在线连接", f"{best_cc:,} 个" if best_cc > 0 else "本次未测", "海量长连接持续保持零中断"),
-        ("高负载综合拦截率", f"拦截 {sec_catch}% · 误报 {sec_fp}%" if sec_catch is not None else "本次未测", "高并发负载下同步安全验证"),
-        ("长稳与日志完整性", soak_val, _plain_memory_verdict(rss_slope) if rss_slope is not None else "连续稳定性与安全日志核对"),
+        ("高负载综合拦截率", f"拦截 {sec_catch}%" if sec_catch is not None else "本次未测", f"正常业务误报率 {sec_fp}%" if sec_fp is not None else "高并发负载下同步安全验证"),
+        ("长时间运行稳定性", soak_card_val, soak_card_sub),
+        ("安全日志完整性", rec_card_val, rec_card_sub),
     ]
 
     cards_html = "\n".join(
@@ -912,7 +1269,66 @@ def render_html_report(summary: Dict[str, object]) -> str:
     else:
         fp_html = '<p class="not-run">本次未测（未提供环境配置信息）</p>'
 
-    # 2. 核心性能指标
+    # 2. 4 层与 7 层吞吐能力对比
+    l7_tp_arms = [a for a in l7_arms if a.get("is_l7_throughput")]
+    if l4_arms or l7_tp_arms:
+        tp_svg = _svg_throughput_bars(l4_arms, l7_arms)
+        if l4_arms:
+            l4_rows = []
+            for a in l4_arms:
+                loss_str = (
+                    f"丢包 {_fmt(a.get('udp_loss_pct'), '%')}"
+                    if a.get("proto") == "UDP"
+                    else f"重传 {a.get('retransmits', 0)} 次"
+                )
+                cpu_str = f"{_fmt(a.get('client_cpu_pct'), '%')} / {_fmt(a.get('server_cpu_pct'), '%')}"
+                pkt_str = f"{a.get('streams', 1)} 流 / {a.get('packet_len_bytes') or '—'} B"
+                badge = '<span class="badge pass">达标基线</span>' if a.get("zero_loss_pass") else '<span class="badge fail">未达标</span>'
+                l4_rows.append(
+                    f"<tr><td><code>{_esc(a['label'])}</code></td><td>{_esc(a['mode_cn'])}</td>"
+                    f"<td>{_esc(a['proto'])} · {_esc(a['direction_cn'])}</td><td class='num'>{_esc(pkt_str)}</td>"
+                    f"<td class='num'><strong>{_esc(_fmt(a.get('throughput_gbps')))}</strong></td>"
+                    f"<td class='num'>{_esc(_fmt_pps(a.get('pps')))}</td><td class='num'>{_esc(loss_str)}</td>"
+                    f"<td class='num'>{_esc(cpu_str)}</td><td>{badge}</td></tr>"
+                )
+            l4_table = f"""
+            <h3 class="sub-h3">4 层传输层吞吐明细（TCP / UDP）</h3>
+            <div class="table-wrap"><table>
+              <thead><tr><th>测试项目</th><th>转发路径 / 模式</th><th>协议与方向</th><th>并发流 / 包长</th><th>吞吐速率 (Gbps)</th><th>估算包转发率</th><th>重传 / 丢包</th><th>双端CPU(发/收)</th><th>基线判定</th></tr></thead>
+              <tbody>{''.join(l4_rows)}</tbody>
+            </table></div>"""
+        else:
+            l4_table = '<p class="not-run">4 层传输层吞吐：本次未测（未提供 4 层测试结果）</p>'
+
+        if l7_tp_arms:
+            l7tp_rows = []
+            for a in l7_tp_arms:
+                badge = '<span class="badge pass">达标基线</span>' if a.get("zero_loss_pass") else '<span class="badge fail">过载超限</span>'
+                l7tp_rows.append(
+                    f"<tr><td><code>{_esc(a['label'])}</code></td><td>{_esc(a['mode_cn'])}</td>"
+                    f"<td>{_esc(a['proto'])}</td><td class='num'>{_esc(_fmt(a['goodput_gbps']))}</td>"
+                    f"<td class='num'><strong>{_esc(_fmt(a['throughput_est_gbps']))}</strong></td>"
+                    f"<td class='num'>{_esc(_fmt(a['achieved_rps']))}</td>"
+                    f"<td class='num'>{_esc(_fmt(a['ttlb_p99_ms']))}</td><td>{badge}</td></tr>"
+                )
+            l7tp_table = f"""
+            <h3 class="sub-h3">7 层应用层过检吞吐汇总（全防护）</h3>
+            <div class="table-wrap"><table>
+              <thead><tr><th>测试项目</th><th>流量模型</th><th>协议与加密</th><th>有效载荷吞吐 (Gbps)</th><th>估算总带宽 (Gbps)</th><th>每秒请求数</th><th>99% 耗时 (ms)</th><th>基线判定</th></tr></thead>
+              <tbody>{''.join(l7tp_rows)}</tbody>
+            </table></div>"""
+        else:
+            l7tp_table = '<p class="not-run">7 层应用层吞吐：本次未测</p>'
+
+        tp_html = f"""
+        <p class="hint">口径说明：<strong>4 层吞吐</strong>反映网卡与内核传输层（TCP/UDP）转发及线速基线能力；<strong>7 层吞吐</strong>反映开启应用层 WAF 与 API 全防护后的实际业务过检带宽（分 HTTP 明文大包、HTTPS 加密大包与混合尺寸业务三档）。</p>
+        {tp_svg}
+        {l4_table}
+        {l7tp_table}"""
+    else:
+        tp_html = '<p class="not-run">本次未测（未提供 4 层或 7 层吞吐数据）</p>'
+
+    # 3. 7 层核心性能指标
     if l7_arms:
         l7_rows = []
         for a in l7_arms:
@@ -920,7 +1336,7 @@ def render_html_report(summary: Dict[str, object]) -> str:
             badge = '<span class="badge pass">达标基线</span>' if a.get("zero_loss_pass") else '<span class="badge fail">过载超限</span>'
             l7_rows.append(
                 f"<tr><td><code>{_esc(a['label'])}</code></td><td>{_esc(a['mode_cn'])}</td>"
-                f"<td>{_esc(a['proto'])}</td><td class='num'>{_esc(a['local_ip_count'])} 个</td>"
+                f"<td class='wrap'>{_esc(a['proto'])}</td><td class='num'>{_esc(a['local_ip_count'])} 个</td>"
                 f"<td class='num'>{_esc(_fmt(a['achieved_rps']))} / {_esc(_fmt(a['achieved_cps']))}</td>"
                 f"<td class='num'>{_esc(_fmt(a['goodput_gbps']))} / {_esc(_fmt(a['throughput_est_gbps']))}</td>"
                 f"<td class='num'>{_esc(cc_col)}</td>"
@@ -1094,20 +1510,22 @@ def render_html_report(summary: Dict[str, object]) -> str:
   .header .meta {{ font-size:13px; color:#cbd5e1; }}
   .demo-banner {{ background:#fef3c7; border:1px solid #f59e0b; color:#92400e; padding:12px 16px; border-radius:8px; margin-bottom:16px; font-size:13px; }}
   .verdict-box {{ background:#eff6ff; border:1px solid #93c5fd; color:#1e3a8a; padding:14px 18px; border-radius:10px; margin-bottom:18px; font-size:14px; line-height:1.7; }}
-  .kpi-grid {{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:20px; }}
-  @media (max-width:900px) {{ .kpi-grid {{ grid-template-columns:repeat(2,1fr); }} }}
-  .kpi-card {{ background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 20px; box-shadow:0 1px 2px rgba(15,23,42,.04); }}
-  .kpi-label {{ font-size:13px; color:var(--muted); }}
-  .kpi-val {{ font-size:20px; font-weight:700; color:#0f172a; margin:6px 0; white-space:nowrap; }}
+  .kpi-grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:18px; }}
+  @media (max-width:1050px) {{ .kpi-grid {{ grid-template-columns:repeat(2,1fr); }} }}
+  .kpi-card {{ background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; box-shadow:0 1px 2px rgba(15,23,42,.04); }}
+  .kpi-label {{ font-size:12.5px; color:var(--muted); }}
+  .kpi-val {{ font-size:19px; font-weight:700; color:#0f172a; margin:5px 0; white-space:nowrap; }}
   .kpi-sub {{ font-size:11.5px; color:#64748b; }}
   section {{ background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px 24px; margin-bottom:18px; page-break-inside:avoid; }}
   h2 {{ margin:0 0 10px; font-size:16.5px; border-left:4px solid var(--primary); padding-left:10px; color:#0f172a; }}
+  .sub-h3 {{ margin:14px 0 6px; font-size:13.5px; color:#1e293b; font-weight:600; }}
   .hint {{ margin:0 0 12px; font-size:12.5px; color:#475569; background:#f8fafc; padding:8px 12px; border-radius:6px; }}
   .table-wrap {{ width:100%; overflow-x:auto; }}
   table {{ width:100%; border-collapse:collapse; font-size:13px; margin-top:10px; }}
   th, td {{ border:1px solid var(--line); padding:8px 11px; text-align:left; vertical-align:middle; }}
   th {{ background:#f1f5f9; font-weight:600; color:#1e293b; white-space:nowrap; }}
   td {{ white-space:nowrap; }}
+  td.wrap {{ white-space:normal; }}
   td.num {{ text-align:right; font-variant-numeric:tabular-nums; }}
   code {{ background:#f1f5f9; padding:2px 6px; border-radius:4px; font-size:12.5px; white-space:nowrap; }}
   .badge {{ display:inline-block; padding:2px 9px; border-radius:999px; font-size:11.5px; font-weight:600; white-space:nowrap; }}
@@ -1126,12 +1544,35 @@ def render_html_report(summary: Dict[str, object]) -> str:
   .bar-track {{ height:10px; background:#e2e8f0; border-radius:999px; overflow:hidden; }}
   .bar-fill {{ height:100%; border-radius:999px; }}
   footer {{ text-align:center; font-size:12px; color:#64748b; margin-top:16px; }}
-  @page {{ size:landscape; margin:10mm; }}
+  .print-only {{ display:none; }}
+  @page {{ size:A4 landscape; margin:9mm 9mm; }}
   @media print {{
-    body {{ background:#fff; padding:0; }}
-    .container {{ max-width:none; }}
-    .kpi-card, section {{ box-shadow:none; }}
+    * {{ -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }}
+    body {{ background:#fff; padding:0; font-size:11.5px; }}
+    .container {{ max-width:none; width:100%; }}
+    .header {{ padding:16px 22px; margin-bottom:10px; }}
+    .header h1 {{ font-size:18px; margin-bottom:4px; }}
+    .demo-banner, .verdict-box {{ padding:8px 12px; margin-bottom:10px; font-size:11.5px; line-height:1.55; }}
+    .kpi-grid {{ grid-template-columns:repeat(4,1fr) !important; gap:8px; margin-bottom:10px; }}
+    .kpi-card {{ padding:8px 10px; box-shadow:none; }}
+    .kpi-label {{ font-size:10.5px; }}
+    .kpi-val {{ font-size:14.5px; margin:2px 0; }}
+    .kpi-sub {{ font-size:9.8px; }}
+    section {{ padding:9px 13px; margin-bottom:8px; box-shadow:none; break-inside:avoid; page-break-inside:avoid; }}
+    section.allow-break {{ break-inside:auto; page-break-inside:auto; }}
+    h2 {{ font-size:13.5px; margin-bottom:5px; }}
+    .sub-h3 {{ margin:7px 0 3px; font-size:11.5px; }}
+    .hint {{ font-size:10.5px; padding:4px 8px; margin-bottom:5px; }}
     .table-wrap {{ overflow:visible; }}
+    table {{ font-size:10px; margin-top:4px; }}
+    th, td {{ padding:3.5px 6px; }}
+    td.wrap {{ white-space:nowrap; }}
+    code {{ font-size:9.5px; padding:1px 4px; }}
+    .badge {{ font-size:9.5px; padding:1px 6px; }}
+    .chart-svg {{ max-height:172px; margin:4px 0 6px; }}
+    footer {{ margin-top:6px; font-size:10.5px; }}
+    .screen-only {{ display:none; }}
+    .print-only {{ display:inline; }}
   }}
 </style>
 </head>
@@ -1145,16 +1586,53 @@ def render_html_report(summary: Dict[str, object]) -> str:
   {verdict_html}
   <div class="kpi-grid">{cards_html}</div>
   <section><h2>1. 被测环境配置清单</h2>{fp_html}</section>
-  <section><h2>2. 核心性能指标汇总（稳态运行窗口）</h2>{l7_html}</section>
-  <section><h2>3. 单机容量上限探测（无损基线收敛）</h2>{bs_html}</section>
-  <section><h2>4. 高负载安全防护效能评估</h2>{sec_html}</section>
-  <section><h2>5. 长时间连续运行稳定性验证</h2>{soak_html}</section>
-  <section><h2>6. 安全日志入库完整性核对</h2>{rec_html}</section>
-  <section><h2>7. 混合业务专项压测明细</h2>{k6_html}</section>
-  <footer>聚信压测工具自动生成 · 在浏览器中按 Cmd+P / Ctrl+P 选择“另存为 PDF”即可直接交付客户</footer>
+  <section><h2>2. 4 层与 7 层吞吐能力对比</h2>{tp_html}</section>
+  <section><h2>3. 7 层核心性能指标汇总（稳态运行窗口）</h2>{l7_html}</section>
+  <section><h2>4. 单机容量上限探测（无损基线收敛）</h2>{bs_html}</section>
+  <section class="allow-break"><h2>5. 高负载安全防护效能评估</h2>{sec_html}</section>
+  <section><h2>6. 长时间连续运行稳定性验证</h2>{soak_html}</section>
+  <section><h2>7. 安全日志入库完整性核对</h2>{rec_html}</section>
+  <section><h2>8. 混合业务专项压测明细</h2>{k6_html}</section>
+  <footer><span class="screen-only">聚信压测工具自动生成 · 在浏览器中按 Cmd+P / Ctrl+P 选择“另存为 PDF”即可直接交付客户</span><span class="print-only">聚信压测工具自动生成 · 本报告由原始实测数据汇总产出</span></footer>
 </div>
 </body>
 </html>"""
+
+
+def find_chrome_binary() -> Optional[str]:
+    candidates = [
+        os.environ.get("JUXIN_CHROME_BIN", ""),
+        shutil.which("google-chrome") or "",
+        shutil.which("chromium") or "",
+        shutil.which("chromium-browser") or "",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    ]
+    for cand in candidates:
+        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
+def export_html_to_pdf(html_path: str, pdf_path: str) -> None:
+    chrome = find_chrome_binary()
+    if not chrome:
+        raise RuntimeError(
+            "未检测到 Chrome/Chromium，无法自动导出 PDF（可安装 Chrome 或用浏览器打开 HTML 后打印另存为 PDF）。"
+        )
+    os.makedirs(os.path.dirname(os.path.abspath(pdf_path)), exist_ok=True)
+    file_url = "file://" + os.path.abspath(html_path)
+    cmd = [
+        chrome,
+        "--headless=new",
+        "--disable-gpu",
+        "--no-sandbox",
+        "--no-pdf-header-footer",
+        f"--print-to-pdf={os.path.abspath(pdf_path)}",
+        file_url,
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def parse_labeled_arg(raw: str) -> Tuple[str, str]:
@@ -1169,6 +1647,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--env-name", required=True, help="被测环境名称")
     parser.add_argument("--fingerprint", default="", help="fingerprint.json")
     parser.add_argument("--metrics", default="", help="runtime-metrics.csv")
+    parser.add_argument("--l4-json", action="append", default=[], help="4层吞吐 JSON（l4-throughput.py 或 iperf3 -J），格式 label=path.json（可重复）")
     parser.add_argument("--l7bench-json", action="append", default=[], help="l7bench JSON，格式 label=path.json（可重复）")
     parser.add_argument("--binary-search-json", action="append", default=[], help="binary-search JSON，格式 label=path.json（可重复）")
     parser.add_argument("--security-scorecard-json", default="", help="security-under-load.py 生成的评分卡 JSON")
@@ -1177,6 +1656,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--reconcile", default="", help="reconcile.json")
     parser.add_argument("--out-md", required=True, help="输出 Markdown 交付报告路径")
     parser.add_argument("--out-html", default="", help="可选：输出单文件离线可视化 HTML 报告路径（含内联 SVG 图表）")
+    parser.add_argument("--out-pdf", default="", help="可选：调用本机 Chrome/Chromium 直接导出横向排版 PDF 报告")
     parser.add_argument("--out-json", default="", help="可选：输出汇总 JSON 路径")
     parser.add_argument("--demo-banner", action="store_true", help="在报告顶部插入演示样例数据声明横幅")
     args = parser.parse_args(argv)
@@ -1187,6 +1667,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             fp_data = json.load(f)
 
     metrics_data = analyze_metrics_csv(args.metrics) if args.metrics else None
+
+    l4_arms: List[Dict[str, object]] = []
+    for item in args.l4_json:
+        label, path = parse_labeled_arg(item)
+        l4_arms.append(analyze_l4_json(label, path))
 
     l7_arms: List[Dict[str, object]] = []
     for item in args.l7bench_json:
@@ -1225,6 +1710,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "env_name": args.env_name,
         "demo_banner": args.demo_banner,
         "fingerprint": fp_data,
+        "l4_arms": l4_arms,
         "l7bench_arms": l7_arms,
         "binary_searches": bs_runs,
         "security_scorecard": sec_data,
@@ -1238,12 +1724,28 @@ def main(argv: Optional[List[str]] = None) -> int:
     with open(args.out_md, "w", encoding="utf-8") as f:
         f.write(md)
 
-    if args.out_html:
+    html_path_used = args.out_html
+    tmp_html_path = ""
+    if args.out_html or args.out_pdf:
         html_doc = render_html_report(summary)
-        os.makedirs(os.path.dirname(os.path.abspath(args.out_html)), exist_ok=True)
-        with open(args.out_html, "w", encoding="utf-8") as f:
-            f.write(html_doc)
-        print(f"[summarize] 可视化 HTML 报告已生成: {args.out_html}")
+        if args.out_html:
+            os.makedirs(os.path.dirname(os.path.abspath(args.out_html)), exist_ok=True)
+            with open(args.out_html, "w", encoding="utf-8") as f:
+                f.write(html_doc)
+            print(f"[summarize] 可视化 HTML 报告已生成: {args.out_html}")
+        else:
+            fd, tmp_html_path = tempfile.mkstemp(suffix=".html", prefix="juxin-report-")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(html_doc)
+            html_path_used = tmp_html_path
+
+    if args.out_pdf:
+        try:
+            export_html_to_pdf(html_path_used, args.out_pdf)
+            print(f"[summarize] PDF 交付报告已生成: {args.out_pdf}")
+        finally:
+            if tmp_html_path and os.path.exists(tmp_html_path):
+                os.remove(tmp_html_path)
 
     if args.out_json:
         os.makedirs(os.path.dirname(os.path.abspath(args.out_json)), exist_ok=True)

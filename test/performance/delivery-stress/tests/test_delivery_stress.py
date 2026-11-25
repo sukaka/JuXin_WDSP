@@ -28,6 +28,78 @@ reconcile = load_module("reconcile_events", "reconcile-events.py")
 summarize = load_module("summarize_run", "summarize-run.py")
 binsearch = load_module("binary_search", "binary-search.py")
 secload = load_module("security_under_load", "security-under-load.py")
+l4tp = load_module("l4_throughput", "l4-throughput.py")
+
+
+class TestL4Throughput(unittest.TestCase):
+    def test_parse_tcp_forward_and_bidir_and_udp(self):
+        tcp_raw = {
+            "start": {
+                "connected": [{"remote_host": "10.10.1.20", "remote_port": 5201}],
+                "tcp_mss_default": 1448,
+                "test_start": {"protocol": "TCP", "num_streams": 16, "blksize": 131072, "duration": 30, "omit": 5, "bidir": 1},
+            },
+            "end": {
+                "sum_sent": {"seconds": 30.0, "bytes": 34650000000, "bits_per_second": 9240000000.0, "retransmits": 0},
+                "sum_received": {"seconds": 30.0, "bytes": 34650000000, "bits_per_second": 9240000000.0},
+                "sum_sent_bidir_reverse": {"seconds": 30.0, "bytes": 34425000000, "bits_per_second": 9180000000.0, "retransmits": 0},
+                "sum_received_bidir_reverse": {"seconds": 30.0, "bytes": 34425000000, "bits_per_second": 9180000000.0},
+                "cpu_utilization_percent": {"host_total": 32.5, "remote_total": 35.1},
+            },
+        }
+        res = l4tp.parse_iperf3_json(tcp_raw, mode="routed_forward")
+        self.assertEqual(res["config"]["proto"], "tcp")
+        self.assertEqual(res["config"]["direction"], "bidir")
+        self.assertEqual(res["summary"]["throughput_gbps"], 18.42)
+        self.assertEqual(res["summary"]["tx_gbps"], 9.24)
+        self.assertEqual(res["summary"]["rx_gbps"], 9.18)
+        self.assertTrue(res["summary"]["zero_loss_pass"])
+        self.assertGreater(res["summary"]["pps"], 1_000_000)
+
+        udp_raw = {
+            "start": {"test_start": {"protocol": "UDP", "num_streams": 8, "blksize": 1400, "duration": 30, "omit": 5}},
+            "end": {
+                "sum_received": {
+                    "seconds": 30.0,
+                    "bytes": 34200000000,
+                    "bits_per_second": 9120000000.0,
+                    "jitter_ms": 0.082,
+                    "lost_packets": 0,
+                    "packets": 24428571,
+                    "lost_percent": 0.0,
+                }
+            },
+        }
+        ures = l4tp.parse_iperf3_json(udp_raw, mode="transparent_bridge")
+        self.assertEqual(ures["config"]["proto"], "udp")
+        self.assertEqual(ures["summary"]["throughput_gbps"], 9.12)
+        self.assertEqual(ures["summary"]["udp_loss_pct"], 0.0)
+        self.assertTrue(ures["summary"]["zero_loss_pass"])
+
+    def test_cli_parse_raw_json_and_help(self):
+        script = os.path.join(SCRIPTS_DIR, "l4-throughput.py")
+        proc = subprocess.run(["python3", script, "--help"], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        with tempfile.TemporaryDirectory() as td:
+            raw_p = os.path.join(td, "raw-iperf.json")
+            out_p = os.path.join(td, "l4-norm.json")
+            with open(raw_p, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "start": {"test_start": {"protocol": "TCP", "num_streams": 8, "blksize": 65536, "duration": 10}},
+                        "end": {
+                            "sum_sent": {"seconds": 10.0, "bytes": 11750000000, "bits_per_second": 9400000000.0, "retransmits": 0},
+                            "sum_received": {"seconds": 10.0, "bytes": 11750000000, "bits_per_second": 9400000000.0},
+                        },
+                    },
+                    f,
+                )
+            rc = l4tp.main(["--parse-raw-json", raw_p, "--mode", "direct_baseline", "--out-json", out_p])
+            self.assertEqual(rc, 0)
+            with open(out_p, "r", encoding="utf-8") as f:
+                doc = json.load(f)
+            self.assertEqual(doc["summary"]["throughput_gbps"], 9.4)
+            self.assertTrue(doc["summary"]["zero_loss_pass"])
 
 
 class TestReconcileEvents(unittest.TestCase):
@@ -285,6 +357,49 @@ class TestSummarizeRun(unittest.TestCase):
                     f,
                 )
 
+            l4_path = os.path.join(td, "l4.json")
+            with open(l4_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "layer": "L4",
+                        "config": {"proto": "tcp", "direction": "forward", "mode": "routed_forward", "streams": 16, "packet_len_bytes": 1448, "duration_sec": 30},
+                        "summary": {"tx_gbps": 9.45, "rx_gbps": 9.45, "throughput_gbps": 9.45, "retransmits": 0, "retrans_pct": 0.0, "pps": 815200.0, "client_cpu_pct": 21.0, "server_cpu_pct": 24.5, "zero_loss_pass": True},
+                    },
+                    f,
+                )
+
+            l7_http_bw = os.path.join(td, "l7-http-256k.json")
+            with open(l7_http_bw, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "config": {
+                            "mode": "tps",
+                            "target_base_url": "http://10.10.1.10",
+                            "path": "/static/256k.bin",
+                            "local_ip_count": 32,
+                        },
+                        "steady_window": {"duration_seconds": 120.0},
+                        "summary": {
+                            "completed": 446400,
+                            "achieved_rps": 3720.0,
+                            "achieved_cps": 2.0,
+                            "goodput_gbps": 7.62,
+                            "throughput_est_gbps": 7.86,
+                            "error_rate_pct": 0.0,
+                            "backpressure_drop_pct": 0.0,
+                            "zero_loss_pass": True,
+                        },
+                        "latency": {
+                            "tcp_connect": {"p99_ms": 0.5},
+                            "tls_handshake": {"p99_ms": 0.0},
+                            "ttfb": {"p99_ms": 6.4},
+                            "ttlb": {"p50_ms": 8.2, "p95_ms": 15.1, "p99_ms": 19.2, "p999_ms": 31.0},
+                        },
+                        "errors": {"tcp_reset": 0, "timeout": 0},
+                    },
+                    f,
+                )
+
             out_md = os.path.join(td, "report.md")
             out_html = os.path.join(td, "report.html")
             out_json = os.path.join(td, "summary.json")
@@ -292,6 +407,8 @@ class TestSummarizeRun(unittest.TestCase):
                 [
                     "--env-name", "KY5288G1-裸机",
                     "--fingerprint", fp_path,
+                    "--l4-json", f"4层-TCP单向转发={l4_path}",
+                    "--l7bench-json", f"7层-HTTP大包吞吐={l7_http_bw}",
                     "--l7bench-json", f"EMIX_TLS13={l7_path}",
                     "--binary-search-json", f"BS_EMIX={bs_path}",
                     "--security-scorecard-json", sec_path,
@@ -305,6 +422,11 @@ class TestSummarizeRun(unittest.TestCase):
                 md = f.read()
             self.assertIn("聚信压测工具", md)
             self.assertIn("核心测试结论", md)
+            self.assertIn("4 层与 7 层吞吐能力对比", md)
+            self.assertIn("4层-TCP单向转发", md)
+            self.assertIn("9.45", md)
+            self.assertIn("7层-HTTP大包吞吐", md)
+            self.assertIn("7.86", md)
             self.assertIn("EMIX_TLS13", md)
             self.assertIn("6.12 / 6.31", md)
             self.assertIn("已收敛至稳定基线", md)
@@ -314,6 +436,8 @@ class TestSummarizeRun(unittest.TestCase):
                 hdoc = f.read()
             self.assertIn("<!DOCTYPE html>", hdoc)
             self.assertIn("聚信压测工具", hdoc)
+            self.assertIn("4层传输吞吐", hdoc)
+            self.assertIn("7层HTTP全防护", hdoc)
             self.assertIn("达标基线（通过）", hdoc)
             self.assertIn("过载超限（回退）", hdoc)
             self.assertIn("<svg ", hdoc)

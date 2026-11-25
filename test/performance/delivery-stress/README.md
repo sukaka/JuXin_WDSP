@@ -22,11 +22,12 @@ test/performance/delivery-stress/
 │   ├── setup-multi-ip.sh                     # 压测机万兆口多源 IP 池配置（突破单 IP 65535 端口墙）
 │   ├── gen-test-certs.sh                     # 生成压测用 RSA-2048 与 ECDSA-P256 两套自签证书
 │   ├── preflight-fingerprint.sh              # 被测机硬件/NUMA/网卡/磁盘 fio/WDSP 版本指纹采集
+│   ├── l4-throughput.py                      # 4 层传输层（TCP/UDP 单向/双向）吞吐压测封装与 JSON 解析器
 │   ├── binary-search.py                      # RFC 2544 自动二分无损容量搜索编排器
 │   ├── security-under-load.py                # RFC 9411 带压安全效能评分卡（支持自定义 WAF 拦截码）
 │   ├── collect-metrics.sh                    # 被测机实时采集（/jiuzhang/runtime + 宿主/网卡/双盘/事件积压）
 │   ├── reconcile-events.py                   # WDSP 事件追平轮询 + PostgreSQL 唯一 request_id 零丢失对账
-│   └── summarize-run.py                      # 聚合全部原始产物，一键导出 Markdown + 离线可视化 HTML + JSON 报告
+│   └── summarize-run.py                      # 聚合全部原始产物，一键导出 Markdown + 离线可视化 HTML + PDF + JSON 报告
 ├── templates/customer-delivery-report.md     # 双环境客户交付报告模板
 └── tests/test_delivery_stress.py             # 全部 Python 与 Shell 单元测试
 ```
@@ -57,10 +58,19 @@ bash scripts/gen-test-certs.sh --out-dir /tmp/wdsp-test-certs --domain bench.wds
 # 分别上传到 WDSP 站点，对比 RSA-2048 与 ECDSA-P256 的 HTTPS CPS
 ```
 
-### 4. 跑 RFC 3511 / RFC 9411 L7 四大核心指标（严格三段式，仅统计 Steady State）
+### 4. 跑 4 层传输层吞吐 + 7 层应用层核心指标（严格三段式，仅统计 Steady State）
 ```bash
 mkdir -p ./juxin-out
 LIPS="10.10.1.101-10.10.1.132"   # 阿里云单 IP 时去掉 --local-ips 参数
+
+# (0) 4 层传输层吞吐（先在目标/源站机启动 iperf3 -s -D，再执行单向/双向 TCP 与 UDP 压测）
+python3 scripts/l4-throughput.py --target 10.10.1.20 --proto tcp --direction forward --mode routed_forward --streams 16 --duration 30 --omit 5 --out-json ./juxin-out/l4-tcp-fwd.json
+python3 scripts/l4-throughput.py --target 10.10.1.20 --proto tcp --direction bidir   --mode routed_forward --streams 16 --duration 30 --omit 5 --out-json ./juxin-out/l4-tcp-bidir.json
+python3 scripts/l4-throughput.py --target 10.10.1.20 --proto udp --direction forward --mode routed_forward --streams 8 --udp-bitrate 10G --packet-len 1400 --duration 30 --omit 5 --out-json ./juxin-out/l4-udp-fwd.json
+
+# (0b) 7 层 HTTP / HTTPS 大包过检吞吐（256KB 文件下载，全防护）
+./dist/l7bench-linux-amd64 -mode tps -url http://10.10.1.10  -host bench.wdsp.local -path /static/256k.bin -local-ips "$LIPS" -rate 3500 -ramp-up 15s -steady 120s -ramp-down 5s -out-json ./juxin-out/l7-http-256k.json
+./dist/l7bench-linux-amd64 -mode tps -url https://10.10.1.10 -host bench.wdsp.local -path /static/256k.bin -local-ips "$LIPS" -tls-version 1.3 -rate 3000 -ramp-up 15s -steady 120s -ramp-down 5s -out-json ./juxin-out/l7-https-256k.json
 
 # (A) HTTP/HTTPS 恒定事务 TPS（RFC 2544 自动二分搜最大无损点 + 180s 长稳态确认）
 python3 scripts/binary-search.py \
@@ -116,6 +126,11 @@ python3 scripts/security-under-load.py \
 python3 scripts/summarize-run.py \
   --env-name "KY5288G1 (2xKH-40000 32C / openEuler 24.03 SP3 / 裸机网关)" \
   --fingerprint ./stress-out/fp/fingerprint.json \
+  --l4-json "4层-TCP单向转发=./juxin-out/l4-tcp-fwd.json" \
+  --l4-json "4层-TCP双向全双工=./juxin-out/l4-tcp-bidir.json" \
+  --l4-json "4层-UDP大包转发=./juxin-out/l4-udp-fwd.json" \
+  --l7bench-json "7层-HTTP大包吞吐=./juxin-out/l7-http-256k.json" \
+  --l7bench-json "7层-HTTPS大包吞吐=./juxin-out/l7-https-256k.json" \
   --l7bench-json "HTTPS_TPS_Confirm=./juxin-out/bs-tps-https/trial-confirm-xxxx.json" \
   --l7bench-json "HTTPS_EMIX_Confirm=./juxin-out/bs-emix-https/trial-confirm-xxxx.json" \
   --l7bench-json "TLS12_RSA_CPS=./juxin-out/bs-cps-tls12-rsa/trial-confirm-xxxx.json" \
@@ -128,6 +143,7 @@ python3 scripts/summarize-run.py \
   --reconcile ./stress-out/reconcile.json \
   --out-md ./juxin-out/ky5288-report.md \
   --out-html ./juxin-out/ky5288-report.html \
+  --out-pdf ./juxin-out/ky5288-report.pdf \
   --out-json ./juxin-out/ky5288-summary.json
 ```
 
