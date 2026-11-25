@@ -130,7 +130,7 @@ func TestUpdateUpstreamRejectsInvalidScheme(t *testing.T) {
 	s := &Store{}
 	u := &Upstream{Host: "192.0.2.1", Port: 9001, Weight: 10, Scheme: "gopher"}
 	err := s.UpdateUpstream(context.Background(), u)
-	if err == nil || !strings.Contains(err.Error(), "源站协议仅支持 http、https 或 h2c") {
+	if err == nil || !strings.Contains(err.Error(), "源站协议仅支持 http、https、h2c 或 tlcp") {
 		t.Fatalf("expected scheme error, got %v", err)
 	}
 	// h2c 合法路径由 PG 契约覆盖（合法 scheme 会触达 db，本测试 Store{} 无实例；

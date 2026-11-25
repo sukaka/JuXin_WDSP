@@ -469,8 +469,13 @@ type Guard struct {
 	// API 授权等密钥完全分离；nil 时精确内部端点仍本地拒绝，不落入源站。
 	PublishSmoke *publishSmokeJSON `json:"publish_smoke,omitempty"`
 
+	// AllowedHTTPVersions 站点级允许接入的 HTTP 协议版本（用于现网协议降级门控，
+	// 如 ["HTTP/1.1"] 或 ["HTTP/1.0","HTTP/1.1"]；空列表=不限制，零行为变化）。
+	AllowedHTTPVersions []string `json:"allowed_http_versions,omitempty"`
+
 	// 运行时
-	logger         *zap.Logger
+	logger                *zap.Logger
+	allowedHTTPVersionSet map[string]bool
 	resolver       clientip.Resolver
 	proxies        *trustedproxy.Set
 	protected      *cidr.Matcher

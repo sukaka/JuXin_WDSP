@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/certificates"
 )
 
 // redactedSecretPlaceholder 脱敏占位符（与 guardconfig.RedactGuardConfig / redactPlaceholder 一致）。
@@ -42,6 +43,9 @@ func isGuardHandlerNode(m mapT) bool { return m["handler"] == "jiuzhang_guard" }
 
 // isACMEHTTP01HandlerNode 判定 jiuzhang_acme_http01 处理器节点（:80 ACME HTTP-01 挑战路由）。
 func isACMEHTTP01HandlerNode(m mapT) bool { return m["handler"] == "jiuzhang_acme_http01" }
+
+// isTLSMuxWrapperNode 判定 jiuzhang_tls_mux 监听包装器节点（双协议同端口自识别终止层）。
+func isTLSMuxWrapperNode(m mapT) bool { return m["wrapper"] == "jiuzhang_tls_mux" }
 
 // isTLSTicketKeySourceNode 判定 apps.tls.session_tickets.key_source 节点
 // （tls.stek.jiuzhang 静态键，generator.go 产出形态）。
@@ -87,11 +91,19 @@ func redactMapSecret(m mapT, key string) {
 	}
 }
 
+// hasNonEmptyStringField 判断 map 中指定键是否为非空字符串。
+func hasNonEmptyStringField(m mapT, key string) bool {
+	s, ok := m[key].(string)
+	return ok && strings.TrimSpace(s) != ""
+}
+
 // RedactConfigSecrets 脱敏配置 JSON 中的密钥类字段（版本表存储与预览用）：
 // guard 段（valkey.password、identity_salt、api_scan_verification.key_hex、
 // api_file_signature.key_hex、api_mask_crypto.key_hex、api_authz_object_hmac_key_hex、
-// bot_policy.signing_keys）、TLS 会话票据 keys_hex 以及 apps.tls.certificates.load_pem[*].key
-// 均以 "***" 占位；publish_smoke 整段移除；certificate、tags、地址、kid 等非密钥字段原样保留。
+// bot_policy.signing_keys）、TLS 会话票据 keys_hex、apps.tls.certificates.load_pem[*].key
+// 以及 listener_wrappers 中 jiuzhang_tls_mux 的 session_ticket_keys_hex 与每站点
+// key_pem / gm_sign_key_pem / gm_enc_key_pem 均以 "***" 占位；publish_smoke 整段移除；
+// certificate、cert_pem、gm_sign_cert_pem、gm_enc_cert_pem、tags、cert_id、gm_cert_id、地址、kid 等非密钥字段原样保留。
 func RedactConfigSecrets(configJSON string) (string, error) {
 	root, err := parseConfigJSON(configJSON)
 	if err != nil {
@@ -142,6 +154,24 @@ func RedactConfigSecrets(configJSON string) (string, error) {
 				}
 			}
 		}
+		if isTLSMuxWrapperNode(m) {
+			if keys, ok := m["session_ticket_keys_hex"].([]interface{}); ok {
+				for i, k := range keys {
+					if s, ok := k.(string); ok && s != "" {
+						keys[i] = redactedSecretPlaceholder
+					}
+				}
+			}
+			if sites, ok := m["sites"].([]interface{}); ok {
+				for _, rawSite := range sites {
+					if site, ok := rawSite.(mapT); ok {
+						redactMapSecret(site, "key_pem")
+						redactMapSecret(site, "gm_sign_key_pem")
+						redactMapSecret(site, "gm_enc_key_pem")
+					}
+				}
+			}
+		}
 	})
 	if rawList, ok := tlsLoadPEMRawList(root); ok {
 		for _, item := range rawList {
@@ -173,7 +203,7 @@ func (n *configSecretNeeds) any() bool {
 	return n.valkey || n.identitySalt || n.scanVerify || n.fileSignature || n.maskCrypto || n.authzObjectKey || n.tlsTicketKey || n.botSigningKeys
 }
 
-// reinjectConfigSecrets 回滚重放前将历史配置 JSON 中 guard 段密钥类字段替换为当前设置值
+// reinjectConfigSecrets 回滚重放前将历史配置 JSON 中 guard 段与 jiuzhang_tls_mux 密钥类字段替换为当前设置值
 // （与 RollbackAccessControl 经 GetVersionConfig 重注入同口径；新版本快照为脱敏占位、
 // 存量历史版本可能为旧明文，统一按字段存在性重注入，不信任快照内的密钥值）。
 // 历史配置含密钥字段而当前设置取不到值时如实报错（回滚失败），不回放占位符或旧明文；
@@ -184,6 +214,7 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 		return "", fmt.Errorf("回滚配置 JSON 解析失败: %w", err)
 	}
 	var needs configSecretNeeds
+	var tlsMuxNodes []mapT
 	walkConfigMaps(root, func(m mapT) {
 		if isGuardHandlerNode(m) {
 			if _, ok := m["valkey"]; ok {
@@ -223,9 +254,15 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 		if isTLSTicketKeySourceNode(m) {
 			needs.tlsTicketKey = true
 		}
+		if isTLSMuxWrapperNode(m) {
+			tlsMuxNodes = append(tlsMuxNodes, m)
+			if keys, ok := m["session_ticket_keys_hex"].([]interface{}); ok && len(keys) > 0 {
+				needs.tlsTicketKey = true
+			}
+		}
 	})
 	loadPEMList, hasLoadPEM := tlsLoadPEMRawList(root)
-	if !needs.any() && !hasLoadPEM {
+	if !needs.any() && !hasLoadPEM && len(tlsMuxNodes) == 0 {
 		return configJSON, nil
 	}
 	if needs.any() {
@@ -303,10 +340,20 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 			if isTLSTicketKeySourceNode(m) {
 				m["keys_hex"] = ticketKeys
 			}
+			if isTLSMuxWrapperNode(m) {
+				if keys, ok := m["session_ticket_keys_hex"].([]interface{}); ok && len(keys) > 0 {
+					m["session_ticket_keys_hex"] = ticketKeys
+				}
+			}
 		})
 	}
 	if hasLoadPEM {
 		if err := p.reinjectLoadPEMPrivateKeys(ctx, loadPEMList); err != nil {
+			return "", err
+		}
+	}
+	if len(tlsMuxNodes) > 0 {
+		if err := p.reinjectTLSMuxPrivateKeys(ctx, tlsMuxNodes); err != nil {
 			return "", err
 		}
 	}
@@ -315,6 +362,108 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 		return "", fmt.Errorf("回滚配置重序列化失败: %w", err)
 	}
 	return string(out), nil
+}
+
+// reinjectTLSMuxPrivateKeys 按 jiuzhang_tls_mux.sites[*] 的 cert_id / gm_cert_id 从证书仓储解密回填
+// 国际私钥（key_pem）与国密双私钥（gm_sign_key_pem / gm_enc_key_pem）。
+// 任一站点缺少有效 UUID 标识、未装配仓储、证书已删除或解密结果为空/占位均 fail-closed 报错，绝不回放 "***"。
+func (p *Publisher) reinjectTLSMuxPrivateKeys(ctx context.Context, muxNodes []mapT) error {
+	loadIntlKey := p.certKeyLoader
+	if loadIntlKey == nil && p.certs != nil {
+		loadIntlKey = p.certs.GetDecryptedKey
+	}
+	loadGMMaterial := p.gmCertMaterialLoader
+	if loadGMMaterial == nil && p.certs != nil {
+		loadGMMaterial = p.certs.GetGMCertMaterial
+	}
+	intlCache := make(map[uuid.UUID]string)
+	gmCache := make(map[uuid.UUID]*certificates.GMCertMaterial)
+
+	for nodeIdx, muxNode := range muxNodes {
+		rawSites, exists := muxNode["sites"]
+		if !exists {
+			continue
+		}
+		sites, ok := rawSites.([]interface{})
+		if !ok {
+			return fmt.Errorf("回滚重注入 jiuzhang_tls_mux 私钥失败：wrapper[%d].sites 格式非法", nodeIdx)
+		}
+		for siteIdx, rawSite := range sites {
+			site, ok := rawSite.(mapT)
+			if !ok {
+				return fmt.Errorf("回滚重注入 jiuzhang_tls_mux 私钥失败：sites[%d] 格式非法", siteIdx)
+			}
+			// 1. 国际通用证书私钥回填
+			hasIntl := hasNonEmptyStringField(site, "key_pem") || hasNonEmptyStringField(site, "cert_pem") || hasNonEmptyStringField(site, "cert_id")
+			if hasIntl {
+				certIDStr, _ := site["cert_id"].(string)
+				certIDStr = strings.TrimSpace(certIDStr)
+				if certIDStr == "" {
+					return fmt.Errorf("回滚重注入 jiuzhang_tls_mux 证书私钥失败：sites[%d] 缺少国际证书标识 cert_id，无法定位私钥", siteIdx)
+				}
+				certID, err := uuid.Parse(certIDStr)
+				if err != nil {
+					return fmt.Errorf("回滚重注入 jiuzhang_tls_mux 证书私钥失败：sites[%d] cert_id %q 不是合法 UUID: %w", siteIdx, certIDStr, err)
+				}
+				if loadIntlKey == nil {
+					return fmt.Errorf("回滚重注入 jiuzhang_tls_mux 证书私钥失败：配置包含国际证书，但未装配证书仓储，无法解密私钥")
+				}
+				keyPEM, cached := intlCache[certID]
+				if !cached {
+					keyPEM, err = loadIntlKey(ctx, certID)
+					if err != nil {
+						return fmt.Errorf("回滚重注入 jiuzhang_tls_mux 证书私钥失败：证书 %s 读取或解密私钥失败（证书可能已删除或主密钥不可用）: %w", certID, err)
+					}
+					trimmed := strings.TrimSpace(keyPEM)
+					if trimmed == "" || trimmed == redactedSecretPlaceholder {
+						return fmt.Errorf("回滚重注入 jiuzhang_tls_mux 证书私钥失败：证书 %s 解密结果为空或仍为脱敏占位", certID)
+					}
+					intlCache[certID] = keyPEM
+				}
+				site["key_pem"] = keyPEM
+			}
+			// 2. 国密 SM_TLCP 双证书私钥回填（签名私钥 + 加密私钥）
+			hasGM := hasNonEmptyStringField(site, "gm_sign_key_pem") ||
+				hasNonEmptyStringField(site, "gm_enc_key_pem") ||
+				hasNonEmptyStringField(site, "gm_sign_cert_pem") ||
+				hasNonEmptyStringField(site, "gm_enc_cert_pem") ||
+				hasNonEmptyStringField(site, "gm_cert_id")
+			if hasGM {
+				gmCertIDStr, _ := site["gm_cert_id"].(string)
+				gmCertIDStr = strings.TrimSpace(gmCertIDStr)
+				if gmCertIDStr == "" {
+					return fmt.Errorf("回滚重注入 jiuzhang_tls_mux 国密证书私钥失败：sites[%d] 缺少国密证书标识 gm_cert_id，无法定位私钥", siteIdx)
+				}
+				gmCertID, err := uuid.Parse(gmCertIDStr)
+				if err != nil {
+					return fmt.Errorf("回滚重注入 jiuzhang_tls_mux 国密证书私钥失败：sites[%d] gm_cert_id %q 不是合法 UUID: %w", siteIdx, gmCertIDStr, err)
+				}
+				if loadGMMaterial == nil {
+					return fmt.Errorf("回滚重注入 jiuzhang_tls_mux 国密证书私钥失败：配置包含国密双证书，但未装配证书仓储，无法解密私钥")
+				}
+				mat, cached := gmCache[gmCertID]
+				if !cached {
+					mat, err = loadGMMaterial(ctx, gmCertID)
+					if err != nil {
+						return fmt.Errorf("回滚重注入 jiuzhang_tls_mux 国密证书私钥失败：国密证书 %s 读取或解密失败（证书可能已删除或主密钥不可用）: %w", gmCertID, err)
+					}
+					if mat == nil {
+						return fmt.Errorf("回滚重注入 jiuzhang_tls_mux 国密证书私钥失败：国密证书 %s 返回材料为空", gmCertID)
+					}
+					signKeyTrim := strings.TrimSpace(mat.SignKeyPEM)
+					encKeyTrim := strings.TrimSpace(mat.EncKeyPEM)
+					if signKeyTrim == "" || signKeyTrim == redactedSecretPlaceholder ||
+						encKeyTrim == "" || encKeyTrim == redactedSecretPlaceholder {
+						return fmt.Errorf("回滚重注入 jiuzhang_tls_mux 国密证书私钥失败：国密证书 %s 解密私钥为空或仍为脱敏占位", gmCertID)
+					}
+					gmCache[gmCertID] = mat
+				}
+				site["gm_sign_key_pem"] = mat.SignKeyPEM
+				site["gm_enc_key_pem"] = mat.EncKeyPEM
+			}
+		}
+	}
+	return nil
 }
 
 // reinjectLoadPEMPrivateKeys 按 load_pem[*].tags[0]（证书 UUID）从证书仓储解密回填当前私钥 PEM；

@@ -36,15 +36,20 @@ func (h *Handler) SetDomainLister(apps DomainLister) {
 	h.apps = apps
 }
 
-// List 证书列表。
+// List 证书列表（支持 name、status、protocol_type、include_replaced 筛选）。
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	status := r.URL.Query().Get("status")
+	protocolType := r.URL.Query().Get("protocol_type")
 	includeReplaced := r.URL.Query().Get("include_replaced") == "true" || status == StatusReplaced
 	page := queryInt(r, "page", 1)
 	pageSize := queryInt(r, "page_size", 20)
-	list, total, err := h.store.ListWithOptions(r.Context(), name, status, includeReplaced, page, pageSize)
+	list, total, err := h.store.ListWithFilter(r.Context(), name, status, protocolType, includeReplaced, page, pageSize)
 	if err != nil {
+		if errors.Is(err, ErrInvalidProtocolType) {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "证书协议类型参数无效，仅支持 INTERNATIONAL 或 SM_TLCP")
+			return
+		}
 		response.InternalError(w, r, err)
 		return
 	}
@@ -76,26 +81,32 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 type uploadCertRequest struct {
-	Name     string `json:"name"`
-	CertPEM  string `json:"cert_pem"`
-	KeyPEM   string `json:"key_pem"`
-	ChainPEM string `json:"chain_pem"`
+	Name         string `json:"name"`
+	ProtocolType string `json:"protocol_type"`
+	CertPEM      string `json:"cert_pem"`
+	KeyPEM       string `json:"key_pem"`
+	EncCertPEM   string `json:"enc_cert_pem"`
+	EncKeyPEM    string `json:"enc_key_pem"`
+	ChainPEM     string `json:"chain_pem"`
 }
 
-// Upload 上传证书。
+// Upload 上传证书（支持国际通用单证与国密 SM_TLCP 签名+加密双证）。
 func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	var req uploadCertRequest
-	if err := response.DecodeJSON(w, r, &req, 128*1024); err != nil {
+	if err := response.DecodeJSON(w, r, &req, 256*1024); err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误或文件过大")
 		return
 	}
 	c, err := h.store.Upload(r.Context(), UploadInput{
-		Name:      req.Name,
-		CertPEM:   req.CertPEM,
-		KeyPEM:    req.KeyPEM,
-		ChainPEM:  req.ChainPEM,
-		CreatedBy: p.UserID,
+		Name:         req.Name,
+		ProtocolType: req.ProtocolType,
+		CertPEM:      req.CertPEM,
+		KeyPEM:       req.KeyPEM,
+		EncCertPEM:   req.EncCertPEM,
+		EncKeyPEM:    req.EncKeyPEM,
+		ChainPEM:     req.ChainPEM,
+		CreatedBy:    p.UserID,
 	})
 	if err != nil {
 		if errors.Is(err, ErrNameExists) {
@@ -150,23 +161,33 @@ func (h *Handler) ListApplications(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"application_ids": appIDs, "count": len(appIDs)})
 }
 
-// GetApplication 查询应用当前活动证书；未绑定时 certificate=null。
+// GetApplication 查询应用当前活动证书（向后兼容 certificate=国际证书，同时返回 gm_certificate 与 bindings 双槽位视图）。
 func (h *Handler) GetApplication(w http.ResponseWriter, r *http.Request) {
 	appID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的应用ID")
 		return
 	}
-	cert, err := h.store.GetApplicationCertificate(r.Context(), appID)
+	bindings, err := h.store.GetApplicationCertificates(r.Context(), appID)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
 	}
-	var item map[string]interface{}
-	if cert != nil {
-		item = certItem(cert, 1)
+	var intlItem, gmItem map[string]interface{}
+	if bindings != nil && bindings.International != nil {
+		intlItem = certItem(bindings.International, 1)
 	}
-	response.JSON(w, r, http.StatusOK, map[string]interface{}{"certificate": item})
+	if bindings != nil && bindings.GM != nil {
+		gmItem = certItem(bindings.GM, 1)
+	}
+	response.JSON(w, r, http.StatusOK, map[string]interface{}{
+		"certificate":    intlItem,
+		"gm_certificate": gmItem,
+		"bindings": map[string]interface{}{
+			"international": intlItem,
+			"gm":            gmItem,
+		},
+	})
 }
 
 // ---------- 辅助 ----------
@@ -176,10 +197,13 @@ func certItem(c *Certificate, usage int) map[string]interface{} {
 	if managedBy == "" {
 		managedBy = ManagedByManual
 	}
-	return map[string]interface{}{
+	protoType := c.EffectiveProtocolType()
+	item := map[string]interface{}{
 		"id": c.ID, "name": c.Name, "certificate_type": c.CertificateType,
+		"protocol_type": protoType,
 		"common_name": c.CommonName, "subject": c.Subject, "issuer": c.Issuer,
 		"serial_number": c.SerialNumber, "not_before": c.NotBefore, "not_after": c.NotAfter,
+		"effective_not_after": c.EffectiveNotAfter(),
 		"fingerprint_sha256": c.FingerprintSHA256, "public_key_algorithm": c.PublicKeyAlgorithm,
 		"public_key_bits": c.PublicKeyBits, "signature_algorithm": c.SignatureAlgorithm,
 		"san_domains": c.SANDomains, "status": c.Status, "usage_count": usage,
@@ -190,6 +214,16 @@ func certItem(c *Certificate, usage int) map[string]interface{} {
 		"superseded_by": c.SupersededBy, "last_renewed_at": c.LastRenewedAt,
 		"created_at": c.CreatedAt, "updated_at": c.UpdatedAt, "version": c.Version,
 	}
+	if protoType == ProtocolSMTLCP {
+		item["enc_common_name"] = c.EncCommonName
+		item["enc_subject"] = c.EncSubject
+		item["enc_issuer"] = c.EncIssuer
+		item["enc_serial_number"] = c.EncSerialNumber
+		item["enc_not_before"] = c.EncNotBefore
+		item["enc_not_after"] = c.EncNotAfter
+		item["enc_fingerprint_sha256"] = c.EncFingerprintSHA256
+	}
+	return item
 }
 
 func certSummary(c *Certificate) string {
@@ -198,13 +232,15 @@ func certSummary(c *Certificate) string {
 		fp = fp[:16]
 	}
 	b, err := json.Marshal(struct {
-		Name        string `json:"name"`
-		CN          string `json:"cn"`
-		Fingerprint string `json:"fingerprint"`
+		Name         string `json:"name"`
+		ProtocolType string `json:"protocol_type"`
+		CN           string `json:"cn"`
+		Fingerprint  string `json:"fingerprint"`
 	}{
-		Name:        c.Name,
-		CN:          c.CommonName,
-		Fingerprint: fp,
+		Name:         c.Name,
+		ProtocolType: c.EffectiveProtocolType(),
+		CN:           c.CommonName,
+		Fingerprint:  fp,
 	})
 	if err != nil {
 		return "{}"

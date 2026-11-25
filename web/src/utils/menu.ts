@@ -482,6 +482,13 @@ export const MENU_ITEMS: MenuDef[] = [
     roles: ['SECURITY_ADMIN'],
     group: '事件中心',
   },
+  {
+    key: '/tls-sessions',
+    label: '加密会话分析',
+    permissions: ['events.read'],
+    denyAuditOnly: true,
+    group: '事件中心',
+  },
   // AI 自动化渗透防护 阶段1：风险身份（新分组，位于事件中心之后）
   {
     key: '/risk-identities',

@@ -192,7 +192,7 @@ const (
 // 提取 ModSecurity 风格 [key "value"] 对。
 var kvPattern = regexp.MustCompile(`\[([a-zA-Z_]+) "((?:[^"\\]|\\.)*)"\]`)
 
-var scorePattern = regexp.MustCompile(`Total Score: (\d+)`)
+var scorePattern = regexp.MustCompile(`(?:Total Score:\s*|总分[：:]\s*)(\d+)`)
 
 // matchedDataPattern 解析 "Matched Data: <sample> found within <VAR>:<param>: <value>"，
 // 其中变量部分形如 ARGS:q / REQUEST_HEADERS:User-Agent，参数名不可省略。
@@ -200,18 +200,29 @@ var matchedDataPattern = regexp.MustCompile(`^Matched Data: (.*?) found within (
 
 // attackTypeByTag 将 CRS 攻击标签映射为九章攻击类型。
 var attackTypeByTag = map[string]string{
-	"attack-sqli":              "SQL_INJECTION",
-	"attack-xss":               "XSS",
-	"attack-rce":               "COMMAND_INJECTION",
-	"attack-lfi":               "LOCAL_FILE_INCLUSION",
-	"attack-rfi":               "REMOTE_FILE_INCLUSION",
-	"attack-php":               "PHP_CODE_INJECTION",
-	"attack-java":              "JAVA_CODE_INJECTION",
-	"attack-protocol":          "PROTOCOL_VIOLATION",
-	"attack-fixation":          "SESSION_FIXATION",
-	"attack-scanner":           "SCANNER",
-	"attack-disclosure":        "DATA_DISCLOSURE",
-	"attack-injection-generic": "GENERIC_INJECTION",
+	"attack-sqli":                    "SQL_INJECTION",
+	"attack-xss":                     "XSS",
+	"attack-rce":                     "COMMAND_INJECTION",
+	"attack-lfi":                     "LOCAL_FILE_INCLUSION",
+	"attack-rfi":                     "REMOTE_FILE_INCLUSION",
+	"attack-php":                     "PHP_CODE_INJECTION",
+	"attack-injection-php":           "PHP_CODE_INJECTION",
+	"attack-java":                    "JAVA_CODE_INJECTION",
+	"attack-injection-java":          "JAVA_CODE_INJECTION",
+	"attack-protocol":                "PROTOCOL_VIOLATION",
+	"attack-multipart-header":        "PROTOCOL_VIOLATION",
+	"attack-deprecated-header":       "PROTOCOL_VIOLATION",
+	"attack-fixation":                "SESSION_FIXATION",
+	"attack-scanner":                 "SCANNER",
+	"attack-reputation-scanner":      "SCANNER",
+	"attack-disclosure":              "DATA_DISCLOSURE",
+	"attack-injection-generic":       "GENERIC_INJECTION",
+	"OWASP_CRS/METHOD-ENFORCEMENT":   "PROTOCOL_VIOLATION",
+	"OWASP_CRS/PROTOCOL-ENFORCEMENT": "PROTOCOL_VIOLATION",
+	"OWASP_CRS/PROTOCOL-ATTACK":      "PROTOCOL_VIOLATION",
+	"OWASP_CRS/MULTIPART-ATTACK":     "PROTOCOL_VIOLATION",
+	"OWASP_CRS/SCANNER-DETECTION":    "SCANNER",
+	"OWASP_CRS/WEB-SHELLS":           "WEBSHELL",
 	// 以下与规则库同步侧（server/internal/wafrules）保持一致
 	"attack-ssrf":            "SSRF",
 	"attack-xxe":             "XXE_INJECTION",

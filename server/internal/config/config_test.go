@@ -468,3 +468,26 @@ func TestLoadGatewayTproxyDefaultsAndEnvOverride(t *testing.T) {
 		t.Fatalf("tproxy env override mismatch: %+v", cfg.Gateway)
 	}
 }
+
+func TestLoadTLSSessionLogPathDefaultAndOverride(t *testing.T) {
+	t.Setenv("POSTGRES_PASSWORD", "test-postgres-password")
+	t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+	t.Setenv("WAF_TLS_SESSION_LOG", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.WAF.TLSSessionLogPath != "/var/log/caddy/tls-handshake-events.jsonl" {
+		t.Fatalf("TLSSessionLogPath default = %q, want /var/log/caddy/tls-handshake-events.jsonl", cfg.WAF.TLSSessionLogPath)
+	}
+
+	t.Setenv("WAF_TLS_SESSION_LOG", "/var/log/caddy-audit/tls-handshake-events.jsonl")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() override error = %v", err)
+	}
+	if cfg.WAF.TLSSessionLogPath != "/var/log/caddy-audit/tls-handshake-events.jsonl" {
+		t.Fatalf("TLSSessionLogPath override = %q", cfg.WAF.TLSSessionLogPath)
+	}
+}

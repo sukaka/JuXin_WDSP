@@ -139,6 +139,38 @@ export default function AccessLogDetailDrawer({
             </Descriptions.Item>
             <Descriptions.Item label="HTTP 版本">{log.http_version || '-'}</Descriptions.Item>
             <Descriptions.Item label="内容类型">{log.content_type || '-'}</Descriptions.Item>
+            {(log.tls_protocol ||
+              log.tls_cipher_suite ||
+              log.tls_ja3 ||
+              log.client_hello_version ||
+              log.tls_is_gm) && (
+              <>
+                <Descriptions.Item label="TLS / 国密协议">
+                  {log.tls_protocol || '-'}
+                  {log.tls_is_gm && (
+                    <Tag color="volcano" style={{ marginLeft: 8 }}>
+                      国密 SM2/TLCP
+                    </Tag>
+                  )}
+                </Descriptions.Item>
+                <Descriptions.Item label="ClientHello 版本">
+                  {log.client_hello_version || '-'}
+                </Descriptions.Item>
+                <Descriptions.Item label="加密算法套件" span={2}>
+                  <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                    {log.tls_cipher_suite || '-'}
+                  </Typography.Text>
+                </Descriptions.Item>
+                <Descriptions.Item label="TLS JA3 指纹" span={2}>
+                  <Typography.Text
+                    style={{ fontFamily: 'monospace', fontSize: 12 }}
+                    copyable={Boolean(log.tls_ja3)}
+                  >
+                    {log.tls_ja3 || '-'}
+                  </Typography.Text>
+                </Descriptions.Item>
+              </>
+            )}
             <Descriptions.Item label="用户代理" span={2}>
               {log.user_agent_summary || '-'}
             </Descriptions.Item>

@@ -49,6 +49,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/syslogfw"
 	"github.com/jiuzhang-waf/server/internal/systemalerts"
 	"github.com/jiuzhang-waf/server/internal/temporaryblocks"
+	"github.com/jiuzhang-waf/server/internal/tlssessions"
 	"github.com/jiuzhang-waf/server/internal/urlwhitelists"
 	"github.com/jiuzhang-waf/server/internal/users"
 	"github.com/jiuzhang-waf/server/internal/wafrules"
@@ -212,6 +213,14 @@ func run() error {
 	accessFullCollector.SetBatchTxFactory(db.Begin)
 	go accessFullCollector.Run(collectorCtx, 2*time.Second)
 	go accesslogs.NewRetentionCleaner(db, settings.NewService(db)).Run(collectorCtx, 10*time.Minute)
+
+	// SSL/HTTPS 加密会话分析：TLS/TLCP 握手事件 JSONL 采集器 + 留存清理（无日志文件时采集器空转）
+	tlsSessionCollector := tlssessions.NewCollector(db, tlssessions.DefaultCollectorID, cfg.WAF.TLSSessionLogPath)
+	tlsSessionCollector.SetFlushPolicy(cfg.WAF.CollectorFlushBatch, cfg.WAF.CollectorFlushInterval)
+	tlsSessionCollector.SetBatchTxFactory(db.Begin)
+	go tlsSessionCollector.Run(collectorCtx, 2*time.Second)
+	go tlssessions.NewRetentionCleaner(db, settings.NewService(db)).Run(collectorCtx, 10*time.Minute)
+
 	application.StartRequestPCAP(collectorCtx)
 
 	// 站点资产被动发现：mirrorcap site-discovery.jsonl 断点续传 upsert（幂等键 domain+ip+port；

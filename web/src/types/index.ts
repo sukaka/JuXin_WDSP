@@ -354,7 +354,7 @@ export interface UpstreamItem {
   id: string
   application_id: string
   name: string
-  scheme: 'http' | 'https'
+  scheme: 'http' | 'https' | 'h2c' | 'tlcp'
   host: string
   normalized_host: string
   port: number
@@ -430,22 +430,35 @@ export type AcmeOrderStatus =
   | 'PUBLISH_FAILED'
   | 'FAILED'
 
+/** 证书协议类型：国际通用单证 / 国密 SM2 双证（TLCP 1.1） */
+export type CertificateProtocolType = 'INTERNATIONAL' | 'SM_TLCP'
+
 /** HTTPS 证书列表项 */
 export interface CertificateItem {
   id: string
   name: string
   certificate_type: string
+  protocol_type?: CertificateProtocolType
   common_name: string
   subject: string
   issuer: string
   serial_number: string
   not_before?: string | null
   not_after?: string | null
+  effective_not_after?: string | null
   fingerprint_sha256: string
   public_key_algorithm: string
   public_key_bits: number
   signature_algorithm: string
   san_domains: string[]
+  /** 国密加密证书元数据（SM_TLCP 专用） */
+  enc_common_name?: string
+  enc_subject?: string
+  enc_issuer?: string
+  enc_serial_number?: string
+  enc_not_before?: string | null
+  enc_not_after?: string | null
+  enc_fingerprint_sha256?: string
   status: CertificateStatus
   usage_count: number
   managed_by?: CertificateManagedBy
@@ -459,6 +472,19 @@ export interface CertificateItem {
   created_at: string
   updated_at: string
   version: number
+}
+
+/** 应用双槽位证书绑定视图 */
+export interface ApplicationCertificateBindings {
+  international: CertificateItem | null
+  gm: CertificateItem | null
+}
+
+/** GET /applications/{id}/certificate 返回体（兼容旧 certificate 字段并附带双槽位） */
+export interface ApplicationCertificatesResult {
+  certificate: CertificateItem | null
+  gm_certificate?: CertificateItem | null
+  bindings?: ApplicationCertificateBindings
 }
 
 /** 证书详情（含绑定应用 ID 列表，不含私钥） */
@@ -1240,6 +1266,77 @@ export interface AccessLogItem {
   duration_ms: number
   /** 实际 WAF 动作（如 ALLOW/BLOCK）；无明确归因时不得标为阻断 */
   waf_action: string
+  /** 可选 TLS/国密握手上下文（旧记录或缺省为空） */
+  tls_protocol?: string
+  tls_cipher_suite?: string
+  tls_is_gm?: boolean
+  tls_ja3?: string
+  client_hello_version?: string
+}
+
+/* ==================== SSL/HTTPS 加密会话分析 ==================== */
+
+export type TLSSessionAction =
+  | 'ALLOWED'
+  | 'BLOCKED_LEGACY_SSL'
+  | 'BLOCKED_PROTOCOL_POLICY'
+  | 'HANDSHAKE_FAILED'
+
+export type TLSSessionProtocol =
+  | 'SSLv2'
+  | 'SSLv2/v3'
+  | 'SSLv3'
+  | 'TLS1.0'
+  | 'TLS1.1'
+  | 'TLS1.2'
+  | 'TLS1.3'
+  | 'TLCP1.1'
+  | 'UNKNOWN'
+
+/** SSL/HTTPS 加密会话握手记录 */
+export interface TLSSessionItem {
+  id: string
+  occurred_at: string
+  gateway_node_id: string
+  application_id?: string | null
+  sni: string
+  client_ip: string
+  client_port: number
+  server_port: number
+  detected_protocol: string
+  negotiated_protocol: string
+  cipher_suite: string
+  is_gm: boolean
+  ja3_hash: string
+  alpn: string
+  action: string
+  error_reason: string
+}
+
+export interface TLSSessionProtocolStat {
+  protocol: string
+  count: number
+  is_gm: boolean
+  is_legacy: boolean
+}
+
+export interface TLSSessionCipherStat {
+  cipher_suite: string
+  count: number
+  is_gm: boolean
+}
+
+/** SSL/HTTPS 加密会话汇总统计（GET /tls-sessions/summary） */
+export interface TLSSessionSummary {
+  total_handshakes: number
+  allowed_count: number
+  gm_count: number
+  intl_count: number
+  legacy_ssl_blocked_count: number
+  policy_blocked_count: number
+  handshake_failed_count: number
+  by_protocol: TLSSessionProtocolStat[]
+  by_cipher_suite: TLSSessionCipherStat[]
 }
 
 /** 访问日志详情（额外含Trace、真实TTFB与脱敏头体留痕；未采集字段保持空值） */
@@ -3059,7 +3156,7 @@ export interface AppPathRoute {
   id: string
   application_id: string
   path_prefix: string
-  upstream_scheme: 'http' | 'https'
+  upstream_scheme: 'http' | 'https' | 'tlcp'
   upstream_host: string
   upstream_port: number
   strip_prefix: boolean
@@ -3069,6 +3166,32 @@ export interface AppPathRoute {
   created_at: string
   updated_at: string
   version: number
+}
+
+/** 应用级 TLS/国密协议自识别、TLS/HTTP 协议降级与加密会话分析配置 */
+export type TLSProtocolMode = 'AUTO_DETECT' | 'INTERNATIONAL_ONLY' | 'GM_ONLY'
+export type AllowedTLSVersion = 'TLCP1.1' | 'TLS1.0' | 'TLS1.1' | 'TLS1.2' | 'TLS1.3'
+export type LegacySSLAnalysisVersion = 'SSLv2' | 'SSLv2_v3' | 'SSLv3'
+export type AppHTTPVersion = 'HTTP/1.0' | 'HTTP/1.1' | 'HTTP/2'
+export type UpstreamHTTPVersion = 'AUTO' | 'HTTP/1.0' | 'HTTP/1.1' | 'HTTP/2'
+export type UpstreamTLSMinVersion = 'TLS1.0' | 'TLS1.1' | 'TLS1.2' | 'TLS1.3'
+
+export interface AppTLSConfig {
+  tls_protocol_mode: TLSProtocolMode
+  allowed_tls_versions: AllowedTLSVersion[]
+  legacy_ssl_analysis_versions: LegacySSLAnalysisVersion[]
+  http_versions: AppHTTPVersion[]
+  upstream_http_version: UpstreamHTTPVersion
+  upstream_tls_min_version: UpstreamTLSMinVersion
+  session_analysis_enabled: boolean
+}
+
+export interface AppTLSConfigResult {
+  config: AppTLSConfig
+  configured: boolean
+  version: number
+  updated_at?: string
+  message?: string
 }
 
 /* ==================== 产品侧离线授权（.lic 导入与门控） ==================== */

@@ -54,7 +54,13 @@ type GenerateInput struct {
 	TransparentHTTPSListen string
 	// ACMEHTTP01 自动 SSL HTTP-01 挑战应答配置（nil 或 Enabled=false 时零变化）。
 	ACMEHTTP01 *ACMEHTTP01Config
+	// TLSSessionLogPath jiuzhang_tls_mux 加密会话分析 JSONL 日志路径（空串取 DefaultTLSSessionLogPath）。
+	TLSSessionLogPath string
 }
+
+// DefaultTLSSessionLogPath 是 jiuzhang_tls_mux 加密会话握手事件的默认 JSONL 落盘路径
+// （与网关 tlsmux.DefaultSessionLogPath 一致）。
+const DefaultTLSSessionLogPath = "/var/log/caddy/tls-handshake-events.jsonl"
 
 // ACMEHTTP01Config 是网关 ACME HTTP-01 挑战应答配置（jiuzhang_acme_http01）。
 type ACMEHTTP01Config struct {
@@ -92,6 +98,16 @@ type AppData struct {
 	ChainPEM     string // 证书链 PEM（可选，合并至 certificate 尾部）
 	KeyPEM       string // 私钥 PEM（仅内存流转，版本表与预览强制脱敏）
 	HasCert      bool
+	// 国密 TLCP 1.1 双证书（SM2 签名证书 + SM2 加密证书；仅内存流转，版本表与预览强制脱敏）。
+	HasGMCert     bool
+	GMCertID      string
+	GMSignCertPEM string
+	GMSignKeyPEM  string
+	GMEncCertPEM  string
+	GMEncKeyPEM   string
+	GMChainPEM    string
+	// TLSConfig 应用级国密/国际协议自识别、TLS/HTTP 协议降级与加密会话分析策略（nil 表示默认兼容路径）。
+	TLSConfig *AppTLSConfig
 	// PendingAutoSSL 标记开启自动 SSL 且尚未签发首次证书的应用：
 	// 允许先发布 :80 HTTP 与 ACME 挑战路由，暂缓生成 :443 HTTPS 与 308 跳转，待证书签发后再自动发布上线。
 	PendingAutoSSL bool
@@ -176,7 +192,7 @@ func Generate(in GenerateInput) (*Generated, error) {
 		return nil, err
 	}
 
-	servers, routeCount := buildServers(in)
+	servers, routeCount, legacyHTTPSApps := buildServers(in)
 	if in.Guard != nil && in.Guard.SoftwareBypass != nil {
 		injectConnectionMetrics(servers)
 	}
@@ -215,15 +231,16 @@ func Generate(in GenerateInput) (*Generated, error) {
 	//   - certificates.load_pem：优先路径，使用 Caddy 原生 PEMLoader 在内存中直接加载证书链与私钥
 	//     （跨节点扇出无需共享本地证书目录，版本存储由 RedactConfigSecrets 强制脱敏 key 为 "***"）；
 	//   - certificates.load_files：向后兼容路径，仅当应用仅提供 CertFileName 而无内联 PEM 时产出；
+	//   - 若应用的全部 HTTPS 监听已由 jiuzhang_tls_mux 接管，则证书直接内嵌于 mux.sites[*]，不重复写入 load_pem/load_files；
 	//   - session_tickets（HA §7.2）：配置了下发 tls.stek.jiuzhang 静态键（支持 1~2 键平滑轮换，
 	//     主备多节点共用 → 会话恢复跨节点可用）；
 	// 均未配置保持缺省（无 apps.tls 段，Go 标准库进程内随机票据键，跨节点恢复回退完整握手）。
 	tlsApp := mapT{}
 	certsCfg := mapT{}
-	if pemPairs := buildCertPEMPairs(in); len(pemPairs) > 0 {
+	if pemPairs := buildCertPEMPairs(in, legacyHTTPSApps); len(pemPairs) > 0 {
 		certsCfg["load_pem"] = pemPairs
 	}
-	if filePairs := buildCertFilePairs(in); len(filePairs) > 0 {
+	if filePairs := buildCertFilePairs(in, legacyHTTPSApps); len(filePairs) > 0 {
 		certsCfg["load_files"] = filePairs
 	}
 	if len(certsCfg) > 0 {
@@ -337,17 +354,35 @@ type routeEntry struct {
 	route   mapT
 }
 
-// buildServers 按监听端口分组构建 servers。
+// httpsServerApp 记录某个 HTTPS 监听服务器上的单个应用及其归属 HTTPS 域名集合。
+type httpsServerApp struct {
+	appIdx  int
+	app     AppData
+	domains []string
+}
+
+// buildServers 按监听端口分组构建 servers，并返回至少在一个非 mux 传统 HTTPS 监听上提供服务的应用索引集合。
 // TRANSPARENT（透明串接）应用分流到专用内部回环 server（srv_transparent_http /
-// srv_transparent_https，挂 proxy_protocol / tls listener_wrappers），与公网反代/路由
+// srv_transparent_https，挂 proxy_protocol / tls 或 jiuzhang_tls_mux listener_wrappers），与公网反代/路由
 // 站点（srv0/srv1...）完全隔离，避免端口冲突且确保 tproxyd PROXY v1 正常解包。
-func buildServers(in GenerateInput) (map[string]interface{}, int) {
+func buildServers(in GenerateInput) (map[string]interface{}, int, map[int]bool) {
 	httpServers := map[string][]routeEntry{}  // listen addr -> routes (REVERSE_PROXY/ROUTED)
 	httpsServers := map[string][]routeEntry{} // listen addr -> routes (REVERSE_PROXY/ROUTED)
+	httpsServerApps := map[string]map[int]*httpsServerApp{}
 	var transparentHTTPRoutes []routeEntry
 	var transparentHTTPSRoutes []routeEntry
+	transparentHTTPSApps := map[int]*httpsServerApp{}
 
-	for _, app := range in.Apps {
+	recordHTTPSApp := func(bucket map[int]*httpsServerApp, appIdx int, app AppData, host string) {
+		entry, ok := bucket[appIdx]
+		if !ok {
+			entry = &httpsServerApp{appIdx: appIdx, app: app}
+			bucket[appIdx] = entry
+		}
+		entry.domains = append(entry.domains, host)
+	}
+
+	for appIdx, app := range in.Apps {
 		// MIRROR（镜像旁路）应用不生成内联站点路由：其流量经镜像口到达 mirrorcap 采集器，
 		// 不在反代链上（docs/NETWORK_MODES_DESIGN.md §4.2）；边车配置由发布通道另行写出。
 		if app.DeploymentMode == applications.DeployModeMirror {
@@ -398,9 +433,14 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 				entries := append(pathRouteEntries(in, effApp, hosts, *d.HTTPSPort), routeEntry{appCode: app.Code, route: route})
 				if isTransparent {
 					transparentHTTPSRoutes = append(transparentHTTPSRoutes, entries...)
+					recordHTTPSApp(transparentHTTPSApps, appIdx, app, d.NormalizedHostname)
 				} else {
 					addr := fmt.Sprintf(":%d", *d.HTTPSPort)
 					httpsServers[addr] = append(httpsServers[addr], entries...)
+					if httpsServerApps[addr] == nil {
+						httpsServerApps[addr] = map[int]*httpsServerApp{}
+					}
+					recordHTTPSApp(httpsServerApps[addr], appIdx, app, d.NormalizedHostname)
 				}
 			}
 		}
@@ -409,6 +449,7 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 	servers := mapT{}
 	routeCount := 0
 	serverIdx := 0
+	legacyHTTPSApps := map[int]bool{}
 
 	acmeEnabled := in.ACMEHTTP01 != nil && in.ACMEHTTP01.Enabled
 	hasPublicPort80 := false
@@ -455,8 +496,7 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 		}
 		routeCount++
 	}
-	// HTTPS servers（REVERSE_PROXY / ROUTED，带证书）
-	publicTLSPolicies := buildTLSPoliciesForMode(in, false)
+	// HTTPS servers（REVERSE_PROXY / ROUTED，带证书或 jiuzhang_tls_mux）
 	for _, addr := range sortedKeys(httpsServers) {
 		entries := httpsServers[addr]
 		sort.SliceStable(entries, func(i, j int) bool { return entries[i].appCode < entries[j].appCode })
@@ -472,9 +512,19 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 			"logs":            mapT{"default_logger_name": "access"},
 			"errors":          buildErrorRoutes(in),
 		}
-		// TLS 连接策略：按域名关联证书
-		if len(publicTLSPolicies) > 0 {
-			server["tls_connection_policies"] = publicTLSPolicies
+		srvApps := sortedHTTPSServerApps(httpsServerApps[addr])
+		if serverNeedsTLSMux(srvApps) {
+			muxWrapper, protocols := buildTLSMuxWrapper(in, srvApps)
+			server["listener_wrappers"] = []interface{}{muxWrapper}
+			server["protocols"] = protocols
+		} else {
+			for _, sa := range srvApps {
+				legacyHTTPSApps[sa.appIdx] = true
+			}
+			// TLS 连接策略：按域名关联证书（兼容传统国际 TLS 路径）
+			if tlsPolicies := buildTLSPoliciesForApps(srvApps); len(tlsPolicies) > 0 {
+				server["tls_connection_policies"] = tlsPolicies
+			}
 		}
 		servers[fmt.Sprintf("srv%d", serverIdx)] = server
 		serverIdx++
@@ -510,7 +560,7 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 		}
 	}
 
-	// 透明串接专用回环 HTTPS server（proxy_protocol 必须位于 tls 之前以先剥离 PROXY v1 头）
+	// 透明串接专用回环 HTTPS server（proxy_protocol 必须位于 tls / jiuzhang_tls_mux 之前以先剥离 PROXY v1 头）
 	if len(transparentHTTPSRoutes) > 0 {
 		sort.SliceStable(transparentHTTPSRoutes, func(i, j int) bool {
 			return transparentHTTPSRoutes[i].appCode < transparentHTTPSRoutes[j].appCode
@@ -530,17 +580,30 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 			"automatic_https": mapT{"disable": true},
 			"logs":            mapT{"default_logger_name": "access"},
 			"errors":          buildErrorRoutes(in),
-			"listener_wrappers": []interface{}{
+		}
+		tApps := sortedHTTPSServerApps(transparentHTTPSApps)
+		if serverNeedsTLSMux(tApps) {
+			muxWrapper, protocols := buildTLSMuxWrapper(in, tApps)
+			server["listener_wrappers"] = []interface{}{
+				mapT{"wrapper": "proxy_protocol", "allow": []string{"127.0.0.1/32"}},
+				muxWrapper,
+			}
+			server["protocols"] = protocols
+		} else {
+			for _, sa := range tApps {
+				legacyHTTPSApps[sa.appIdx] = true
+			}
+			server["listener_wrappers"] = []interface{}{
 				mapT{"wrapper": "proxy_protocol", "allow": []string{"127.0.0.1/32"}},
 				mapT{"wrapper": "tls"},
-			},
-		}
-		if tlsPolicies := buildTLSPoliciesForMode(in, true); len(tlsPolicies) > 0 {
-			server["tls_connection_policies"] = tlsPolicies
+			}
+			if tlsPolicies := buildTLSPoliciesForApps(tApps); len(tlsPolicies) > 0 {
+				server["tls_connection_policies"] = tlsPolicies
+			}
 		}
 		servers["srv_transparent_https"] = server
 	}
-	return servers, routeCount
+	return servers, routeCount, legacyHTTPSApps
 }
 
 // buildACMEHTTP01Route 构建 ACME HTTP-01 挑战应答路由（位于 :80 路由表最前，优先于 308 跳转、Guard 与 WAF）。
@@ -644,6 +707,299 @@ func hasCertFile(app AppData) bool {
 	return app.HasCert && app.CertFileName != ""
 }
 
+func hasGMCertPEM(app AppData) bool {
+	return app.HasGMCert &&
+		strings.TrimSpace(app.GMSignCertPEM) != "" &&
+		strings.TrimSpace(app.GMSignKeyPEM) != "" &&
+		strings.TrimSpace(app.GMEncCertPEM) != "" &&
+		strings.TrimSpace(app.GMEncKeyPEM) != ""
+}
+
+func gmCertTag(app AppData) string {
+	if app.GMCertID != "" {
+		return app.GMCertID
+	}
+	if app.AppID != "" {
+		return app.AppID
+	}
+	return app.Code
+}
+
+func sliceContainsFold(items []string, target string) bool {
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item), target) {
+			return true
+		}
+	}
+	return false
+}
+
+// restrictedAllowedHTTPVersions 返回站点显式裁剪后的允许 HTTP 版本列表；
+// 未配置或全量开放（HTTP/1.0 + HTTP/1.1 + HTTP/2）时返回 nil（零开销、与存量逐字节一致）。
+func restrictedAllowedHTTPVersions(cfg *AppTLSConfig) []string {
+	if cfg == nil || len(cfg.HTTPVersions) == 0 {
+		return nil
+	}
+	var (
+		has10, has11, has2 bool
+		seen               = make(map[string]bool, len(cfg.HTTPVersions))
+		out                = make([]string, 0, len(cfg.HTTPVersions))
+	)
+	for _, raw := range cfg.HTTPVersions {
+		v := strings.ToUpper(strings.TrimSpace(raw))
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+		switch v {
+		case HTTPVersion10:
+			has10 = true
+		case HTTPVersion11:
+			has11 = true
+		case HTTPVersion2, "H2", "HTTP/2.0":
+			has2 = true
+		}
+	}
+	if len(out) == 0 || (has10 && has11 && has2) {
+		return nil
+	}
+	return out
+}
+
+func siteAllowsHTTP2(cfg *AppTLSConfig) bool {
+	if cfg == nil || len(cfg.HTTPVersions) == 0 {
+		return true
+	}
+	for _, raw := range cfg.HTTPVersions {
+		switch strings.ToUpper(strings.TrimSpace(raw)) {
+		case HTTPVersion2, "H2", "HTTP/2.0":
+			return true
+		}
+	}
+	return false
+}
+
+func tlsVersionsRequireMux(versions []string) bool {
+	if len(versions) == 0 {
+		return false
+	}
+	has12, has13 := false, false
+	for _, raw := range versions {
+		switch strings.ToUpper(strings.TrimSpace(raw)) {
+		case TLSVersion12:
+			has12 = true
+		case TLSVersion13:
+			has13 = true
+		case "":
+		default:
+			// 包含 TLS1.0 / TLS1.1 / TLCP1.1 等均须走 jiuzhang_tls_mux
+			return true
+		}
+	}
+	return !(has12 && has13)
+}
+
+// appNeedsTLSMux 判定单个 HTTPS 应用是否需要启用 caddy.listeners.jiuzhang_tls_mux 监听包装器：
+// 国密双证书、自定义 TLS 协议模式/版本降级（TLS1.0/1.1/TLCP1.1/单版本约束）、HTTP/2 降级、
+// 弱协议识别分析或加密会话分析开启均由 jiuzhang_tls_mux 接管。
+func appNeedsTLSMux(app AppData) bool {
+	if app.HasGMCert {
+		return true
+	}
+	if app.TLSConfig == nil {
+		return false
+	}
+	cfg := app.TLSConfig
+	if cfg.SessionAnalysisEnabled {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.TLSProtocolMode), TLSProtocolModeGMOnly) {
+		return true
+	}
+	if len(cfg.LegacySSLAnalysisVersions) > 0 {
+		return true
+	}
+	if tlsVersionsRequireMux(cfg.AllowedTLSVersions) {
+		return true
+	}
+	if !siteAllowsHTTP2(cfg) {
+		return true
+	}
+	return false
+}
+
+func appHasActiveHTTPS(app AppData) bool {
+	if app.DeploymentMode == applications.DeployModeMirror || app.PendingAutoSSL {
+		return false
+	}
+	for _, d := range app.Domains {
+		if d.HTTPSEnabled && d.HTTPSPort != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func serverNeedsTLSMux(srvApps []*httpsServerApp) bool {
+	for _, sa := range srvApps {
+		if appNeedsTLSMux(sa.app) {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedHTTPSServerApps(bucket map[int]*httpsServerApp) []*httpsServerApp {
+	out := make([]*httpsServerApp, 0, len(bucket))
+	for _, sa := range bucket {
+		seen := make(map[string]bool, len(sa.domains))
+		uniq := make([]string, 0, len(sa.domains))
+		for _, dom := range sa.domains {
+			d := strings.TrimSpace(dom)
+			if d != "" && !seen[d] {
+				seen[d] = true
+				uniq = append(uniq, d)
+			}
+		}
+		sort.Strings(uniq)
+		sa.domains = uniq
+		out = append(out, sa)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].app.Code != out[j].app.Code {
+			return out[i].app.Code < out[j].app.Code
+		}
+		if out[i].app.AppID != out[j].app.AppID {
+			return out[i].app.AppID < out[j].app.AppID
+		}
+		return out[i].appIdx < out[j].appIdx
+	})
+	return out
+}
+
+// buildTLSMuxWrapper 构建 caddy.listeners.jiuzhang_tls_mux 监听包装器与 server["protocols"]：
+// 至少一个站点允许 HTTP/2 时 protocols=["h1","h2"]，否则 ["h1"]（保证 HTTP/2 降级与 HTTP/1.0/1.1 兼容）。
+func buildTLSMuxWrapper(in GenerateInput, srvApps []*httpsServerApp) (mapT, []string) {
+	sites := make([]interface{}, 0, len(srvApps))
+	anyAllowsH2 := false
+	anySessionAnalysis := false
+
+	for _, sa := range srvApps {
+		app := sa.app
+		site := mapT{
+			"domains": sa.domains,
+		}
+		if app.AppID != "" {
+			site["app_id"] = app.AppID
+		}
+		if app.TLSConfig != nil {
+			cfg := app.TLSConfig
+			mode := strings.ToUpper(strings.TrimSpace(cfg.TLSProtocolMode))
+			if mode == "" {
+				mode = TLSProtocolModeAutoDetect
+			}
+			site["tls_protocol_mode"] = mode
+			if len(cfg.AllowedTLSVersions) > 0 {
+				site["allowed_tls_versions"] = append([]string(nil), cfg.AllowedTLSVersions...)
+			}
+			legacy := make([]string, len(cfg.LegacySSLAnalysisVersions))
+			copy(legacy, cfg.LegacySSLAnalysisVersions)
+			site["legacy_ssl_analysis_versions"] = legacy
+			if len(cfg.HTTPVersions) > 0 {
+				site["http_versions"] = append([]string(nil), cfg.HTTPVersions...)
+			}
+			site["session_analysis_enabled"] = cfg.SessionAnalysisEnabled
+			if cfg.SessionAnalysisEnabled {
+				anySessionAnalysis = true
+			}
+		} else {
+			hasIntl := hasCertPEM(app)
+			hasGM := hasGMCertPEM(app)
+			mode := TLSProtocolModeAutoDetect
+			var allowed []string
+			switch {
+			case hasGM && hasIntl:
+				allowed = []string{TLSVersion12, TLSVersion13, TLSVersionTLCP11}
+			case hasGM && !hasIntl:
+				mode = TLSProtocolModeGMOnly
+				allowed = []string{TLSVersionTLCP11}
+			default:
+				allowed = []string{TLSVersion12, TLSVersion13}
+			}
+			site["tls_protocol_mode"] = mode
+			site["allowed_tls_versions"] = allowed
+			site["legacy_ssl_analysis_versions"] = []string{LegacySSLv2, LegacySSLv2v3, LegacySSLv3}
+			site["http_versions"] = []string{HTTPVersion10, HTTPVersion11, HTTPVersion2}
+			site["session_analysis_enabled"] = true
+			anySessionAnalysis = true
+		}
+		if siteAllowsHTTP2(app.TLSConfig) {
+			anyAllowsH2 = true
+		}
+		if hasCertPEM(app) {
+			if cid := certTag(app); cid != "" {
+				site["cert_id"] = cid
+			}
+			site["cert_pem"] = mergeCertChainPEM(app.CertPEM, app.ChainPEM)
+			site["key_pem"] = app.KeyPEM
+		}
+		if hasGMCertPEM(app) {
+			if gcid := gmCertTag(app); gcid != "" {
+				site["gm_cert_id"] = gcid
+			}
+			site["gm_sign_cert_pem"] = mergeCertChainPEM(app.GMSignCertPEM, app.GMChainPEM)
+			site["gm_sign_key_pem"] = app.GMSignKeyPEM
+			site["gm_enc_cert_pem"] = mergeCertChainPEM(app.GMEncCertPEM, app.GMChainPEM)
+			site["gm_enc_key_pem"] = app.GMEncKeyPEM
+		}
+		sites = append(sites, site)
+	}
+
+	wrapper := mapT{
+		"wrapper": "jiuzhang_tls_mux",
+		"sites":   sites,
+	}
+	if in.Guard != nil && strings.TrimSpace(in.Guard.GatewayNode) != "" {
+		wrapper["gateway_node"] = strings.TrimSpace(in.Guard.GatewayNode)
+	}
+	if anySessionAnalysis {
+		logPath := strings.TrimSpace(in.TLSSessionLogPath)
+		if logPath == "" {
+			logPath = DefaultTLSSessionLogPath
+		}
+		wrapper["session_log_path"] = logPath
+	}
+	if ticketKeys := in.Guard.EffectiveTLSSessionTicketKeys(); len(ticketKeys) > 0 {
+		wrapper["session_ticket_keys_hex"] = ticketKeys
+	}
+	protocols := []string{"h1"}
+	if anyAllowsH2 {
+		protocols = append(protocols, "h2")
+	}
+	return wrapper, protocols
+}
+
+// upstreamUsesJiuzhangTLSTransport 判定源站是否需要走 http.reverse_proxy.transport.jiuzhang_tls。
+func upstreamUsesJiuzhangTLSTransport(u applications.Upstream, tlsCfg *AppTLSConfig) bool {
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	if scheme == "tlcp" {
+		return true
+	}
+	if tlsCfg == nil {
+		return false
+	}
+	minVer := strings.ToUpper(strings.TrimSpace(tlsCfg.UpstreamTLSMinVersion))
+	httpVer := strings.ToUpper(strings.TrimSpace(tlsCfg.UpstreamHTTPVersion))
+	if scheme == "https" && (minVer == TLSVersion10 || minVer == TLSVersion11 || httpVer == HTTPVersion10 || httpVer == HTTPVersion11) {
+		return true
+	}
+	if scheme == "http" && httpVer == HTTPVersion10 {
+		return true
+	}
+	return false
+}
+
 // mergeCertChainPEM 将非空证书链合并到主证书 PEM 尾部（若主证书内尚未包含该链）。
 func mergeCertChainPEM(certPEM, chainPEM string) string {
 	chainTrim := strings.TrimSpace(chainPEM)
@@ -665,14 +1021,18 @@ func mergeCertChainPEM(certPEM, chainPEM string) string {
 // buildCertPEMPairs 构建 apps.tls.certificates.load_pem 条目（Caddy v2.11.4
 // tls.certificates.load_pem，modules/caddytls/pemloader.go）：将证书链与私钥直接以
 // PEM 形式下发内存加载，彻底解除跨节点共享证书磁盘文件的依赖；同一证书多应用绑定按 tag 去重并排序。
-func buildCertPEMPairs(in GenerateInput) []interface{} {
+// 已完全由 jiuzhang_tls_mux 接管的 HTTPS 应用不重复输出到 load_pem。
+func buildCertPEMPairs(in GenerateInput, legacyHTTPSApps map[int]bool) []interface{} {
 	seen := map[string]bool{}
 	var pairs []interface{}
-	for _, app := range in.Apps {
+	for idx, app := range in.Apps {
 		if !hasCertPEM(app) {
 			continue
 		}
 		if app.DeploymentMode == applications.DeployModeMirror {
+			continue
+		}
+		if legacyHTTPSApps != nil && appHasActiveHTTPS(app) && !legacyHTTPSApps[idx] {
 			continue
 		}
 		tag := certTag(app)
@@ -695,9 +1055,12 @@ func buildCertPEMPairs(in GenerateInput) []interface{} {
 // buildCertFilePairs 构建 apps.tls.certificates.load_files 条目（向后兼容路径）：
 // 仅在应用未提供内联 PEM（CertPEM/KeyPEM 为空）且具备 CertFileName 时产出；
 // 同一证书被多应用绑定或已由 load_pem 加载时只加载一次（按 tag 去重），按 tag 排序保证确定性。
-func buildCertFilePairs(in GenerateInput) []interface{} {
+func buildCertFilePairs(in GenerateInput, legacyHTTPSApps map[int]bool) []interface{} {
 	pemTags := map[string]bool{}
-	for _, app := range in.Apps {
+	for idx, app := range in.Apps {
+		if legacyHTTPSApps != nil && appHasActiveHTTPS(app) && !legacyHTTPSApps[idx] {
+			continue
+		}
 		if hasCertPEM(app) && app.DeploymentMode != applications.DeployModeMirror {
 			if tag := certTag(app); tag != "" {
 				pemTags[tag] = true
@@ -706,12 +1069,15 @@ func buildCertFilePairs(in GenerateInput) []interface{} {
 	}
 	seen := map[string]bool{}
 	var pairs []interface{}
-	for _, app := range in.Apps {
+	for idx, app := range in.Apps {
 		// 优先使用 load_pem；无内联 PEM 且缺文件名无从引用；MIRROR 应用无内联站点路由，不加载其证书
 		if hasCertPEM(app) || !hasCertFile(app) {
 			continue
 		}
 		if app.DeploymentMode == applications.DeployModeMirror {
+			continue
+		}
+		if legacyHTTPSApps != nil && appHasActiveHTTPS(app) && !legacyHTTPSApps[idx] {
 			continue
 		}
 		tag := certTag(app)
@@ -730,6 +1096,40 @@ func buildCertFilePairs(in GenerateInput) []interface{} {
 		return pairs[i].(mapT)["tags"].([]string)[0] < pairs[j].(mapT)["tags"].([]string)[0]
 	})
 	return pairs
+}
+
+// buildTLSPoliciesForApps 为指定非 mux HTTPS server 上的应用构建 tls_connection_policies。
+func buildTLSPoliciesForApps(srvApps []*httpsServerApp) []interface{} {
+	groups := map[string][]string{} // cert tag -> sni domains
+	for _, sa := range srvApps {
+		app := sa.app
+		if !hasCertPEM(app) && !hasCertFile(app) {
+			continue
+		}
+		tag := certTag(app)
+		if tag == "" {
+			continue
+		}
+		groups[tag] = append(groups[tag], sa.domains...)
+	}
+	if len(groups) == 0 {
+		return nil
+	}
+	tags := make([]string, 0, len(groups))
+	for tag := range groups {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	var policies []interface{}
+	for _, tag := range tags {
+		domains := groups[tag]
+		sort.Strings(domains)
+		policies = append(policies, mapT{
+			"match":                 mapT{"sni": domains},
+			"certificate_selection": mapT{"any_tag": []string{tag}},
+		})
+	}
+	return policies
 }
 
 // buildTLSPolicies 构建 TLS 连接策略（证书选择）：默认用于公网 HTTPS server。
@@ -788,7 +1188,7 @@ func buildTLSPoliciesForMode(in GenerateInput, transparentOnly bool) []interface
 // buildHandles 构建请求处理链：可选软件旁路选择器包裹检测/纯透传子链，共用 reverse_proxy。
 // publicPort 为路由所在监听的接入端口（302 Location 端口改写目标）。
 func buildHandles(in GenerateInput, app AppData, d applications.Domain, publicPort int) []interface{} {
-	proxy := applyProxyOptions(buildReverseProxy(app.Upstreams), app.HeaderConfig)
+	proxy := applyProxyOptions(buildReverseProxyWithTLS(app.Upstreams, app.TLSConfig), app.HeaderConfig)
 	return buildChainHandles(in, app, proxy, publicPort)
 }
 
@@ -827,6 +1227,14 @@ func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []E
 	// （完整请求体）；保留 E（中断响应体）——仅出现于被阻断事务且体量有界，用于取证。
 	b.WriteString("SecAuditEngine RelevantOnly\n")
 	b.WriteString("SecAuditLogParts ABIJDEFHZ\n")
+	// 显式内联 phase 1~5 默认动作（与 gateway/rules/crs/crs-setup.conf 同口径）：
+	// 避免增量镜像升级后宿主只读挂载的旧版 crs-setup.conf 缺失 phase:1/3/4/5 默认动作，
+	// 导致 phase:1/3/4 规则命中不写入审计日志 messages、攻击类型退化为「其他」。
+	b.WriteString("SecDefaultAction \"phase:1,log,auditlog,pass\"\n")
+	b.WriteString("SecDefaultAction \"phase:2,log,auditlog,pass\"\n")
+	b.WriteString("SecDefaultAction \"phase:3,log,auditlog,pass\"\n")
+	b.WriteString("SecDefaultAction \"phase:4,log,auditlog,pass\"\n")
+	b.WriteString("SecDefaultAction \"phase:5,log,auditlog,pass\"\n")
 	// 策略参数（PL 与异常阈值，覆盖 crs-setup.conf 默认值）
 	pl := app.ParanoiaLevel
 	if pl <= 0 {
@@ -898,8 +1306,15 @@ func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []E
 	return b.String()
 }
 
-// buildReverseProxy 构建反向代理（源站、负载均衡、健康检查）。
+// buildReverseProxy 构建反向代理（源站、负载均衡、健康检查；兼容不带站点 TLSConfig 的调用方）。
 func buildReverseProxy(upstreams []applications.Upstream) mapT {
+	return buildReverseProxyWithTLS(upstreams, nil)
+}
+
+// buildReverseProxyWithTLS 构建反向代理（源站、负载均衡、健康检查与协议感知传输层）。
+// 支持国密 tlcp 回源、HTTPS TLS 1.0/1.1 或 HTTP/1.0/1.1 降级回源及 HTTP/1.0 明文回源；
+// 常规 http/https/h2c 源站保持原有 Caddy http transport 形态零变化。
+func buildReverseProxyWithTLS(upstreams []applications.Upstream, tlsCfg *AppTLSConfig) mapT {
 	// 仅活动源站
 	var active []applications.Upstream
 	for _, u := range upstreams {
@@ -967,38 +1382,113 @@ func buildReverseProxy(upstreams []applications.Upstream) mapT {
 	// 传输层与超时配置（取首个活动源站；Caddy 要求同一 reverse_proxy 的全部源站
 	// 使用同一 scheme/transport，与超时取值口径一致——同应用多源站须同 scheme）
 	if len(active) > 0 {
-		u := active[0]
-		transport := mapT{
-			"protocol":                "http",
-			"dial_timeout":            fmt.Sprintf("%dms", u.ConnectTimeoutMs),
-			"response_header_timeout": fmt.Sprintf("%dms", u.ResponseHeaderTimeoutMs),
-		}
-		// h2c 明文回源（NG-GRPC G1：gRPC 源站只讲 HTTP/2 prior knowledge——
-		// Caddy http transport 默认 versions 不含 h2c，须显式声明（协商失败即 502）；
-		// scheme=h2c 仅声明协议族，tls 段不挂（明文语义与 https 互斥）
-		if u.Scheme == "h2c" {
-			transport["versions"] = []string{"h2c"}
-		}
-		// HTTPS 回源：http transport 携带 tls 段（Caddy v2.11.4 reverseproxy
-		// httptransport.go：TLSConfig 非空即对回源连接启用 TLS）。
-		// server_name 取 TLSServerName，缺省回退源站主机名（TLS SNI 与证书校验证名）；
-		// insecure_skip_verify 取反于 TLSVerify（默认校验源站证书，显式关闭才跳过）。
-		if u.Scheme == "https" {
-			tls := mapT{}
-			serverName := u.TLSServerName
-			if serverName == "" {
-				serverName = u.NormalizedHost
-			}
-			if serverName != "" {
-				tls["server_name"] = serverName
-			}
-			if !u.TLSVerify {
-				tls["insecure_skip_verify"] = true
-			}
-			transport["tls"] = tls
-		}
-		proxy["transport"] = transport
+		proxy["transport"] = buildUpstreamTransport(active[0], tlsCfg)
 	}
 
 	return proxy
+}
+
+// buildUpstreamTransport 构建反向代理回源传输层：
+//   - scheme=tlcp：使用 http.reverse_proxy.transport.jiuzhang_tls（mode="tlcp"）；
+//   - scheme=https 且 TLSConfig 指定 TLS1.0/TLS1.1 或 HTTP/1.0/HTTP/1.1：使用 jiuzhang_tls（mode="tls"）；
+//   - scheme=http 且 TLSConfig 指定 HTTP/1.0：使用 jiuzhang_tls（mode="plain"）；
+//   - 其他场景保持 Caddy 原生 http transport 形态（与存量配置逐字节一致）。
+func buildUpstreamTransport(u applications.Upstream, tlsCfg *AppTLSConfig) mapT {
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	if upstreamUsesJiuzhangTLSTransport(u, tlsCfg) {
+		dialMs := u.ConnectTimeoutMs
+		if dialMs <= 0 {
+			dialMs = 3000
+		}
+		respHdrMs := u.ResponseHeaderTimeoutMs
+		if respHdrMs <= 0 {
+			respHdrMs = 10000
+		}
+		serverName := strings.TrimSpace(u.TLSServerName)
+		if serverName == "" {
+			serverName = u.NormalizedHost
+		}
+		httpVer := UpstreamHTTPAuto
+		minVer := TLSVersion12
+		if tlsCfg != nil {
+			if v := strings.ToUpper(strings.TrimSpace(tlsCfg.UpstreamHTTPVersion)); v != "" {
+				httpVer = v
+			}
+			if v := strings.ToUpper(strings.TrimSpace(tlsCfg.UpstreamTLSMinVersion)); v != "" {
+				minVer = v
+			}
+		}
+		switch scheme {
+		case "tlcp":
+			tr := mapT{
+				"protocol":                "jiuzhang_tls",
+				"mode":                    "tlcp",
+				"http_version":            httpVer,
+				"dial_timeout":            fmt.Sprintf("%dms", dialMs),
+				"response_header_timeout": fmt.Sprintf("%dms", respHdrMs),
+			}
+			if serverName != "" {
+				tr["server_name"] = serverName
+			}
+			if !u.TLSVerify {
+				tr["insecure_skip_verify"] = true
+			}
+			return tr
+		case "https":
+			tr := mapT{
+				"protocol":                "jiuzhang_tls",
+				"mode":                    "tls",
+				"tls_min_version":         minVer,
+				"http_version":            httpVer,
+				"dial_timeout":            fmt.Sprintf("%dms", dialMs),
+				"response_header_timeout": fmt.Sprintf("%dms", respHdrMs),
+			}
+			if serverName != "" {
+				tr["server_name"] = serverName
+			}
+			if !u.TLSVerify {
+				tr["insecure_skip_verify"] = true
+			}
+			return tr
+		case "http":
+			return mapT{
+				"protocol":                "jiuzhang_tls",
+				"mode":                    "plain",
+				"http_version":            httpVer,
+				"dial_timeout":            fmt.Sprintf("%dms", dialMs),
+				"response_header_timeout": fmt.Sprintf("%dms", respHdrMs),
+			}
+		}
+	}
+
+	transport := mapT{
+		"protocol":                "http",
+		"dial_timeout":            fmt.Sprintf("%dms", u.ConnectTimeoutMs),
+		"response_header_timeout": fmt.Sprintf("%dms", u.ResponseHeaderTimeoutMs),
+	}
+	// h2c 明文回源（NG-GRPC G1：gRPC 源站只讲 HTTP/2 prior knowledge——
+	// Caddy http transport 默认 versions 不含 h2c，须显式声明（协商失败即 502）；
+	// scheme=h2c 仅声明协议族，tls 段不挂（明文语义与 https 互斥）
+	if u.Scheme == "h2c" {
+		transport["versions"] = []string{"h2c"}
+	}
+	// HTTPS 回源：http transport 携带 tls 段（Caddy v2.11.4 reverseproxy
+	// httptransport.go：TLSConfig 非空即对回源连接启用 TLS）。
+	// server_name 取 TLSServerName，缺省回退源站主机名（TLS SNI 与证书校验证名）；
+	// insecure_skip_verify 取反于 TLSVerify（默认校验源站证书，显式关闭才跳过）。
+	if u.Scheme == "https" {
+		tls := mapT{}
+		serverName := u.TLSServerName
+		if serverName == "" {
+			serverName = u.NormalizedHost
+		}
+		if serverName != "" {
+			tls["server_name"] = serverName
+		}
+		if !u.TLSVerify {
+			tls["insecure_skip_verify"] = true
+		}
+		transport["tls"] = tls
+	}
+	return transport
 }

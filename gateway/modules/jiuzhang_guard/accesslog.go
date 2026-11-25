@@ -31,6 +31,7 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/tlsmux"
 	"go.uber.org/zap"
 )
 
@@ -156,6 +157,12 @@ type accessLogRecord struct {
 	Path                  string              `json:"request_path"`
 	QuerySummary          string              `json:"query_summary"`
 	HTTPVersion           string              `json:"http_version"`
+	// SSL/TLS/国密加密会话分析字段（明文 HTTP 时 omitempty 省略，保持零行为变化）
+	TLSProtocol           string              `json:"tls_protocol,omitempty"`
+	TLSCipherSuite        string              `json:"tls_cipher_suite,omitempty"`
+	TLSIsGM               bool                `json:"tls_is_gm,omitempty"`
+	TLSJA3                string              `json:"tls_ja3,omitempty"`
+	ClientHelloVersion    string              `json:"client_hello_version,omitempty"`
 	ContentType           string              `json:"content_type"`
 	UserAgent             string              `json:"user_agent_summary"`
 	Referer               string              `json:"referer_summary"`
@@ -355,6 +362,19 @@ func (g *Guard) captureAccessLog(w http.ResponseWriter, r *http.Request, handler
 		ContentType:   sanitizeAccessLogField(r.Header.Get("Content-Type"), 255),
 		UserAgent:     sanitizeAccessLogField(r.UserAgent(), 512),
 		Referer:       sanitizeAccessLogField(r.Referer(), 512),
+	}
+	// SSL/TLS/国密加密会话分析字段：优先取 jiuzhang_tls_mux 连接元数据（含 ClientHello 与 JA3），回退 r.TLS
+	if meta := tlsConnMetaFrom(r.Context()); meta != nil {
+		rec.TLSProtocol = sanitizeAccessLogField(meta.NegotiatedProtocol, 24)
+		rec.TLSCipherSuite = sanitizeAccessLogField(meta.CipherSuite, 64)
+		rec.TLSIsGM = meta.IsGM
+		rec.TLSJA3 = sanitizeAccessLogField(meta.JA3Hash, 64)
+		rec.ClientHelloVersion = sanitizeAccessLogField(meta.DetectedProtocol, 24)
+	} else if r.TLS != nil {
+		isGM := r.TLS.Version == tlsmux.VersionTLCP11 || tlsmux.IsGMCipherSuite(r.TLS.CipherSuite)
+		rec.TLSProtocol = sanitizeAccessLogField(tlsmux.ProtocolLabel(r.TLS.Version), 24)
+		rec.TLSCipherSuite = sanitizeAccessLogField(tlsmux.CipherSuiteDisplayName(r.TLS.CipherSuite, isGM), 64)
+		rec.TLSIsGM = isGM
 	}
 	// APM 阶段1（D6/D7）：trace 关联键与端点归一化对所有请求计算（归一化为纯函数，
 	// 不依赖 API 动态防护管线，WAF-only 站点同样可用）；path 为空时端点字段留空

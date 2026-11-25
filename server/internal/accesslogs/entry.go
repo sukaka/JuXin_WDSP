@@ -32,6 +32,12 @@ type LogEntry struct {
 	RequestPath           string              `json:"request_path"`
 	QuerySummary          string              `json:"query_summary"`
 	HTTPVersion           string              `json:"http_version"`
+	// SSL/TLS/国密加密会话分析字段（迁移 000241；明文 HTTP 或旧网关日志缺失时为空/false）
+	TLSProtocol           string              `json:"tls_protocol"`
+	TLSCipherSuite        string              `json:"tls_cipher_suite"`
+	TLSIsGM               bool                `json:"tls_is_gm"`
+	TLSJA3                string              `json:"tls_ja3"`
+	ClientHelloVersion    string              `json:"client_hello_version"`
 	ContentType           string              `json:"content_type"`
 	UserAgentSummary      string              `json:"user_agent_summary"`
 	RefererSummary        string              `json:"referer_summary"`
@@ -59,9 +65,13 @@ const (
 	maxRequestIDLen    = 64
 	maxDomainLen       = 255
 	maxNodeLen         = 64
-	maxMethodLen       = 16
-	maxVersionLen      = 16
-	maxCTLen           = 255
+	maxMethodLen         = 16
+	maxVersionLen        = 16
+	maxTLSProtocolLen    = 24
+	maxTLSCipherSuiteLen = 64
+	maxTLSJA3Len         = 64
+	maxClientHelloVerLen = 24
+	maxCTLen             = 255
 	maxSummaryLen      = 512
 	maxWAFActionLen    = 32
 	maxTraceIDLen      = 64 // W3C trace_id 为 32 hex，留一倍余量
@@ -95,6 +105,10 @@ func ParseLine(line []byte) (*LogEntry, error) {
 	e.GatewayNodeID = truncateStr(e.GatewayNodeID, maxNodeLen)
 	e.RequestMethod = truncateStr(e.RequestMethod, maxMethodLen)
 	e.HTTPVersion = truncateStr(e.HTTPVersion, maxVersionLen)
+	e.TLSProtocol = truncateStr(stripNUL(e.TLSProtocol), maxTLSProtocolLen)
+	e.TLSCipherSuite = truncateStr(stripNUL(e.TLSCipherSuite), maxTLSCipherSuiteLen)
+	e.TLSJA3 = truncateStr(stripNUL(e.TLSJA3), maxTLSJA3Len)
+	e.ClientHelloVersion = truncateStr(stripNUL(e.ClientHelloVersion), maxClientHelloVerLen)
 	e.ContentType = truncateStr(e.ContentType, maxCTLen)
 	e.UserAgentSummary = truncateStr(e.UserAgentSummary, maxSummaryLen)
 	e.RefererSummary = truncateStr(e.RefererSummary, maxSummaryLen)

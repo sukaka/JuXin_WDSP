@@ -243,7 +243,7 @@ func pathRouteEntries(in GenerateInput, app AppData, hosts []string, publicPort 
 			// https 回源默认校验证书（SNI/证名取源站主机名，见 buildReverseProxy）
 			TLSVerify: true,
 		}
-		proxy := applyProxyOptions(buildReverseProxy([]applications.Upstream{upstream}), app.HeaderConfig)
+		proxy := applyProxyOptions(buildReverseProxyWithTLS([]applications.Upstream{upstream}, app.TLSConfig), app.HeaderConfig)
 		var preProxy []interface{}
 		if pr.StripPrefix {
 			// 安全底线（H-15）：strip_path_prefix 必须位于 jiuzhang_guard 与 Coraza WAF 之后、
@@ -278,7 +278,11 @@ func buildChainHandlesWithPreProxy(in GenerateInput, app AppData, proxy mapT, pu
 	bypass := []interface{}{requestID}
 	if app.ProtectionMode != applications.ModeBypass {
 		if in.Guard != nil {
-			normal = append(normal, buildGuardHandler(in.Guard, app, publicPort))
+			gh := buildGuardHandler(in.Guard, app, publicPort)
+			if versions := restrictedAllowedHTTPVersions(app.TLSConfig); len(versions) > 0 {
+				gh["allowed_http_versions"] = versions
+			}
+			normal = append(normal, gh)
 		}
 		ruleEngine := modeToRuleEngine[app.ProtectionMode]
 		if ruleEngine == "" {

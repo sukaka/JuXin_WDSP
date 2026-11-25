@@ -48,6 +48,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/capability"
+	"github.com/jiuzhang-waf/server/internal/applications"
 )
 
 // 清单文件名与陈旧阈值（网关侧 janitor 60s 刷新；超过 3×tick 即 stale——
@@ -82,6 +83,77 @@ type CapabilityFacts struct {
 	MachineIDProtect bool
 	// RiskChallenge 表示发布范围内至少一个最终生效的已启用风险策略配置了 CHALLENGE 阈值。
 	RiskChallenge bool
+	// TLSMuxRequired 表示发布配置需要使用 caddy.listeners.jiuzhang_tls_mux 监听包装器
+	// 或 http.reverse_proxy.transport.jiuzhang_tls 回源传输模块（需要节点能力 protocols.tls_mux="v1"）。
+	TLSMuxRequired bool
+	// TLCPRequired 表示发布配置包含国密 SM_TLCP 双证书、TLCP1.1 协议策略或 tlcp 回源源站
+	// （需要节点能力 protocols.tlcp="1.1"）。
+	TLCPRequired bool
+}
+
+// capabilityFactsFromApps 从发布应用快照推导 TLS Mux 与国密 TLCP 能力需求。
+// 纯存量国际 TLS/HTTP 应用（无 GM 证书、无自定义 TLSConfig、无 tlcp 源站）返回 (false, false)，
+// 保证存量发布空需求免门禁、零行为变化。
+func capabilityFactsFromApps(appsData []AppData) (tlsMuxRequired, tlcpRequired bool) {
+	for _, app := range appsData {
+		if app.DeploymentMode == applications.DeployModeMirror {
+			continue
+		}
+		if appHasActiveHTTPS(app) {
+			if appNeedsTLSMux(app) {
+				tlsMuxRequired = true
+			}
+			if app.HasGMCert {
+				tlsMuxRequired = true
+				tlcpRequired = true
+			}
+			if app.TLSConfig != nil {
+				if strings.EqualFold(strings.TrimSpace(app.TLSConfig.TLSProtocolMode), TLSProtocolModeGMOnly) ||
+					sliceContainsFold(app.TLSConfig.AllowedTLSVersions, TLSVersionTLCP11) {
+					tlsMuxRequired = true
+					tlcpRequired = true
+				}
+			}
+		}
+		for _, u := range app.Upstreams {
+			if u.Status != "ACTIVE" {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(u.Scheme), "tlcp") {
+				tlsMuxRequired = true
+				tlcpRequired = true
+			} else if upstreamUsesJiuzhangTLSTransport(u, app.TLSConfig) {
+				tlsMuxRequired = true
+			}
+		}
+		for _, pr := range app.PathRoutes {
+			if !strings.HasPrefix(pr.PathPrefix, "/") {
+				continue
+			}
+			u := applications.Upstream{
+				Scheme:         pr.UpstreamScheme,
+				NormalizedHost: pr.UpstreamHost,
+				Port:           pr.UpstreamPort,
+				Status:         "ACTIVE",
+				TLSVerify:      true,
+			}
+			if strings.EqualFold(strings.TrimSpace(pr.UpstreamScheme), "tlcp") {
+				tlsMuxRequired = true
+				tlcpRequired = true
+			} else if upstreamUsesJiuzhangTLSTransport(u, app.TLSConfig) {
+				tlsMuxRequired = true
+			}
+		}
+	}
+	return tlsMuxRequired, tlcpRequired
+}
+
+// mergeAppCapabilityFacts 将应用级 TLS Mux / TLCP 能力事实并入 GuardConfig 能力事实。
+func mergeAppCapabilityFacts(facts CapabilityFacts, appsData []AppData) CapabilityFacts {
+	tlsMux, tlcp := capabilityFactsFromApps(appsData)
+	facts.TLSMuxRequired = facts.TLSMuxRequired || tlsMux
+	facts.TLCPRequired = facts.TLCPRequired || tlcp
+	return facts
 }
 
 // capabilityFactsFromGuard 从发布负载提取能力事实（nil guardCfg = 无特性需求）。
@@ -250,6 +322,12 @@ func RequiredCapabilities(f CapabilityFacts) capability.Manifest {
 	if f.RiskChallenge {
 		actions = append(actions, "risk_challenge")
 	}
+	if f.TLSMuxRequired {
+		protocols["tls_mux"] = "v1"
+	}
+	if f.TLCPRequired {
+		protocols["tlcp"] = "1.1"
+	}
 	if len(protocols) > 0 {
 		required.Protocols = protocols
 	}
@@ -312,11 +390,18 @@ func formatMissing(missing []capability.Missing) string {
 	return strings.Join(parts, "; ")
 }
 
-// evaluateCapabilityGate 节点能力发布门评估（executePublish 在回归门禁之后、
-// 发往节点 /load 之前调用）。targetAppIDs 为空表示全局发布，非空仅评估目标应用。
-// 返回 (是否继续发布, 失败码, 失败消息)；空需求/全部满足时放行。
+// evaluateCapabilityGate 节点能力发布门评估（兼容仅基于 GuardConfig 的存量调用方与单测）。
 func (p *Publisher) evaluateCapabilityGate(ctx context.Context, guardCfg *GuardConfig, targetAppIDs ...uuid.UUID) (bool, string, string) {
-	required := RequiredCapabilities(capabilityFactsFromGuard(guardCfg, targetAppIDs...))
+	return p.evaluateCapabilityGateWithApps(ctx, guardCfg, nil, targetAppIDs...)
+}
+
+// evaluateCapabilityGateWithApps 节点能力发布门评估（executePublish 在回归门禁之后、
+// 发往节点 /load 之前调用）。合并 GuardConfig 与 appsData（TLS Mux / 国密 TLCP 需求）；
+// targetAppIDs 为空表示全局发布，非空仅评估目标应用。
+// 返回 (是否继续发布, 失败码, 失败消息)；空需求/全部满足时放行。
+func (p *Publisher) evaluateCapabilityGateWithApps(ctx context.Context, guardCfg *GuardConfig, appsData []AppData, targetAppIDs ...uuid.UUID) (bool, string, string) {
+	facts := mergeAppCapabilityFacts(capabilityFactsFromGuard(guardCfg, targetAppIDs...), appsData)
+	required := RequiredCapabilities(facts)
 	if requiredEmpty(required) {
 		return true, "", "" // 空需求免门禁——存量发布零变化
 	}

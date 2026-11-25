@@ -198,6 +198,8 @@ type WAFConfig struct {
 	AccessFullLog string
 	// AccessFullLogGateway 网关容器内全量访问日志路径（下发网关配置用，二期）
 	AccessFullLogGateway string
+	// TLSSessionLogPath SSL/HTTPS 加密会话握手事件日志路径（API 侧采集，默认与网关 tlsmux 一致）
+	TLSSessionLogPath string
 	// IdentityEventsLog 身份与行为事件日志路径（API 侧采集，client_identity 体系；
 	// 空 = 不启动 identity-events 采集器）
 	IdentityEventsLog string
@@ -472,6 +474,7 @@ func Load() (*Config, error) {
 			APIEventsLogGateway:  getEnv("GATEWAY_API_EVENTS_LOG", "/var/log/caddy/api-runtime-events.log"),
 			AccessFullLog:        getEnv("WAF_ACCESS_FULL_LOG", "runtime/logs/access-full.jsonl"),
 			AccessFullLogGateway: getEnv("GATEWAY_ACCESS_FULL_LOG", "/var/log/caddy/access-full.jsonl"),
+			TLSSessionLogPath:    getEnv("WAF_TLS_SESSION_LOG", "/var/log/caddy/tls-handshake-events.jsonl"),
 			// client_identity 体系：采集路径空 = 不启动 identity-events 采集器（main.go 装配门控）；
 			// 网关侧路径下发 identity_events_log（与 guard-events.log 同目录推导）
 			IdentityEventsLog:        getEnv("WAF_IDENTITY_EVENTS_LOG", ""),

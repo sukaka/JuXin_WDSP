@@ -123,6 +123,8 @@ func buildCapabilityManifest(in capabilityInputs, now time.Time) capability.Mani
 			"graphql": "parse",
 			"grpc":    grpcLevel,
 			"mcp":     "acl_v1", // mcpguard 在 binary 即成立（NG-MCP D13 恒报进程能力；层级表预登记 capability/types.go）
+			"tls_mux": "v1",     // caddy.listeners.jiuzhang_tls_mux 与 http.reverse_proxy.transport.jiuzhang_tls 在 binary 即成立
+			"tlcp":    "1.1",    // gotlcp TLCP 1.1（SM2/SM3/SM4）双证自识别与加密回源能力
 		},
 		Detectors:   detectors,
 		Actions:     []string{"block", "temp_block", "rate_limit", "risk_challenge", "mask_response", "observe", "allow"},

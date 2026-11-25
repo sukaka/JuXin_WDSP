@@ -31,10 +31,89 @@ func NewHandler(store Repository, audit *audits.Service) *Handler {
 func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h *Handler) {
 	mux.Handle("GET /api/v1/applications/{id}/header-config", authz(middleware.RequirePermission("applications.read")(http.HandlerFunc(h.GetHeaderConfig))))
 	mux.Handle("PUT /api/v1/applications/{id}/header-config", authz(middleware.RequirePermission("applications.update")(http.HandlerFunc(h.PutHeaderConfig))))
+	mux.Handle("GET /api/v1/applications/{id}/tls-config", authz(middleware.RequirePermission("applications.read")(http.HandlerFunc(h.GetTLSConfig))))
+	mux.Handle("PUT /api/v1/applications/{id}/tls-config", authz(middleware.RequirePermission("applications.update")(http.HandlerFunc(h.PutTLSConfig))))
 	mux.Handle("GET /api/v1/applications/{id}/path-routes", authz(middleware.RequirePermission("applications.read")(http.HandlerFunc(h.ListPathRoutes))))
 	mux.Handle("POST /api/v1/applications/{id}/path-routes", authz(middleware.RequirePermission("applications.update")(http.HandlerFunc(h.CreatePathRoute))))
 	mux.Handle("PATCH /api/v1/applications/{id}/path-routes/{rid}", authz(middleware.RequirePermission("applications.update")(http.HandlerFunc(h.UpdatePathRoute))))
 	mux.Handle("DELETE /api/v1/applications/{id}/path-routes/{rid}", authz(middleware.RequirePermission("applications.update")(http.HandlerFunc(h.DeletePathRoute))))
+}
+
+// GetTLSConfig GET /api/v1/applications/{id}/tls-config
+// 返回应用级国密自识别、TLS/HTTP 协议降级与加密会话分析配置；无记录返回默认策略 + configured:false + version:0。
+func (h *Handler) GetTLSConfig(w http.ResponseWriter, r *http.Request) {
+	appID, ok := parseAppID(w, r)
+	if !ok {
+		return
+	}
+	rec, err := h.store.GetTLSConfigRecord(r.Context(), appID)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	if rec == nil {
+		response.JSON(w, r, http.StatusOK, map[string]any{
+			"config":     DefaultTLSConfig(),
+			"configured": false,
+			"version":    0,
+		})
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]any{
+		"config":     rec.Config,
+		"configured": true,
+		"version":    rec.Version,
+		"updated_at": rec.UpdatedAt,
+	})
+}
+
+type tlsConfigRequest struct {
+	gatewayconfig.AppTLSConfig
+	Version int `json:"version"`
+}
+
+// PutTLSConfig PUT /api/v1/applications/{id}/tls-config
+// 全量 upsert + version 乐观锁；校验失败 400，版本冲突 409，应用不存在 404。
+func (h *Handler) PutTLSConfig(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	appID, ok := parseAppID(w, r)
+	if !ok {
+		return
+	}
+	var req tlsConfigRequest
+	if err := response.DecodeJSON(w, r, &req, 32768); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	var updatedBy uuid.UUID
+	if p != nil {
+		updatedBy = p.UserID
+	}
+	newVersion, err := h.store.UpsertTLSConfig(r.Context(), appID, &req.AppTLSConfig, updatedBy, req.Version)
+	if errors.Is(err, ErrInvalid) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
+	if errors.Is(err, ErrAppNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "应用不存在")
+		return
+	}
+	if errors.Is(err, ErrVersionConflict) {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "配置已被其他人修改，请刷新后重试")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "update", appID.String(), "tls-config", "",
+		summaryJSON(map[string]any{"config": req.AppTLSConfig, "version": newVersion}), audits.RiskMedium)
+	response.JSON(w, r, http.StatusOK, map[string]any{
+		"config":     req.AppTLSConfig,
+		"configured": true,
+		"version":    newVersion,
+		"message":    "协议与加密策略配置已保存",
+	})
 }
 
 // GetHeaderConfig GET /api/v1/applications/{id}/header-config

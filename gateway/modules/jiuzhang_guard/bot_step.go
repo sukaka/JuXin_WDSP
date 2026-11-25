@@ -503,6 +503,8 @@ func (g *Guard) evalBotRule(r *http.Request, rule botSignalRuleJSON, fetchSnap f
 // 策略值示例 "TLS 1.3"/"TLS 1.2"（配置校验期已限定取值域）。
 func botTLSVersionString(v uint16) string {
 	switch v {
+	case 0x0101:
+		return "TLCP 1.1"
 	case tls.VersionTLS10:
 		return "TLS 1.0"
 	case tls.VersionTLS11:

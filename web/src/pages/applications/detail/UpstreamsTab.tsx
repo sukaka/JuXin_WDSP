@@ -428,9 +428,16 @@ export default function UpstreamsTab({
       title: '地址',
       key: 'addr',
       render: (_, r) => (
-        <span style={{ fontFamily: 'monospace' }}>
-          {r.scheme}://{r.host}:{r.port}
-        </span>
+        <Space size={6} wrap>
+          <span style={{ fontFamily: 'monospace' }}>
+            {r.scheme}://{r.host}:{r.port}
+          </span>
+          {r.scheme === 'tlcp' && (
+            <Tag color="volcano" style={{ marginInlineEnd: 0 }}>
+              国密 TLCP
+            </Tag>
+          )}
+        </Space>
       ),
     },
     { title: '权重', dataIndex: 'weight', width: 80 },
@@ -643,16 +650,19 @@ export default function UpstreamsTab({
             <Form.Item name="name" label="名称" style={{ width: 220 }}>
               <Input placeholder="源站名称（可选）" />
             </Form.Item>
-            <Form.Item name="scheme" label="协议" style={{ width: 120 }} rules={[{ required: true }]}>
+            <Form.Item name="scheme" label="协议" style={{ width: 150 }} rules={[{ required: true }]}>
               <Select
+                aria-label="协议"
                 options={[
                   { value: 'http', label: 'HTTP' },
                   { value: 'https', label: 'HTTPS' },
+                  { value: 'h2c', label: 'H2C' },
+                  { value: 'tlcp', label: 'TLCP (国密)' },
                 ]}
                 onChange={(v: string) => {
                   const cur = form.getFieldValue('port') as number
-                  if (v === 'https' && cur === 80) form.setFieldValue('port', 443)
-                  if (v === 'http' && cur === 443) form.setFieldValue('port', 80)
+                  if ((v === 'https' || v === 'tlcp') && cur === 80) form.setFieldValue('port', 443)
+                  if ((v === 'http' || v === 'h2c') && cur === 443) form.setFieldValue('port', 80)
                 }}
               />
             </Form.Item>
@@ -719,7 +729,7 @@ export default function UpstreamsTab({
             </Form.Item>
           </Space>
 
-          {scheme === 'https' && (
+          {(scheme === 'https' || scheme === 'tlcp') && (
             <Space size="middle" wrap style={{ display: 'flex' }}>
               <Form.Item name="tls_server_name" label="加密域名（SNI）" style={{ width: 240 }}>
                 <Input placeholder="留空则使用主机地址" />
@@ -750,6 +760,9 @@ export default function UpstreamsTab({
               >
                 开始测试
               </Button>
+              {testing.scheme === 'tlcp' && (
+                <Tag color="volcano">国密 TLCP 1.1 加密回源探测</Tag>
+              )}
             </Space>
             {testMutation.isPending && <Typography.Text type="secondary">测试执行中…</Typography.Text>}
             {testResult && <TestResultView result={testResult} />}

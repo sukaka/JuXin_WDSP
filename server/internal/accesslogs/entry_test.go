@@ -211,3 +211,57 @@ func TestParseLineRealClientIPFields(t *testing.T) {
 		}
 	})
 }
+
+// TestParseLineTLSFields 加密会话分析扩展字段合同（迁移 000241）：
+// 新格式行携带 tls_protocol/tls_cipher_suite/tls_is_gm/tls_ja3/client_hello_version；
+// 旧格式行缺失这 5 个字段时安全回落空串/false；超长字段截断、NUL 剥离。
+func TestParseLineTLSFields(t *testing.T) {
+	t.Run("new format with GM TLCP fields", func(t *testing.T) {
+		line := `{"occurred_at":"2026-11-25T10:00:00Z","request_id":"req-tls-gm-1",` +
+			`"tls_protocol":"TLCP1.1","tls_cipher_suite":"TLCP_ECC_SM4_GCM_SM3",` +
+			`"tls_is_gm":true,"tls_ja3":"0123456789abcdef0123456789abcdef","client_hello_version":"TLCP1.1"}`
+		e, err := ParseLine([]byte(line))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if e.TLSProtocol != "TLCP1.1" || e.TLSCipherSuite != "TLCP_ECC_SM4_GCM_SM3" ||
+			!e.TLSIsGM || e.TLSJA3 != "0123456789abcdef0123456789abcdef" || e.ClientHelloVersion != "TLCP1.1" {
+			t.Errorf("TLS fields mismatch: %+v", e)
+		}
+	})
+
+	t.Run("legacy line without TLS fields remains backwards compatible", func(t *testing.T) {
+		line := `{"occurred_at":"2026-11-25T10:00:00Z","request_id":"req-tls-legacy","request_method":"GET","response_status":200}`
+		e, err := ParseLine([]byte(line))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if e.TLSProtocol != "" || e.TLSCipherSuite != "" || e.TLSIsGM || e.TLSJA3 != "" || e.ClientHelloVersion != "" {
+			t.Errorf("legacy line must default TLS fields to empty/false: %+v", e)
+		}
+	})
+
+	t.Run("overlong TLS fields truncated and NUL stripped", func(t *testing.T) {
+		line := `{"occurred_at":"2026-11-25T10:00:00Z","request_id":"req-tls-trunc",` +
+			`"tls_protocol":"T\u0000` + strings.Repeat("p", 40) + `",` +
+			`"tls_cipher_suite":"C\u0000` + strings.Repeat("c", 100) + `",` +
+			`"tls_ja3":"J\u0000` + strings.Repeat("j", 100) + `",` +
+			`"client_hello_version":"V\u0000` + strings.Repeat("v", 40) + `"}`
+		e, err := ParseLine([]byte(line))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(e.TLSProtocol) != maxTLSProtocolLen || strings.Contains(e.TLSProtocol, "\x00") {
+			t.Errorf("tls_protocol not sanitized/truncated: len=%d", len(e.TLSProtocol))
+		}
+		if len(e.TLSCipherSuite) != maxTLSCipherSuiteLen || strings.Contains(e.TLSCipherSuite, "\x00") {
+			t.Errorf("tls_cipher_suite not sanitized/truncated: len=%d", len(e.TLSCipherSuite))
+		}
+		if len(e.TLSJA3) != maxTLSJA3Len || strings.Contains(e.TLSJA3, "\x00") {
+			t.Errorf("tls_ja3 not sanitized/truncated: len=%d", len(e.TLSJA3))
+		}
+		if len(e.ClientHelloVersion) != maxClientHelloVerLen || strings.Contains(e.ClientHelloVersion, "\x00") {
+			t.Errorf("client_hello_version not sanitized/truncated: len=%d", len(e.ClientHelloVersion))
+		}
+	})
+}

@@ -228,6 +228,9 @@ const EventStatisticsPage = lazy(
 const SiteAccessTrendsPage = lazy(
   () => import('../pages/site-access-trends/SiteAccessTrendsPage'),
 )
+const TLSSessionsPage = lazy(
+  () => import('../pages/tls-sessions/TLSSessionsPage'),
+)
 const ApmOverviewPage = lazy(
   () => import('../pages/apm-overview/ApmOverviewPage'),
 )
@@ -1241,6 +1244,14 @@ export default function AppRoutes() {
             element={
               <RequirePermission permission="analytics.security.read">
                 <SiteAccessTrendsPage />
+              </RequirePermission>
+            }
+          />
+          <Route
+            path="tls-sessions"
+            element={
+              <RequirePermission permission="events.read" denyAuditOnly>
+                <TLSSessionsPage />
               </RequirePermission>
             }
           />

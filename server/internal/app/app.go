@@ -121,6 +121,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/systemops"
 	"github.com/jiuzhang-waf/server/internal/temporaryblocks"
 	"github.com/jiuzhang-waf/server/internal/threatintel"
+	"github.com/jiuzhang-waf/server/internal/tlssessions"
 	"github.com/jiuzhang-waf/server/internal/trustedproxies"
 	"github.com/jiuzhang-waf/server/internal/upgrades"
 	"github.com/jiuzhang-waf/server/internal/upstreams"
@@ -1417,6 +1418,11 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	mux.Handle("GET /api/v1/access-logs/flow", authz(middleware.RequirePermission("access_logs.read")(http.HandlerFunc(accessLogHandler.Flow))))
 	mux.Handle("GET /api/v1/access-logs/export", authz(exportRate(middleware.RequirePermission("access_logs.export")(http.HandlerFunc(accessLogHandler.Export)))))
 	mux.Handle("GET /api/v1/access-logs/{id}", authz(middleware.RequirePermission("access_logs.read")(http.HandlerFunc(accessLogHandler.Get))))
+
+	// SSL/HTTPS 加密会话分析（M4：TLS/TLCP 握手事件明细与协议汇总；权限 events.read）
+	tlsSessionHandler := tlssessions.NewHandler(tlssessions.NewStore(db))
+	mux.Handle("GET /api/v1/tls-sessions", authz(middleware.RequirePermission("events.read")(http.HandlerFunc(tlsSessionHandler.List))))
+	mux.Handle("GET /api/v1/tls-sessions/summary", authz(middleware.RequirePermission("events.read")(http.HandlerFunc(tlsSessionHandler.Summary))))
 
 	// 统一 GeoIP 归属地单条 / 批量查询（ip2region + DB-IP/MMDB；大屏与控制台共用，要求登录态）
 	apigeo.RegisterLookupRoutes(mux, authz, apigeo.NewLookupHandler(geoEngine))

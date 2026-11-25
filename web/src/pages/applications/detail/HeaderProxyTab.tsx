@@ -126,7 +126,7 @@ function formatHstsDuration(seconds: number | undefined): string | null {
 
 interface PathRouteFormValues {
   path_prefix: string
-  upstream_scheme: 'http' | 'https'
+  upstream_scheme: 'http' | 'https' | 'tlcp'
   upstream_host: string
   upstream_port: number
   strip_prefix: boolean
@@ -571,14 +571,21 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
       title: '源站',
       key: 'upstream',
       render: (_, r) => (
-        <span
-          style={{
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-            fontSize: 13,
-          }}
-        >
-          {r.upstream_scheme}://{r.upstream_host}:{r.upstream_port}
-        </span>
+        <Space size={6} wrap>
+          <span
+            style={{
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              fontSize: 13,
+            }}
+          >
+            {r.upstream_scheme}://{r.upstream_host}:{r.upstream_port}
+          </span>
+          {r.upstream_scheme === 'tlcp' && (
+            <Tag color="volcano" style={{ marginInlineEnd: 0 }}>
+              国密 TLCP
+            </Tag>
+          )}
+        </Space>
       ),
     },
     {
@@ -1136,22 +1143,24 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
 
           <SectionHeader title="目标源站" spaced />
           <Row gutter={12}>
-            <Col span={7}>
+            <Col span={8}>
               <Form.Item
                 name="upstream_scheme"
                 label="源站协议"
                 rules={[{ required: true }]}
               >
                 <Select
+                  aria-label="源站协议"
                   options={[
                     { value: 'http', label: 'HTTP' },
                     { value: 'https', label: 'HTTPS' },
+                    { value: 'tlcp', label: 'TLCP (国密)' },
                   ]}
                   onChange={(v: string) => {
                     const cur = routeForm.getFieldValue(
                       'upstream_port',
                     ) as number
-                    if (v === 'https' && cur === 80)
+                    if ((v === 'https' || v === 'tlcp') && cur === 80)
                       routeForm.setFieldValue('upstream_port', 443)
                     if (v === 'http' && cur === 443)
                       routeForm.setFieldValue('upstream_port', 80)
@@ -1159,7 +1168,7 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
                 />
               </Form.Item>
             </Col>
-            <Col span={11}>
+            <Col span={10}>
               <Form.Item
                 name="upstream_host"
                 label="源站主机"

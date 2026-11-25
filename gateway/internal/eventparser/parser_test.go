@@ -209,6 +209,11 @@ func TestParseLineExtendedAttackTypes(t *testing.T) {
 		{`[tag \"attack-deserialization\"]`, "DESERIALIZATION"},
 		{`[tag \"attack-ssti\"]`, "SSTI"},
 		{`[tag \"attack-upload\"]`, "FILE_UPLOAD"},
+		{`[tag \"attack-reputation-scanner\"]`, "SCANNER"},
+		{`[tag \"attack-injection-php\"]`, "PHP_CODE_INJECTION"},
+		{`[tag \"attack-injection-java\"]`, "JAVA_CODE_INJECTION"},
+		{`[tag \"attack-multipart-header\"]`, "PROTOCOL_VIOLATION"},
+		{`[tag \"OWASP_CRS/METHOD-ENFORCEMENT\"]`, "PROTOCOL_VIOLATION"},
 		{`[tag \"webshell/upload\"]`, "WEBSHELL"},
 		{`[tag \"webshell/chopper\"]`, "WEBSHELL"},
 		{`[tag \"app/struts\"]`, "UNKNOWN"},
@@ -223,6 +228,19 @@ func TestParseLineExtendedAttackTypes(t *testing.T) {
 		if evt.Security.AttackType != c.want {
 			t.Errorf("tags %s: attack_type = %q, want %q", c.tags, evt.Security.AttackType, c.want)
 		}
+	}
+
+	// 中文二次阻断评估总分提取（9000102/9000104）
+	cnScoreLine := `{"transaction":{"timestamp":"2026/11/25 19:03:26","id":"txCN","client_ip":"45.148.10.119","client_port":51234,"request":{"method":"GET","protocol":"HTTP/1.1","uri":"/backend/.env","headers":{"host":["www.jxdr.cn"]}},"response":{"status":0},"producer":{"rule_engine":"On"},"is_interrupted":true},"messages":[{"error_message":"[id \"930130\"] [msg \"Restricted File Access Attempt\"] [severity \"critical\"] [tag \"attack-lfi\"]"},{"error_message":"[id \"9000102\"] [msg \"九章二次阻断评估：阶段 1 入站异常评分超过阈值（总分：10）\"] [severity \"critical\"] [tag \"jiuzhang-custom\"] [tag \"anomaly-evaluation\"]"}]}`
+	evtCN, err := ParseLine([]byte(cnScoreLine), "node", testApp())
+	if err != nil {
+		t.Fatalf("ParseLine(cnScoreLine) error = %v", err)
+	}
+	if evtCN.Security.AnomalyScore != 10 {
+		t.Errorf("anomaly_score = %d, want 10", evtCN.Security.AnomalyScore)
+	}
+	if evtCN.Security.AttackType != "LOCAL_FILE_INCLUSION" {
+		t.Errorf("attack_type = %q, want LOCAL_FILE_INCLUSION", evtCN.Security.AttackType)
 	}
 }
 

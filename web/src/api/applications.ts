@@ -4,6 +4,8 @@ import type {
   AppHeaderConfig,
   AppHeaderConfigResult,
   AppPathRoute,
+  AppTLSConfig,
+  AppTLSConfigResult,
   ApplicationDetail,
   ApplicationItem,
   DeploymentMode,
@@ -177,6 +179,17 @@ export const headerConfigApi = {
     request<AppHeaderConfigResult>(`/applications/${appId}/header-config`),
   update: (appId: string, body: UpdateHeaderConfigBody) =>
     request<AppHeaderConfigResult>(`/applications/${appId}/header-config`, { method: 'PUT', body }),
+}
+
+export interface UpdateTLSConfigBody extends AppTLSConfig {
+  version: number
+}
+
+export const tlsConfigApi = {
+  get: (appId: string) =>
+    request<AppTLSConfigResult>(`/applications/${appId}/tls-config`),
+  update: (appId: string, body: UpdateTLSConfigBody) =>
+    request<AppTLSConfigResult>(`/applications/${appId}/tls-config`, { method: 'PUT', body }),
 }
 
 export const pathRoutesApi = {

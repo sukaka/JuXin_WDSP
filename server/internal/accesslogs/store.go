@@ -51,8 +51,9 @@ INSERT INTO access_logs (occurred_at, request_id, application_id, domain, gatewa
   trace_id, span_id, endpoint_key, path_template, ttfb_ms,
   client_ip_source, trusted_proxy_used, forwarded_chain_summary,
   request_headers, request_body, request_body_truncated,
-  response_headers, response_body, response_body_truncated)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
+  response_headers, response_body, response_body_truncated,
+  tls_protocol, tls_cipher_suite, tls_is_gm, tls_ja3, client_hello_version)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
 ON CONFLICT (request_id) WHERE request_id <> '' DO NOTHING`,
 		e.OccurredAt, e.RequestID, appID, e.Domain, e.GatewayNodeID,
 		nullableIP(e.ClientIP), e.ClientPort, e.RequestMethod, e.RequestURI, e.RequestPath, e.QuerySummary,
@@ -61,7 +62,8 @@ ON CONFLICT (request_id) WHERE request_id <> '' DO NOTHING`,
 		nullStr(e.TraceID), nullStr(e.SpanID), nullStr(e.EndpointKey), nullStr(e.PathTemplate), nullInt64(e.TTFBMs),
 		nullStr(e.ClientIPSource), nullStr(e.TrustedProxyUsed), nullStr(e.ForwardedChainSummary),
 		nonNilHeaders(e.RequestHeaders), e.RequestBody, e.RequestBodyTruncated,
-		nonNilHeaders(e.ResponseHeaders), e.ResponseBody, e.ResponseBodyTruncated)
+		nonNilHeaders(e.ResponseHeaders), e.ResponseBody, e.ResponseBodyTruncated,
+		e.TLSProtocol, e.TLSCipherSuite, e.TLSIsGM, e.TLSJA3, e.ClientHelloVersion)
 	if err != nil {
 		return false, err
 	}
@@ -104,7 +106,13 @@ type AccessLog struct {
 	RequestPath      string     `json:"request_path"`
 	QuerySummary     string     `json:"query_summary"`
 	HTTPVersion      string     `json:"http_version"`
-	ContentType      string     `json:"content_type"`
+	// SSL/TLS/国密加密会话分析字段（迁移 000241；旧数据默认空串/false）
+	TLSProtocol        string `json:"tls_protocol"`
+	TLSCipherSuite     string `json:"tls_cipher_suite"`
+	TLSIsGM            bool   `json:"tls_is_gm"`
+	TLSJA3             string `json:"tls_ja3"`
+	ClientHelloVersion string `json:"client_hello_version"`
+	ContentType        string `json:"content_type"`
 	UserAgentSummary string     `json:"user_agent_summary"`
 	RefererSummary   string     `json:"referer_summary"`
 	ResponseStatus   int        `json:"response_status"`
@@ -245,7 +253,8 @@ const listColumns = `id, occurred_at, request_id, application_id, domain, gatewa
   host(client_ip), COALESCE(client_port, 0), request_method, request_uri, request_path, query_summary,
   http_version, content_type, user_agent_summary, referer_summary,
   response_status, bytes_in, bytes_out, duration_ms, waf_action,
-  client_ip_source, trusted_proxy_used, forwarded_chain_summary`
+  client_ip_source, trusted_proxy_used, forwarded_chain_summary,
+  tls_protocol, tls_cipher_suite, tls_is_gm, tls_ja3, client_hello_version`
 
 const payloadColumns = `, request_headers, request_body, request_body_truncated,
   response_headers, response_body, response_body_truncated`
@@ -293,7 +302,8 @@ func (s *Store) list(ctx context.Context, f ListFilter, maxPageSize int) ([]Acce
 			&cip, &e.ClientPort, &e.RequestMethod, &e.RequestURI, &e.RequestPath, &e.QuerySummary,
 			&e.HTTPVersion, &e.ContentType, &e.UserAgentSummary, &e.RefererSummary,
 			&e.ResponseStatus, &e.BytesIn, &e.BytesOut, &e.DurationMS, &e.WAFAction,
-			&ipSource, &proxyUsed, &chainSummary); err != nil {
+			&ipSource, &proxyUsed, &chainSummary,
+			&e.TLSProtocol, &e.TLSCipherSuite, &e.TLSIsGM, &e.TLSJA3, &e.ClientHelloVersion); err != nil {
 			return nil, 0, err
 		}
 		if cip != nil {
@@ -325,6 +335,7 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*AccessLog, error) {
 		&e.HTTPVersion, &e.ContentType, &e.UserAgentSummary, &e.RefererSummary,
 		&e.ResponseStatus, &e.BytesIn, &e.BytesOut, &e.DurationMS, &e.WAFAction,
 		&ipSource, &proxyUsed, &chainSummary,
+		&e.TLSProtocol, &e.TLSCipherSuite, &e.TLSIsGM, &e.TLSJA3, &e.ClientHelloVersion,
 		&traceID, &spanID, &endpointKey, &pathTemplate, &ttfb,
 		&e.RequestHeaders, &e.RequestBody, &e.RequestBodyTruncated,
 		&e.ResponseHeaders, &e.ResponseBody, &e.ResponseBodyTruncated)

@@ -1,9 +1,16 @@
 import { request } from './client'
-import type { CertificateDetail, CertificateItem, PageResult } from '../types'
+import type {
+  ApplicationCertificatesResult,
+  CertificateDetail,
+  CertificateItem,
+  CertificateProtocolType,
+  PageResult,
+} from '../types'
 
 export interface CertificateListParams {
   name?: string
   status?: string
+  protocol_type?: CertificateProtocolType
   include_replaced?: boolean
   page: number
   page_size: number
@@ -11,8 +18,11 @@ export interface CertificateListParams {
 
 export interface UploadCertificateBody {
   name: string
+  protocol_type?: CertificateProtocolType
   cert_pem: string
   key_pem: string
+  enc_cert_pem?: string
+  enc_key_pem?: string
   chain_pem: string
 }
 
@@ -31,7 +41,12 @@ export const certificatesApi = {
   applications: (id: string) =>
     request<CertificateApplications>(`/certificates/${id}/applications`),
   applicationCertificate: (applicationId: string) =>
-    request<{ certificate: CertificateItem | null }>(`/applications/${applicationId}/certificate`),
+    request<ApplicationCertificatesResult>(`/applications/${applicationId}/certificate`),
+  unbindSlot: (applicationId: string, slot: CertificateProtocolType) =>
+    request<{ message: string }>(`/applications/${applicationId}/certificate`, {
+      method: 'DELETE',
+      query: { slot },
+    }),
   bind: (certificateId: string, applicationId: string) =>
     request<{ message: string }>(`/certificates/${certificateId}/bind`, {
       method: 'POST',

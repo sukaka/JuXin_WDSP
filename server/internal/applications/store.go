@@ -864,8 +864,8 @@ func (s *Store) AddUpstream(ctx context.Context, u *Upstream) error {
 	if err := validation.ValidatePort(u.Port); err != nil {
 		return err
 	}
-	if u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "h2c" {
-		return fmt.Errorf("源站协议仅支持 http、https 或 h2c")
+	if u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "h2c" && u.Scheme != "tlcp" {
+		return fmt.Errorf("源站协议仅支持 http、https、h2c 或 tlcp")
 	}
 	if u.Weight < 1 || u.Weight > 100 {
 		return fmt.Errorf("源站权重必须在1至100之间")
@@ -934,8 +934,8 @@ func (s *Store) UpdateUpstream(ctx context.Context, u *Upstream) error {
 		return err
 	}
 	// 与 AddUpstream 同口径校验协议，防写入任意值进入发布配置
-	if u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "h2c" {
-		return fmt.Errorf("源站协议仅支持 http、https 或 h2c")
+	if u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "h2c" && u.Scheme != "tlcp" {
+		return fmt.Errorf("源站协议仅支持 http、https、h2c 或 tlcp")
 	}
 	if u.Weight < 1 || u.Weight > 100 {
 		return fmt.Errorf("源站权重必须在1至100之间")

@@ -180,6 +180,7 @@ const MENU_ICONS: Record<string, ReactNode> = {
   '/access-logs': <ContainerOutlined />,
   '/event-statistics': <BarChartOutlined />,
   '/site-access-trends': <LineChartOutlined />,
+  '/tls-sessions': <LockOutlined />,
   '/risk-identities': <IdcardOutlined />,
   '/attack-sessions': <AimOutlined />,
   '/apm-overview': <FundViewOutlined />,

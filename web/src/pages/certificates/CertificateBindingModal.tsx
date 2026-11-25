@@ -7,13 +7,16 @@ import { applicationsApi } from '../../api/applications'
 import { certificatesApi } from '../../api/certificates'
 import { useAuthStore } from '../../stores/auth'
 import { hasPermission } from '../../utils/permission'
-import type { ApplicationItem, CertificateItem } from '../../types'
+import { isGMProtocol } from '../../utils/stage3'
+import type { ApplicationItem, CertificateItem, CertificateProtocolType } from '../../types'
 
 interface CertificateBindingModalProps {
   open: boolean
   operation: 'bind' | 'unbind'
   certificate?: CertificateItem
   application?: ApplicationItem
+  /** 指定证书协议槽位时，仅筛选同协议证书（INTERNATIONAL / SM_TLCP） */
+  protocolSlot?: CertificateProtocolType
   onClose: () => void
 }
 
@@ -28,10 +31,14 @@ async function listAllApplications(): Promise<ApplicationItem[]> {
   throw new Error('应用数量超过可展示上限，请缩小操作范围')
 }
 
-async function listAllCertificates(): Promise<CertificateItem[]> {
+async function listAllCertificates(protocolType?: CertificateProtocolType): Promise<CertificateItem[]> {
   const items: CertificateItem[] = []
   for (let page = 1; page <= 1000; page++) {
-    const result = await certificatesApi.list({ page, page_size: 100 })
+    const result = await certificatesApi.list(
+      protocolType
+        ? { page, page_size: 100, protocol_type: protocolType }
+        : { page, page_size: 100 },
+    )
     const current = result.items ?? []
     items.push(...current)
     if (items.length >= result.total || current.length === 0) return items
@@ -44,6 +51,7 @@ export default function CertificateBindingModal({
   operation,
   certificate,
   application,
+  protocolSlot,
   onClose,
 }: CertificateBindingModalProps) {
   const { message } = AntdApp.useApp()
@@ -54,6 +62,7 @@ export default function CertificateBindingModal({
   const canReadCerts = hasPermission(permissions, 'certificates.read')
   const [selectedID, setSelectedID] = useState('')
   const [saved, setSaved] = useState(false)
+  const isGMSlot = isGMProtocol(protocolSlot ?? certificate?.protocol_type)
 
   const applicationsQuery = useQuery({
     queryKey: ['certificate-binding-applications', certificate?.id, operation],
@@ -72,8 +81,8 @@ export default function CertificateBindingModal({
       (operation === 'bind' || canReadCerts),
   })
   const certificatesQuery = useQuery({
-    queryKey: ['certificate-binding-certificates', application?.id],
-    queryFn: listAllCertificates,
+    queryKey: ['certificate-binding-certificates', application?.id, protocolSlot ?? 'ALL'],
+    queryFn: () => listAllCertificates(protocolSlot),
     enabled: open && operation === 'bind' && Boolean(application) && !certificate && canReadCerts,
   })
 
@@ -103,7 +112,7 @@ export default function CertificateBindingModal({
     setSaved(false)
     mutation.reset()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, operation, certificate?.id, application?.id])
+  }, [open, operation, certificate?.id, application?.id, protocolSlot])
 
   const options = useMemo(() => {
     if (certificate && !application) {
@@ -112,19 +121,28 @@ export default function CertificateBindingModal({
         label: `${app.name}（${app.code}）`,
       }))
     }
-    return (certificatesQuery.data ?? []).map((cert) => ({
+    const list = (certificatesQuery.data ?? []).filter((cert) =>
+      protocolSlot ? (cert.protocol_type ?? 'INTERNATIONAL') === protocolSlot : true,
+    )
+    return list.map((cert) => ({
       value: cert.id,
       label: `${cert.name}（${cert.common_name}）`,
       disabled: ['EXPIRED', 'INVALID', 'KEY_MISMATCH'].includes(cert.status),
     }))
-  }, [application, certificate, applicationsQuery.data, certificatesQuery.data])
+  }, [application, certificate, applicationsQuery.data, certificatesQuery.data, protocolSlot])
 
   const needsSelection = !application || !certificate
   const optionError = applicationsQuery.error ?? certificatesQuery.error
   const canPublish = hasPermission(permissions, 'gateway_configs.preview')
   const title = operation === 'bind'
-    ? application ? '绑定或替换证书' : '绑定证书到应用'
-    : '解绑证书'
+    ? application
+      ? isGMSlot
+        ? '绑定或替换国密双证书'
+        : '绑定或替换证书'
+      : '绑定证书到应用'
+    : isGMSlot
+      ? '解绑国密双证书'
+      : '解绑证书'
 
   const close = () => {
     setSelectedID('')
@@ -180,18 +198,18 @@ export default function CertificateBindingModal({
               ? '证书 CN/SAN 必须覆盖应用的全部 HTTPS 域名，且证书未过期'
               : '解绑只改变待发布配置关系；请完成配置发布，使网关与绑定关系一致'}
             description={operation === 'bind'
-              ? '一个应用仅保留一张活动证书，选择新证书会替换旧证书。保存后需执行配置发布。'
-              : '解绑不会删除证书文件，也不会删除历史审计记录。'}
+              ? '同一应用支持双槽位绑定（1 张通用国际证书 + 1 套国密 SM2 双证书），替换仅覆盖同协议槽位，互不影响。保存后需执行配置发布。'
+              : '仅解绑当前选定证书，不会影响另一协议槽位，也不会删除证书文件或历史审计记录。'}
           />
           {needsSelection && (
             <>
               <Typography.Text strong>
-                {application ? '选择证书' : '选择应用'}
+                {application ? (isGMSlot ? '选择国密双证书' : '选择证书') : '选择应用'}
               </Typography.Text>
               <Select
-                aria-label={application ? '选择证书' : '选择应用'}
+                aria-label={application ? (isGMSlot ? '选择国密双证书' : '选择证书') : '选择应用'}
                 style={{ width: '100%', marginTop: 8 }}
-                placeholder={application ? '请选择证书' : '请选择应用'}
+                placeholder={application ? (isGMSlot ? '请选择国密 SM2 双证书' : '请选择证书') : '请选择应用'}
                 value={selectedID || undefined}
                 options={options}
                 loading={applicationsQuery.isLoading || certificatesQuery.isLoading}

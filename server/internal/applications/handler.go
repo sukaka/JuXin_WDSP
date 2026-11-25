@@ -956,7 +956,7 @@ func (h *Handler) BindCertificate(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "证书已绑定"})
 }
 
-// UnbindCertificate 解绑应用证书。
+// UnbindCertificate 解绑应用证书（支持可选查询参数 ?slot=INTERNATIONAL|SM_TLCP 仅解绑指定槽位，缺省解绑全部）。
 func (h *Handler) UnbindCertificate(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	appID, err := uuid.Parse(r.PathValue("id"))
@@ -972,6 +972,26 @@ func (h *Handler) UnbindCertificate(w http.ResponseWriter, r *http.Request) {
 	if h.certBinder == nil {
 		response.Error(w, r, http.StatusServiceUnavailable, response.CodeServiceUnavailable, "证书服务未配置")
 		return
+	}
+	slot := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("slot")))
+	if slot != "" {
+		if slot != "INTERNATIONAL" && slot != "SM_TLCP" {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的证书槽位参数，仅支持 INTERNATIONAL 或 SM_TLCP")
+			return
+		}
+		type slotUnbinder interface {
+			UnbindApplicationBySlot(ctx context.Context, appID uuid.UUID, slot string) error
+		}
+		if su, ok := h.certBinder.(slotUnbinder); ok {
+			if err := su.UnbindApplicationBySlot(r.Context(), appID, slot); err != nil {
+				response.InternalError(w, r, err)
+				return
+			}
+			h.recordAudit(r, p, "certificates", "unbind", "certificate", appID.String(), app.Code,
+				"bound_to="+app.Code+" slot="+slot, "", audits.ResultSuccess, audits.RiskMedium)
+			response.JSON(w, r, http.StatusOK, map[string]string{"message": "证书已解绑"})
+			return
+		}
 	}
 	if err := h.certBinder.UnbindApplication(r.Context(), appID); err != nil {
 		response.InternalError(w, r, err)

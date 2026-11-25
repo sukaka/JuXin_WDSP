@@ -52,6 +52,15 @@ export const CERT_STATUS_META: Record<string, { color: string; label: string }> 
   REPLACED: { color: 'default', label: '已续签替换' },
 }
 
+export const CERT_PROTOCOL_META: Record<string, { color: string; label: string }> = {
+  INTERNATIONAL: { color: 'blue', label: '通用国际' },
+  SM_TLCP: { color: 'volcano', label: '国密 SM2/TLCP' },
+}
+
+export function isGMProtocol(protocol?: string | null): boolean {
+  return protocol === 'SM_TLCP'
+}
+
 export const ACME_PROVIDER_META: Record<string, { color: string; label: string }> = {
   LETSENCRYPT: { color: 'blue', label: "Let's Encrypt 生产" },
   LETSENCRYPT_STAGING: { color: 'gold', label: "Let's Encrypt 测试" },

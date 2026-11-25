@@ -230,6 +230,12 @@ func TestGenerateProductionAuditOverridesPOC(t *testing.T) {
 	if crsIdx := strings.Index(g.JSON, "Include /etc/caddy/rules/crs/crs-setup.conf"); crsIdx < 0 || engIdx > crsIdx || partsIdx > crsIdx {
 		t.Error("audit overrides must come before crs-setup include")
 	}
+	for _, phase := range []string{"phase:1", "phase:2", "phase:3", "phase:4", "phase:5"} {
+		want := `SecDefaultAction \"` + phase + `,log,auditlog,pass\"`
+		if !strings.Contains(g.JSON, want) {
+			t.Errorf("missing inline default action for %s in generated directives", phase)
+		}
+	}
 	if strings.Contains(g.JSON, "SecAuditEngine On") {
 		t.Error("production config must not enable POC audit engine (full request body capture)")
 	}

@@ -38,6 +38,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -51,6 +52,7 @@ import (
 	"strings"
 	"time"
 
+	"gitee.com/Trisia/gotlcp/tlcp"
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/applications"
 )
@@ -61,6 +63,7 @@ const (
 	SmokeProbeBlacklist = "BLACKLIST"
 	SmokeProbeCC        = "CC"
 	SmokeProbeCCExact   = "CC_EXACT"
+	SmokeProbeGMTLCP    = "GM_TLCP"
 )
 
 // 冒烟探针结果词表（gateway_validation_results.result）。
@@ -104,9 +107,11 @@ type smokeTarget struct {
 	appID        string
 	appCode      string
 	scheme       string // http / https
-	host         string // Host 头与 TLS SNI（应用域名；泛域名已替换为 smoke. 前缀）
+	host         string // Host 头与 TLS/TLCP SNI（应用域名；泛域名已替换为 smoke. 前缀）
 	port         int
 	transparent  bool // TRANSPARENT 模式需拨号透明回环端口并前置 PROXY v1 头
+	HasIntlCert  bool // 站点提供国际 TLS 监听能力（双证场景与 HasGMCert 同时为 true）
+	HasGMCert    bool // 站点提供国密 TLCP 1.1 监听能力（需真实 gotlcp/tlcp 探针验证）
 	publishSmoke *GuardPublishSmoke
 }
 
@@ -330,7 +335,8 @@ func resolveSmokeTargets(appsData []AppData, guardCfg *GuardConfig) ([]smokeTarg
 			if host == "" {
 				continue
 			}
-			// HTTP 跳 HTTPS 时 80 端口仅返回 308 静态重定向（不经 guard），须探 HTTPS
+			// HTTP 跳 HTTPS 时 80 端口仅返回 308 静态重定向（不经 guard），须探 HTTPS；
+			// 绑定国密双证的 HTTPS 站点同样优先探 HTTPS 以实测 TLCP 1.1 握手与双协议分流。
 			target := smokeTarget{
 				appID:        app.AppID,
 				appCode:      app.Code,
@@ -338,9 +344,11 @@ func resolveSmokeTargets(appsData []AppData, guardCfg *GuardConfig) ([]smokeTarg
 				transparent:  app.DeploymentMode == applications.DeployModeTransparent,
 				publishSmoke: guardCfg.PublishSmoke,
 			}
+			httpsReady := d.HTTPSEnabled && d.HTTPSPort != nil && !app.PendingAutoSSL
 			switch {
-			case d.HTTPSEnabled && d.HTTPSPort != nil && (d.RedirectHTTPToHTTPS || !d.HTTPEnabled || d.HTTPPort == nil):
+			case httpsReady && (app.HasGMCert || d.RedirectHTTPToHTTPS || !d.HTTPEnabled || d.HTTPPort == nil):
 				target.scheme, target.port = "https", *d.HTTPSPort
+				target.HasIntlCert, target.HasGMCert = smokeCertModes(app)
 				targets = append(targets, target)
 			case d.HTTPEnabled && d.HTTPPort != nil:
 				target.scheme, target.port = "http", *d.HTTPPort
@@ -355,6 +363,36 @@ func resolveSmokeTargets(appsData []AppData, guardCfg *GuardConfig) ([]smokeTarg
 		return nil, "无可用探针目标（应用均为透传/镜像模式或未声明数据面端口）"
 	}
 	return targets, ""
+}
+
+// smokeCertModes 根据应用证书槽位与站点 TLSConfig 判定 HTTPS 探针应覆盖国际 TLS / 国密 TLCP 哪些协议。
+func smokeCertModes(app AppData) (hasIntl, hasGM bool) {
+	hasGM = app.HasGMCert
+	// 兼容未显式设置 HasCert 的存量 HTTPS 单测（非 GM 站点默认按国际 TLS 探测）
+	hasIntl = app.HasCert || !app.HasGMCert
+	if app.TLSConfig == nil {
+		return hasIntl, hasGM
+	}
+	mode := strings.ToUpper(strings.TrimSpace(app.TLSConfig.TLSProtocolMode))
+	switch mode {
+	case TLSProtocolModeGMOnly:
+		hasIntl = false
+	case TLSProtocolModeInternationalOnly:
+		hasGM = false
+	}
+	if len(app.TLSConfig.AllowedTLSVersions) > 0 {
+		if !sliceContainsFold(app.TLSConfig.AllowedTLSVersions, TLSVersionTLCP11) {
+			hasGM = false
+		}
+		intlAllowed := sliceContainsFold(app.TLSConfig.AllowedTLSVersions, TLSVersion10) ||
+			sliceContainsFold(app.TLSConfig.AllowedTLSVersions, TLSVersion11) ||
+			sliceContainsFold(app.TLSConfig.AllowedTLSVersions, TLSVersion12) ||
+			sliceContainsFold(app.TLSConfig.AllowedTLSVersions, TLSVersion13)
+		if !intlAllowed {
+			hasIntl = false
+		}
+	}
+	return hasIntl, hasGM
 }
 
 // smokeableHostname 泛域名替换为确定子域（Host 头不允许 * 字符）。
@@ -549,16 +587,156 @@ func firstPlainDenyIP(guardCfg *GuardConfig, appCode string) string {
 	return ""
 }
 
-// probeTarget 对单个应用目标按真实IP→黑名单→CC 顺序执行探针。
+// tlcpHandshakeError 区分「TCP 已建连但国密 TLCP 握手失败」与「数据面 TCP 不可达」：
+// 握手失败属于正面证据（证书/协议配置异常），必须判 FAIL 触发自动回滚，不得降级为 SKIP。
+type tlcpHandshakeError struct {
+	err error
+}
+
+func (e *tlcpHandshakeError) Error() string {
+	return fmt.Sprintf("tlcp handshake failed: %v", e.err)
+}
+
+func (e *tlcpHandshakeError) Unwrap() error { return e.err }
+
+// smokeTLCPClientFor 构造真实 gotlcp/tlcp 协议探针客户端：
+// 拨号重定向到数据面地址（TRANSPARENT 目标先写 PROXY v1 头），使用目标域名作为 SNI 完成 TLCP 1.1 握手。
+func (p *Publisher) smokeTLCPClientFor(t smokeTarget) *http.Client {
+	dialAddr := p.smokeDialAddress(t)
+	dialer := &net.Dialer{Timeout: smokeRequestTimeout}
+	return &http.Client{
+		Timeout: smokeRequestTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+			ForceAttemptHTTP2: false,
+			TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
+			DialTLSContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				rawConn, err := dialer.DialContext(ctx, network, dialAddr)
+				if err != nil {
+					return nil, err
+				}
+				if t.transparent {
+					if err := writeSmokeProxyV1Header(rawConn, t.port); err != nil {
+						_ = rawConn.Close()
+						return nil, err
+					}
+				}
+				tConn := tlcp.Client(rawConn, &tlcp.Config{
+					ServerName:         t.host,
+					InsecureSkipVerify: true, //nolint:gosec // 探针语义见 smokeClientFor 注释
+				})
+				hsCtx, cancel := context.WithTimeout(ctx, smokeRequestTimeout)
+				defer cancel()
+				if err := tConn.HandshakeContext(hsCtx); err != nil {
+					_ = rawConn.Close()
+					return nil, &tlcpHandshakeError{err: err}
+				}
+				return tConn, nil
+			},
+		},
+	}
+}
+
+// probeGMTLCP 对具备国密双证书的 HTTPS 目标执行真实 gotlcp/tlcp 1.1 握手与
+// /_wdsp/internal/v1/publish-smoke 验签探测。
+// dataPlaneReachable=true 表示同一端口已由国际 TLS 探针确认可达，此时任何错误均判 FAIL。
+func (p *Publisher) probeGMTLCP(ctx context.Context, client *http.Client, t smokeTarget, dataPlaneReachable bool) (smokeProbeResult, bool) {
+	resp, err := p.doSmokeRequest(ctx, client, t, SmokeProbeGMTLCP, nil)
+	if err != nil {
+		var hsErr *tlcpHandshakeError
+		if dataPlaneReachable || errors.As(err, &hsErr) {
+			return smokeProbeResult{
+				Probe:   SmokeProbeGMTLCP,
+				AppCode: t.appCode,
+				Result:  SmokeResultFail,
+				Message: fmt.Sprintf("国密 TLCP 1.1 探针失败（握手或请求异常）：%v", err),
+			}, true
+		}
+		return smokeProbeResult{
+			Probe:   SmokeProbeGMTLCP,
+			AppCode: t.appCode,
+			Result:  SmokeResultSkip,
+			Message: fmt.Sprintf("国密 TLCP 数据面探针不可达：%v", err),
+		}, false
+	}
+	switch classifySmokeResponse(resp) {
+	case verdictGuardAuthenticated:
+		return smokeProbeResult{
+			Probe:   SmokeProbeGMTLCP,
+			AppCode: t.appCode,
+			Result:  SmokeResultPass,
+			Message: "国密 TLCP 1.1 握手与内部冒烟端点验签应答通过",
+		}, true
+	case verdictGuardBlock:
+		return smokeProbeResult{
+			Probe:   SmokeProbeGMTLCP,
+			AppCode: t.appCode,
+			Result:  SmokeResultPass,
+			Message: fmt.Sprintf("国密 TLCP 1.1 握手成功并由防护链主动处置（status=%d）", resp.status),
+		}, true
+	default:
+		return smokeProbeResult{
+			Probe:   SmokeProbeGMTLCP,
+			AppCode: t.appCode,
+			Result:  SmokeResultFail,
+			Message: fmt.Sprintf("国密 TLCP 1.1 探针响应与防护链预期不符（status=%d），guard 未生效或路由错误", resp.status),
+		}, true
+	}
+}
+
+// probeTarget 对单个应用目标按真实IP→黑名单→CC（及国密 TLCP）顺序执行探针。
 // 返回 available=false 表示传输层不可达（该目标探针不可用，记 SKIP 不判 FAIL）。
 func (p *Publisher) probeTarget(ctx context.Context, t smokeTarget, guardCfg *GuardConfig) (results []smokeProbeResult, available bool) {
-	client := p.smokeClientFor(t)
+	gmOnly := t.scheme == "https" && t.HasGMCert && !t.HasIntlCert
+	dualCert := t.scheme == "https" && t.HasGMCert && t.HasIntlCert
+
+	var client *http.Client
+	if gmOnly {
+		client = p.smokeTLCPClientFor(t)
+		gmRes, gmAvail := p.probeGMTLCP(ctx, client, t, false)
+		if !gmAvail {
+			return []smokeProbeResult{gmRes}, false
+		}
+		results = append(results, gmRes)
+		if gmRes.Result == SmokeResultFail {
+			return results, true
+		}
+	} else {
+		client = p.smokeClientFor(t)
+	}
 
 	// 1. 真实 IP 识别探针：合成不可路由 XFF，验证真实 IP 识别与防护链接管。
 	realIP, err := p.doSmokeRequest(ctx, client, t, SmokeProbeRealIP, map[string]string{
 		"X-Forwarded-For": smokeRealIPSpoofXFF,
 	})
 	if err != nil {
+		if dualCert {
+			// 双证站点：若国密 TLCP 端口可达，说明数据面本身可达而国际 TLS 握手失败，必须判 FAIL 触发回滚
+			gmRes, gmAvail := p.probeGMTLCP(ctx, p.smokeTLCPClientFor(t), t, false)
+			if gmAvail {
+				return []smokeProbeResult{
+					{
+						Probe:   SmokeProbeRealIP,
+						AppCode: t.appCode,
+						Result:  SmokeResultFail,
+						Message: fmt.Sprintf("双证站点国际 TLS 探针失败（同端口国密 TLCP 可达）：%v", err),
+					},
+					gmRes,
+				}, true
+			}
+		}
+		if gmOnly {
+			results = append(results, smokeProbeResult{
+				Probe:   SmokeProbeRealIP,
+				AppCode: t.appCode,
+				Result:  SmokeResultFail,
+				Message: fmt.Sprintf("国密 TLCP 真实 IP 探针请求失败（数据面此前可达）：%v", err),
+			})
+			return results, true
+		}
 		return []smokeProbeResult{{
 			Probe: SmokeProbeRealIP, AppCode: t.appCode, Result: SmokeResultSkip,
 			Message: fmt.Sprintf("数据面探针不可达：%v", err),
@@ -574,6 +752,12 @@ func (p *Publisher) probeTarget(ctx context.Context, t smokeTarget, guardCfg *Gu
 	default:
 		results = append(results, smokeProbeResult{Probe: SmokeProbeRealIP, AppCode: t.appCode, Result: SmokeResultFail,
 			Message: fmt.Sprintf("探针响应与防护链预期不符（status=%d），guard 未生效或路由错误", realIP.status)})
+	}
+
+	// 双证站点：在国际 TLS 确认可达后，追加同端口真实 gotlcp/tlcp 1.1 探针（任一协议异常均触发回滚）
+	if dualCert {
+		gmRes, _ := p.probeGMTLCP(ctx, p.smokeTLCPClientFor(t), t, true)
+		results = append(results, gmRes)
 	}
 
 	// 2. 黑名单命中探针：用发布快照中的真实黑名单单 IP 合成 XFF。

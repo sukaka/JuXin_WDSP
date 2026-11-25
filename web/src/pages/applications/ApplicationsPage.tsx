@@ -279,45 +279,19 @@ export default function ApplicationsPage() {
           >
             {v}
           </Link>
-          {record.primary_domain ? (
-            <span
-              style={{
-                fontSize: 12,
-                color: 'rgba(0, 0, 0, 0.45)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                minWidth: 0,
-              }}
-            >
-              <span
-                title={record.primary_domain}
-                style={{
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {record.primary_domain}
-              </span>
-              {record.domain_count > 1 && (
-                <Tag
-                  style={{
-                    marginInlineEnd: 0,
-                    fontSize: 11,
-                    lineHeight: '16px',
-                    paddingInline: 4,
-                  }}
-                >
-                  +{record.domain_count - 1}
-                </Tag>
-              )}
-            </span>
-          ) : (
-            <span style={{ fontSize: 12, color: 'rgba(0, 0, 0, 0.35)' }}>
-              {record.domain_count > 0 ? `${record.domain_count} 个域名` : '未配置域名'}
-            </span>
-          )}
+          <span
+            style={{
+              fontSize: 12,
+              color:
+                record.domain_count > 0
+                  ? 'rgba(0, 0, 0, 0.45)'
+                  : 'rgba(0, 0, 0, 0.35)',
+            }}
+          >
+            {record.domain_count > 0
+              ? `已配置 ${record.domain_count} 个域名`
+              : '未配置域名'}
+          </span>
         </div>
       ),
     },
@@ -344,6 +318,7 @@ export default function ApplicationsPage() {
     {
       title: '域名数',
       dataIndex: 'domain_count',
+      key: 'domain_count',
       width: 90,
     },
     {
@@ -568,8 +543,8 @@ export default function ApplicationsPage() {
         />
       ) : (
         <SmartTable<ApplicationItem>
-          storageKey="applications-v2"
-          defaultHiddenKeys={['code']}
+          storageKey="applications-v3"
+          defaultHiddenKeys={['code', 'domain_count']}
           rowKey="id"
           rowSelection={rowSelection}
           loading={listQuery.isLoading}

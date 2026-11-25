@@ -39,7 +39,7 @@ var (
 	frameOptions    = map[string]bool{"default": true, "inherit": true, "deny": true, "sameorigin": true, "allow_from": true}
 	cspModes        = map[string]bool{"off": true, "preset": true, "custom": true}
 	ruleMethods     = map[string]bool{"set": true, "add": true, "delete": true}
-	upstreamSchemes = map[string]bool{"http": true, "https": true}
+	upstreamSchemes = map[string]bool{"http": true, "https": true, "tlcp": true}
 	routeStatuses   = map[string]bool{"ENABLED": true, "DISABLED": true}
 )
 
@@ -78,6 +78,9 @@ type Repository interface {
 	GetHeaderConfig(ctx context.Context, appID uuid.UUID) (*gatewayconfig.AppHeaderConfig, error)
 	GetHeaderConfigRecord(ctx context.Context, appID uuid.UUID) (*HeaderConfigRecord, error)
 	UpsertHeaderConfig(ctx context.Context, appID uuid.UUID, cfg *gatewayconfig.AppHeaderConfig, updatedBy uuid.UUID, expectVersion int) (int, error)
+	GetTLSConfig(ctx context.Context, appID uuid.UUID) (*gatewayconfig.AppTLSConfig, error)
+	GetTLSConfigRecord(ctx context.Context, appID uuid.UUID) (*TLSConfigRecord, error)
+	UpsertTLSConfig(ctx context.Context, appID uuid.UUID, cfg *gatewayconfig.AppTLSConfig, updatedBy uuid.UUID, expectVersion int) (int, error)
 	ListEnabledPathRoutes(ctx context.Context, appID uuid.UUID) ([]gatewayconfig.AppPathRoute, error)
 	ListPathRoutes(ctx context.Context, appID uuid.UUID, page, pageSize int) ([]PathRoute, int64, error)
 	GetPathRoute(ctx context.Context, appID, routeID uuid.UUID) (*PathRoute, error)
@@ -518,7 +521,7 @@ func validatePathRoute(r *PathRoute) error {
 		return fmt.Errorf("%w: upstream_port 必须在 1-65535 之间", ErrInvalid)
 	}
 	if !upstreamSchemes[r.UpstreamScheme] {
-		return fmt.Errorf("%w: upstream_scheme 取值无效（http/https）", ErrInvalid)
+		return fmt.Errorf("%w: upstream_scheme 取值无效（http/https/tlcp）", ErrInvalid)
 	}
 	if !routeStatuses[r.Status] {
 		return fmt.Errorf("%w: status 取值无效（ENABLED/DISABLED）", ErrInvalid)

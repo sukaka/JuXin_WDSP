@@ -377,13 +377,20 @@ describe('ApplicationsPage 应用主列与可选应用标识', () => {
     vi.unstubAllGlobals()
   })
 
-  it('首列展示应用名称与主域名（含多域名 +N 标签及无域名占位），应用标识默认隐藏并可在列设置开启', async () => {
+  it('首列展示应用名称与已配置域名数（及无域名占位），应用标识与域名数列默认隐藏并可在列设置开启', async () => {
     const multiDomainApp = makeApp({
       id: 'app-multi',
       code: 'guanwang',
       name: '官网',
       primary_domain: 'www.example.com',
       domain_count: 3,
+    })
+    const singleDomainApp = makeApp({
+      id: 'app-single',
+      code: 'docs-site',
+      name: '文档站',
+      primary_domain: 'docs.example.com',
+      domain_count: 1,
     })
     const emptyDomainApp = makeApp({
       id: 'app-empty',
@@ -392,26 +399,32 @@ describe('ApplicationsPage 应用主列与可选应用标识', () => {
       primary_domain: '',
       domain_count: 0,
     })
-    vi.stubGlobal('fetch', mockFetch([multiDomainApp, emptyDomainApp]))
+    vi.stubGlobal('fetch', mockFetch([multiDomainApp, singleDomainApp, emptyDomainApp]))
     useAuthStore.setState({ user: makeUser(['applications.read']), csrfToken: null, initialized: true })
     renderPage()
 
     expect(await screen.findByText('官网')).toBeInTheDocument()
-    expect(screen.getByText('www.example.com')).toBeInTheDocument()
-    expect(screen.getByText('+2')).toBeInTheDocument()
+    expect(screen.getByText('已配置 3 个域名')).toBeInTheDocument()
+    expect(screen.getByText('已配置 1 个域名')).toBeInTheDocument()
     expect(screen.getByText('未配置域名')).toBeInTheDocument()
+    expect(screen.queryByText('+2')).not.toBeInTheDocument()
+    expect(screen.queryByText('www.example.com')).not.toBeInTheDocument()
 
-    // 默认不展示应用标识列（代码值不在表格内露出）
+    // 默认不展示应用标识列与重复的域名数列
     const table = document.querySelector('table')!
     expect(within(table).queryByText('guanwang')).not.toBeInTheDocument()
     expect(within(table).queryByText('应用标识')).not.toBeInTheDocument()
+    expect(within(table).queryByText('域名数')).not.toBeInTheDocument()
 
-    // 列设置勾选「应用标识」后即可显示
+    // 列设置勾选「应用标识」「域名数」后即可显示
     fireEvent.click(screen.getByRole('button', { name: /列设置/ }))
     const box = (await screen.findByText('重置列宽与显隐')).parentElement!.parentElement as HTMLElement
     fireEvent.click(within(box).getByLabelText('应用标识'))
+    fireEvent.click(within(box).getByLabelText('域名数'))
     expect(within(table).getByText('guanwang')).toBeInTheDocument()
     expect(within(table).getByText('draft-site')).toBeInTheDocument()
+    expect(within(table).getByRole('columnheader', { name: /域名数/ })).toBeInTheDocument()
+    expect(within(screen.getByText('官网').closest('tr')!).getByText('3')).toBeInTheDocument()
   })
 
   it('新建弹窗展开高级选项可自定义应用标识，非法格式被前端校验拦截', async () => {

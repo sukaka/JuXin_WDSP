@@ -7,10 +7,12 @@ import {
   Card,
   Checkbox,
   Descriptions,
+  Divider,
   Drawer,
   Form,
   Input,
   Modal,
+  Radio,
   Select,
   Space,
   Tabs,
@@ -36,17 +38,22 @@ import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import {
   ACME_PROVIDER_META,
+  CERT_PROTOCOL_META,
   CERT_STATUS_META,
   certRemainingColor,
   certRemainingDays,
+  isGMProtocol,
 } from '../../utils/stage3'
-import type { CertificateItem } from '../../types'
+import type { CertificateItem, CertificateProtocolType } from '../../types'
 
 interface Filters {
   name?: string
   status?: string
+  protocol_type?: CertificateProtocolType
   include_replaced?: boolean
 }
+
+const PRIVATE_KEY_BEGIN_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/
 
 /** PEM 文本基本格式前端校验（仅做头尾标记检查，真实解析由后端完成） */
 function validatePem(value: string, beginPattern: RegExp, label: string): string | null {
@@ -107,6 +114,8 @@ export default function CertificatesPage() {
   const [detailId, setDetailId] = useState<string | null>(null)
   const [binding, setBinding] = useState<{ operation: 'bind' | 'unbind'; certificate: CertificateItem } | null>(null)
   const [uploadForm] = Form.useForm<UploadCertificateBody>()
+  const uploadProtocol = Form.useWatch('protocol_type', uploadForm) ?? 'INTERNATIONAL'
+  const isUploadGM = isGMProtocol(uploadProtocol)
 
   const listQuery = useQuery({
     queryKey: ['certificates', filters, page, pageSize],
@@ -184,6 +193,14 @@ export default function CertificatesPage() {
         </Button>
       ),
     },
+    {
+      title: '协议类型',
+      dataIndex: 'protocol_type',
+      width: 130,
+      render: (v?: CertificateProtocolType) => (
+        <StatusTag value={v ?? 'INTERNATIONAL'} map={CERT_PROTOCOL_META} />
+      ),
+    },
     { title: '通用名称(CN)', dataIndex: 'common_name', width: 180 },
     {
       title: '颁发者',
@@ -211,16 +228,28 @@ export default function CertificatesPage() {
     },
     {
       title: '到期时间',
-      dataIndex: 'not_after',
+      key: 'effective_not_after',
       width: 170,
-      render: (v: string | null) => formatDateTime(v),
+      render: (_, record) => {
+        const effective = record.effective_not_after ?? record.not_after ?? null
+        if (isGMProtocol(record.protocol_type) && record.enc_not_after) {
+          return (
+            <Tooltip
+              title={`签名证书到期：${formatDateTime(record.not_after)}\n加密证书到期：${formatDateTime(record.enc_not_after)}`}
+            >
+              <span>{formatDateTime(effective)}</span>
+            </Tooltip>
+          )
+        }
+        return formatDateTime(effective)
+      },
     },
     {
       title: '剩余天数',
       key: 'remaining',
       width: 120,
       render: (_, record) => {
-        const days = certRemainingDays(record.not_after)
+        const days = certRemainingDays(record.effective_not_after ?? record.not_after)
         if (days === null) return '-'
         return (
           <Tag color={certRemainingColor(days)}>
@@ -331,6 +360,7 @@ export default function CertificatesPage() {
   ]
 
   const detail = detailQuery.data
+  const detailIsGM = isGMProtocol(detail?.protocol_type)
 
   return (
     <Card
@@ -343,7 +373,15 @@ export default function CertificatesPage() {
             </Button>
           )}
           {hasPermission(permissions, 'certificates.create') && (
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                uploadForm.resetFields()
+                uploadForm.setFieldsValue({ protocol_type: 'INTERNATIONAL' })
+                setUploadOpen(true)
+              }}
+            >
               上传证书
             </Button>
           )}
@@ -366,6 +404,21 @@ export default function CertificatesPage() {
                     style={{ width: 240 }}
                     onSearch={(v) => {
                       setFilters((f) => ({ ...f, name: v || undefined }))
+                      setPage(1)
+                    }}
+                  />
+                  <Select
+                    aria-label="协议类型"
+                    placeholder="全部协议"
+                    allowClear
+                    style={{ width: 170 }}
+                    value={filters.protocol_type}
+                    options={[
+                      { value: 'INTERNATIONAL', label: '通用国际证书' },
+                      { value: 'SM_TLCP', label: '国密双证书(SM2)' },
+                    ]}
+                    onChange={(v: CertificateProtocolType | undefined) => {
+                      setFilters((f) => ({ ...f, protocol_type: v }))
                       setPage(1)
                     }}
                   />
@@ -413,7 +466,7 @@ export default function CertificatesPage() {
                       onDoubleClick: () => setDetailId(record.id),
                       style: { cursor: 'pointer' },
                     })}
-                    scroll={{ x: 1400 }}
+                    scroll={{ x: 1520 }}
                     pagination={{
                       current: page,
                       pageSize,
@@ -444,27 +497,49 @@ export default function CertificatesPage() {
         onCancel={() => setUploadOpen(false)}
         onOk={() => uploadForm.submit()}
         confirmLoading={uploadMutation.isPending}
-        width={640}
+        width={680}
         destroyOnHidden
       >
         <Alert
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="粘贴 PEM 文本上传，私钥仅用于服务端校验并加密存储，不会在任何 API 中返回"
+          message={
+            isUploadGM
+              ? '国密 TLCP 1.1 需同时上传 SM2 签名证书/私钥与加密证书/私钥；所有私钥仅用于服务端校验并加密存储，不会在任何 API 中返回'
+              : '粘贴 PEM 文本上传，私钥仅用于服务端校验并加密存储，不会在任何 API 中返回'
+          }
         />
         <Form
           form={uploadForm}
           layout="vertical"
-          onFinish={(values) =>
-            uploadMutation.mutate({
+          initialValues={{ protocol_type: 'INTERNATIONAL' }}
+          onFinish={(values) => {
+            const protocolType = values.protocol_type ?? 'INTERNATIONAL'
+            const payload: UploadCertificateBody = {
               name: values.name.trim(),
+              protocol_type: protocolType,
               cert_pem: values.cert_pem.trim(),
               key_pem: values.key_pem.trim(),
               chain_pem: (values.chain_pem ?? '').trim(),
-            })
-          }
+            }
+            if (isGMProtocol(protocolType)) {
+              payload.enc_cert_pem = (values.enc_cert_pem ?? '').trim()
+              payload.enc_key_pem = (values.enc_key_pem ?? '').trim()
+            }
+            uploadMutation.mutate(payload)
+          }}
         >
+          <Form.Item name="protocol_type" label="协议类型" rules={[{ required: true }]}>
+            <Radio.Group optionType="button" buttonStyle="solid">
+              <Radio.Button value="INTERNATIONAL">
+                通用协议证书 (RSA/ECDSA/Ed25519)
+              </Radio.Button>
+              <Radio.Button value="SM_TLCP">
+                国密协议双证书 (SM2 签名+加密)
+              </Radio.Button>
+            </Radio.Group>
+          </Form.Item>
           <Form.Item
             name="name"
             label="证书名称"
@@ -473,48 +548,105 @@ export default function CertificatesPage() {
               { max: 128, message: '不超过 128 个字符' },
             ]}
           >
-            <Input placeholder="如 example.com 2026 证书" autoComplete="off" />
+            <Input
+              placeholder={
+                isUploadGM ? '如 example.com 2026 国密双证书' : '如 example.com 2026 证书'
+              }
+              autoComplete="off"
+            />
           </Form.Item>
           <Form.Item
             name="cert_pem"
-            label="证书 PEM"
+            label={isUploadGM ? '签名证书 PEM' : '证书 PEM'}
             rules={[
-              { required: true, message: '请粘贴证书内容' },
+              { required: true, message: isUploadGM ? '请粘贴签名证书内容' : '请粘贴证书内容' },
               {
                 validator: (_, v: string) => {
                   if (!v) return Promise.resolve()
-                  const err = validatePem(v, /-----BEGIN CERTIFICATE-----/, '证书 PEM')
+                  const err = validatePem(
+                    v,
+                    /-----BEGIN CERTIFICATE-----/,
+                    isUploadGM ? '签名证书 PEM' : '证书 PEM',
+                  )
                   return err ? Promise.reject(new Error(err)) : Promise.resolve()
                 },
               },
             ]}
           >
             <Input.TextArea
-              rows={5}
+              rows={4}
               style={{ fontFamily: 'monospace', fontSize: 12 }}
               placeholder="-----BEGIN CERTIFICATE-----&#10;…&#10;-----END CERTIFICATE-----"
             />
           </Form.Item>
           <Form.Item
             name="key_pem"
-            label="私钥 PEM"
+            label={isUploadGM ? '签名私钥 PEM' : '私钥 PEM'}
             rules={[
-              { required: true, message: '请粘贴私钥内容' },
+              { required: true, message: isUploadGM ? '请粘贴签名私钥内容' : '请粘贴私钥内容' },
               {
                 validator: (_, v: string) => {
                   if (!v) return Promise.resolve()
-                  const err = validatePem(v, /-----BEGIN [A-Z ]*PRIVATE KEY-----/, '私钥 PEM')
+                  const err = validatePem(
+                    v,
+                    PRIVATE_KEY_BEGIN_RE,
+                    isUploadGM ? '签名私钥 PEM' : '私钥 PEM',
+                  )
                   return err ? Promise.reject(new Error(err)) : Promise.resolve()
                 },
               },
             ]}
           >
             <Input.TextArea
-              rows={5}
+              rows={4}
               style={{ fontFamily: 'monospace', fontSize: 12 }}
               placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"
             />
           </Form.Item>
+          {isUploadGM && (
+            <>
+              <Form.Item
+                name="enc_cert_pem"
+                label="加密证书 PEM"
+                rules={[
+                  { required: true, message: '请粘贴加密证书内容' },
+                  {
+                    validator: (_, v: string) => {
+                      if (!v) return Promise.resolve()
+                      const err = validatePem(v, /-----BEGIN CERTIFICATE-----/, '加密证书 PEM')
+                      return err ? Promise.reject(new Error(err)) : Promise.resolve()
+                    },
+                  },
+                ]}
+              >
+                <Input.TextArea
+                  rows={4}
+                  style={{ fontFamily: 'monospace', fontSize: 12 }}
+                  placeholder="-----BEGIN CERTIFICATE-----&#10;（SM2 加密证书）&#10;-----END CERTIFICATE-----"
+                />
+              </Form.Item>
+              <Form.Item
+                name="enc_key_pem"
+                label="加密私钥 PEM"
+                rules={[
+                  { required: true, message: '请粘贴加密私钥内容' },
+                  {
+                    validator: (_, v: string) => {
+                      if (!v) return Promise.resolve()
+                      const err = validatePem(v, PRIVATE_KEY_BEGIN_RE, '加密私钥 PEM')
+                      return err ? Promise.reject(new Error(err)) : Promise.resolve()
+                    },
+                  },
+                ]}
+              >
+                <Input.TextArea
+                  rows={4}
+                  style={{ fontFamily: 'monospace', fontSize: 12 }}
+                  placeholder="-----BEGIN PRIVATE KEY-----&#10;（SM2 加密私钥）&#10;-----END PRIVATE KEY-----"
+                />
+              </Form.Item>
+            </>
+          )}
           <Form.Item
             name="chain_pem"
             label="证书链 PEM（可选）"
@@ -529,7 +661,7 @@ export default function CertificatesPage() {
             ]}
           >
             <Input.TextArea
-              rows={4}
+              rows={3}
               style={{ fontFamily: 'monospace', fontSize: 12 }}
               placeholder="中间证书/根证书（可选）"
             />
@@ -541,7 +673,7 @@ export default function CertificatesPage() {
         title={detail ? `证书详情：${detail.name}` : '证书详情'}
         open={detailId !== null}
         onClose={() => setDetailId(null)}
-        width={640}
+        width={660}
       >
         {detailQuery.isLoading && <Typography.Text type="secondary">加载中…</Typography.Text>}
         {detailQuery.isError && (
@@ -553,72 +685,134 @@ export default function CertificatesPage() {
           />
         )}
         {detail && (
-          <Descriptions column={1} size="small" bordered>
-            <Descriptions.Item label="名称">{detail.name}</Descriptions.Item>
-            <Descriptions.Item label="状态">
-              <StatusTag value={detail.status} map={CERT_STATUS_META} />
-            </Descriptions.Item>
-            <Descriptions.Item label="托管方式">
-              {detail.managed_by === 'ACME' ? (
-                <Space>
-                  <Tag color="cyan">ACME 自动续约</Tag>
-                  {detail.acme_provider && <StatusTag value={detail.acme_provider} map={ACME_PROVIDER_META} />}
-                </Space>
-              ) : (
-                <Tag>手动上传</Tag>
+          <>
+            <Descriptions column={1} size="small" bordered>
+              <Descriptions.Item label="名称">{detail.name}</Descriptions.Item>
+              <Descriptions.Item label="协议类型">
+                <StatusTag value={detail.protocol_type ?? 'INTERNATIONAL'} map={CERT_PROTOCOL_META} />
+              </Descriptions.Item>
+              <Descriptions.Item label="状态">
+                <StatusTag value={detail.status} map={CERT_STATUS_META} />
+              </Descriptions.Item>
+              <Descriptions.Item label="托管方式">
+                {detail.managed_by === 'ACME' ? (
+                  <Space>
+                    <Tag color="cyan">ACME 自动续约</Tag>
+                    {detail.acme_provider && <StatusTag value={detail.acme_provider} map={ACME_PROVIDER_META} />}
+                  </Space>
+                ) : (
+                  <Tag>手动上传</Tag>
+                )}
+              </Descriptions.Item>
+              {detail.managed_by === 'ACME' && (
+                <>
+                  <Descriptions.Item label="提前续约天数">
+                    到期前 {detail.renew_before_days ?? 30} 天
+                  </Descriptions.Item>
+                  <Descriptions.Item label="最近续约时间">
+                    {formatDateTime(detail.last_renewed_at)}
+                  </Descriptions.Item>
+                </>
               )}
-            </Descriptions.Item>
-            {detail.managed_by === 'ACME' && (
+              <Descriptions.Item label={detailIsGM ? '签名证书 CN' : '通用名称(CN)'}>
+                {detail.common_name}
+              </Descriptions.Item>
+              <Descriptions.Item label={detailIsGM ? '签名证书主题' : '主题'}>
+                {detail.subject}
+              </Descriptions.Item>
+              <Descriptions.Item label={detailIsGM ? '签名证书颁发者' : '颁发者'}>
+                {detail.issuer}
+              </Descriptions.Item>
+              <Descriptions.Item label={detailIsGM ? '签名证书序列号' : '序列号'}>
+                {detail.serial_number}
+              </Descriptions.Item>
+              <Descriptions.Item label="备用域名">
+                {detail.san_domains && detail.san_domains.length > 0 ? (
+                  <Space wrap>
+                    {detail.san_domains.map((d) => (
+                      <Tag key={d}>{d}</Tag>
+                    ))}
+                  </Space>
+                ) : (
+                  '-'
+                )}
+              </Descriptions.Item>
+              <Descriptions.Item label={detailIsGM ? '签名证书有效期' : '有效期'}>
+                {formatDateTime(detail.not_before)} ~ {formatDateTime(detail.not_after)}
+                {(() => {
+                  const days = certRemainingDays(detail.not_after)
+                  if (days === null) return null
+                  return (
+                    <Tag color={certRemainingColor(days)} style={{ marginLeft: 8 }}>
+                      {days < 0 ? `已过期 ${-days} 天` : `剩余 ${days} 天`}
+                    </Tag>
+                  )
+                })()}
+              </Descriptions.Item>
+              <Descriptions.Item label={detailIsGM ? '签名证书 SHA256 指纹' : 'SHA256 指纹'}>
+                <Typography.Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                  {detail.fingerprint_sha256}
+                </Typography.Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="公钥算法">
+                {detail.public_key_algorithm} {detail.public_key_bits > 0 ? `${detail.public_key_bits} 位` : ''}
+              </Descriptions.Item>
+              <Descriptions.Item label="签名算法">{detail.signature_algorithm}</Descriptions.Item>
+              <Descriptions.Item label="绑定应用">
+                <BoundApplications certId={detail.id} />
+              </Descriptions.Item>
+              <Descriptions.Item label="上传时间">{formatDateTime(detail.created_at)}</Descriptions.Item>
+            </Descriptions>
+
+            {detailIsGM && (
               <>
-                <Descriptions.Item label="提前续约天数">
-                  到期前 {detail.renew_before_days ?? 30} 天
-                </Descriptions.Item>
-                <Descriptions.Item label="最近续约时间">
-                  {formatDateTime(detail.last_renewed_at)}
-                </Descriptions.Item>
+                <Divider titlePlacement="start" plain style={{ fontSize: 13, margin: '16px 0 12px' }}>
+                  加密证书信息（SM2 加密）
+                </Divider>
+                <Descriptions column={1} size="small" bordered>
+                  <Descriptions.Item label="加密证书 CN">
+                    {detail.enc_common_name || '-'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="加密证书主题">
+                    {detail.enc_subject || '-'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="加密证书颁发者">
+                    {detail.enc_issuer || '-'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="加密证书序列号">
+                    {detail.enc_serial_number || '-'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="加密证书有效期">
+                    {detail.enc_not_before || detail.enc_not_after ? (
+                      <>
+                        {formatDateTime(detail.enc_not_before)} ~ {formatDateTime(detail.enc_not_after)}
+                        {(() => {
+                          const days = certRemainingDays(detail.enc_not_after)
+                          if (days === null) return null
+                          return (
+                            <Tag color={certRemainingColor(days)} style={{ marginLeft: 8 }}>
+                              {days < 0 ? `已过期 ${-days} 天` : `剩余 ${days} 天`}
+                            </Tag>
+                          )
+                        })()}
+                      </>
+                    ) : (
+                      '-'
+                    )}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="加密证书 SHA256 指纹">
+                    {detail.enc_fingerprint_sha256 ? (
+                      <Typography.Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                        {detail.enc_fingerprint_sha256}
+                      </Typography.Text>
+                    ) : (
+                      '-'
+                    )}
+                  </Descriptions.Item>
+                </Descriptions>
               </>
             )}
-            <Descriptions.Item label="通用名称(CN)">{detail.common_name}</Descriptions.Item>
-            <Descriptions.Item label="主题">{detail.subject}</Descriptions.Item>
-            <Descriptions.Item label="颁发者">{detail.issuer}</Descriptions.Item>
-            <Descriptions.Item label="序列号">{detail.serial_number}</Descriptions.Item>
-            <Descriptions.Item label="备用域名">
-              {detail.san_domains && detail.san_domains.length > 0 ? (
-                <Space wrap>
-                  {detail.san_domains.map((d) => (
-                    <Tag key={d}>{d}</Tag>
-                  ))}
-                </Space>
-              ) : (
-                '-'
-              )}
-            </Descriptions.Item>
-            <Descriptions.Item label="有效期">
-              {formatDateTime(detail.not_before)} ~ {formatDateTime(detail.not_after)}
-              {(() => {
-                const days = certRemainingDays(detail.not_after)
-                if (days === null) return null
-                return (
-                  <Tag color={certRemainingColor(days)} style={{ marginLeft: 8 }}>
-                    {days < 0 ? `已过期 ${-days} 天` : `剩余 ${days} 天`}
-                  </Tag>
-                )
-              })()}
-            </Descriptions.Item>
-            <Descriptions.Item label="SHA256 指纹">
-              <Typography.Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                {detail.fingerprint_sha256}
-              </Typography.Text>
-            </Descriptions.Item>
-            <Descriptions.Item label="公钥算法">
-              {detail.public_key_algorithm} {detail.public_key_bits > 0 ? `${detail.public_key_bits} 位` : ''}
-            </Descriptions.Item>
-            <Descriptions.Item label="签名算法">{detail.signature_algorithm}</Descriptions.Item>
-            <Descriptions.Item label="绑定应用">
-              <BoundApplications certId={detail.id} />
-            </Descriptions.Item>
-            <Descriptions.Item label="上传时间">{formatDateTime(detail.created_at)}</Descriptions.Item>
-          </Descriptions>
+          </>
         )}
       </Drawer>
       <AcmeSettingsModal open={acmeSettingsOpen} onClose={() => setAcmeSettingsOpen(false)} />

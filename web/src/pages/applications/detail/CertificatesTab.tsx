@@ -41,11 +41,58 @@ import {
   certRemainingDays,
   isActiveAcmeOrderStatus,
 } from '../../../utils/stage3'
-import type { ApplicationItem, CertificateItem } from '../../../types'
+import type {
+  ApplicationItem,
+  CertificateItem,
+  CertificateProtocolType,
+} from '../../../types'
 import { InlineNote } from './DetailTabPrimitives'
+import TLSProtocolPolicyCard from './TLSProtocolPolicyCard'
 import './detailTab.css'
 
 const MAX_VISIBLE_SANS = 6
+
+const CERT_DETAIL_FIELD_LABELS: Record<string, string> = {
+  id: '证书 ID',
+  name: '证书名称',
+  protocol_type: '协议类型',
+  certificate_type: '证书类型',
+  common_name: '签名/通用名称 (CN)',
+  subject: '签名/证书主题',
+  issuer: '颁发者',
+  serial_number: '序列号',
+  not_before: '生效时间',
+  not_after: '到期时间',
+  effective_not_after: '综合到期时间',
+  fingerprint_sha256: 'SHA256 指纹',
+  public_key_algorithm: '公钥算法',
+  public_key_bits: '公钥位数',
+  signature_algorithm: '签名算法',
+  san_domains: '备用域名 (SAN)',
+  enc_common_name: '加密证书 CN',
+  enc_subject: '加密证书主题',
+  enc_issuer: '加密证书颁发者',
+  enc_serial_number: '加密证书序列号',
+  enc_not_before: '加密证书生效时间',
+  enc_not_after: '加密证书到期时间',
+  enc_fingerprint_sha256: '加密证书 SHA256 指纹',
+  status: '状态',
+  managed_by: '托管方式',
+  usage_count: '使用应用数',
+  created_at: '上传时间',
+  updated_at: '更新时间',
+}
+
+const CERT_DETAIL_VALUE_LABELS: Record<string, Record<string, string>> = {
+  protocol_type: {
+    INTERNATIONAL: '通用国际（RSA/ECDSA/Ed25519）',
+    SM_TLCP: '国密 SM2 双证书（TLCP 1.1）',
+  },
+  managed_by: {
+    MANUAL: '手动上传',
+    ACME: 'ACME 自动托管',
+  },
+}
 
 function resolveCertHeroTone(
   cert: CertificateItem,
@@ -68,6 +115,12 @@ function resolveCertHeroTone(
   return 'default'
 }
 
+interface BindingModalState {
+  operation: 'bind' | 'unbind'
+  slot: CertificateProtocolType
+  certificate?: CertificateItem
+}
+
 export default function CertificatesTab({
   application,
 }: {
@@ -76,19 +129,27 @@ export default function CertificatesTab({
   const { message } = AntdApp.useApp()
   const queryClient = useQueryClient()
   const [detailRecord, setDetailRecord] = useState<CertificateItem | null>(null)
-  const [operation, setOperation] = useState<'bind' | 'unbind' | null>(null)
+  const [bindingModal, setBindingModal] = useState<BindingModalState | null>(
+    null,
+  )
   const [customRenewDays, setCustomRenewDays] = useState<number | null>(null)
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canRead = hasPermission(permissions, 'certificates.read')
   const canBind = hasPermission(permissions, 'certificates.bind')
   const canCreate = hasPermission(permissions, 'certificates.create')
+  const canReadApp = hasPermission(permissions, 'applications.read')
 
   const boundQuery = useQuery({
     queryKey: ['app-certificates', application.id],
     queryFn: () => certificatesApi.applicationCertificate(application.id),
     enabled: canRead,
   })
-  const boundCertificate = boundQuery.data?.certificate ?? null
+  const intlCertificate =
+    boundQuery.data?.bindings?.international ??
+    boundQuery.data?.certificate ??
+    null
+  const gmCertificate =
+    boundQuery.data?.bindings?.gm ?? boundQuery.data?.gm_certificate ?? null
 
   const autoSslQuery = useQuery({
     queryKey: ['app-auto-ssl', application.id],
@@ -191,18 +252,35 @@ export default function CertificatesTab({
       isActiveAcmeOrderStatus(autoSsl?.latest_order?.status),
   )
 
-  const remainingDays = boundCertificate
-    ? certRemainingDays(boundCertificate.not_after)
+  const intlRemainingDays = intlCertificate
+    ? certRemainingDays(
+        intlCertificate.effective_not_after ?? intlCertificate.not_after,
+      )
     : null
-  const heroTone = boundCertificate
-    ? resolveCertHeroTone(boundCertificate, remainingDays)
+  const intlHeroTone = intlCertificate
+    ? resolveCertHeroTone(intlCertificate, intlRemainingDays)
     : 'default'
-  const certStatusMeta = boundCertificate
-    ? CERT_STATUS_META[boundCertificate.status]
+  const intlStatusMeta = intlCertificate
+    ? CERT_STATUS_META[intlCertificate.status]
     : undefined
-  const sanDomains = boundCertificate?.san_domains ?? []
-  const visibleSans = sanDomains.slice(0, MAX_VISIBLE_SANS)
-  const hiddenSans = sanDomains.slice(MAX_VISIBLE_SANS)
+  const intlSanDomains = intlCertificate?.san_domains ?? []
+  const intlVisibleSans = intlSanDomains.slice(0, MAX_VISIBLE_SANS)
+  const intlHiddenSans = intlSanDomains.slice(MAX_VISIBLE_SANS)
+
+  const gmRemainingDays = gmCertificate
+    ? certRemainingDays(
+        gmCertificate.effective_not_after ?? gmCertificate.not_after,
+      )
+    : null
+  const gmHeroTone = gmCertificate
+    ? resolveCertHeroTone(gmCertificate, gmRemainingDays)
+    : 'default'
+  const gmStatusMeta = gmCertificate
+    ? CERT_STATUS_META[gmCertificate.status]
+    : undefined
+  const gmSanDomains = gmCertificate?.san_domains ?? []
+  const gmVisibleSans = gmSanDomains.slice(0, MAX_VISIBLE_SANS)
+  const gmHiddenSans = gmSanDomains.slice(MAX_VISIBLE_SANS)
 
   const criticalWarnings = (autoSsl?.warnings ?? []).filter(
     (w) => w.level === 'error' || w.level === 'warning',
@@ -213,17 +291,24 @@ export default function CertificatesTab({
 
   return (
     <div className="jz-detail-tab">
-      {/* 区块 1：当前绑定证书（主角凭证卡片，替代单行超宽表格） */}
+      {/* 区块 1：槽位 1 — 通用协议证书（RSA / ECDSA / Ed25519） */}
       <Card
         className="jz-detail-card"
-        title="当前绑定证书"
+        title={
+          <Space size={8} wrap>
+            <span>通用协议证书（RSA / ECDSA / Ed25519）</span>
+            <Tag color="blue" style={{ marginInlineEnd: 0 }}>
+              国际槽位
+            </Tag>
+          </Space>
+        }
         extra={
-          boundCertificate && (
+          intlCertificate && (
             <Space size={8} wrap>
               <Button
                 size="small"
                 icon={<EyeOutlined aria-hidden="true" />}
-                onClick={() => setDetailRecord(boundCertificate)}
+                onClick={() => setDetailRecord(intlCertificate)}
               >
                 查看详情
               </Button>
@@ -233,7 +318,12 @@ export default function CertificatesTab({
                     type="primary"
                     size="small"
                     icon={<SwapOutlined aria-hidden="true" />}
-                    onClick={() => setOperation('bind')}
+                    onClick={() =>
+                      setBindingModal({
+                        operation: 'bind',
+                        slot: 'INTERNATIONAL',
+                      })
+                    }
                   >
                     替换证书
                   </Button>
@@ -241,7 +331,13 @@ export default function CertificatesTab({
                     danger
                     size="small"
                     icon={<DeleteOutlined aria-hidden="true" />}
-                    onClick={() => setOperation('unbind')}
+                    onClick={() =>
+                      setBindingModal({
+                        operation: 'unbind',
+                        slot: 'INTERNATIONAL',
+                        certificate: intlCertificate,
+                      })
+                    }
                   >
                     解绑证书
                   </Button>
@@ -266,9 +362,9 @@ export default function CertificatesTab({
                 : undefined
             }
           />
-        ) : boundCertificate ? (
+        ) : intlCertificate ? (
           <div
-            className={`jz-detail-cert-hero${heroTone !== 'default' ? ` jz-detail-cert-hero--${heroTone}` : ''}`}
+            className={`jz-detail-cert-hero${intlHeroTone !== 'default' ? ` jz-detail-cert-hero--${intlHeroTone}` : ''}`}
           >
             <div className="jz-detail-cert-hero-top">
               <div className="jz-detail-cert-hero-identity">
@@ -278,16 +374,16 @@ export default function CertificatesTab({
                 <div style={{ minWidth: 0 }}>
                   <Space size={8} wrap align="center">
                     <Typography.Text strong style={{ fontSize: 16 }}>
-                      {boundCertificate.name}
+                      {intlCertificate.name}
                     </Typography.Text>
-                    {certStatusMeta ? (
-                      <Tag color={certStatusMeta.color}>
-                        {certStatusMeta.label}
+                    {intlStatusMeta ? (
+                      <Tag color={intlStatusMeta.color}>
+                        {intlStatusMeta.label}
                       </Tag>
                     ) : (
-                      <Tag>{boundCertificate.status}</Tag>
+                      <Tag>{intlCertificate.status}</Tag>
                     )}
-                    {boundCertificate.managed_by === 'ACME' ? (
+                    {intlCertificate.managed_by === 'ACME' ? (
                       <Tag color="cyan" icon={<SafetyCertificateOutlined />}>
                         ACME 自动
                       </Tag>
@@ -300,25 +396,25 @@ export default function CertificatesTab({
                       CN：
                     </Typography.Text>
                     <Typography.Text code style={{ fontSize: 12 }}>
-                      {boundCertificate.common_name || '-'}
+                      {intlCertificate.common_name || '-'}
                     </Typography.Text>
                   </div>
                 </div>
               </div>
 
-              {remainingDays !== null && (
+              {intlRemainingDays !== null && (
                 <Tag
                   icon={<ClockCircleOutlined />}
-                  color={certRemainingColor(remainingDays)}
+                  color={certRemainingColor(intlRemainingDays)}
                   style={{
                     fontSize: 13,
                     padding: '4px 10px',
                     marginInlineEnd: 0,
                   }}
                 >
-                  {remainingDays < 0
-                    ? `已过期 ${-remainingDays} 天`
-                    : `剩余 ${remainingDays} 天`}
+                  {intlRemainingDays < 0
+                    ? `已过期 ${-intlRemainingDays} 天`
+                    : `剩余 ${intlRemainingDays} 天`}
                 </Tag>
               )}
             </div>
@@ -328,32 +424,40 @@ export default function CertificatesTab({
                 <div className="jz-detail-cert-meta-label">通用名称 (CN)</div>
                 <div className="jz-detail-cert-meta-value">
                   <Typography.Text code>
-                    {boundCertificate.common_name || '-'}
+                    {intlCertificate.common_name || '-'}
                   </Typography.Text>
                 </div>
               </Col>
               <Col xs={24} sm={12} md={8}>
                 <div className="jz-detail-cert-meta-label">到期时间</div>
                 <div className="jz-detail-cert-meta-value">
-                  {formatDateTime(boundCertificate.not_after ?? null)}
+                  {formatDateTime(
+                    intlCertificate.effective_not_after ??
+                      intlCertificate.not_after ??
+                      null,
+                  )}
                 </div>
               </Col>
               <Col xs={24} sm={24} md={8}>
                 <div className="jz-detail-cert-meta-label">颁发者 / 密钥</div>
                 <div className="jz-detail-cert-meta-value">
-                  {boundCertificate.issuer || '-'}
-                  {boundCertificate.public_key_algorithm
-                    ? ` · ${boundCertificate.public_key_algorithm}${boundCertificate.public_key_bits ? ` ${boundCertificate.public_key_bits}` : ''}`
+                  {intlCertificate.issuer || '-'}
+                  {intlCertificate.public_key_algorithm
+                    ? ` · ${intlCertificate.public_key_algorithm}${intlCertificate.public_key_bits ? ` ${intlCertificate.public_key_bits}` : ''}`
                     : ''}
                 </div>
               </Col>
               <Col span={24}>
                 <div className="jz-detail-cert-meta-label">
-                  备用域名 (SAN{sanDomains.length > 0 ? ` · ${sanDomains.length} 个` : ''})
+                  备用域名 (SAN
+                  {intlSanDomains.length > 0
+                    ? ` · ${intlSanDomains.length} 个`
+                    : ''}
+                  )
                 </div>
-                {sanDomains.length > 0 ? (
+                {intlSanDomains.length > 0 ? (
                   <Space size={6} wrap>
-                    {visibleSans.map((domain) => (
+                    {intlVisibleSans.map((domain) => (
                       <Tag
                         key={domain}
                         style={{
@@ -365,10 +469,10 @@ export default function CertificatesTab({
                         {domain}
                       </Tag>
                     ))}
-                    {hiddenSans.length > 0 && (
-                      <Tooltip title={sanDomains.join('\n')}>
+                    {intlHiddenSans.length > 0 && (
+                      <Tooltip title={intlSanDomains.join('\n')}>
                         <Tag color="blue" style={{ cursor: 'pointer' }}>
-                          +{hiddenSans.length} 个域名
+                          +{intlHiddenSans.length} 个域名
                         </Tag>
                       </Tooltip>
                     )}
@@ -390,14 +494,18 @@ export default function CertificatesTab({
                 : '当前应用未绑定证书'}
             </Typography.Text>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              可从证书库选择已有证书直接绑定，或在下方开启 ACME 自动申请免费
-              SSL 证书。
+              可从证书库选择已有通用国际证书直接绑定，或在下方开启 ACME 自动申请免费 SSL 证书。
             </Typography.Text>
             {canBind && (
               <Button
                 type="primary"
                 style={{ marginTop: 4 }}
-                onClick={() => setOperation('bind')}
+                onClick={() =>
+                  setBindingModal({
+                    operation: 'bind',
+                    slot: 'INTERNATIONAL',
+                  })
+                }
               >
                 绑定证书
               </Button>
@@ -408,13 +516,230 @@ export default function CertificatesTab({
         <div style={{ marginTop: 14 }}>
           <InlineNote compact>
             <strong>证书绑定、替换和解绑均需经过配置发布后生效</strong>
-            ：后端会校验证书有效期及 CN/SAN 对应用全部 HTTPS
-            域名的覆盖；开启自动 SSL 且开启自动发布时，签发与续约成功后会自动触发配置发布。
+            ：后端会校验证书有效期及 CN/SAN 对应用全部 HTTPS 域名的覆盖；同一应用可与下方国密 SM2 双证书并存。
           </InlineNote>
         </div>
       </Card>
 
-      {/* 区块 2：ACME 自动申请与到期续约 SSL 证书 */}
+      {/* 区块 2：槽位 2 — 国密协议双证书（SM2 / TLCP 1.1） */}
+      <Card
+        className="jz-detail-card"
+        title={
+          <Space size={8} wrap>
+            <span>国密协议双证书（SM2 / TLCP 1.1）</span>
+            <Tag color="volcano" style={{ marginInlineEnd: 0 }}>
+              国密槽位
+            </Tag>
+          </Space>
+        }
+        extra={
+          gmCertificate && (
+            <Space size={8} wrap>
+              <Button
+                size="small"
+                icon={<EyeOutlined aria-hidden="true" />}
+                onClick={() => setDetailRecord(gmCertificate)}
+              >
+                查看国密详情
+              </Button>
+              {canBind && (
+                <>
+                  <Button
+                    type="primary"
+                    size="small"
+                    icon={<SwapOutlined aria-hidden="true" />}
+                    onClick={() =>
+                      setBindingModal({
+                        operation: 'bind',
+                        slot: 'SM_TLCP',
+                      })
+                    }
+                  >
+                    替换国密双证书
+                  </Button>
+                  <Button
+                    danger
+                    size="small"
+                    icon={<DeleteOutlined aria-hidden="true" />}
+                    onClick={() =>
+                      setBindingModal({
+                        operation: 'unbind',
+                        slot: 'SM_TLCP',
+                        certificate: gmCertificate,
+                      })
+                    }
+                  >
+                    解绑国密双证书
+                  </Button>
+                </>
+              )}
+            </Space>
+          )
+        }
+      >
+        {boundQuery.isLoading ? (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: 28 }}>
+            <Spin />
+          </div>
+        ) : boundQuery.isError ? (
+          <Alert
+            type="error"
+            showIcon
+            title="加载国密证书绑定失败"
+            description={
+              boundQuery.error instanceof ApiError
+                ? boundQuery.error.message
+                : undefined
+            }
+          />
+        ) : gmCertificate ? (
+          <div
+            className={`jz-detail-cert-hero${gmHeroTone !== 'default' ? ` jz-detail-cert-hero--${gmHeroTone}` : ''}`}
+          >
+            <div className="jz-detail-cert-hero-top">
+              <div className="jz-detail-cert-hero-identity">
+                <div className="jz-detail-cert-hero-icon" aria-hidden="true">
+                  <SafetyCertificateOutlined />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <Space size={8} wrap align="center">
+                    <Typography.Text strong style={{ fontSize: 16 }}>
+                      {gmCertificate.name}
+                    </Typography.Text>
+                    {gmStatusMeta ? (
+                      <Tag color={gmStatusMeta.color}>{gmStatusMeta.label}</Tag>
+                    ) : (
+                      <Tag>{gmCertificate.status}</Tag>
+                    )}
+                    <Tag color="volcano">国密 SM2/TLCP</Tag>
+                  </Space>
+                  <div style={{ marginTop: 4 }}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      签名 CN：
+                    </Typography.Text>
+                    <Typography.Text code style={{ fontSize: 12 }}>
+                      {gmCertificate.common_name || '-'}
+                    </Typography.Text>
+                    {gmCertificate.enc_common_name && (
+                      <>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12, marginLeft: 12 }}
+                        >
+                          加密 CN：
+                        </Typography.Text>
+                        <Typography.Text code style={{ fontSize: 12 }}>
+                          {gmCertificate.enc_common_name}
+                        </Typography.Text>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {gmRemainingDays !== null && (
+                <Tag
+                  icon={<ClockCircleOutlined />}
+                  color={certRemainingColor(gmRemainingDays)}
+                  style={{
+                    fontSize: 13,
+                    padding: '4px 10px',
+                    marginInlineEnd: 0,
+                  }}
+                >
+                  {gmRemainingDays < 0
+                    ? `已过期 ${-gmRemainingDays} 天`
+                    : `剩余 ${gmRemainingDays} 天`}
+                </Tag>
+              )}
+            </div>
+
+            <Row gutter={[16, 14]} className="jz-detail-cert-hero-grid">
+              <Col xs={24} sm={12} md={8}>
+                <div className="jz-detail-cert-meta-label">签名证书到期时间</div>
+                <div className="jz-detail-cert-meta-value">
+                  {formatDateTime(gmCertificate.not_after ?? null)}
+                </div>
+              </Col>
+              <Col xs={24} sm={12} md={8}>
+                <div className="jz-detail-cert-meta-label">加密证书到期时间</div>
+                <div className="jz-detail-cert-meta-value">
+                  {formatDateTime(gmCertificate.enc_not_after ?? null)}
+                </div>
+              </Col>
+              <Col xs={24} sm={24} md={8}>
+                <div className="jz-detail-cert-meta-label">签名 / 加密序列号</div>
+                <div className="jz-detail-cert-meta-value" style={{ fontSize: 12 }}>
+                  {gmCertificate.serial_number || '-'}
+                  {gmCertificate.enc_serial_number
+                    ? ` / ${gmCertificate.enc_serial_number}`
+                    : ''}
+                </div>
+              </Col>
+              <Col span={24}>
+                <div className="jz-detail-cert-meta-label">
+                  备用域名 (SAN
+                  {gmSanDomains.length > 0 ? ` · ${gmSanDomains.length} 个` : ''}
+                  )
+                </div>
+                {gmSanDomains.length > 0 ? (
+                  <Space size={6} wrap>
+                    {gmVisibleSans.map((domain) => (
+                      <Tag
+                        key={domain}
+                        style={{
+                          fontFamily:
+                            'ui-monospace, SFMono-Regular, Menlo, monospace',
+                          marginInlineEnd: 0,
+                        }}
+                      >
+                        {domain}
+                      </Tag>
+                    ))}
+                    {gmHiddenSans.length > 0 && (
+                      <Tooltip title={gmSanDomains.join('\n')}>
+                        <Tag color="volcano" style={{ cursor: 'pointer' }}>
+                          +{gmHiddenSans.length} 个域名
+                        </Tag>
+                      </Tooltip>
+                    )}
+                  </Space>
+                ) : (
+                  <Typography.Text type="secondary">-</Typography.Text>
+                )}
+              </Col>
+            </Row>
+          </div>
+        ) : (
+          <div className="jz-detail-cert-empty">
+            <div className="jz-detail-cert-empty-icon" aria-hidden="true">
+              <SafetyCertificateOutlined />
+            </div>
+            <Typography.Text strong style={{ fontSize: 14 }}>
+              当前应用未绑定国密双证书
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              支持与通用国际证书同端口共存；绑定 SM2 签名+加密双证书后，网关可在同一 HTTPS 端口自动识别国密 TLCP 1.1 与标准 TLS 客户端。
+            </Typography.Text>
+            {canBind && (
+              <Button
+                type="primary"
+                style={{ marginTop: 4 }}
+                onClick={() =>
+                  setBindingModal({
+                    operation: 'bind',
+                    slot: 'SM_TLCP',
+                  })
+                }
+              >
+                绑定国密双证书
+              </Button>
+            )}
+          </div>
+        )}
+      </Card>
+
+      {/* 区块 3：ACME 自动申请与到期续约 SSL 证书 */}
       <Card
         className="jz-detail-card"
         title={
@@ -474,13 +799,16 @@ export default function CertificatesTab({
                   disabled={!autoSsl?.ready || orderInProgress}
                   onClick={() => issueMutation.mutate()}
                 >
-                  {boundCertificate ? '立即申请/续约' : '立即申请证书'}
+                  {intlCertificate ? '立即申请/续约' : '立即申请证书'}
                 </Button>
               </Tooltip>
             )}
           </Space>
         }
       >
+        <InlineNote compact>
+          <strong>作用域说明</strong>：ACME 自动申请与续约仅管理「通用协议证书（国际槽位）」，不会覆盖或解绑已绑定的国密 SM2 双证书。
+        </InlineNote>
         {autoSslQuery.isError ? (
           <Alert
             type="error"
@@ -687,21 +1015,35 @@ export default function CertificatesTab({
         ) : null}
       </Card>
 
+      {/* 区块 4：站点级协议与加密策略（TLS / HTTP 降级与自识别，按 applications.read/update 门控） */}
+      {canReadApp && (
+        <TLSProtocolPolicyCard
+          appId={application.id}
+          hasIntlCert={Boolean(intlCertificate)}
+          hasGMCert={Boolean(gmCertificate)}
+        />
+      )}
+
       <RecordDetailDrawer
         open={detailRecord !== null}
         title="证书详情"
         record={detailRecord as Record<string, unknown> | null}
+        fieldLabels={CERT_DETAIL_FIELD_LABELS}
+        valueLabels={CERT_DETAIL_VALUE_LABELS}
         onClose={() => setDetailRecord(null)}
       />
-      {operation && (
+      {bindingModal && (
         <CertificateBindingModal
           open
-          operation={operation}
+          operation={bindingModal.operation}
           application={application}
+          protocolSlot={bindingModal.slot}
           certificate={
-            operation === 'unbind' ? (boundCertificate ?? undefined) : undefined
+            bindingModal.operation === 'unbind'
+              ? bindingModal.certificate
+              : undefined
           }
-          onClose={() => setOperation(null)}
+          onClose={() => setBindingModal(null)}
         />
       )}
     </div>

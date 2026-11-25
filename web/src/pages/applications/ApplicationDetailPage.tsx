@@ -33,6 +33,7 @@ import ApplicationAssetValueCard from './ApplicationAssetValueCard'
 import DomainsTab from './detail/DomainsTab'
 import UpstreamsTab from './detail/UpstreamsTab'
 import CertificatesTab from './detail/CertificatesTab'
+import TLSProtocolPolicyCard from './detail/TLSProtocolPolicyCard'
 import HeaderProxyTab from './detail/HeaderProxyTab'
 import JwtTrustTab from './detail/JwtTrustTab'
 import BotPolicyTab from './detail/BotPolicyTab'
@@ -285,11 +286,16 @@ export default function ApplicationDetailPage() {
                     ) : hasHttps ? (
                       <CertificatesTab application={app} />
                     ) : (
-                      <Alert
-                        type="info"
-                        showIcon
-                        message="当前应用未启用 HTTPS 域名，无需绑定证书"
-                      />
+                      <Space direction="vertical" size={16} style={{ display: 'flex' }}>
+                        <Alert
+                          type="info"
+                          showIcon
+                          message="当前应用未启用 HTTPS 域名，无需绑定证书"
+                        />
+                        {hasPermission(permissions, 'applications.read') && (
+                          <TLSProtocolPolicyCard appId={app.id} />
+                        )}
+                      </Space>
                     ),
                   },
                 ]

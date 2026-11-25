@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"gitee.com/Trisia/gotlcp/tlcp"
 	"github.com/jiuzhang-waf/server/internal/validation"
 )
 
@@ -60,9 +61,9 @@ func TestConnectivity(ctx context.Context, in TestInput) *TestResult {
 
 	// 1. 协议与方法校验
 	scheme := strings.ToLower(in.Scheme)
-	if scheme != "http" && scheme != "https" {
+	if scheme != "http" && scheme != "https" && scheme != "tlcp" {
 		result.ErrorCode = "INVALID_SCHEME"
-		result.ErrorMessage = "仅支持 HTTP 和 HTTPS 协议"
+		result.ErrorMessage = "仅支持 HTTP、HTTPS 和 TLCP（国密）协议"
 		return result
 	}
 	method := strings.ToUpper(strings.TrimSpace(in.Method))
@@ -111,12 +112,17 @@ func TestConnectivity(ctx context.Context, in TestInput) *TestResult {
 		result.ResolvedAddresses = append(result.ResolvedAddresses, a.String())
 	}
 
-	// 5. 建立带自定义 Dial 的 HTTP 客户端（强制使用已校验的 IP）
+	// 5. 建立带自定义 Dial 的 HTTP 客户端（强制使用已校验的 IP；tlcp 经 gotlcp 真实国密握手）
 	start := time.Now()
-	client := buildSafeClient(in, addrs)
+	var tlcpHandshakeDone bool
+	var tlcpVerifyResult string
+	client := buildSafeClient(in, addrs, func(ok bool, verifyMsg string) {
+		tlcpHandshakeDone = ok
+		tlcpVerifyResult = verifyMsg
+	})
 	defer client.CloseIdleConnections()
 
-	// 6. 发起 HTTP 请求
+	// 6. 发起 HTTP 请求（tlcp 复用 https URL 经自定义 DialTLSContext 执行 TLCP 1.1 握手）
 	path := in.HealthCheckPath
 	if path == "" {
 		path = "/"
@@ -124,7 +130,11 @@ func TestConnectivity(ctx context.Context, in TestInput) *TestResult {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	url := fmt.Sprintf("%s://%s%s", scheme, net.JoinHostPort(in.Host, fmt.Sprintf("%d", in.Port)), path)
+	reqScheme := scheme
+	if reqScheme == "tlcp" {
+		reqScheme = "https"
+	}
+	url := fmt.Sprintf("%s://%s%s", reqScheme, net.JoinHostPort(in.Host, fmt.Sprintf("%d", in.Port)), path)
 
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
@@ -153,6 +163,9 @@ func TestConnectivity(ctx context.Context, in TestInput) *TestResult {
 	resp, err := client.Do(req)
 	result.ResponseTimeMs = time.Since(start).Milliseconds()
 	if err != nil {
+		if scheme == "tlcp" && tlcpVerifyResult != "" {
+			result.TLSVerifyResult = tlcpVerifyResult
+		}
 		result.ErrorCode = classifyError(err)
 		result.ErrorMessage = sanitizeErrorMessage(err)
 		return result
@@ -161,6 +174,9 @@ func TestConnectivity(ctx context.Context, in TestInput) *TestResult {
 	result.TCPConnected = true
 	if scheme == "https" {
 		result.TLSHandshake = tlsHandshakeDone
+	} else if scheme == "tlcp" {
+		result.TLSHandshake = tlcpHandshakeDone
+		result.TLSVerifyResult = tlcpVerifyResult
 	}
 	result.HTTPStatus = resp.StatusCode
 
@@ -183,8 +199,8 @@ func isAlwaysDeniedUpstreamAddr(a netip.Addr) bool {
 		a.IsMulticast()
 }
 
-// buildSafeClient 构建使用预校验 IP 的安全 HTTP 客户端。
-func buildSafeClient(in TestInput, addrs []netip.Addr) *http.Client {
+// buildSafeClient 构建使用预校验 IP 的安全 HTTP 客户端（支持 http / https / tlcp）。
+func buildSafeClient(in TestInput, addrs []netip.Addr, onTLCPHandshake func(ok bool, verifyMsg string)) *http.Client {
 	reqTimeout := httpTimeout
 	if in.Timeout > 0 {
 		reqTimeout = in.Timeout
@@ -206,41 +222,69 @@ func buildSafeClient(in TestInput, addrs []netip.Addr) *http.Client {
 		Timeout:   dTimeout,
 		KeepAlive: 0,
 	}
+	safeDial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// 强制使用已校验的 IP 地址（防 DNS 重绑定）
+		_, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		var lastErr error
+		for _, a := range addrs {
+			a = a.Unmap()
+			if isAlwaysDeniedUpstreamAddr(a) || (!in.AllowPrivate && validation.IsPrivateOrSpecialAddress(a)) {
+				return nil, fmt.Errorf("ssrf blocked: %s", a)
+			}
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(a.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
 	transport := &http.Transport{
 		DisableKeepAlives:   true,
 		MaxIdleConns:        0,
 		IdleConnTimeout:     30 * time.Second,
 		TLSHandshakeTimeout: tTimeout,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			// 强制使用已校验的 IP 地址（防 DNS 重绑定）
-			_, port, err := net.SplitHostPort(addr)
-			if err != nil {
-				return nil, err
-			}
-			var lastErr error
-			for _, a := range addrs {
-				a = a.Unmap()
-				if isAlwaysDeniedUpstreamAddr(a) || (!in.AllowPrivate && validation.IsPrivateOrSpecialAddress(a)) {
-					return nil, fmt.Errorf("ssrf blocked: %s", a)
-				}
-				conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(a.String(), port))
-				if err == nil {
-					return conn, nil
-				}
-				lastErr = err
-			}
-			return nil, lastErr
-		},
+		DialContext:         safeDial,
 	}
-	if strings.ToLower(in.Scheme) == "https" {
-		serverName := in.TLSServerName
-		if serverName == "" {
-			serverName = in.Host
-		}
+	scheme := strings.ToLower(in.Scheme)
+	serverName := in.TLSServerName
+	if serverName == "" {
+		serverName = in.Host
+	}
+	switch scheme {
+	case "https":
 		transport.TLSClientConfig = &tls.Config{
 			ServerName:         serverName,
 			InsecureSkipVerify: !in.TLSVerify, // 仅在显式关闭时跳过证书校验
 			MinVersion:         tls.VersionTLS12,
+		}
+	case "tlcp":
+		transport.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			rawConn, err := safeDial(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			tlcpCfg := &tlcp.Config{
+				ServerName:         serverName,
+				InsecureSkipVerify: !in.TLSVerify,
+			}
+			tConn := tlcp.Client(rawConn, tlcpCfg)
+			hsCtx, cancel := context.WithTimeout(ctx, tTimeout)
+			defer cancel()
+			if err := tConn.HandshakeContext(hsCtx); err != nil {
+				_ = rawConn.Close()
+				if onTLCPHandshake != nil {
+					onTLCPHandshake(false, err.Error())
+				}
+				return nil, fmt.Errorf("tlcp handshake failed: %w", err)
+			}
+			if onTLCPHandshake != nil {
+				onTLCPHandshake(true, "ok")
+			}
+			return tConn, nil
 		}
 	}
 	return &http.Client{
@@ -257,7 +301,7 @@ func buildSafeClient(in TestInput, addrs []netip.Addr) *http.Client {
 
 // classifyError 分类错误码。
 func classifyError(err error) string {
-	msg := err.Error()
+	msg := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(msg, "timeout"):
 		return "TIMEOUT"
@@ -267,7 +311,7 @@ func classifyError(err error) string {
 		return "NO_ROUTE"
 	case strings.Contains(msg, "certificate"):
 		return "TLS_CERTIFICATE_ERROR"
-	case strings.Contains(msg, "tls"):
+	case strings.Contains(msg, "tls") || strings.Contains(msg, "tlcp"):
 		return "TLS_HANDSHAKE_FAILED"
 	default:
 		return "CONNECTION_FAILED"

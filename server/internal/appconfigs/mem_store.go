@@ -14,16 +14,18 @@ import (
 // 供单测与无库环境驱动真实 Handler。内存实现无应用表，不模拟外键
 // （任意 appID 均视为存在；ErrAppNotFound 仅 SQL Store 产生）。
 type MemStore struct {
-	mu      sync.Mutex
-	headers map[uuid.UUID]*HeaderConfigRecord // appID → 配置记录
-	routes  map[uuid.UUID]*PathRoute          // routeID → 路径转发
+	mu         sync.Mutex
+	headers    map[uuid.UUID]*HeaderConfigRecord // appID → 头合规配置记录
+	tlsConfigs map[uuid.UUID]*TLSConfigRecord    // appID → TLS/HTTP 协议策略记录
+	routes     map[uuid.UUID]*PathRoute          // routeID → 路径转发
 }
 
 // NewMemStore 创建空内存仓储。
 func NewMemStore() *MemStore {
 	return &MemStore{
-		headers: map[uuid.UUID]*HeaderConfigRecord{},
-		routes:  map[uuid.UUID]*PathRoute{},
+		headers:    map[uuid.UUID]*HeaderConfigRecord{},
+		tlsConfigs: map[uuid.UUID]*TLSConfigRecord{},
+		routes:     map[uuid.UUID]*PathRoute{},
 	}
 }
 

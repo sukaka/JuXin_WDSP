@@ -144,10 +144,11 @@ type GuardProvider interface {
 	GetVersionConfig(ctx context.Context, versionID uuid.UUID) (*GuardConfig, error)
 }
 
-// AppConfigsProvider 应用头合规与路径转发配置提供者（appconfigs.Store 实现，可为 nil）。
-// GetHeaderConfig 未配置时返回 (nil, nil)（默认静态头行为）；DB 错误如实返回（中止发布，禁止静默降级）。
+// AppConfigsProvider 应用头合规、协议策略与路径转发配置提供者（appconfigs.Store 实现，可为 nil）。
+// GetHeaderConfig/GetTLSConfig 未配置时返回 (nil, nil)（采用默认行为）；DB 错误如实返回（中止发布，禁止静默降级）。
 type AppConfigsProvider interface {
 	GetHeaderConfig(ctx context.Context, appID uuid.UUID) (*AppHeaderConfig, error)
+	GetTLSConfig(ctx context.Context, appID uuid.UUID) (*AppTLSConfig, error)
 	ListEnabledPathRoutes(ctx context.Context, appID uuid.UUID) ([]AppPathRoute, error)
 }
 
@@ -249,9 +250,10 @@ type Publisher struct {
 	syncAlerter     SyncAlerter
 	localNodeName   string
 	nodeAgentSyncer NodeAgentSyncer
-	// certKeyLoader / loadVersionFn 仅测试注入覆盖，生产路径分别走 p.certs.GetDecryptedKey / p.getVersion。
-	certKeyLoader func(ctx context.Context, certID uuid.UUID) (string, error)
-	loadVersionFn func(ctx context.Context, id uuid.UUID) (*ConfigVersion, error)
+	// certKeyLoader / gmCertMaterialLoader / loadVersionFn 仅测试注入覆盖，生产路径分别走 p.certs.GetDecryptedKey / p.certs.GetGMCertMaterial / p.getVersion。
+	certKeyLoader        func(ctx context.Context, certID uuid.UUID) (string, error)
+	gmCertMaterialLoader func(ctx context.Context, certID uuid.UUID) (*certificates.GMCertMaterial, error)
+	loadVersionFn        func(ctx context.Context, id uuid.UUID) (*ConfigVersion, error)
 	// licenseState 授权状态视图（装配层注入 license 内存状态，发布时实时读取无 IO）：
 	// 无效授权 → 强制纯透传（Guard=nil、全部应用 BYPASS）；有效且配额 max_qps>0 →
 	// Guard 注入 LicenseMaxQPS。nil 视为授权有效（未装配授权时发布行为与历史一致）。
@@ -854,7 +856,7 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	// required_capabilities 由本次负载特性段推导；空需求免门禁（存量发布零变化），
 	// 缺能力（CAPABILITY_MISSING）/清单缺失或过期（CAPABILITY_MANIFEST_UNAVAILABLE）
 	// 该节点发布失败并展示缺口明细，不发送 /load、不得静默降级。
-	if ok, code, msg := p.evaluateCapabilityGate(ctx, guardCfg, in.AppIDs...); !ok {
+	if ok, code, msg := p.evaluateCapabilityGateWithApps(ctx, guardCfg, appsData, in.AppIDs...); !ok {
 		p.markVersionResult(ctx, version.ID, "FAILED")
 		p.finishTask(ctx, taskID, TaskFailed, code, msg, &version.ID)
 		return
@@ -1584,13 +1586,18 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 			Domains:        domains,
 			Upstreams:      upstreams,
 		}
-		// 头合规与路径转发（注入者存在时加载；DB 错误中止发布，禁止静默降级为默认头行为）
+		// 头合规、协议策略与路径转发（注入者存在时加载；DB 错误中止发布，禁止静默降级为默认行为）
 		if p.appConfigs != nil {
 			hc, err := p.appConfigs.GetHeaderConfig(ctx, app.ID)
 			if err != nil {
 				return nil, nil, fmt.Errorf("load header config for %s: %w", app.Code, err)
 			}
 			ad.HeaderConfig = hc
+			tc, err := p.appConfigs.GetTLSConfig(ctx, app.ID)
+			if err != nil {
+				return nil, nil, fmt.Errorf("load tls config for %s: %w", app.Code, err)
+			}
+			ad.TLSConfig = tc
 			prs, err := p.appConfigs.ListEnabledPathRoutes(ctx, app.ID)
 			if err != nil {
 				return nil, nil, fmt.Errorf("load path routes for %s: %w", app.Code, err)
@@ -1668,6 +1675,7 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 			}
 		}
 		// 证书（HTTPS 应用；MIRROR 镜像旁路不终结 TLS、不加载证书，跳过强制证书校验）
+		// 支持双槽位并存：通用国际证书、国密 SM_TLCP 双证书，或二者同时绑定。
 		hasHTTPS := false
 		for _, d := range domains {
 			if d.HTTPSEnabled {
@@ -1676,11 +1684,20 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 			}
 		}
 		if hasHTTPS && app.DeploymentMode != applications.DeployModeMirror {
-			cert, err := p.certs.GetApplicationCertificate(ctx, app.ID)
+			bindings, err := p.certs.GetApplicationCertificates(ctx, app.ID)
 			if err != nil {
 				return nil, nil, fmt.Errorf("应用 %s 查询证书失败: %w", app.Code, err)
 			}
-			if cert == nil {
+			var intlCert, gmCert *certificates.Certificate
+			if bindings != nil {
+				intlCert = bindings.International
+				gmCert = bindings.GM
+			}
+			if intlCert == nil && gmCert == nil {
+				// 若显式配置为仅国密模式（GM_ONLY），自动 SSL 无法签发国密双证书，须立即报错
+				if ad.TLSConfig != nil && strings.EqualFold(strings.TrimSpace(ad.TLSConfig.TLSProtocolMode), TLSProtocolModeGMOnly) {
+					return nil, nil, fmt.Errorf("应用 %s 已配置为仅国密模式（GM_ONLY），但未绑定国密 SM_TLCP 双证书", app.Code)
+				}
 				if app.AutoSSLEnabled {
 					// 开启自动 SSL 且首次证书尚未签发：放行 :80 与 ACME HTTP-01 挑战路由，
 					// 暂缓 :443 与 308 跳转，待证书签发绑定后再自动发布上线。
@@ -1689,18 +1706,36 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 					return nil, nil, fmt.Errorf("应用 %s 启用 HTTPS 但未绑定证书", app.Code)
 				}
 			} else {
-				// 读取证书链与解密私钥供 Caddy load_pem 内存加载（跨节点无需共享磁盘文件），
-				// 同时保留本地落盘以兼容既有排障/文件依赖。
-				certFile, certPEM, chainPEM, keyPEM, err := p.prepareCertMaterial(ctx, cert)
-				if err != nil {
-					return nil, nil, fmt.Errorf("应用 %s 证书准备失败: %w", app.Code, err)
+				if intlCert != nil {
+					// 读取证书链与解密私钥供 Caddy load_pem / jiuzhang_tls_mux 内存加载（跨节点无需共享磁盘文件），
+					// 同时保留本地落盘以兼容既有排障/文件依赖。
+					certFile, certPEM, chainPEM, keyPEM, err := p.prepareCertMaterial(ctx, intlCert)
+					if err != nil {
+						return nil, nil, fmt.Errorf("应用 %s 证书准备失败: %w", app.Code, err)
+					}
+					ad.HasCert = true
+					ad.CertID = intlCert.ID.String()
+					ad.CertFileName = certFile
+					ad.CertPEM = certPEM
+					ad.ChainPEM = chainPEM
+					ad.KeyPEM = keyPEM
 				}
-				ad.HasCert = true
-				ad.CertID = cert.ID.String()
-				ad.CertFileName = certFile
-				ad.CertPEM = certPEM
-				ad.ChainPEM = chainPEM
-				ad.KeyPEM = keyPEM
+				if gmCert != nil {
+					gmMat, err := p.prepareGMCertMaterial(ctx, gmCert)
+					if err != nil {
+						return nil, nil, fmt.Errorf("应用 %s 国密双证书准备失败: %w", app.Code, err)
+					}
+					ad.HasGMCert = true
+					ad.GMCertID = gmCert.ID.String()
+					ad.GMSignCertPEM = gmMat.SignCertPEM
+					ad.GMSignKeyPEM = gmMat.SignKeyPEM
+					ad.GMEncCertPEM = gmMat.EncCertPEM
+					ad.GMEncKeyPEM = gmMat.EncKeyPEM
+					ad.GMChainPEM = gmMat.ChainPEM
+				}
+				if err := validateAppTLSConsistency(ad); err != nil {
+					return nil, nil, err
+				}
 			}
 		}
 		appsData = append(appsData, ad)
@@ -1715,9 +1750,59 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 		if ad.PendingAutoSSL {
 			appSnap["cert_pending_auto_ssl"] = true
 		}
+		if ad.HasGMCert {
+			appSnap["has_gm_cert"] = true
+		}
 		snapshot["apps"] = append(snapshot["apps"].([]map[string]interface{}), appSnap)
 	}
 	return appsData, snapshot, nil
+}
+
+// validateAppTLSConsistency 发布前校验站点协议模式与已绑定证书槽位的一致性（fail-closed）：
+//   - GM_ONLY 必须绑定国密 SM_TLCP 双证书；
+//   - INTERNATIONAL_ONLY 必须绑定通用国际证书；
+//   - 至少存在国际证书或国密双证书之一（PendingAutoSSL 例外不进入本函数）。
+func validateAppTLSConsistency(ad AppData) error {
+	if ad.PendingAutoSSL {
+		if ad.TLSConfig != nil && strings.EqualFold(strings.TrimSpace(ad.TLSConfig.TLSProtocolMode), TLSProtocolModeGMOnly) {
+			return fmt.Errorf("应用 %s 已配置为仅国密模式（GM_ONLY），但未绑定国密 SM_TLCP 双证书", ad.Code)
+		}
+		return nil
+	}
+	if !ad.HasCert && !ad.HasGMCert {
+		return fmt.Errorf("应用 %s 启用 HTTPS 但未绑定证书", ad.Code)
+	}
+	if ad.TLSConfig == nil {
+		return nil
+	}
+	mode := strings.ToUpper(strings.TrimSpace(ad.TLSConfig.TLSProtocolMode))
+	switch mode {
+	case TLSProtocolModeGMOnly:
+		if !ad.HasGMCert {
+			return fmt.Errorf("应用 %s 已配置为仅国密模式（GM_ONLY），但未绑定国密 SM_TLCP 双证书", ad.Code)
+		}
+	case TLSProtocolModeInternationalOnly:
+		if !ad.HasCert {
+			return fmt.Errorf("应用 %s 已配置为仅国际模式（INTERNATIONAL_ONLY），但未绑定国际通用证书", ad.Code)
+		}
+	}
+	return nil
+}
+
+// prepareGMCertMaterial 读取并解密国密 SM_TLCP 双证书完整材料（签名证/签名私钥 + 加密证/加密私钥 + 证书链）。
+func (p *Publisher) prepareGMCertMaterial(ctx context.Context, cert *certificates.Certificate) (*certificates.GMCertMaterial, error) {
+	mat, err := p.certs.GetGMCertMaterial(ctx, cert.ID)
+	if err != nil {
+		return nil, err
+	}
+	if mat == nil ||
+		strings.TrimSpace(mat.SignCertPEM) == "" ||
+		strings.TrimSpace(mat.SignKeyPEM) == "" ||
+		strings.TrimSpace(mat.EncCertPEM) == "" ||
+		strings.TrimSpace(mat.EncKeyPEM) == "" {
+		return nil, fmt.Errorf("国密证书 %s 缺少有效的签名或加密证书/私钥 PEM 内容", cert.ID)
+	}
+	return mat, nil
 }
 
 // prepareCertMaterial 读取证书链与解密私钥，并同步写入数据目录（权限 0600，保留本地兼容）。

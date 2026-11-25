@@ -24,6 +24,8 @@ var ProtocolLevels = map[string][]string{
 	"graphql": {"off", "parse", "cost_v1"},
 	"grpc":    {"frame", "unary_g1", "stream_g2"},
 	"mcp":     {"observe", "acl_v1"},
+	"tls_mux": {"v1"},
+	"tlcp":    {"1.1"},
 }
 
 // Manifest 节点能力清单（契约 §2.1 CapabilityManifest）。

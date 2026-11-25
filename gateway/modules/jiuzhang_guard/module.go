@@ -63,6 +63,9 @@ import (
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/ratelimit"
 	_ "github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/stek"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/temporaryblock"
+	// caddy.listeners.jiuzhang_tls_mux 与 http.reverse_proxy.transport.jiuzhang_tls：
+	// 同端口国密 TLCP/国际 TLS 自识别、ClientHello 加密会话分析与国密/降级回源传输模块
+	_ "github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/tlsmux"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/trustedproxy"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/urlwhitelist"
 	"go.uber.org/zap"
@@ -104,6 +107,7 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 	}
 	g.resolver = clientip.NewResolver(g.MaxProxyChain)
 	g.failOpen = g.FailOpen == nil || *g.FailOpen
+	g.allowedHTTPVersionSet = compileAllowedHTTPVersions(g.AllowedHTTPVersions)
 	if strings.TrimSpace(g.APIAuthzObjectHMACKeyHex) != "" {
 		key, err := hex.DecodeString(strings.TrimSpace(g.APIAuthzObjectHMACKeyHex))
 		if err != nil || len(key) != 32 {
@@ -1026,10 +1030,14 @@ const connectionAddrHeader = "X-Jiuzhang-Connection-Addr"
 
 // ServeHTTP 主流程。
 func (g *Guard) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	// 加密会话元数据桥接（须在 RemoteAddr 改写与访问日志采集前执行：为国密 TLCP 连接补齐 r.TLS，
+	// 并将 ClientHello / JA3 / 协议版本与国密标识写入请求上下文）
+	ctx := attachTLSConnMeta(r.Context(), r)
+
 	// APM 阶段1（ADR D5/D6）：trace 上下文在任何拦截分支之前建立，
 	// 全链路（含前置拦截）经请求上下文可取
 	tc := g.resolveTraceContext(r)
-	ctx := context.WithValue(r.Context(), traceContextKey{}, tc)
+	ctx = context.WithValue(ctx, traceContextKey{}, tc)
 
 	// 请求最终处置上下文（WDSP P0-04；契约 S4_DESIGN_BASELINE §7：ServeHTTP 入口创建，
 	// 不依赖访问日志开关；defer Finalize 幂等——panic 展开路径同样补全
@@ -1095,6 +1103,12 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 		accessLogAnnotate(r.Context(), wafActionBlock)
 		dispo.RecordTerminal(ExecutorUnknown, DisActionBlock, http.StatusForbidden, false, []string{"UNPARSEABLE_REMOTE_ADDR"}, nil)
 		return caddyhttp.Error(http.StatusForbidden, fmt.Errorf("unparseable remote addr"))
+	}
+	// 1.5 站点级 HTTP 协议版本降级门控（未配置 allowed_http_versions 时零开销直通；放行发布冒烟精确探针）
+	if !g.isHTTPVersionAllowed(r) && r.URL.Path != publishSmokePath {
+		accessLogAnnotate(r.Context(), wafActionBlock)
+		dispo.RecordTerminal(ExecutorUnknown, DisActionBlock, http.StatusHTTPVersionNotSupported, false, []string{"HTTP_VERSION_NOT_ALLOWED"}, nil)
+		return caddyhttp.Error(http.StatusHTTPVersionNotSupported, fmt.Errorf("http version %s not allowed by site policy", r.Proto))
 	}
 	// 识别结果存入请求上下文：统一 RequestContext 桥接复用（避免重复解析代理头）
 	*r = *r.WithContext(context.WithValue(r.Context(), clientIPResultKey{}, res))

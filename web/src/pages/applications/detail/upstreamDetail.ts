@@ -36,6 +36,12 @@ export const UPSTREAM_DETAIL_FIELD_LABELS: Record<string, string> = {
 }
 
 export const UPSTREAM_DETAIL_VALUE_LABELS: Record<string, Record<string, string>> = {
+  scheme: {
+    http: 'HTTP',
+    https: 'HTTPS',
+    h2c: 'H2C（HTTP/2 明文）',
+    tlcp: 'TLCP（国密 1.1）',
+  },
   status: { ACTIVE: '启用', DISABLED: '停用' },
   health_status: {
     HEALTHY: '正常',

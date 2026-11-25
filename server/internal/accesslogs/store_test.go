@@ -2,6 +2,7 @@ package accesslogs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -264,4 +265,80 @@ func TestFlowBuilderPreservesEdgeRequestCountAndNodeFilters(t *testing.T) {
 			t.Fatalf("aggregated edge %s RequestCount=%d, want %d", edge.ID, edge.RequestCount, len(edge.RequestIDs))
 		}
 	}
+}
+
+// TestInsertAndSerializeTLSFields 验证迁移 000241 扩展的 5 个 TLS 字段在 Insert 参数、
+// SELECT 列与 AccessLog JSON 序列化中向后兼容且完整输出。
+func TestInsertAndSerializeTLSFields(t *testing.T) {
+	const (
+		argTLSProtocol   = 34
+		argTLSCipher     = 35
+		argTLSIsGM       = 36
+		argTLSJA3        = 37
+		argClientHelloV  = 38
+	)
+
+	t.Run("insert with TLS/GM fields", func(t *testing.T) {
+		db := &captureDB{}
+		s := NewStore(nil).WithDB(db)
+		e := &LogEntry{
+			OccurredAt:         time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC),
+			RequestID:          "req-tls-1",
+			TLSProtocol:        "TLCP1.1",
+			TLSCipherSuite:     "TLCP_ECC_SM4_GCM_SM3",
+			TLSIsGM:            true,
+			TLSJA3:             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			ClientHelloVersion: "TLCP1.1",
+		}
+		if _, err := s.Insert(context.Background(), e); err != nil {
+			t.Fatal(err)
+		}
+		for _, col := range []string{"tls_protocol", "tls_cipher_suite", "tls_is_gm", "tls_ja3", "client_hello_version"} {
+			if !strings.Contains(db.sql, col) {
+				t.Errorf("insert SQL missing %s: %s", col, db.sql)
+			}
+			if !strings.Contains(listColumns, col) {
+				t.Errorf("listColumns missing %s", col)
+			}
+		}
+		if len(db.args) != 39 {
+			t.Fatalf("insert args count = %d, want 39", len(db.args))
+		}
+		if db.args[argTLSProtocol] != "TLCP1.1" || db.args[argTLSCipher] != "TLCP_ECC_SM4_GCM_SM3" ||
+			db.args[argTLSIsGM] != true || db.args[argTLSJA3] != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
+			db.args[argClientHelloV] != "TLCP1.1" {
+			t.Fatalf("TLS insert args mismatch: %#v", db.args[argTLSProtocol:])
+		}
+	})
+
+	t.Run("legacy entry defaults to empty and false", func(t *testing.T) {
+		db := &captureDB{}
+		s := NewStore(nil).WithDB(db)
+		if _, err := s.Insert(context.Background(), &LogEntry{
+			OccurredAt: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC),
+			RequestID:  "req-old-1",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if db.args[argTLSProtocol] != "" || db.args[argTLSCipher] != "" ||
+			db.args[argTLSIsGM] != false || db.args[argTLSJA3] != "" || db.args[argClientHelloV] != "" {
+			t.Fatalf("legacy TLS insert args should default empty/false: %#v", db.args[argTLSProtocol:])
+		}
+	})
+
+	t.Run("AccessLog JSON always includes all 5 TLS keys", func(t *testing.T) {
+		raw, err := json.Marshal(AccessLog{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range []string{"tls_protocol", "tls_cipher_suite", "tls_is_gm", "tls_ja3", "client_hello_version"} {
+			if _, ok := m[k]; !ok {
+				t.Errorf("AccessLog JSON missing key %q: %s", k, string(raw))
+			}
+		}
+	})
 }
