@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-11-25
+
+### 新增
+
+- **域名级 WAF 防护策略选择与全链路编译下发**：
+  - **数据库与备份拓扑**：新增迁移 `000239_domain_protection_policy`，在 `application_domains` 表新增可空外键列 `policy_id`（`REFERENCES protection_policies(id) ON DELETE RESTRICT`）及部分索引，为空表示继承所属应用绑定的防护策略或应用默认防护配置；同步更新 `backups/tables.go` 恢复拓扑依赖，确保 `protection_policies` 先于 `application_domains` 恢复。
+  - **后端管理面与安全校验**：应用域名增/改支持 `policy_id` 三态语义（UUID 绑定、`null`/空串恢复继承、更新时缺省保留原绑定），写入前校验策略存在且处于 `ACTIVE` 状态，变更记录高风险操作审计并校验域名归属；域名查询附带策略名称/编码/模式摘要，应用详情返回默认 `protection_policy`；防护策略引用计数、详情抽屉绑定域名列表（`domains`）及删除保护（409 拒绝删除被域名引用的策略）同步覆盖域名级绑定；同步更新 OpenAPI 片段 `02-applications.yaml`、`03-policies.yaml` 与合并规范 `wdsp-api.yaml`。
+  - **网关配置编译与边车联动**：发布快照按域名解析独立策略参数（防护模式、PL、入站/出站异常阈值及按该策略计算的规则覆盖），策略缺失时 fail-hard 阻断发布；HTTP/HTTPS 主路由、路径转发路由与镜像/透明边车（`mirrorcap`/`tproxyd`）均按域名生效策略编译，同时保持应用级 `BYPASS`（应急透传及授权失效强制透传）最高优先级。
+  - **前端界面**：在「应用详情 → 域名管理」的新增/编辑域名弹窗中新增可搜索、可清空的「防护策略」下拉选择器（留空提示继承所属应用默认策略；无 `protection_policies.read` 权限时不触发策略列表请求且保留原绑定），域名列表新增「防护策略」列，应用详情头部展示「默认防护策略」，策略详情抽屉新增「绑定域名」清单。
+
+### 验证与边界
+
+- **后端**：`cd server && go build ./...` 与 `go test ./internal/applications/... ./internal/protectionpolicies/... ./internal/gatewayconfig/... ./internal/backups/... ./internal/restores/... ./internal/upgrades/...` 全部通过（含新增域名三态 `policy_id` 校验、单应用多域名差异化策略编译、规则覆盖隔离、`BYPASS` 优先及镜像/透明边车单测）。
+- **前端**：`cd web && npx tsc --noEmit && npm run lint && npm run build` 0 报错通过（本次改动文件 0 lint 警告）；`npx vitest run src/pages/applications/__tests__/DomainsTab.test.tsx src/pages/applications/__tests__/ApplicationDetailPage.test.tsx src/pages/protection-policies/__tests__/ProtectionPoliciesPage.test.tsx` 3/3 文件、12/12 用例全绿。
+- **未执行项（`NOT_RUN`）**：目标 Linux 宿主机真实 PostgreSQL 迁移（`000239`）、网关实机发布验证与 Playwright E2E 均为 `NOT_RUN`。
+
 ## [1.13.1] - 2026-11-25
 
 ### 修复与体验优化
