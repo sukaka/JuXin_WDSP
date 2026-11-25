@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [1.13.1] - 2026-11-25
+
+### 修复与体验优化
+
+- **应用详情 4 个核心配置页签视觉与交互重构**：新增共享样式 `web/src/pages/applications/detail/detailTab.css` 与基础展示组件 `DetailTabPrimitives.tsx`（`SectionHeader`、`ModeCardGroup`、`InlineNote`、`PreflightResultCard`），统一重构「代理与头合规」「JWT 信任策略」「Bot 挑战策略」「证书绑定」4 个页签并清理 AntD 6 弃用属性警告：
+  - **代理与头合规（`HeaderProxyTab`）**：3 项内核强制安全头收敛为顶部浅绿基线条，响应头与 5 项 HTTP 代理开关升级为 24 栅格与等高 Switch Tile 卡片网格，自定义头规则放入带列头的浅底规则盒并收敛为底部唯一「保存配置」收口栏，路径转发抽屉按三段分组；
+  - **JWT 信任策略（`JwtTrustTab`）**：验证模式升级为 3 栏交互模式卡片，选择器与发行方按 24 栅格与密钥来源分层布局并保留静态 JWKS 私钥粘贴即时拒收与既有 E2E 选择器契约，底部整合「变更理由 + 发布预检 + 保存草稿」收口操作栏并在预检后自动滚动聚焦结果；
+  - **Bot 挑战策略（`BotPolicyTab`、`BotChallengePreview`）**：多节点同步升级为自适应卡片网格，新增实时信号组覆盖仪表条（实时统计请求行为组/访问序列组/客户端声明组规则数、权重和及达标状态），策略模式与保留路由状态升级为 3 栏交互模式卡片，表单直接以 `policyToFormValues` 初始化消除首帧空态闪烁，挑战页预览升级为模拟 HTTPS 浏览器窗框；
+  - **证书绑定（`CertificatesTab`）**：将「当前绑定证书」置顶并以带状态语义竖条、剩余天数徽章和 SAN 域名胶囊的 SSL 证书凭证卡取代原单行 7 列 `SmartTable`，ACME 自动证书卡片重构为「运行概览 + 续约策略与最近任务」双列面板，并统一按钮文案为 `绑定证书` / `替换证书` / `解绑证书`（同步修复 `CertificatesTab.test.tsx` 既有 2 项失败用例）。
+
+### 验证与边界
+
+- **前端**：`cd web && npm run typecheck && npm run lint && npm run build` 0 报错通过（本次改动文件 0 lint 警告）；`npx vitest run src/pages/applications/__tests__/` 10/10 测试文件、74/74 用例全绿（含新增证书凭证卡与 Bot 信号组覆盖条断言）。
+- **后端**：`cd server && go test -count=1 ./internal/upgrades/...` 升版版本号断言回归通过。
+- **未执行项（`NOT_RUN`）**：目标服务器实机升级部署与浏览器真机目视验收及 Playwright E2E 均为 `NOT_RUN`。
+
 ## [1.13.0] - 2026-11-25
 
 ### 新增
