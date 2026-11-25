@@ -4,6 +4,29 @@
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-11-25
+
+### 新增
+
+- **国密双证书（SM2/TLCP）、TLS/HTTP 协议策略与加密会话分析**：
+  - **数据库迁移**：新增迁移 `000240_gm_certs_and_tls_protocol_policy`（扩展 `certificates` 支持 `INTERNATIONAL`/`SM_TLCP` 协议类型及 SM2 加密证书/加密私钥密文字段；扩展 `application_certificates` 支持 `cert_slot` 国际+国密双槽位并发活动绑定；新增一对一 `app_tls_configs` 站点 TLS/HTTP 协议与回源策略表）与迁移 `000241_tls_session_analysis`（扩展 `access_logs` 记录 `tls_protocol`/`tls_cipher_suite`/`tls_is_gm`/`tls_ja3_hash`；新增 `tls_handshake_events` 握手事件表及索引；补齐 `events.read` 权限种子）。
+  - **网关国密多路复用与桥接**：`gateway/modules/jiuzhang_guard/tlsmux` 引入 MIT 许可的 `gotlcp v1.6.1` 与 `gmsm v0.44.1`，实现 ClientHello 嗅探与同端口国际 TLS / 国密 TLCP 1.1 自识别复用监听器、TLCP 回源传输层、JA3 指纹与 JSONL 握手会话日志；`tls_bridge.go`、`accesslog.go`、`bot_step.go` 与 `module.go` 实现 TLCP 合成 TLS 状态桥接、站点级 HTTP 协议版本降级门控与访问日志 TLS/国密字段落盘；`capability` 补齐国密/TLS 能力上报与发布门禁。
+  - **管理后端与发布验证**：新增 `certificates/gm_certparse.go`（SM2 签名+加密双证书解析、公钥匹配与密文存储）、`appconfigs/tls_store.go`、`gatewayconfig/tls_config.go`（含发布快照私钥全量脱敏、TLCP 冒烟探针验证与能力门禁）、`tlssessions`（网关 JSONL 握手采集入库、留存清理与统计查询接口）及 `upstreams` TLCP 回源连通性测试。
+  - **管理前端**：新增「安全事件 → 加密会话分析」页面（`TLSSessionsPage`）与访问日志详情 TLS/国密/JA3 展示；证书管理与绑定弹窗支持上传/展示/绑定国密 SM2 双证书（国际与国密双槽位并存）；应用详情新增 `TLSProtocolPolicyCard`（协议自识别模式、TLS 版本白名单、弱 SSL 识别、HTTP 协议版本、回源协议与会话分析开关）及源站/路径转发 TLCP 回源支持。
+- **聚信压测工具（JuXin Bench）4 层传输吞吐与 PDF 交付报告**：新增 `test/performance/delivery-stress/scripts/l4-throughput.py`（TCP 单向/双向与 UDP 大包吞吐封装解析器），`summarize-run.py` 扩展 `--l4-json` 汇总与 `--out-pdf` PDF 交付报告导出，同步更新客户报告模板与单元测试。
+
+### 修复
+
+- **修复 Coraza Phase 1/3/4/5 审计默认动作缺失与攻击类型规范化覆盖不全**：`gateway/rules/crs/crs-setup.conf` 补齐 `phase:1..5` 的 `SecDefaultAction "log,auditlog,pass"`，并在 `server/internal/gatewayconfig/generator.go` 中幂等内联兜底，确保增量镜像升级后旧宿主只读挂载目录仍具备全阶段审计日志记录；`server/internal/wafrules/sync.go` 与 `server/internal/securityevents/normalize.go` 扩展覆盖 OWASP CRS 4.x 与 `CUSTOM_PACK` 全部攻击标签，避免 `ATTACK-GENERIC` 覆写精确攻击分类或退化为「其他」，并新增 `gateway/corazasemantics/phase1_audit_logging_test.go` 语义回归测试。
+
+### 验证与边界
+
+- **网关**：`cd gateway && go build ./...`、`corazasemantics`、`internal/eventparser`、`dynamic_security/...`（全部子包）与 `modules/jiuzhang_guard`（含 `tlsmux`）全部通过。
+- **后端**：`cd server && go build ./...`、`go test -c ./tests` 及全部 14 个变更包（`accesslogs`、`app`、`appconfigs`、`applications`、`backups`、`certificates`、`config`、`gatewayconfig`、`restores`、`securityevents`、`tlssessions`、`upgrades`、`upstreams`、`wafrules`）全部通过。
+- **前端**：`cd web && npm run typecheck && npm run lint && npm run build` 0 报错通过（本次改动文件 0 警告）；5 组变更 Vitest 测试文件（26/26 用例）全部通过。
+- **压测套件**：`test/performance/delivery-stress/tests` 14/14 Python 单元测试全部通过。
+- **未执行项（`NOT_RUN`）**：目标 Linux/amd64 实机 PostgreSQL 迁移（`000240`–`000241`）、国密客户端实机 TLCP 1.1 握手压测、线上升级回滚演练与 Playwright E2E 均为 `NOT_RUN`。
+
 ## [1.14.0] - 2026-11-25
 
 ### 新增
