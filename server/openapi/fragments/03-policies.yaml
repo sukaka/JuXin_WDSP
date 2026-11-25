@@ -1621,10 +1621,21 @@ components:
         request_body_access: { type: boolean, description: 是否启用请求体检查 }
         response_body_access: { type: boolean, description: 是否启用响应体检查 }
         blocking_status_code: { type: integer, minimum: 400, maximum: 599, description: 阻断时返回的 HTTP 状态码（默认 403） }
-        usage_count: { type: integer, description: 当前引用该策略的应用数量 }
+        usage_count: { type: integer, description: 当前引用该策略的应用与域名总数量 }
+        domain_usage_count: { type: integer, description: 当前单独引用该策略的域名数量 }
         created_at: { type: string, format: date-time, description: 创建时间 }
         updated_at: { type: string, format: date-time, description: 更新时间 }
         version: { type: integer, description: 乐观锁版本号，更新时随请求体回传 }
+
+    PolicyBoundDomain:
+      type: object
+      description: 绑定防护策略的域名摘要
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        application_code: { type: string }
+        application_name: { type: string }
+        hostname: { type: string }
 
     PolicyDetail:
       allOf:
@@ -1635,6 +1646,10 @@ components:
               type: array
               items: { type: string, format: uuid }
               description: 当前绑定该策略的应用 ID 列表
+            domains:
+              type: array
+              items: { $ref: '#/components/schemas/PolicyBoundDomain' }
+              description: 当前单独绑定该策略的域名列表
 
     PolicyUpsertRequest:
       type: object

@@ -94,9 +94,10 @@ type PolicyParams struct {
 	OutboundThreshold int
 }
 
-// PolicyProvider 是应用策略查询接口（由 protectionpolicies.Store 实现）。
+// PolicyProvider 是应用与域名策略查询接口（由 protectionpolicies.Store 实现）。
 type PolicyProvider interface {
 	GetApplicationPolicyParams(ctx context.Context, appID uuid.UUID) (*PolicyParams, error)
+	GetPolicyParams(ctx context.Context, policyID uuid.UUID) (*PolicyParams, error)
 }
 
 // ExceptionRule 是下发到网关的例外规则（SecLang 文本）。
@@ -1626,6 +1627,46 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 			}
 			ad.RuleOverrideSecLang = lines
 		}
+		// 域名级防护策略覆盖（按域名独立解析策略参数与对应策略级规则覆盖；查库失败 fail-hard）
+		if p.policies != nil {
+			policyCache := make(map[uuid.UUID]*PolicyParams)
+			for _, d := range domains {
+				if d.PolicyID == nil {
+					continue
+				}
+				dpp, cached := policyCache[*d.PolicyID]
+				if !cached {
+					var err error
+					dpp, err = p.policies.GetPolicyParams(ctx, *d.PolicyID)
+					if err != nil {
+						return nil, nil, fmt.Errorf("应用 %s 域名 %s 绑定的防护策略不可用: %w", app.Code, d.NormalizedHostname, err)
+					}
+					if dpp == nil {
+						return nil, nil, fmt.Errorf("应用 %s 域名 %s 绑定的防护策略不存在", app.Code, d.NormalizedHostname)
+					}
+					policyCache[*d.PolicyID] = dpp
+				}
+				dp := DomainPolicy{
+					PolicyID:          dpp.PolicyID,
+					ProtectionMode:    dpp.ProtectionMode,
+					ParanoiaLevel:     dpp.ParanoiaLevel,
+					InboundThreshold:  dpp.InboundThreshold,
+					OutboundThreshold: dpp.OutboundThreshold,
+				}
+				if p.ruleOverrides != nil {
+					dLines, err := p.ruleOverrides.SecLangForApp(ctx, app.ID, d.PolicyID)
+					if err != nil {
+						return nil, nil, fmt.Errorf("应用 %s 域名 %s 规则覆盖快照失败: %w", app.Code, d.NormalizedHostname, err)
+					}
+					dp.HasRuleOverrides = true
+					dp.RuleOverrideSecLang = dLines
+				}
+				if ad.DomainPolicies == nil {
+					ad.DomainPolicies = make(map[string]DomainPolicy)
+				}
+				ad.DomainPolicies[d.ID.String()] = dp
+			}
+		}
 		// 证书（HTTPS 应用；MIRROR 镜像旁路不终结 TLS、不加载证书，跳过强制证书校验）
 		hasHTTPS := false
 		for _, d := range domains {
@@ -1667,6 +1708,9 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 			"code": app.Code, "mode": app.ProtectionMode,
 			"deployment_mode": app.DeploymentMode,
 			"domains":         len(domains), "upstreams": len(upstreams),
+		}
+		if len(ad.DomainPolicies) > 0 {
+			appSnap["domain_policies"] = len(ad.DomainPolicies)
 		}
 		if ad.PendingAutoSSL {
 			appSnap["cert_pending_auto_ssl"] = true

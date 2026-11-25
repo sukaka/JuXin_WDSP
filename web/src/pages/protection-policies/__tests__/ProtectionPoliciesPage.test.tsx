@@ -61,10 +61,18 @@ function renderPage() {
 
 describe('ProtectionPoliciesPage 防护策略', () => {
   let detailAppIds: string[] | null
+  let detailDomains: Array<{
+    id: string
+    application_id: string
+    application_code: string
+    application_name: string
+    hostname: string
+  }> | null
   let createCalls: unknown[]
 
   beforeEach(() => {
     detailAppIds = null
+    detailDomains = null
     createCalls = []
     useAuthStore.setState({
       user: makeUser([
@@ -98,7 +106,7 @@ describe('ProtectionPoliciesPage 防护策略', () => {
             jsonResponse(200, {
               code: 'SUCCESS',
               message: 'ok',
-              data: { ...POLICY_ITEM, application_ids: detailAppIds },
+              data: { ...POLICY_ITEM, application_ids: detailAppIds, domains: detailDomains },
             }),
           )
         }
@@ -232,12 +240,23 @@ describe('ProtectionPoliciesPage 防护策略', () => {
     expect(screen.getByText('暂无应用绑定该策略')).toBeInTheDocument()
   })
 
-  it('策略详情抽屉展示已绑定的应用名称', async () => {
+  it('策略详情抽屉展示已绑定的应用名称与域名列表', async () => {
     detailAppIds = ['app-1']
+    detailDomains = [
+      {
+        id: 'dom-1',
+        application_id: 'app-1',
+        application_code: 'shop',
+        application_name: '商城主站',
+        hostname: 'jxdr.cn',
+      },
+    ]
     renderPage()
 
     fireEvent.click(await screen.findByRole('button', { name: /详\s*情/ }))
     expect(await screen.findByText('绑定应用（1）')).toBeInTheDocument()
     expect(await screen.findByText('商城主站')).toBeInTheDocument()
+    expect(screen.getByText('绑定域名（1）')).toBeInTheDocument()
+    expect(screen.getByText('jxdr.cn')).toBeInTheDocument()
   })
 })

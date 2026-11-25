@@ -264,6 +264,15 @@ WHERE id=$22 AND version=$23 AND deleted_at IS NULL`,
 	return nil
 }
 
+// BoundDomain 是绑定防护策略的域名摘要。
+type BoundDomain struct {
+	ID              uuid.UUID `json:"id"`
+	ApplicationID   uuid.UUID `json:"application_id"`
+	ApplicationCode string    `json:"application_code"`
+	ApplicationName string    `json:"application_name"`
+	Hostname        string    `json:"hostname"`
+}
+
 // Delete 删除策略（内置/使用中不可删除）。
 func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
 	p, err := s.GetByID(ctx, id)
@@ -273,10 +282,9 @@ func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
 	if p.IsBuiltin {
 		return ErrBuiltin
 	}
-	// 检查是否被应用引用
-	var useCount int
-	if err := s.db.QueryRow(ctx,
-		`SELECT count(*) FROM application_policies WHERE policy_id = $1 AND is_active = TRUE`, id).Scan(&useCount); err != nil {
+	// 检查是否被未删除应用或域名引用
+	useCount, err := s.CountUsage(ctx, id)
+	if err != nil {
 		return err
 	}
 	if useCount > 0 {
@@ -377,10 +385,13 @@ func joinWithPrefix(columns, prefix string) string {
 	return strings.Join(cols, ",")
 }
 
-// ListApplicationIDs 查询策略绑定的应用。
+// ListApplicationIDs 查询策略绑定的应用（不含已软删应用）。
 func (s *Store) ListApplicationIDs(ctx context.Context, policyID uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := s.db.Query(ctx,
-		`SELECT application_id FROM application_policies WHERE policy_id = $1 AND is_active = TRUE`, policyID)
+	rows, err := s.db.Query(ctx, `
+SELECT ap.application_id
+FROM application_policies ap
+JOIN applications a ON a.id = ap.application_id
+WHERE ap.policy_id = $1 AND ap.is_active = TRUE AND a.deleted_at IS NULL`, policyID)
 	if err != nil {
 		return nil, err
 	}
@@ -396,11 +407,57 @@ func (s *Store) ListApplicationIDs(ctx context.Context, policyID uuid.UUID) ([]u
 	return out, rows.Err()
 }
 
-// CountUsage 查询策略被引用的应用数。
+// ListBoundDomains 查询策略绑定的域名（不含已软删应用）。
+func (s *Store) ListBoundDomains(ctx context.Context, policyID uuid.UUID) ([]BoundDomain, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT ad.id, ad.application_id, a.code, a.name, ad.hostname
+FROM application_domains ad
+JOIN applications a ON a.id = ad.application_id
+WHERE ad.policy_id = $1 AND a.deleted_at IS NULL
+ORDER BY a.name ASC, ad.is_primary DESC, ad.created_at ASC`, policyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []BoundDomain{}
+	for rows.Next() {
+		var d BoundDomain
+		if err := rows.Scan(&d.ID, &d.ApplicationID, &d.ApplicationCode, &d.ApplicationName, &d.Hostname); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// CountUsage 查询策略被引用的总数（应用级绑定 + 域名级绑定，不含已软删应用）。
 func (s *Store) CountUsage(ctx context.Context, policyID uuid.UUID) (int, error) {
+	var appCount, domainCount int
+	if err := s.db.QueryRow(ctx, `
+SELECT count(*)
+FROM application_policies ap
+JOIN applications a ON a.id = ap.application_id
+WHERE ap.policy_id = $1 AND ap.is_active = TRUE AND a.deleted_at IS NULL`, policyID).Scan(&appCount); err != nil {
+		return 0, err
+	}
+	if err := s.db.QueryRow(ctx, `
+SELECT count(*)
+FROM application_domains ad
+JOIN applications a ON a.id = ad.application_id
+WHERE ad.policy_id = $1 AND a.deleted_at IS NULL`, policyID).Scan(&domainCount); err != nil {
+		return 0, err
+	}
+	return appCount + domainCount, nil
+}
+
+// CountDomainUsage 查询策略被域名级引用的数量（不含已软删应用）。
+func (s *Store) CountDomainUsage(ctx context.Context, policyID uuid.UUID) (int, error) {
 	var n int
-	err := s.db.QueryRow(ctx,
-		`SELECT count(*) FROM application_policies WHERE policy_id = $1 AND is_active = TRUE`, policyID).Scan(&n)
+	err := s.db.QueryRow(ctx, `
+SELECT count(*)
+FROM application_domains ad
+JOIN applications a ON a.id = ad.application_id
+WHERE ad.policy_id = $1 AND a.deleted_at IS NULL`, policyID).Scan(&n)
 	return n, err
 }
 
@@ -413,11 +470,27 @@ func (s *Store) GetApplicationPolicyParams(ctx context.Context, appID uuid.UUID)
 	if p == nil {
 		return nil, nil
 	}
+	return toPolicyParams(p), nil
+}
+
+// GetPolicyParams 按策略 ID 查询有效策略参数（供配置生成器解析域名级防护策略使用）。
+func (s *Store) GetPolicyParams(ctx context.Context, policyID uuid.UUID) (*gatewayconfig.PolicyParams, error) {
+	p, err := s.GetByID(ctx, policyID)
+	if err != nil {
+		return nil, err
+	}
+	if p.Status != "ACTIVE" {
+		return nil, fmt.Errorf("%w: policy %s is not active", ErrNotFound, policyID)
+	}
+	return toPolicyParams(p), nil
+}
+
+func toPolicyParams(p *Policy) *gatewayconfig.PolicyParams {
 	return &gatewayconfig.PolicyParams{
 		PolicyID:          p.ID.String(),
 		ProtectionMode:    p.ProtectionMode,
 		ParanoiaLevel:     p.ParanoiaLevel,
 		InboundThreshold:  p.InboundAnomalyThreshold,
 		OutboundThreshold: p.OutboundAnomalyThreshold,
-	}, nil
+	}
 }

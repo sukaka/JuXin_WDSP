@@ -1663,6 +1663,20 @@ components:
               nullable: true
               description: 源站列表（无记录时可能为 null）
               items: { $ref: '#/components/schemas/Upstream' }
+            protection_policy:
+              nullable: true
+              description: 应用级默认绑定的防护策略摘要（未绑定时为 null）
+              $ref: '#/components/schemas/AppPolicySummary'
+
+    AppPolicySummary:
+      type: object
+      description: 应用级默认防护策略摘要
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        protection_mode: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+        paranoia_level: { type: integer, minimum: 1, maximum: 4 }
 
     AppCreateRequest:
       type: object
@@ -1717,6 +1731,10 @@ components:
         http_port: { type: integer, nullable: true, description: HTTP 监听端口（空表示默认） }
         https_port: { type: integer, nullable: true, description: HTTPS 监听端口（空表示默认） }
         redirect_http_to_https: { type: boolean, description: 是否将 HTTP 重定向到 HTTPS }
+        policy_id: { type: string, format: uuid, nullable: true, description: 域名级绑定的 WAF 防护策略 ID（为空表示继承所属应用策略） }
+        policy_code: { type: string, description: 域名级防护策略编码（未绑定时省略） }
+        policy_name: { type: string, description: 域名级防护策略名称（未绑定时省略） }
+        policy_mode: { type: string, enum: [OFF, OBSERVE, PROTECT], description: 域名级防护策略模式（未绑定时省略） }
         status: { type: string, description: 状态（ACTIVE 等） }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -1732,6 +1750,7 @@ components:
         http_port: { type: integer, nullable: true, minimum: 1, maximum: 65535 }
         https_port: { type: integer, nullable: true, minimum: 1, maximum: 65535 }
         redirect_http_to_https: { type: boolean, default: false }
+        policy_id: { type: string, format: uuid, nullable: true, description: 域名级防护策略 ID（UUID=绑定策略，null 或空串=恢复继承应用策略，更新时省略该字段则保持原绑定不变） }
 
     AppBindCertificateRequest:
       type: object

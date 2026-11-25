@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/applications"
 )
 
@@ -62,6 +63,17 @@ type ACMEHTTP01Config struct {
 	Valkey       *GuardValkey `json:"valkey,omitempty"`
 }
 
+// DomainPolicy 是单个域名覆盖的 WAF 防护策略参数（未设置则继承所属应用策略）。
+type DomainPolicy struct {
+	PolicyID            string
+	ProtectionMode      string
+	ParanoiaLevel       int
+	InboundThreshold    int
+	OutboundThreshold   int
+	HasRuleOverrides    bool
+	RuleOverrideSecLang []string
+}
+
 // AppData 是单个应用的完整数据。
 type AppData struct {
 	AppID          string
@@ -89,10 +101,53 @@ type AppData struct {
 	OutboundThreshold int
 	// RuleOverrideSecLang 本应用生效的规则覆盖 SecLang（DISABLE → ctl:ruleRemoveById，置于 CRS 前）
 	RuleOverrideSecLang []string
+	// DomainPolicies 按域名 ID（空 ID 回退规范化域名）索引的域名级防护策略覆盖。
+	DomainPolicies map[string]DomainPolicy
 	// HeaderConfig 头合规与代理配置（nil 时使用默认静态头行为）
 	HeaderConfig *AppHeaderConfig
 	// PathRoutes 路径粒度转发（ENABLED 且校验通过的条目）
 	PathRoutes []AppPathRoute
+}
+
+// effectiveAppForDomain 计算单个域名的生效策略视图：
+//   - 若应用处于 BYPASS（手工透传或授权失效强制透传），必须绝对保持 BYPASS，不得被域名级策略覆盖；
+//   - 若域名绑定了独立防护策略，则覆盖防护模式、PL、异常阈值及对应策略解析的规则覆盖；
+//   - 否则原样继承所属应用策略。
+func effectiveAppForDomain(app AppData, d applications.Domain) AppData {
+	if len(app.DomainPolicies) == 0 {
+		return app
+	}
+	var dp DomainPolicy
+	var ok bool
+	if d.ID != uuid.Nil {
+		dp, ok = app.DomainPolicies[d.ID.String()]
+	}
+	if !ok && d.NormalizedHostname != "" {
+		dp, ok = app.DomainPolicies[d.NormalizedHostname]
+	}
+	if !ok && d.Hostname != "" {
+		dp, ok = app.DomainPolicies[d.Hostname]
+	}
+	if !ok {
+		return app
+	}
+	eff := app
+	if eff.ProtectionMode != applications.ModeBypass && dp.ProtectionMode != "" {
+		eff.ProtectionMode = dp.ProtectionMode
+	}
+	if dp.ParanoiaLevel > 0 {
+		eff.ParanoiaLevel = dp.ParanoiaLevel
+	}
+	if dp.InboundThreshold > 0 {
+		eff.InboundThreshold = dp.InboundThreshold
+	}
+	if dp.OutboundThreshold > 0 {
+		eff.OutboundThreshold = dp.OutboundThreshold
+	}
+	if dp.HasRuleOverrides {
+		eff.RuleOverrideSecLang = dp.RuleOverrideSecLang
+	}
+	return eff
 }
 
 // Generated 是生成结果。
@@ -300,6 +355,7 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 		}
 		isTransparent := app.DeploymentMode == applications.DeployModeTransparent
 		for _, d := range app.Domains {
+			effApp := effectiveAppForDomain(app, d)
 			hosts := []string{d.NormalizedHostname}
 			// 泛域名 Caddy 用 *.example.com 形式（Caddy 支持通配符 host matcher）
 			if d.HTTPEnabled && d.HTTPPort != nil {
@@ -322,9 +378,9 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 				} else {
 					r := mapT{
 						"match":  []interface{}{mapT{"host": hosts}},
-						"handle": buildHandles(in, app, d, *d.HTTPPort),
+						"handle": buildHandles(in, effApp, d, *d.HTTPPort),
 					}
-					entries = append(entries, pathRouteEntries(in, app, hosts, *d.HTTPPort)...)
+					entries = append(entries, pathRouteEntries(in, effApp, hosts, *d.HTTPPort)...)
 					entries = append(entries, routeEntry{appCode: app.Code, route: r})
 				}
 				if isTransparent {
@@ -337,9 +393,9 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 			if d.HTTPSEnabled && d.HTTPSPort != nil && !app.PendingAutoSSL {
 				route := mapT{
 					"match":  []interface{}{mapT{"host": hosts}},
-					"handle": buildHandles(in, app, d, *d.HTTPSPort),
+					"handle": buildHandles(in, effApp, d, *d.HTTPSPort),
 				}
-				entries := append(pathRouteEntries(in, app, hosts, *d.HTTPSPort), routeEntry{appCode: app.Code, route: route})
+				entries := append(pathRouteEntries(in, effApp, hosts, *d.HTTPSPort), routeEntry{appCode: app.Code, route: route})
 				if isTransparent {
 					transparentHTTPSRoutes = append(transparentHTTPSRoutes, entries...)
 				} else {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
@@ -9,20 +9,29 @@ import {
   Input,
   InputNumber,
   Modal,
+  Select,
   Space,
   Tag,
+  Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import { ApiError } from '../../../api/client'
 import { domainsApi } from '../../../api/applications'
 import type { DomainBody } from '../../../api/applications'
+import { protectionPoliciesApi } from '../../../api/protectionPolicies'
+import ProtectionModeTag from '../../../components/ProtectionModeTag'
 import RecordDetailDrawer from '../../../components/RecordDetailDrawer'
 import SmartTable from '../../../components/SmartTable'
 import useBatchDelete from '../../../hooks/useBatchDelete'
 import { useAuthStore } from '../../../stores/auth'
+import { useProductStore } from '../../../stores/product'
 import { hasPermission } from '../../../utils/permission'
-import type { DomainItem } from '../../../types'
+import type {
+  ApplicationProtectionPolicySummary,
+  DomainItem,
+  ProtectionMode,
+} from '../../../types'
 
 interface DomainFormValues {
   hostname: string
@@ -32,6 +41,13 @@ interface DomainFormValues {
   https_enabled: boolean
   https_port?: number | null
   redirect_http_to_https: boolean
+  policy_id?: string | null
+}
+
+const POLICY_MODE_LABEL: Record<string, string> = {
+  OFF: '关闭',
+  OBSERVE: '观察',
+  PROTECT: '防护',
 }
 
 /** 与后端一致的域名前端校验：不含协议/路径/端口，至少两个标签，泛域名仅 *.example.com 形式 */
@@ -57,15 +73,22 @@ function validateHostname(value: string): string | null {
 export default function DomainsTab({
   appId,
   deploymentMode,
+  appProtectionMode,
+  appProtectionPolicy,
 }: {
   appId: string
   deploymentMode?: string
+  appProtectionMode?: ProtectionMode | string
+  appProtectionPolicy?: ApplicationProtectionPolicySummary | null
 }) {
   const isMirror = deploymentMode === 'MIRROR'
   const isTransparent = deploymentMode === 'TRANSPARENT'
   const { message, modal } = AntdApp.useApp()
   const queryClient = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
+  const webWafEnabled = useProductStore((s) => s.webWafEnabled)
+  const canReadPolicies =
+    webWafEnabled && hasPermission(permissions, 'protection_policies.read')
   const [editing, setEditing] = useState<DomainItem | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [detailRecord, setDetailRecord] = useState<DomainItem | null>(null)
@@ -75,16 +98,50 @@ export default function DomainsTab({
   const noProtocolEnabled =
     (httpEnabled === false && !httpsEnabled) ||
     (httpsEnabled === false && !httpEnabled)
+  const modalOpen = createOpen || editing !== null
 
   const listQuery = useQuery({
     queryKey: ['domains', appId],
     queryFn: () => domainsApi.list(appId),
   })
 
+  const policiesQuery = useQuery({
+    queryKey: ['protection-policies', 'for-domain'],
+    queryFn: () => protectionPoliciesApi.list({ page: 1, page_size: 100 }),
+    enabled: modalOpen && canReadPolicies,
+  })
+
+  const policyOptions = useMemo(() => {
+    const items = policiesQuery.data?.items ?? []
+    const opts = items
+      .filter((p) => p.status === 'ACTIVE')
+      .map((p) => ({
+        value: p.id,
+        label: `${p.name}（${p.code} · ${POLICY_MODE_LABEL[p.protection_mode] ?? p.protection_mode} · PL${p.paranoia_level}）`,
+      }))
+    if (
+      editing?.policy_id &&
+      !opts.some((o) => o.value === editing.policy_id)
+    ) {
+      opts.unshift({
+        value: editing.policy_id,
+        label: editing.policy_name
+          ? `${editing.policy_name}${editing.policy_code ? `（${editing.policy_code}）` : ''}`
+          : editing.policy_id,
+      })
+    }
+    return opts
+  }, [policiesQuery.data?.items, editing])
+
+  const inheritPolicyPlaceholder = appProtectionPolicy
+    ? `继承应用默认策略（${appProtectionPolicy.name} · ${POLICY_MODE_LABEL[appProtectionPolicy.protection_mode] ?? appProtectionPolicy.protection_mode} · PL${appProtectionPolicy.paranoia_level}）`
+    : '继承应用默认策略（当前应用未绑定策略，沿用应用防护模式）'
+
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['domains', appId] })
     void queryClient.invalidateQueries({ queryKey: ['application', appId] })
     void queryClient.invalidateQueries({ queryKey: ['applications'] })
+    void queryClient.invalidateQueries({ queryKey: ['protection-policies'] })
   }
 
   const onError = (e: unknown) => {
@@ -92,17 +149,24 @@ export default function DomainsTab({
     if (e instanceof ApiError && e.code === 'RESOURCE_CONFLICT') void invalidate()
   }
 
-  const toBody = (values: DomainFormValues): DomainBody => ({
-    hostname: values.hostname.trim(),
-    is_primary: values.is_primary ?? false,
-    http_enabled: values.http_enabled,
-    https_enabled: values.https_enabled,
-    http_port: values.http_enabled ? (values.http_port ?? 80) : null,
-    https_port: values.https_enabled ? (values.https_port ?? 443) : null,
-    redirect_http_to_https: values.http_enabled && values.https_enabled
-      ? (values.redirect_http_to_https ?? false)
-      : false,
-  })
+  const toBody = (values: DomainFormValues): DomainBody => {
+    const body: DomainBody = {
+      hostname: values.hostname.trim(),
+      is_primary: values.is_primary ?? false,
+      http_enabled: values.http_enabled,
+      https_enabled: values.https_enabled,
+      http_port: values.http_enabled ? (values.http_port ?? 80) : null,
+      https_port: values.https_enabled ? (values.https_port ?? 443) : null,
+      redirect_http_to_https:
+        values.http_enabled && values.https_enabled
+          ? (values.redirect_http_to_https ?? false)
+          : false,
+    }
+    if (canReadPolicies) {
+      body.policy_id = values.policy_id || null
+    }
+    return body
+  }
 
   const saveMutation = useMutation({
     mutationFn: ({ domainId, body }: { domainId: string | null; body: DomainBody }) =>
@@ -143,6 +207,7 @@ export default function DomainsTab({
       https_enabled: record.https_enabled,
       https_port: record.https_port ?? 443,
       redirect_http_to_https: record.redirect_http_to_https,
+      policy_id: record.policy_id ?? undefined,
     })
   }
 
@@ -163,6 +228,32 @@ export default function DomainsTab({
       width: 110,
       render: (v: string) => (v === 'WILDCARD' ? <Tag color="purple">泛域名</Tag> : <Tag>精确</Tag>),
     },
+    ...(webWafEnabled
+      ? [
+          {
+            title: '防护策略',
+            key: 'policy',
+            width: 210,
+            render: (_: unknown, record: DomainItem) =>
+              record.policy_id ? (
+                <Space size={4} wrap>
+                  <Tag color="blue">
+                    {record.policy_name || record.policy_code || record.policy_id}
+                  </Tag>
+                  {record.policy_mode && (
+                    <ProtectionModeTag mode={record.policy_mode} />
+                  )}
+                </Space>
+              ) : (
+                <Tag>
+                  {appProtectionPolicy
+                    ? `继承（${appProtectionPolicy.name}）`
+                    : '继承应用策略'}
+                </Tag>
+              ),
+          },
+        ]
+      : []),
     {
       title: 'HTTP 监听',
       key: 'http',
@@ -215,8 +306,6 @@ export default function DomainsTab({
       ),
     },
   ]
-
-  const modalOpen = createOpen || editing !== null
 
   return (
     <>
@@ -372,6 +461,39 @@ export default function DomainsTab({
           {!isMirror && httpEnabled && httpsEnabled && (
             <Form.Item name="redirect_http_to_https" valuePropName="checked">
               <Checkbox>HTTP 自动跳转 HTTPS</Checkbox>
+            </Form.Item>
+          )}
+          {canReadPolicies && (
+            <Form.Item
+              name="policy_id"
+              label="防护策略"
+              extra={
+                appProtectionMode === 'BYPASS'
+                  ? '留空表示继承应用默认策略；当前应用处于「透传」模式，应急透传优先于域名防护策略。保存后需发布配置生效。'
+                  : '留空表示继承应用级防护策略；选择指定策略后仅对当前域名生效，保存后需发布配置生效。'
+              }
+            >
+              <Select
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                loading={policiesQuery.isLoading}
+                placeholder={inheritPolicyPlaceholder}
+                options={policyOptions}
+                notFoundContent={
+                  policiesQuery.isError ? '加载防护策略列表失败' : '暂无可用防护策略'
+                }
+              />
+            </Form.Item>
+          )}
+          {webWafEnabled && !canReadPolicies && editing?.policy_id && (
+            <Form.Item
+              label="防护策略"
+              extra="当前账号无查看防护策略权限，保存时将保留该域名现有防护策略不变。"
+            >
+              <Typography.Text>
+                {editing.policy_name || editing.policy_code || editing.policy_id}
+              </Typography.Text>
             </Form.Item>
           )}
           {noProtocolEnabled && (

@@ -126,22 +126,35 @@ type Application struct {
 	AutoSSLLastAttemptAt   *time.Time `json:"auto_ssl_last_attempt_at"`
 }
 
+// PolicySummary 是应用或域名关联的防护策略摘要（只读展示用）。
+type PolicySummary struct {
+	ID             uuid.UUID `json:"id"`
+	Code           string    `json:"code"`
+	Name           string    `json:"name"`
+	ProtectionMode string    `json:"protection_mode"`
+	ParanoiaLevel  int       `json:"paranoia_level"`
+}
+
 // Domain 是应用域名。
 type Domain struct {
-	ID                  uuid.UUID `json:"id"`
-	ApplicationID       uuid.UUID `json:"application_id"`
-	Hostname            string    `json:"hostname"`
-	NormalizedHostname  string    `json:"normalized_hostname"`
-	DomainType          string    `json:"domain_type"`
-	IsPrimary           bool      `json:"is_primary"`
-	HTTPEnabled         bool      `json:"http_enabled"`
-	HTTPSEnabled        bool      `json:"https_enabled"`
-	HTTPPort            *int      `json:"http_port"`
-	HTTPSPort           *int      `json:"https_port"`
-	RedirectHTTPToHTTPS bool      `json:"redirect_http_to_https"`
-	Status              string    `json:"status"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	ID                  uuid.UUID  `json:"id"`
+	ApplicationID       uuid.UUID  `json:"application_id"`
+	Hostname            string     `json:"hostname"`
+	NormalizedHostname  string     `json:"normalized_hostname"`
+	DomainType          string     `json:"domain_type"`
+	IsPrimary           bool       `json:"is_primary"`
+	HTTPEnabled         bool       `json:"http_enabled"`
+	HTTPSEnabled        bool       `json:"https_enabled"`
+	HTTPPort            *int       `json:"http_port"`
+	HTTPSPort           *int       `json:"https_port"`
+	RedirectHTTPToHTTPS bool       `json:"redirect_http_to_https"`
+	PolicyID            *uuid.UUID `json:"policy_id"`
+	PolicyCode          string     `json:"policy_code,omitempty"`
+	PolicyName          string     `json:"policy_name,omitempty"`
+	PolicyMode          string     `json:"policy_mode,omitempty"`
+	Status              string     `json:"status"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 // Upstream 是源站。
@@ -555,11 +568,52 @@ func validateDomainInput(d *Domain) error {
 	return nil
 }
 
-// AddDomain 添加域名（含校验与冲突检测）。
+// GetBoundPolicySummary 查询应用当前绑定的活动防护策略摘要（未绑定返回 nil, nil）。
+func (s *Store) GetBoundPolicySummary(ctx context.Context, appID uuid.UUID) (*PolicySummary, error) {
+	row := s.db.QueryRow(ctx, `
+SELECT p.id, p.code, p.name, p.protection_mode, p.paranoia_level
+FROM protection_policies p
+JOIN application_policies ap ON ap.policy_id = p.id
+WHERE ap.application_id = $1 AND ap.is_active = TRUE AND p.deleted_at IS NULL
+LIMIT 1`, appID)
+	var ps PolicySummary
+	if err := row.Scan(&ps.ID, &ps.Code, &ps.Name, &ps.ProtectionMode, &ps.ParanoiaLevel); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &ps, nil
+}
+
+// resolveDomainPolicy 校验并解析域名绑定的防护策略（nil=继承应用策略；非空须存在且 ACTIVE）。
+func (s *Store) resolveDomainPolicy(ctx context.Context, policyID *uuid.UUID) (code, name, mode string, err error) {
+	if policyID == nil {
+		return "", "", "", nil
+	}
+	row := s.db.QueryRow(ctx, `
+SELECT code, name, protection_mode
+FROM protection_policies
+WHERE id = $1 AND deleted_at IS NULL AND status = 'ACTIVE'`, *policyID)
+	if err := row.Scan(&code, &name, &mode); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", "", fmt.Errorf("%w: 所选防护策略不存在或已停用", ErrInvalidInput)
+		}
+		return "", "", "", err
+	}
+	return code, name, mode, nil
+}
+
+// AddDomain 添加域名（含校验、策略有效性检查与冲突检测）。
 func (s *Store) AddDomain(ctx context.Context, d *Domain) error {
 	if err := validateDomainInput(d); err != nil {
 		return err
 	}
+	code, name, mode, err := s.resolveDomainPolicy(ctx, d.PolicyID)
+	if err != nil {
+		return err
+	}
+	d.PolicyCode, d.PolicyName, d.PolicyMode = code, name, mode
 	// 冲突检测：相同规范化域名+端口+协议（跨应用）
 	conflict, err := s.checkDomainConflict(ctx, d, uuid.Nil)
 	if err != nil {
@@ -570,11 +624,11 @@ func (s *Store) AddDomain(ctx context.Context, d *Domain) error {
 	}
 	err = s.db.QueryRow(ctx, `
 INSERT INTO application_domains (application_id, hostname, normalized_hostname, domain_type, is_primary,
-  http_enabled, https_enabled, http_port, https_port, redirect_http_to_https, status)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+  http_enabled, https_enabled, http_port, https_port, redirect_http_to_https, policy_id, status)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 RETURNING id, created_at, updated_at`,
 		d.ApplicationID, d.Hostname, d.NormalizedHostname, d.DomainType, d.IsPrimary,
-		d.HTTPEnabled, d.HTTPSEnabled, d.HTTPPort, d.HTTPSPort, d.RedirectHTTPToHTTPS, d.Status,
+		d.HTTPEnabled, d.HTTPSEnabled, d.HTTPPort, d.HTTPSPort, d.RedirectHTTPToHTTPS, d.PolicyID, d.Status,
 	).Scan(&d.ID, &d.CreatedAt, &d.UpdatedAt)
 	return err
 }
@@ -612,22 +666,38 @@ WHERE ad.normalized_hostname = $1 AND ad.id <> $2 AND ad.status = 'ACTIVE' AND a
 	return "", rows.Err()
 }
 
-// ListDomains 查询应用域名。
+const domainSelectColumns = `ad.id, ad.application_id, ad.hostname, ad.normalized_hostname, ad.domain_type, ad.is_primary,
+  ad.http_enabled, ad.https_enabled, ad.http_port, ad.https_port, ad.redirect_http_to_https,
+  ad.policy_id, COALESCE(pp.code, ''), COALESCE(pp.name, ''), COALESCE(pp.protection_mode, ''),
+  ad.status, ad.created_at, ad.updated_at`
+
+func scanDomainRow(scan func(dest ...any) error) (Domain, error) {
+	var d Domain
+	err := scan(
+		&d.ID, &d.ApplicationID, &d.Hostname, &d.NormalizedHostname, &d.DomainType,
+		&d.IsPrimary, &d.HTTPEnabled, &d.HTTPSEnabled, &d.HTTPPort, &d.HTTPSPort,
+		&d.RedirectHTTPToHTTPS, &d.PolicyID, &d.PolicyCode, &d.PolicyName, &d.PolicyMode,
+		&d.Status, &d.CreatedAt, &d.UpdatedAt,
+	)
+	return d, err
+}
+
+// ListDomains 查询应用域名（附带域名级防护策略摘要）。
 func (s *Store) ListDomains(ctx context.Context, appID uuid.UUID) ([]Domain, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT id, application_id, hostname, normalized_hostname, domain_type, is_primary,
-  http_enabled, https_enabled, http_port, https_port, redirect_http_to_https, status, created_at, updated_at
-FROM application_domains WHERE application_id = $1 ORDER BY is_primary DESC, created_at ASC`, appID)
+SELECT `+domainSelectColumns+`
+FROM application_domains ad
+LEFT JOIN protection_policies pp ON pp.id = ad.policy_id AND pp.deleted_at IS NULL
+WHERE ad.application_id = $1
+ORDER BY ad.is_primary DESC, ad.created_at ASC`, appID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Domain
 	for rows.Next() {
-		var d Domain
-		if err := rows.Scan(&d.ID, &d.ApplicationID, &d.Hostname, &d.NormalizedHostname, &d.DomainType,
-			&d.IsPrimary, &d.HTTPEnabled, &d.HTTPSEnabled, &d.HTTPPort, &d.HTTPSPort,
-			&d.RedirectHTTPToHTTPS, &d.Status, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		d, err := scanDomainRow(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -635,16 +705,14 @@ FROM application_domains WHERE application_id = $1 ORDER BY is_primary DESC, cre
 	return out, rows.Err()
 }
 
-// GetDomain 查询单个域名。
+// GetDomain 查询单个域名（附带域名级防护策略摘要）。
 func (s *Store) GetDomain(ctx context.Context, domainID uuid.UUID) (*Domain, error) {
 	row := s.db.QueryRow(ctx, `
-SELECT id, application_id, hostname, normalized_hostname, domain_type, is_primary,
-  http_enabled, https_enabled, http_port, https_port, redirect_http_to_https, status, created_at, updated_at
-FROM application_domains WHERE id = $1`, domainID)
-	var d Domain
-	err := row.Scan(&d.ID, &d.ApplicationID, &d.Hostname, &d.NormalizedHostname, &d.DomainType,
-		&d.IsPrimary, &d.HTTPEnabled, &d.HTTPSEnabled, &d.HTTPPort, &d.HTTPSPort,
-		&d.RedirectHTTPToHTTPS, &d.Status, &d.CreatedAt, &d.UpdatedAt)
+SELECT `+domainSelectColumns+`
+FROM application_domains ad
+LEFT JOIN protection_policies pp ON pp.id = ad.policy_id AND pp.deleted_at IS NULL
+WHERE ad.id = $1`, domainID)
+	d, err := scanDomainRow(row.Scan)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -654,11 +722,16 @@ FROM application_domains WHERE id = $1`, domainID)
 	return &d, nil
 }
 
-// UpdateDomain 更新域名（含与 AddDomain 同口径的主机名/端口/协议校验及冲突检测）。
+// UpdateDomain 更新域名（含与 AddDomain 同口径的主机名/端口/协议/策略校验及冲突检测）。
 func (s *Store) UpdateDomain(ctx context.Context, d *Domain) error {
 	if err := validateDomainInput(d); err != nil {
 		return err
 	}
+	code, name, mode, err := s.resolveDomainPolicy(ctx, d.PolicyID)
+	if err != nil {
+		return err
+	}
+	d.PolicyCode, d.PolicyName, d.PolicyMode = code, name, mode
 	conflict, err := s.checkDomainConflict(ctx, d, d.ID)
 	if err != nil {
 		return err
@@ -669,10 +742,10 @@ func (s *Store) UpdateDomain(ctx context.Context, d *Domain) error {
 	res, err := s.db.Exec(ctx, `
 UPDATE application_domains SET hostname=$1, normalized_hostname=$2, domain_type=$3, is_primary=$4,
   http_enabled=$5, https_enabled=$6, http_port=$7, https_port=$8, redirect_http_to_https=$9,
-  status=$10, updated_at=now()
-WHERE id=$11`,
+  policy_id=$10, status=$11, updated_at=now()
+WHERE id=$12`,
 		d.Hostname, d.NormalizedHostname, d.DomainType, d.IsPrimary, d.HTTPEnabled, d.HTTPSEnabled,
-		d.HTTPPort, d.HTTPSPort, d.RedirectHTTPToHTTPS, d.Status, d.ID)
+		d.HTTPPort, d.HTTPSPort, d.RedirectHTTPToHTTPS, d.PolicyID, d.Status, d.ID)
 	if err != nil {
 		return err
 	}

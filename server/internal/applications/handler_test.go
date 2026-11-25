@@ -279,3 +279,82 @@ func TestUpstreamHealthJSONAndNotifyCallback(t *testing.T) {
 		t.Fatalf("onUpstreamChanged called %d times, want 1", called)
 	}
 }
+
+func TestOptionalUUIDUnmarshalTriState(t *testing.T) {
+	pid := uuid.New()
+
+	var absent domainRequest
+	if err := json.Unmarshal([]byte(`{"hostname":"a.example.com","http_enabled":true}`), &absent); err != nil {
+		t.Fatalf("absent unmarshal: %v", err)
+	}
+	if absent.PolicyID.Set || absent.PolicyID.Valid || absent.PolicyID.Ptr() != nil {
+		t.Fatalf("absent policy_id should have Set=false, got %+v", absent.PolicyID)
+	}
+
+	for _, raw := range []string{`{"hostname":"a.example.com","policy_id":null}`, `{"hostname":"a.example.com","policy_id":""}`, `{"hostname":"a.example.com","policy_id":"   "}`} {
+		var cleared domainRequest
+		if err := json.Unmarshal([]byte(raw), &cleared); err != nil {
+			t.Fatalf("clear unmarshal %s: %v", raw, err)
+		}
+		if !cleared.PolicyID.Set || cleared.PolicyID.Valid || cleared.PolicyID.Ptr() != nil {
+			t.Fatalf("clear %s should have Set=true Valid=false, got %+v", raw, cleared.PolicyID)
+		}
+	}
+
+	var bound domainRequest
+	if err := json.Unmarshal([]byte(`{"hostname":"a.example.com","policy_id":"`+pid.String()+`"}`), &bound); err != nil {
+		t.Fatalf("bound unmarshal: %v", err)
+	}
+	if !bound.PolicyID.Set || !bound.PolicyID.Valid || bound.PolicyID.Ptr() == nil || *bound.PolicyID.Ptr() != pid {
+		t.Fatalf("bound policy_id mismatch: %+v", bound.PolicyID)
+	}
+
+	for _, bad := range []string{`{"hostname":"a.example.com","policy_id":"not-a-uuid"}`, `{"hostname":"a.example.com","policy_id":123}`} {
+		var invalid domainRequest
+		if err := json.Unmarshal([]byte(bad), &invalid); err == nil {
+			t.Fatalf("expected error for invalid policy_id %s", bad)
+		}
+	}
+}
+
+func TestDomainHandlersRejectInvalidPolicyIDHTTP(t *testing.T) {
+	h := NewHandler(nil, deadAudits(t), nil)
+	appID := uuid.New()
+	domainID := uuid.New()
+	p := &authz.Principal{UserID: uuid.New(), Username: "tester"}
+
+	// POST AddDomain rejects malformed policy_id before DB access
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/applications/"+appID.String()+"/domains",
+		strings.NewReader(`{"hostname":"jxdr.cn","https_enabled":true,"https_port":443,"policy_id":"bad-uuid"}`))
+	req.SetPathValue("id", appID.String())
+	req = req.WithContext(authz.WithPrincipal(req.Context(), p))
+	rec := httptest.NewRecorder()
+	h.AddDomain(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("AddDomain invalid policy_id status = %d, want 400 body=%s", rec.Code, rec.Body.String())
+	}
+
+	// PUT UpdateDomain rejects malformed policy_id before DB access
+	req2 := httptest.NewRequest(http.MethodPut, "/api/v1/applications/"+appID.String()+"/domains/"+domainID.String(),
+		strings.NewReader(`{"hostname":"jxdr.cn","https_enabled":true,"https_port":443,"policy_id":"bad-uuid"}`))
+	req2.SetPathValue("id", appID.String())
+	req2.SetPathValue("domain_id", domainID.String())
+	req2 = req2.WithContext(authz.WithPrincipal(req2.Context(), p))
+	rec2 := httptest.NewRecorder()
+	h.UpdateDomain(rec2, req2)
+	if rec2.Code != http.StatusBadRequest {
+		t.Fatalf("UpdateDomain invalid policy_id status = %d, want 400 body=%s", rec2.Code, rec2.Body.String())
+	}
+}
+
+func TestDomainSummaryIncludesPolicyID(t *testing.T) {
+	pid := uuid.New()
+	s1 := domainSummary(&Domain{NormalizedHostname: "jxdr.cn", DomainType: "EXACT"})
+	if !strings.Contains(s1, `"policy_id":""`) {
+		t.Fatalf("expected empty policy_id in summary, got %s", s1)
+	}
+	s2 := domainSummary(&Domain{NormalizedHostname: "jxdr.cn", DomainType: "EXACT", PolicyID: &pid})
+	if !strings.Contains(s2, `"policy_id":"`+pid.String()+`"`) {
+		t.Fatalf("expected policy_id in summary, got %s", s2)
+	}
+}

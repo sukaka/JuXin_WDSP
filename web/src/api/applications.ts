@@ -54,6 +54,8 @@ export interface DomainBody {
   http_port?: number | null
   https_port?: number | null
   redirect_http_to_https: boolean
+  /** 域名级防护策略 ID：UUID=绑定该策略，null=清除并继承应用策略，省略=保持原值不变 */
+  policy_id?: string | null
 }
 
 export interface UpstreamBody {

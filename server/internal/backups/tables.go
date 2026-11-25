@@ -126,7 +126,7 @@ var Tables = []TableDef{
 var tableDeps = map[string][]string{
 	"user_roles":                         {"users", "roles"},
 	"role_permissions":                   {"roles", "permissions"},
-	"application_domains":                {"applications"},
+	"application_domains":                {"applications", "protection_policies"},
 	"upstreams":                          {"applications"},
 	"exception_policies":                 {"protection_policies"},
 	"ip_access_rules":                    {"applications"},

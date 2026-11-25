@@ -31,9 +31,9 @@ export const protectionPoliciesApi = {
     })
     return { ...data, items: data.items ?? [] }
   },
-  get: async (id: string): Promise<ProtectionPolicyDetail & { application_ids: string[] }> => {
+  get: async (id: string): Promise<ProtectionPolicyDetail & { application_ids: string[]; domains: NonNullable<ProtectionPolicyDetail['domains']> }> => {
     const data = await request<ProtectionPolicyDetail>(`/protection-policies/${id}`)
-    return { ...data, application_ids: data.application_ids ?? [] }
+    return { ...data, application_ids: data.application_ids ?? [], domains: data.domains ?? [] }
   },
   create: (body: CreateProtectionPolicyBody) =>
     request<ProtectionPolicyItem>('/protection-policies', { method: 'POST', body }),

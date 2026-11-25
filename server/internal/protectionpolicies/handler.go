@@ -37,7 +37,10 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	items := make([]map[string]interface{}, 0, len(list))
 	for _, p := range list {
 		usage, _ := h.store.CountUsage(r.Context(), p.ID)
-		items = append(items, policyItem(&p, usage))
+		domainUsage, _ := h.store.CountDomainUsage(r.Context(), p.ID)
+		item := policyItem(&p, usage)
+		item["domain_usage_count"] = domainUsage
+		items = append(items, item)
 	}
 	response.Page(w, r, items, total, page, pageSize)
 }
@@ -140,8 +143,14 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	if appIDs == nil {
 		appIDs = []uuid.UUID{}
 	}
+	boundDomains, _ := h.store.ListBoundDomains(r.Context(), id)
+	if boundDomains == nil {
+		boundDomains = []BoundDomain{}
+	}
 	item := policyItem(policy, usage)
 	item["application_ids"] = appIDs
+	item["domains"] = boundDomains
+	item["domain_usage_count"] = len(boundDomains)
 	response.JSON(w, r, http.StatusOK, item)
 }
 
@@ -220,7 +229,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, ErrInUse) {
-			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "策略正在被应用引用，无法删除")
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "策略正在被应用或域名引用，无法删除")
 			return
 		}
 		response.InternalError(w, r, err)

@@ -257,10 +257,21 @@ export interface ApplicationItem {
   version: number
 }
 
+/** 应用级默认绑定的防护策略摘要 */
+export interface ApplicationProtectionPolicySummary {
+  id: string
+  code: string
+  name: string
+  protection_mode: ProtectionMode
+  paranoia_level: number
+}
+
 /** 应用详情（含域名与源站） */
 export interface ApplicationDetail extends ApplicationItem {
   domains: DomainItem[]
   upstreams: UpstreamItem[]
+  /** 应用级默认绑定的防护策略（未绑定时为 null） */
+  protection_policy?: ApplicationProtectionPolicySummary | null
 }
 
 /* ==================== API 准入防护（docs/API_ADMISSION_CONTROL_DESIGN.md §5） ==================== */
@@ -325,6 +336,11 @@ export interface DomainItem {
   http_port?: number | null
   https_port?: number | null
   redirect_http_to_https: boolean
+  /** 域名级绑定的防护策略 ID（null/空表示继承应用级策略） */
+  policy_id?: string | null
+  policy_code?: string
+  policy_name?: string
+  policy_mode?: ProtectionMode | string
   status: string
   created_at: string
   updated_at: string
@@ -608,14 +624,25 @@ export interface ProtectionPolicyItem {
   response_body_access: boolean
   blocking_status_code: number
   usage_count: number
+  domain_usage_count?: number
   created_at: string
   updated_at: string
   version: number
 }
 
-/** 防护策略详情（含绑定应用 ID 列表） */
+/** 防护策略绑定的域名摘要 */
+export interface ProtectionPolicyBoundDomain {
+  id: string
+  application_id: string
+  application_code: string
+  application_name: string
+  hostname: string
+}
+
+/** 防护策略详情（含绑定应用 ID 与域名列表） */
 export interface ProtectionPolicyDetail extends ProtectionPolicyItem {
   application_ids: string[] | null
+  domains?: ProtectionPolicyBoundDomain[] | null
 }
 
 /** WAF 规则功能类别 */

@@ -161,7 +161,7 @@ func TestScopeTablesTopology(t *testing.T) {
 	checks := [][2]string{
 		{"roles", "user_roles"}, {"users", "user_roles"},
 		{"roles", "role_permissions"}, {"permissions", "role_permissions"},
-		{"applications", "upstreams"}, {"applications", "application_domains"},
+		{"applications", "upstreams"}, {"applications", "application_domains"}, {"protection_policies", "application_domains"},
 		{"protection_policies", "exception_policies"}, {"applications", "ip_access_rules"},
 	}
 	for _, c := range checks {

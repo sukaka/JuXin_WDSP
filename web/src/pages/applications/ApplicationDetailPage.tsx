@@ -9,6 +9,7 @@ import {
   Space,
   Spin,
   Tabs,
+  Tag,
   Tooltip,
   Typography,
 } from 'antd'
@@ -19,6 +20,7 @@ import ProtectionModeTag from '../../components/ProtectionModeTag'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { useBreadcrumbObjectName } from '../../stores/breadcrumb'
+import { useProductStore } from '../../stores/product'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import {
@@ -41,6 +43,7 @@ export default function ApplicationDetailPage() {
   const { message, modal } = AntdApp.useApp()
   const queryClient = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
+  const webWafEnabled = useProductStore((s) => s.webWafEnabled)
 
   const detailQuery = useQuery({
     queryKey: ['application', id],
@@ -165,6 +168,21 @@ export default function ApplicationDetailPage() {
           <Descriptions.Item label="描述">
             {app.description || '-'}
           </Descriptions.Item>
+          {webWafEnabled && (
+            <Descriptions.Item label="默认防护策略">
+              {app.protection_policy ? (
+                <Space size={4} wrap>
+                  <Tag color="blue">{app.protection_policy.name}</Tag>
+                  <ProtectionModeTag mode={app.protection_policy.protection_mode} />
+                  <Tag color="geekblue">{`PL${app.protection_policy.paranoia_level}`}</Tag>
+                </Space>
+              ) : (
+                <Typography.Text type="secondary">
+                  未绑定（按应用防护模式）
+                </Typography.Text>
+              )}
+            </Descriptions.Item>
+          )}
           <Descriptions.Item label="健康状态">
             <StatusTag
               value={
@@ -211,7 +229,14 @@ export default function ApplicationDetailPage() {
             {
               key: 'domains',
               label: `域名管理 (${app.domains.length})`,
-              children: <DomainsTab appId={app.id} deploymentMode={app.deployment_mode} />,
+              children: (
+                <DomainsTab
+                  appId={app.id}
+                  deploymentMode={app.deployment_mode}
+                  appProtectionMode={app.protection_mode}
+                  appProtectionPolicy={app.protection_policy}
+                />
+              ),
             },
             {
               key: 'upstreams',

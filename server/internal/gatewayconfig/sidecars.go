@@ -121,16 +121,32 @@ func buildMirrorcapSidecar(apps []AppData, node string, interfaces []string, dis
 	}
 }
 
-// hasDetectableMirrorApp 是否存在需要执行镜像检测的 MIRROR 应用（排除 OFF/BYPASS）。
+// domainProtectionActive 判断域名在生效策略（含域名级覆盖，BYPASS 始终优先）下是否开启检测/牵引。
+func domainProtectionActive(app AppData, d applications.Domain) bool {
+	if app.ProtectionMode == applications.ModeBypass {
+		return false
+	}
+	eff := effectiveAppForDomain(app, d)
+	return eff.ProtectionMode != applications.ModeOff && eff.ProtectionMode != applications.ModeBypass
+}
+
+// hasDetectableMirrorApp 是否存在需要执行镜像检测的 MIRROR 应用（含域名级覆盖；排除 OFF/BYPASS）。
 func hasDetectableMirrorApp(apps []AppData) bool {
 	for _, app := range apps {
-		if app.DeploymentMode != applications.DeployModeMirror {
+		if app.DeploymentMode != applications.DeployModeMirror || app.ProtectionMode == applications.ModeBypass {
 			continue
 		}
-		if app.ProtectionMode == applications.ModeOff || app.ProtectionMode == applications.ModeBypass {
+		if len(app.Domains) == 0 {
+			if app.ProtectionMode != applications.ModeOff {
+				return true
+			}
 			continue
 		}
-		return true
+		for _, d := range app.Domains {
+			if domainProtectionActive(app, d) {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -146,14 +162,20 @@ func mirrorPlaintextPorts(apps []AppData) ([]int, bool) {
 	hasDomain := false
 	hasMirror := false
 	for _, app := range apps {
-		if app.DeploymentMode != applications.DeployModeMirror {
+		if app.DeploymentMode != applications.DeployModeMirror || app.ProtectionMode == applications.ModeBypass {
 			continue
 		}
-		if app.ProtectionMode == applications.ModeOff || app.ProtectionMode == applications.ModeBypass {
+		if len(app.Domains) == 0 {
+			if app.ProtectionMode != applications.ModeOff {
+				hasMirror = true
+			}
 			continue
 		}
-		hasMirror = true
 		for _, d := range app.Domains {
+			if !domainProtectionActive(app, d) {
+				continue
+			}
+			hasMirror = true
 			hasDomain = true
 			if d.HTTPEnabled && d.HTTPPort != nil && !seen[*d.HTTPPort] {
 				seen[*d.HTTPPort] = true
@@ -176,14 +198,11 @@ func mirrorDetectDomains(apps []AppData) []string {
 	seen := map[string]bool{}
 	var hosts []string
 	for _, app := range apps {
-		if app.DeploymentMode != applications.DeployModeMirror {
-			continue
-		}
-		if app.ProtectionMode == applications.ModeOff || app.ProtectionMode == applications.ModeBypass {
+		if app.DeploymentMode != applications.DeployModeMirror || app.ProtectionMode == applications.ModeBypass {
 			continue
 		}
 		for _, d := range app.Domains {
-			if !d.HTTPEnabled {
+			if !d.HTTPEnabled || !domainProtectionActive(app, d) {
 				continue
 			}
 			h := d.NormalizedHostname
@@ -243,15 +262,6 @@ func buildMirrorcapDiscovery(apps []AppData, mirrorIfaces, trafficIfaces []strin
 	return d
 }
 
-// isActiveTransparentApp 判定应用是否为需要执行透明牵引的 TRANSPARENT 应用：
-// 排除 OFF/BYPASS（含授权失效强制 BYPASS），保证 BYPASS 真正关闭透明牵引。
-func isActiveTransparentApp(app AppData) bool {
-	if app.DeploymentMode != applications.DeployModeTransparent {
-		return false
-	}
-	return app.ProtectionMode != applications.ModeOff && app.ProtectionMode != applications.ModeBypass
-}
-
 // isActiveDomain 判断域名是否处于生效状态（测试构造空 Status 视为 ACTIVE）。
 func isActiveDomain(d applications.Domain) bool {
 	return d.Status == "" || strings.EqualFold(d.Status, "ACTIVE")
@@ -293,16 +303,16 @@ func buildTproxydSidecarWithOptions(apps []AppData, listen, target, targetTLS st
 }
 
 // transparentProtectHosts 收集非 OFF/BYPASS 的 TRANSPARENT 应用中启用了 HTTPS 的
-// 规范化域名（去重排序；无则空数组 []）。纯 HTTP 域名不进入 protect_hosts。
+// 规范化域名（支持域名级策略覆盖；去重排序；无则空数组 []）。纯 HTTP 域名不进入 protect_hosts。
 func transparentProtectHosts(apps []AppData) []string {
 	seen := map[string]bool{}
 	var hosts []string
 	for _, app := range apps {
-		if !isActiveTransparentApp(app) {
+		if app.DeploymentMode != applications.DeployModeTransparent || app.ProtectionMode == applications.ModeBypass {
 			continue
 		}
 		for _, d := range app.Domains {
-			if !isActiveDomain(d) || !d.HTTPSEnabled || d.HTTPSPort == nil {
+			if !isActiveDomain(d) || !d.HTTPSEnabled || d.HTTPSPort == nil || !domainProtectionActive(app, d) {
 				continue
 			}
 			h := d.NormalizedHostname
@@ -325,16 +335,16 @@ func transparentProtectHosts(apps []AppData) []string {
 }
 
 // transparentSidecarPorts 收集非 OFF/BYPASS 的 TRANSPARENT 应用活动域名的监听端口
-// （HTTP/HTTPS，去重排序；无则返回空数组 []，绝不凭空补 80 劫持无关流量）。
+// （支持域名级策略覆盖；HTTP/HTTPS，去重排序；无则返回空数组 []，绝不凭空补 80 劫持无关流量）。
 func transparentSidecarPorts(apps []AppData) []int {
 	seen := map[int]bool{}
 	var ports []int
 	for _, app := range apps {
-		if !isActiveTransparentApp(app) {
+		if app.DeploymentMode != applications.DeployModeTransparent || app.ProtectionMode == applications.ModeBypass {
 			continue
 		}
 		for _, d := range app.Domains {
-			if !isActiveDomain(d) {
+			if !isActiveDomain(d) || !domainProtectionActive(app, d) {
 				continue
 			}
 			if d.HTTPEnabled && d.HTTPPort != nil && !seen[*d.HTTPPort] {

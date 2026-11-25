@@ -61,6 +61,7 @@ func TestEmptyApplicationIDsSerializesAsArray(t *testing.T) {
 	emptyIDs := []uuid.UUID{}
 	item := policyItem(validTestPolicy(), 0)
 	item["application_ids"] = emptyIDs
+	item["domains"] = []BoundDomain{}
 
 	raw, err := json.Marshal(item)
 	if err != nil {
@@ -68,6 +69,9 @@ func TestEmptyApplicationIDsSerializesAsArray(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"application_ids":[]`) {
 		t.Fatalf("expected application_ids:[], got %s", string(raw))
+	}
+	if !strings.Contains(string(raw), `"domains":[]`) {
+		t.Fatalf("expected domains:[], got %s", string(raw))
 	}
 
 	appsRaw, err := json.Marshal(map[string]interface{}{"application_ids": emptyIDs, "count": len(emptyIDs)})

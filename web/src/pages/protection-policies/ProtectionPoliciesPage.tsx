@@ -242,7 +242,7 @@ export default function ProtectionPoliciesPage() {
         title: '删除确认',
         content:
           record.usage_count > 0
-            ? `策略「${record.name}」正被 ${record.usage_count} 个应用引用，删除将被后端拒绝。确定继续吗？`
+            ? `策略「${record.name}」正被 ${record.usage_count} 处应用或域名引用，删除将被后端拒绝。确定继续吗？`
             : `确定删除策略「${record.name}」吗？删除后不可恢复。`,
         okButtonProps: { danger: true },
         onOk: exec,
@@ -313,7 +313,7 @@ export default function ProtectionPoliciesPage() {
       render: (v: boolean) => (v ? <Tag color="purple">内置</Tag> : <Tag>自定义</Tag>),
     },
     {
-      title: '引用应用数',
+      title: '引用数',
       dataIndex: 'usage_count',
       width: 100,
       render: (v: number) => (v > 0 ? <Tag color="blue">{v}</Tag> : v),
@@ -630,6 +630,31 @@ export default function ProtectionPoliciesPage() {
                     }
                   >
                     <Typography.Text>{appNameById.get(appId) ?? appId}</Typography.Text>
+                  </List.Item>
+                )}
+              />
+            )}
+            <Typography.Title level={5} style={{ marginTop: 20 }}>
+              绑定域名（{detail.domains?.length ?? 0}）
+            </Typography.Title>
+            <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+              可在「网站应用 → 域名管理」中为单个域名选择或调整防护策略；域名级策略优先于所属应用默认策略。
+            </Typography.Paragraph>
+            {(detail.domains ?? []).length === 0 ? (
+              <Typography.Text type="secondary">暂无域名单独绑定该策略</Typography.Text>
+            ) : (
+              <List
+                size="small"
+                bordered
+                dataSource={detail.domains ?? []}
+                renderItem={(dom) => (
+                  <List.Item>
+                    <Space wrap>
+                      <Typography.Text code>{dom.hostname}</Typography.Text>
+                      <Typography.Text type="secondary">
+                        {dom.application_name} ({dom.application_code})
+                      </Typography.Text>
+                    </Space>
                   </List.Item>
                 )}
               />

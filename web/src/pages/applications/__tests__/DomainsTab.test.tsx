@@ -164,4 +164,180 @@ describe('DomainsTab 协议校验与透明串接提示 (P1-7 / P1-13)', () => {
     fireEvent.click(okBtn)
     expect(fetchMock.mock.calls.some((c) => c[1]?.method === 'PUT')).toBe(false)
   })
+
+  it('具备 protection_policies.read 权限时可在编辑/新增域名弹窗选择或清除防护策略并在列表展示', async () => {
+    useAuthStore.setState({
+      user: makeUser([
+        'domains.read',
+        'domains.create',
+        'domains.update',
+        'protection_policies.read',
+      ]),
+      csrfToken: null,
+      initialized: true,
+    })
+
+    const boundDomain: DomainItem = {
+      ...sampleDomain,
+      id: 'dom-jxdr',
+      hostname: 'jxdr.cn',
+      normalized_hostname: 'jxdr.cn',
+      https_enabled: true,
+      https_port: 443,
+      policy_id: 'pol-standard',
+      policy_code: 'standard',
+      policy_name: '标准策略',
+      policy_mode: 'PROTECT',
+    }
+    const inheritDomain: DomainItem = {
+      ...sampleDomain,
+      id: 'dom-sub',
+      hostname: 'blog.jxdr.cn',
+      normalized_hostname: 'blog.jxdr.cn',
+      is_primary: false,
+      http_enabled: true,
+      http_port: 80,
+      policy_id: null,
+    }
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const method = init?.method ?? 'GET'
+      if (method === 'GET' && url.includes('/applications/app-1/domains')) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: { items: [boundDomain, inheritDomain] },
+          }),
+        )
+      }
+      if (method === 'GET' && url.includes('/protection-policies')) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: {
+              items: [
+                {
+                  id: 'pol-standard',
+                  code: 'standard',
+                  name: '标准策略',
+                  status: 'ACTIVE',
+                  protection_mode: 'PROTECT',
+                  paranoia_level: 1,
+                },
+                {
+                  id: 'pol-strict',
+                  code: 'strict',
+                  name: '严格策略',
+                  status: 'ACTIVE',
+                  protection_mode: 'PROTECT',
+                  paranoia_level: 2,
+                },
+              ],
+              page: 1,
+              page_size: 100,
+              total: 2,
+            },
+          }),
+        )
+      }
+      if (method === 'PUT' && url.includes('/applications/app-1/domains/dom-jxdr')) {
+        return Promise.resolve(
+          jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: boundDomain }),
+        )
+      }
+      return Promise.reject(new Error(`unexpected url: ${method} ${url}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <AntdApp>
+          <DomainsTab
+            appId="app-1"
+            deploymentMode="REVERSE_PROXY"
+            appProtectionMode="OBSERVE"
+            appProtectionPolicy={{
+              id: 'pol-relaxed',
+              code: 'relaxed',
+              name: '宽松策略',
+              protection_mode: 'OBSERVE',
+              paranoia_level: 1,
+            }}
+          />
+        </AntdApp>
+      </QueryClientProvider>,
+    )
+
+    // 列表中同时展示独立策略名与继承默认策略标签，且未打开弹窗前不请求策略列表
+    expect(await screen.findByText('jxdr.cn')).toBeInTheDocument()
+    expect(screen.getByText('标准策略')).toBeInTheDocument()
+    expect(screen.getByText('继承（宽松策略）')).toBeInTheDocument()
+    expect(
+      fetchMock.mock.calls.some((c) => String(c[0]).includes('/protection-policies')),
+    ).toBe(false)
+
+    // 打开编辑弹窗后加载策略列表，切换到「严格策略」并提交 PUT
+    const editButtons = screen.getAllByRole('button', { name: /^编\s*辑$/ })
+    fireEvent.click(editButtons[0])
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some((c) => String(c[0]).includes('/protection-policies')),
+      ).toBe(true),
+    )
+
+    const policyCombobox = within(dialog).getByLabelText('防护策略')
+    fireEvent.mouseDown(policyCombobox)
+    const strictOption = await screen.findByText(/严格策略（strict · 防护 · PL2）/)
+    fireEvent.click(strictOption)
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /^(OK|确\s*定)$/ }))
+    await waitFor(() => {
+      const putCall = fetchMock.mock.calls.find((c) => c[1]?.method === 'PUT')
+      expect(putCall).toBeTruthy()
+      const body = JSON.parse(String(putCall![1]?.body)) as Record<string, unknown>
+      expect(body.hostname).toBe('jxdr.cn')
+      expect(body.policy_id).toBe('pol-strict')
+    })
+  })
+
+  it('缺少 protection_policies.read 权限时不请求策略接口，编辑提交省略 policy_id 以保留既有策略', async () => {
+    const boundDomain: DomainItem = {
+      ...sampleDomain,
+      id: 'dom-keep',
+      hostname: 'keep.jxdr.cn',
+      normalized_hostname: 'keep.jxdr.cn',
+      https_enabled: true,
+      https_port: 443,
+      policy_id: 'pol-standard',
+      policy_code: 'standard',
+      policy_name: '标准策略',
+      policy_mode: 'PROTECT',
+    }
+    const fetchMock = mockDomainsFetch([boundDomain])
+    vi.stubGlobal('fetch', fetchMock)
+    renderTab('REVERSE_PROXY')
+
+    expect(await screen.findByText('keep.jxdr.cn')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^编\s*辑$/ }))
+    const dialog = await screen.findByRole('dialog')
+    expect(
+      within(dialog).getByText(/当前账号无查看防护策略权限，保存时将保留该域名现有防护策略不变/),
+    ).toBeInTheDocument()
+    expect(
+      fetchMock.mock.calls.some((c) => String(c[0]).includes('/protection-policies')),
+    ).toBe(false)
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /^(OK|确\s*定)$/ }))
+    await waitFor(() => {
+      const putCall = fetchMock.mock.calls.find((c) => c[1]?.method === 'PUT')
+      expect(putCall).toBeTruthy()
+      const body = JSON.parse(String(putCall![1]?.body)) as Record<string, unknown>
+      expect('policy_id' in body).toBe(false)
+    })
+  })
 })

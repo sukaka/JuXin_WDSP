@@ -283,9 +283,11 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	upstreamCount, _ := h.store.CountActiveUpstreams(r.Context(), id)
 	domains, _ := h.store.ListDomains(r.Context(), id)
 	upstreams, _ := h.store.ListUpstreams(r.Context(), id)
+	boundPolicy, _ := h.store.GetBoundPolicySummary(r.Context(), id)
 	item := appItem(a, domainCount, upstreamCount, primaryActiveDomain(domains))
 	item["domains"] = domains
 	item["upstreams"] = upstreams
+	item["protection_policy"] = boundPolicy
 	response.JSON(w, r, http.StatusOK, item)
 }
 
@@ -537,14 +539,70 @@ func (h *Handler) ListDomains(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"items": domains})
 }
 
+// optionalUUID 表示 JSON 三态 UUID 字段：
+//   - 字段缺省（Set=false）：更新时保持原值不变；
+//   - 显式 null 或空串（Set=true, Valid=false）：清除绑定（继承应用策略）；
+//   - 有效 UUID 字符串（Set=true, Valid=true）：绑定指定策略。
+type optionalUUID struct {
+	Set   bool
+	Valid bool
+	UUID  uuid.UUID
+}
+
+func (o *optionalUUID) UnmarshalJSON(data []byte) error {
+	o.Set = true
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		o.Valid = false
+		o.UUID = uuid.Nil
+		return nil
+	}
+	var raw string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("无效的防护策略ID")
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		o.Valid = false
+		o.UUID = uuid.Nil
+		return nil
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("无效的防护策略ID")
+	}
+	o.Valid = true
+	o.UUID = id
+	return nil
+}
+
+func (o optionalUUID) Ptr() *uuid.UUID {
+	if !o.Valid {
+		return nil
+	}
+	id := o.UUID
+	return &id
+}
+
+func uuidPtrEqual(a, b *uuid.UUID) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
 type domainRequest struct {
-	Hostname            string `json:"hostname"`
-	IsPrimary           bool   `json:"is_primary"`
-	HTTPEnabled         bool   `json:"http_enabled"`
-	HTTPSEnabled        bool   `json:"https_enabled"`
-	HTTPPort            *int   `json:"http_port"`
-	HTTPSPort           *int   `json:"https_port"`
-	RedirectHTTPToHTTPS bool   `json:"redirect_http_to_https"`
+	Hostname            string       `json:"hostname"`
+	IsPrimary           bool         `json:"is_primary"`
+	HTTPEnabled         bool         `json:"http_enabled"`
+	HTTPSEnabled        bool         `json:"https_enabled"`
+	HTTPPort            *int         `json:"http_port"`
+	HTTPSPort           *int         `json:"https_port"`
+	RedirectHTTPToHTTPS bool         `json:"redirect_http_to_https"`
+	PolicyID            optionalUUID `json:"policy_id"`
 }
 
 // AddDomain 添加域名。
@@ -555,13 +613,13 @@ func (h *Handler) AddDomain(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的应用ID")
 		return
 	}
-	if _, err := h.store.GetByID(r.Context(), appID); err != nil {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "应用不存在")
-		return
-	}
 	var req domainRequest
 	if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	if _, err := h.store.GetByID(r.Context(), appID); err != nil {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "应用不存在")
 		return
 	}
 	d := &Domain{
@@ -573,6 +631,7 @@ func (h *Handler) AddDomain(w http.ResponseWriter, r *http.Request) {
 		HTTPPort:            req.HTTPPort,
 		HTTPSPort:           req.HTTPSPort,
 		RedirectHTTPToHTTPS: req.RedirectHTTPToHTTPS,
+		PolicyID:            req.PolicyID.Ptr(),
 		Status:              "ACTIVE",
 	}
 	if err := h.store.AddDomain(r.Context(), d); err != nil {
@@ -586,7 +645,11 @@ func (h *Handler) AddDomain(w http.ResponseWriter, r *http.Request) {
 	if d.HTTPSEnabled {
 		h.notifyDomainsChanged(appID)
 	}
-	h.recordAudit(r, p, "applications", "add_domain", "domain", d.ID.String(), d.Hostname, "", domainSummary(d), audits.ResultSuccess, audits.RiskMedium)
+	risk := audits.RiskMedium
+	if d.PolicyID != nil {
+		risk = audits.RiskHigh
+	}
+	h.recordAudit(r, p, "applications", "add_domain", "domain", d.ID.String(), d.Hostname, "", domainSummary(d), audits.ResultSuccess, risk)
 	response.JSON(w, r, http.StatusOK, d)
 }
 
@@ -598,14 +661,23 @@ func (h *Handler) UpdateDomain(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的域名ID")
 		return
 	}
-	d, err := h.store.GetDomain(r.Context(), domainID)
-	if err != nil {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "域名不存在")
-		return
+	var appIDFilter *uuid.UUID
+	if rawAppID := r.PathValue("id"); rawAppID != "" {
+		parsedAppID, err := uuid.Parse(rawAppID)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的应用ID")
+			return
+		}
+		appIDFilter = &parsedAppID
 	}
 	var req domainRequest
 	if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	d, err := h.store.GetDomain(r.Context(), domainID)
+	if err != nil || (appIDFilter != nil && d.ApplicationID != *appIDFilter) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "域名不存在")
 		return
 	}
 	before := domainSummary(d)
@@ -616,6 +688,12 @@ func (h *Handler) UpdateDomain(w http.ResponseWriter, r *http.Request) {
 	d.HTTPPort = req.HTTPPort
 	d.HTTPSPort = req.HTTPSPort
 	d.RedirectHTTPToHTTPS = req.RedirectHTTPToHTTPS
+	policyChanged := false
+	if req.PolicyID.Set {
+		nextPolicyID := req.PolicyID.Ptr()
+		policyChanged = !uuidPtrEqual(d.PolicyID, nextPolicyID)
+		d.PolicyID = nextPolicyID
+	}
 	if err := h.store.UpdateDomain(r.Context(), d); err != nil {
 		if errors.Is(err, ErrDomainConflict) {
 			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, err.Error())
@@ -627,7 +705,11 @@ func (h *Handler) UpdateDomain(w http.ResponseWriter, r *http.Request) {
 	if d.HTTPSEnabled {
 		h.notifyDomainsChanged(d.ApplicationID)
 	}
-	h.recordAudit(r, p, "applications", "update_domain", "domain", d.ID.String(), d.Hostname, before, domainSummary(d), audits.ResultSuccess, audits.RiskMedium)
+	risk := audits.RiskMedium
+	if policyChanged {
+		risk = audits.RiskHigh
+	}
+	h.recordAudit(r, p, "applications", "update_domain", "domain", d.ID.String(), d.Hostname, before, domainSummary(d), audits.ResultSuccess, risk)
 	response.JSON(w, r, http.StatusOK, d)
 }
 
@@ -639,8 +721,17 @@ func (h *Handler) DeleteDomain(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的域名ID")
 		return
 	}
+	var appIDFilter *uuid.UUID
+	if rawAppID := r.PathValue("id"); rawAppID != "" {
+		parsedAppID, err := uuid.Parse(rawAppID)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的应用ID")
+			return
+		}
+		appIDFilter = &parsedAppID
+	}
 	d, err := h.store.GetDomain(r.Context(), domainID)
-	if err != nil {
+	if err != nil || (appIDFilter != nil && d.ApplicationID != *appIDFilter) {
 		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "域名不存在")
 		return
 	}
@@ -1036,7 +1127,11 @@ func appSummary(a *Application) string {
 }
 
 func domainSummary(d *Domain) string {
-	return `{"hostname":"` + d.NormalizedHostname + `","type":"` + d.DomainType + `"}`
+	pid := ""
+	if d.PolicyID != nil {
+		pid = d.PolicyID.String()
+	}
+	return `{"hostname":"` + d.NormalizedHostname + `","type":"` + d.DomainType + `","policy_id":"` + pid + `"}`
 }
 
 func upstreamSummary(u *Upstream) string {
