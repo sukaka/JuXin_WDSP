@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { Alert, Radio, Space, Typography } from 'antd'
+import { LockOutlined } from '@ant-design/icons'
+import './detailTab.css'
 
 /**
  * Bot 挑战页体验预览（WDSP P1-02 B4，BOT-006 核对的管理页入口）。
@@ -34,18 +36,21 @@ const TEXTS = {
 
 function ReplicaFrame({ children }: { children: React.ReactNode }) {
   return (
-    <div
-      style={{
-        border: '1px solid #d9d9d9',
-        borderRadius: 8,
-        padding: '24px 16px',
-        maxWidth: '40em',
-        lineHeight: 1.6,
-        color: '#222',
-        background: '#fff',
-      }}
-    >
-      {children}
+    <div className="jz-detail-browser-frame">
+      <div className="jz-detail-browser-bar">
+        <span className="jz-detail-browser-dots" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </span>
+        <div className="jz-detail-browser-url">
+          <LockOutlined style={{ marginRight: 6, color: '#16a34a' }} />
+          https://your-site.example.com/docs
+        </div>
+      </div>
+      <div className="jz-detail-browser-viewport">
+        <div className="jz-detail-browser-card">{children}</div>
+      </div>
     </div>
   )
 }
@@ -55,7 +60,15 @@ function ReplicaButton({ children }: { children: React.ReactNode }) {
     <button
       type="button"
       disabled
-      style={{ fontSize: '1em', padding: '.4em 1.2em' }}
+      style={{
+        fontSize: '0.95em',
+        padding: '6px 18px',
+        borderRadius: 6,
+        border: '1px solid #cbd5e1',
+        background: '#f8fafc',
+        color: '#334155',
+        cursor: 'not-allowed',
+      }}
     >
       {children}
     </button>
@@ -65,7 +78,7 @@ function ReplicaButton({ children }: { children: React.ReactNode }) {
 export default function BotChallengePreview() {
   const [state, setState] = useState<PreviewState>('solving')
   return (
-    <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+    <Space orientation="vertical" size={14} style={{ display: 'flex' }}>
       <Radio.Group
         options={STATE_OPTIONS}
         value={state}
@@ -75,15 +88,17 @@ export default function BotChallengePreview() {
         size="small"
       />
       <ReplicaFrame>
-        <h1 style={{ fontSize: '1.5em' }}>{TEXTS.title}</h1>
-        {state === 'solving' && (
-          <p role="status">{TEXTS.solving}</p>
-        )}
+        <h1 style={{ fontSize: '1.35em', marginTop: 0, marginBottom: 10 }}>
+          {TEXTS.title}
+        </h1>
+        {state === 'solving' && <p role="status">{TEXTS.solving}</p>}
         {state === 'manual' && (
           <>
-            <p role="status">{TEXTS.manualStatus}</p>
-            <p>{TEXTS.manualReason}</p>
-            <Space>
+            <p role="status" style={{ fontWeight: 600 }}>
+              {TEXTS.manualStatus}
+            </p>
+            <p style={{ color: '#475569' }}>{TEXTS.manualReason}</p>
+            <Space style={{ marginBottom: 12 }}>
               <ReplicaButton>{TEXTS.retry}</ReplicaButton>
             </Space>
           </>
@@ -91,11 +106,21 @@ export default function BotChallengePreview() {
         {state === 'noscript' && <p>{TEXTS.noscript}</p>}
         {state === 'unavailable' && (
           <>
-            <h1 style={{ fontSize: '1.5em' }}>{TEXTS.unavailableTitle}</h1>
+            <h1 style={{ fontSize: '1.2em', color: '#b91c1c' }}>
+              {TEXTS.unavailableTitle}
+            </h1>
             <p>{TEXTS.unavailableMsg}</p>
           </>
         )}
-        <p>
+        <p
+          style={{
+            marginBottom: 0,
+            paddingTop: 10,
+            borderTop: '1px solid #eef1f7',
+            fontSize: 12,
+            color: '#64748b',
+          }}
+        >
           {TEXTS.requestID}
           <code>0192-demo-request-id</code>
         </p>
@@ -103,10 +128,13 @@ export default function BotChallengePreview() {
       <Alert
         type="info"
         showIcon
-        message="静态示意，不含真实挑战脚本"
+        title="静态示意，不含真实挑战脚本"
         description="实际页面由网关在响应时渲染：CSP nonce 仅允许第一方脚本、禁止被嵌入、Cache-Control no-store；状态文本以 role=status + aria-live 播报，手动重试按钮自动获得焦点（键盘/读屏可用）；验证通过后最多自动刷新一次，仍被挑战则显示可恢复原因，不会无限循环。完整可读性以 BOT-006 真实浏览器实测为准。"
       />
-      <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+      <Typography.Paragraph
+        type="secondary"
+        style={{ fontSize: 12, marginBottom: 0 }}
+      >
         合法 API/SDK 等机器客户端不会收到本页面：挑战仅覆盖显式配置路径上的 HTTPS
         GET 浏览器文档导航，其余请求仅观测并记录不适用原因。
       </Typography.Paragraph>

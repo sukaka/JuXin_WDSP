@@ -500,4 +500,15 @@ describe('BotPolicyTab', () => {
     expect(screen.queryByText('BOT')).not.toBeInTheDocument()
     expect(screen.queryByText('cipher_suite')).not.toBeInTheDocument()
   })
+
+  it('实时信号组覆盖条展示当前规则对应的信号组计数与覆盖状态', async () => {
+    vi.stubGlobal('fetch', mockFetch(DRAFT_PENDING))
+    grant(['bot_policy.read', 'bot_policy.edit'])
+    renderTab()
+    await screen.findByText('草稿待发布')
+    const coverage = screen.getByTestId('bot-signal-coverage')
+    expect(coverage.textContent).toContain('请求行为组：1 条')
+    expect(coverage.textContent).toContain('已覆盖 1 / 2 组')
+    expect(coverage.textContent).toContain('含行为组')
+  })
 })

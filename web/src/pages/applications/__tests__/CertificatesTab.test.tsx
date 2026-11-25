@@ -99,4 +99,25 @@ describe('CertificatesTab', () => {
     expect(certificatesApi.applicationCertificate).not.toHaveBeenCalled()
     expect(certificatesApi.list).not.toHaveBeenCalled()
   })
+
+  it('已绑定证书以凭证卡片展示 SAN 域名并支持打开详情抽屉', async () => {
+    vi.mocked(certificatesApi.applicationCertificate).mockResolvedValue({
+      certificate: {
+        ...certificate,
+        issuer: 'Let\'s Encrypt R11',
+        san_domains: ['shop.example.com', 'www.shop.example.com'],
+      } as CertificateItem,
+    })
+    useAuthStore.setState({
+      user: { permissions: ['certificates.read', 'certificates.bind'] } as CurrentUser,
+      initialized: true,
+    })
+    renderTab()
+
+    expect(await screen.findByText('订单证书')).toBeInTheDocument()
+    expect(screen.getByText('www.shop.example.com')).toBeInTheDocument()
+    expect(screen.getByText('Let\'s Encrypt R11')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /查看详情/ }))
+    expect(await screen.findByText('证书详情')).toBeInTheDocument()
+  })
 })

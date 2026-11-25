@@ -1,24 +1,33 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useInRouterContext } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
   App as AntdApp,
   Button,
   Card,
+  Col,
   Descriptions,
   Form,
   Input,
   InputNumber,
-  List,
   Radio,
+  Row,
   Select,
   Space,
   Spin,
   Switch,
+  Tag,
   Tooltip,
   Typography,
 } from 'antd'
-import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
+import {
+  KeyOutlined,
+  LinkOutlined,
+  MinusCircleOutlined,
+  PlusOutlined,
+  SafetyCertificateOutlined,
+} from '@ant-design/icons'
 import { ApiError } from '../../../api/client'
 import {
   JWT_TRUST_LIMITS,
@@ -44,6 +53,14 @@ import {
   JWT_TRUST_STATE_META,
   mapJwtTrustFieldErrorPath,
 } from '../../../utils/jwtTrust'
+import {
+  InlineNote,
+  ModeCardGroup,
+  PreflightResultCard,
+  SectionHeader,
+  type ModeCardOption,
+} from './DetailTabPrimitives'
+import './detailTab.css'
 
 const METHOD_OPTIONS = [
   'GET',
@@ -63,10 +80,30 @@ const ALGORITHM_OPTIONS = [
   { value: 'ES256', label: 'ES256' },
 ]
 
-const MODE_OPTIONS = [
-  { value: 'OFF', label: '关闭（不校验 Token）' },
-  { value: 'OBSERVE', label: '观察（校验并记录，不拦截）' },
-  { value: 'PROTECT', label: '强制验证（非法 Token 401 / 验证不可用 503）' },
+const MODE_CARD_OPTIONS: ModeCardOption<JwtTrustMode>[] = [
+  {
+    value: 'OFF',
+    label: '关闭（不校验 Token）',
+    description: '维持既有流量行为，不解析业务 Bearer 凭证',
+    badge: '默认',
+    tone: 'neutral',
+  },
+  {
+    value: 'OBSERVE',
+    label: '观察（校验并记录，不拦截）',
+    description: '仅校验签名与声明并记录结果，推荐灰度阶段先启用',
+    badge: '推荐先用',
+    badgeColor: 'blue',
+    tone: 'info',
+  },
+  {
+    value: 'PROTECT',
+    label: '强制验证（非法 Token 401 / 验证不可用 503）',
+    description: '在 API 管线出口强制实断，白名单与 L7 allow 不绕过',
+    badge: '严格阻断',
+    badgeColor: 'green',
+    tone: 'success',
+  },
 ]
 
 /** 表单值（选择器路径二选一折叠为 match_type+path；issuer 密钥来源拍平为三个字段） */
@@ -144,13 +181,17 @@ export default function JwtTrustTab({
 }) {
   const { message } = AntdApp.useApp()
   const queryClient = useQueryClient()
+  const inRouter = useInRouterContext()
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canManage = hasPermission(permissions, 'jwt_trust.manage')
   const [form] = Form.useForm<PolicyFormValues>()
   const mode = Form.useWatch('mode', form) ?? 'OFF'
+  const selectorsWatch = Form.useWatch('selectors', form) ?? []
+  const issuersWatch = Form.useWatch('issuers', form) ?? []
   const [preflight, setPreflight] = useState<JwtTrustPreflightResult | null>(
     null,
   )
+  const preflightRef = useRef<HTMLDivElement | null>(null)
 
   const policyQuery = useQuery({
     queryKey: ['jwt-trust-policy', appId],
@@ -251,7 +292,17 @@ export default function JwtTrustTab({
         selectors: toSelectors(values.selectors),
         issuers: toIssuers(values.issuers),
       }),
-    onSuccess: (data) => setPreflight(data),
+    onSuccess: (data) => {
+      setPreflight(data)
+      setTimeout(() => {
+        if (typeof preflightRef.current?.scrollIntoView === 'function') {
+          preflightRef.current.scrollIntoView({
+            behavior: 'smooth',
+            block: 'nearest',
+          })
+        }
+      }, 60)
+    },
     onError: (e) =>
       message.error(e instanceof ApiError ? e.message : '预检失败'),
   })
@@ -279,7 +330,7 @@ export default function JwtTrustTab({
 
   if (policyQuery.isLoading) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: 32 }}>
+      <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
         <Spin />
       </div>
     )
@@ -297,10 +348,24 @@ export default function JwtTrustTab({
   const effectiveMode = summary.state === 'PUBLISHED' ? policy.mode : null
 
   return (
-    <Space direction="vertical" size={16} style={{ display: 'flex' }}>
-      <Card title="策略状态">
+    <div className="jz-detail-tab">
+      <Card
+        className="jz-detail-card"
+        title="策略状态"
+        extra={
+          summary.state === 'DRAFT_PENDING' && inRouter ? (
+            <Link to="/config-publish">
+              <Button type="link" size="small" style={{ paddingInline: 0 }}>
+                前往配置发布
+              </Button>
+            </Link>
+          ) : undefined
+        }
+      >
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small">
-          <Descriptions.Item label="应用范围">{appCode}</Descriptions.Item>
+          <Descriptions.Item label="应用范围">
+            <Typography.Text code>{appCode}</Typography.Text>
+          </Descriptions.Item>
           <Descriptions.Item label="配置状态">
             <StatusTag value={summary.state} map={JWT_TRUST_STATE_META} />
           </Descriptions.Item>
@@ -308,12 +373,18 @@ export default function JwtTrustTab({
             <StatusTag value={policy.mode} map={JWT_TRUST_MODE_META} />
           </Descriptions.Item>
           <Descriptions.Item label="草稿版本">
-            {summary.draft_version > 0 ? `v${summary.draft_version}` : '无草稿'}
+            {summary.draft_version > 0 ? (
+              <Typography.Text strong>{`v${summary.draft_version}`}</Typography.Text>
+            ) : (
+              <Typography.Text type="secondary">无草稿</Typography.Text>
+            )}
           </Descriptions.Item>
           <Descriptions.Item label="已生效版本">
-            {summary.published_version > 0
-              ? `v${summary.published_version}`
-              : '未随发布下发'}
+            {summary.published_version > 0 ? (
+              <Typography.Text strong>{`v${summary.published_version}`}</Typography.Text>
+            ) : (
+              <Typography.Text type="secondary">未随发布下发</Typography.Text>
+            )}
           </Descriptions.Item>
           <Descriptions.Item label="最近更新">
             {policy.updated_at
@@ -321,13 +392,19 @@ export default function JwtTrustTab({
               : '-'}
           </Descriptions.Item>
         </Descriptions>
+
         {summary.state === 'DRAFT_PENDING' && (
           <Alert
             type="warning"
             showIcon
-            style={{ marginTop: 12 }}
-            message="草稿已保存，尚未生效"
+            style={{ marginTop: 14 }}
+            title="草稿已保存，尚未生效"
             description={`草稿 v${summary.draft_version} 与已生效版本 v${summary.published_version} 存在差异；保存草稿不等于线上生效，需经配置发布并获节点回执后才生效。发布失败时旧版本继续运行。`}
+            action={
+              inRouter ? (
+                <Link to="/config-publish">前往配置发布</Link>
+              ) : undefined
+            }
           />
         )}
         {summary.state === 'PUBLISHED' &&
@@ -336,8 +413,8 @@ export default function JwtTrustTab({
             <Alert
               type="success"
               showIcon
-              style={{ marginTop: 12 }}
-              message={`已生效：${JWT_TRUST_MODE_META[effectiveMode]?.label ?? effectiveMode}（版本 v${summary.published_version}）`}
+              style={{ marginTop: 14 }}
+              title={`已生效：${JWT_TRUST_MODE_META[effectiveMode]?.label ?? effectiveMode}（版本 v${summary.published_version}）`}
               description="节点级密钥状态与同步结果以发布预检和节点回执为准；部分节点同步失败时发布会被拒绝并保留旧版本（部分节点未生效）。"
             />
           )}
@@ -345,42 +422,30 @@ export default function JwtTrustTab({
           <Alert
             type="info"
             showIcon
-            style={{ marginTop: 12 }}
-            message="尚未配置 JWT 信任策略，当前不校验业务 Token"
+            style={{ marginTop: 14 }}
+            title="尚未配置 JWT 信任策略，当前不校验业务 Token"
             description="默认关闭，不改变既有流量；密钥不可用、部分节点未生效等运行态以预检与发布回执为准。"
           />
         )}
       </Card>
 
       <Card
+        className="jz-detail-card"
         title="策略配置"
         extra={
-          canManage && (
-            <Space>
-              <Button
-                loading={preflightMutation.isPending}
-                onClick={() => void runPreflight()}
-              >
-                发布预检
-              </Button>
-              <Button
-                type="primary"
-                loading={saveMutation.isPending}
-                onClick={() => form.submit()}
-              >
-                保存草稿
-              </Button>
-            </Space>
-          )
+          <Space size={6}>
+            <Tag color="blue" style={{ marginInlineEnd: 0 }}>
+              RS256 / ES256
+            </Tag>
+            <Tag style={{ marginInlineEnd: 0 }}>本地验签 · 零热路径 IO</Tag>
+          </Space>
         }
       >
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 16 }}
-          message="仅校验 Authorization 头中的单个 Bearer JWT；支持 RS256 / ES256 显式白名单。"
-          description="密钥轮换条件：上游须先在 JWKS 中公布新 kid 对应公钥，再开始使用新 kid 签发 Token；删除旧公钥后新请求立即不再信任旧 kid。验证通过仅证明发行方签发了 Token，不代表主体有权访问某业务对象。"
-        />
+        <InlineNote tooltip="密钥轮换条件：上游须先在 JWKS 中公布新 kid 对应公钥，再开始使用新 kid 签发 Token；删除旧公钥后新请求立即不再信任旧 kid。验证通过仅证明发行方签发了 Token，不代表主体有权访问某业务对象。">
+          仅校验 <code>Authorization</code> 头中的单个 Bearer JWT；支持 RS256 /
+          ES256 显式白名单。
+        </InlineNote>
+
         <Form<PolicyFormValues>
           form={form}
           layout="vertical"
@@ -388,124 +453,180 @@ export default function JwtTrustTab({
           disabled={!canManage}
           onFinish={(values) => saveMutation.mutate(values)}
         >
+          <SectionHeader
+            title="验证模式"
+            description="选择当前应用对命中选择器请求的 JWT 校验与处置强度。"
+          />
           <Form.Item
             name="mode"
-            label="验证模式"
+            style={{ marginBottom: 8 }}
             extra={
               mode === 'PROTECT' ? (
-                <Typography.Text type="warning">
-                  强制验证要求应用 API 动态管线已启用且处于防护模式，且目标节点无已知同步失败，否则发布将被拒绝
-                </Typography.Text>
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginTop: 10 }}
+                  title="强制验证要求应用 API 动态管线已启用且处于防护模式，且目标节点无已知同步失败，否则发布将被拒绝"
+                />
               ) : undefined
             }
           >
-            <Radio.Group options={MODE_OPTIONS} />
+            <ModeCardGroup options={MODE_CARD_OPTIONS} disabled={!canManage} />
           </Form.Item>
 
-          <Typography.Title level={5} style={{ marginTop: 0 }}>
-            校验范围（选择器）
-          </Typography.Title>
-          <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-            不同选择器之间为或（OR）关系，重叠时「必须携带 Token」取开启优先；路径前缀按完整路径段匹配（/api 匹配 /api 与
-            /api/orders，不匹配 /apix）；未命中选择器的请求维持原行为。
-            {mode !== 'OFF' && '非关闭模式下至少需要一条选择器。'}
-          </Typography.Paragraph>
+          <SectionHeader
+            spaced
+            title="校验范围（选择器）"
+            badge={
+              <Tag style={{ marginInlineEnd: 0 }}>
+                {selectorsWatch.length} / {JWT_TRUST_LIMITS.maxSelectors}
+              </Tag>
+            }
+            description={
+              <>
+                不同选择器之间为或（OR）关系，重叠时「必须携带 Token」取开启优先；路径前缀按完整路径段匹配（
+                <code>/api</code> 匹配 <code>/api</code> 与{' '}
+                <code>/api/orders</code>，不匹配 <code>/apix</code>
+                ）；未命中选择器的请求维持原行为。
+                {mode !== 'OFF' && '非关闭模式下至少需要一条选择器。'}
+              </>
+            }
+          />
+
           <Form.List name="selectors">
             {(fields, { add, remove }) => (
-              <>
-                {fields.map((field) => (
-                  <Space
-                    key={field.key}
-                    style={{ display: 'flex', marginBottom: 8 }}
-                    align="baseline"
-                    wrap
-                  >
-                    <Form.Item
-                      name={[field.name, 'methods']}
-                      style={{ marginBottom: 0 }}
-                      rules={[
-                        {
-                          required: mode !== 'OFF',
-                          message: '请选择 HTTP 方法',
-                        },
-                      ]}
-                    >
-                      <Select
-                        mode="multiple"
-                        options={METHOD_OPTIONS}
-                        placeholder="方法"
-                        style={{ width: 220 }}
-                      />
-                    </Form.Item>
-                    <Form.Item
-                      name={[field.name, 'match_type']}
-                      style={{ marginBottom: 0 }}
-                      initialValue="prefix"
-                    >
-                      <Radio.Group
-                        options={[
-                          { value: 'exact', label: '精确路径' },
-                          { value: 'prefix', label: '路径前缀' },
-                        ]}
-                        optionType="button"
-                        buttonStyle="solid"
-                        size="small"
-                      />
-                    </Form.Item>
-                    <Form.Item
-                      name={[field.name, 'path']}
-                      style={{ marginBottom: 0 }}
-                      rules={[
-                        { required: mode !== 'OFF', message: '请输入路径' },
-                        {
-                          validator: (_, v: string) => {
-                            if (!v) return Promise.resolve()
-                            if (!v.startsWith('/'))
-                              return Promise.reject(
-                                new Error('路径必须以 / 开头'),
-                              )
-                            if (v.includes('?') || v.includes('#')) {
-                              return Promise.reject(
-                                new Error('路径不得包含查询串或锚点'),
-                              )
-                            }
-                            return Promise.resolve()
-                          },
-                        },
-                      ]}
-                    >
-                      <Input
-                        placeholder="如 /api/orders"
-                        style={{ width: 240 }}
-                        autoComplete="off"
-                      />
-                    </Form.Item>
-                    <Form.Item
-                      name={[field.name, 'token_required']}
-                      style={{ marginBottom: 0 }}
-                      valuePropName="checked"
-                      initialValue={false}
-                    >
-                      <Switch
-                        checkedChildren="必须携带 Token"
-                        unCheckedChildren="可选"
-                      />
-                    </Form.Item>
-                    <Tooltip title="删除此选择器">
-                      <Button
-                        type="text"
-                        danger
-                        icon={<MinusCircleOutlined />}
-                        aria-label="删除此选择器"
-                        onClick={() => remove(field.name)}
-                      />
-                    </Tooltip>
-                  </Space>
-                ))}
+              <div className="jz-detail-rule-box">
+                {fields.length > 0 ? (
+                  <>
+                    <Row gutter={12} className="jz-detail-rule-header">
+                      <Col xs={24} md={7}>
+                        HTTP 方法
+                      </Col>
+                      <Col xs={24} md={4}>
+                        匹配方式
+                      </Col>
+                      <Col xs={24} md={7}>
+                        请求路径
+                      </Col>
+                      <Col xs={24} md={5}>
+                        未携带处理
+                      </Col>
+                      <Col xs={24} md={1} style={{ textAlign: 'right' }} />
+                    </Row>
+                    {fields.map((field) => (
+                      <Row
+                        key={field.key}
+                        gutter={[12, 8]}
+                        align="middle"
+                        className="jz-detail-rule-row"
+                      >
+                        <Col xs={24} md={7}>
+                          <Form.Item
+                            name={[field.name, 'methods']}
+                            style={{ marginBottom: 0 }}
+                            rules={[
+                              {
+                                required: mode !== 'OFF',
+                                message: '请选择 HTTP 方法',
+                              },
+                            ]}
+                          >
+                            <Select
+                              mode="multiple"
+                              options={METHOD_OPTIONS}
+                              placeholder="选择 HTTP 方法"
+                              maxTagCount="responsive"
+                              style={{ width: '100%' }}
+                            />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={12} md={4}>
+                          <Form.Item
+                            name={[field.name, 'match_type']}
+                            style={{ marginBottom: 0 }}
+                            initialValue="prefix"
+                          >
+                            <Radio.Group
+                              options={[
+                                { value: 'exact', label: '精确路径' },
+                                { value: 'prefix', label: '路径前缀' },
+                              ]}
+                              optionType="button"
+                              buttonStyle="solid"
+                              size="small"
+                            />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={24} md={7}>
+                          <Form.Item
+                            name={[field.name, 'path']}
+                            style={{ marginBottom: 0 }}
+                            rules={[
+                              {
+                                required: mode !== 'OFF',
+                                message: '请输入路径',
+                              },
+                              {
+                                validator: (_, v: string) => {
+                                  if (!v) return Promise.resolve()
+                                  if (!v.startsWith('/'))
+                                    return Promise.reject(
+                                      new Error('路径必须以 / 开头'),
+                                    )
+                                  if (v.includes('?') || v.includes('#')) {
+                                    return Promise.reject(
+                                      new Error('路径不得包含查询串或锚点'),
+                                    )
+                                  }
+                                  return Promise.resolve()
+                                },
+                              },
+                            ]}
+                          >
+                            <Input
+                              placeholder="如 /api/orders"
+                              autoComplete="off"
+                            />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={20} md={5}>
+                          <Form.Item
+                            name={[field.name, 'token_required']}
+                            style={{ marginBottom: 0 }}
+                            valuePropName="checked"
+                            initialValue={false}
+                          >
+                            <Switch
+                              checkedChildren="必须携带 Token"
+                              unCheckedChildren="可选"
+                            />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={4} md={1} style={{ textAlign: 'right' }}>
+                          <Tooltip title="删除此选择器">
+                            <Button
+                              type="text"
+                              danger
+                              icon={<MinusCircleOutlined />}
+                              aria-label="删除此选择器"
+                              onClick={() => remove(field.name)}
+                            />
+                          </Tooltip>
+                        </Col>
+                      </Row>
+                    ))}
+                  </>
+                ) : (
+                  <div className="jz-detail-rule-empty">
+                    尚未添加校验范围选择器；点击下方按钮定义需要验证 Bearer JWT
+                    的路径与方法
+                  </div>
+                )}
                 <Button
                   block
                   type="dashed"
                   icon={<PlusOutlined />}
+                  style={{ marginTop: fields.length > 0 ? 10 : 0 }}
                   disabled={fields.length >= JWT_TRUST_LIMITS.maxSelectors}
                   onClick={() =>
                     add({
@@ -518,281 +639,367 @@ export default function JwtTrustTab({
                 >
                   添加选择器
                 </Button>
-              </>
+              </div>
             )}
           </Form.List>
 
-          <Typography.Title level={5} style={{ marginTop: 24 }}>
-            受信发行方（最多 {JWT_TRUST_LIMITS.maxIssuers} 个）
-          </Typography.Title>
-          <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-            发行方（Issuer）为大小写敏感精确值且策略内唯一；Token 的受众声明（aud）与配置的受众列表至少匹配一项；算法白名单仅 RS256 / ES256，不由 Token 扩展。
-            {mode !== 'OFF' && '非关闭模式下至少需要一个发行方。'}
-          </Typography.Paragraph>
+          <SectionHeader
+            spaced
+            title={`受信发行方（最多 ${JWT_TRUST_LIMITS.maxIssuers} 个）`}
+            badge={
+              <Tag style={{ marginInlineEnd: 0 }}>
+                {issuersWatch.length} / {JWT_TRUST_LIMITS.maxIssuers}
+              </Tag>
+            }
+            description={
+              <>
+                发行方（Issuer）为大小写敏感精确值且策略内唯一；Token
+                的受众声明（aud）与配置的受众列表至少匹配一项；算法白名单仅
+                RS256 / ES256，不由 Token 扩展。
+                {mode !== 'OFF' && '非关闭模式下至少需要一个发行方。'}
+              </>
+            }
+          />
+
           <Form.List name="issuers">
             {(fields, { add, remove }) => (
               <>
-                {fields.map((field) => (
-                  <Card
-                    key={field.key}
-                    size="small"
-                    style={{ marginBottom: 12 }}
-                    title={`发行方 #${field.name + 1}`}
-                    extra={
-                      <Tooltip title="删除此发行方" placement="left">
-                        <Button
-                          type="text"
-                          danger
-                          icon={<MinusCircleOutlined />}
-                          aria-label={`删除发行方 #${field.name + 1}`}
-                          onClick={() => remove(field.name)}
-                        />
-                      </Tooltip>
-                    }
-                  >
-                    <Space size="middle" wrap style={{ display: 'flex' }}>
-                      <Form.Item
-                        name={[field.name, 'issuer']}
-                        label="发行方精确值（Issuer）"
-                        style={{ width: 320 }}
-                        rules={[
-                          {
-                            required: mode !== 'OFF',
-                            message: '请输入发行方精确值',
-                          },
-                          { max: 512, message: '发行方长度不能超过 512' },
-                        ]}
-                      >
-                        <Input
-                          placeholder="如 https://idp.example.com/"
-                          autoComplete="off"
-                        />
-                      </Form.Item>
-                      <Form.Item
-                        name={[field.name, 'audiences']}
-                        label="受众列表（Audience）"
-                        style={{ minWidth: 260 }}
-                        rules={[
-                          {
-                            required: mode !== 'OFF',
-                            message: '请至少填写一个受众',
-                          },
-                        ]}
-                      >
-                        <Select
-                          mode="tags"
-                          placeholder="输入后回车添加"
-                          open={false}
-                          tokenSeparators={[',']}
-                        />
-                      </Form.Item>
-                      <Form.Item
-                        name={[field.name, 'algorithms']}
-                        label="算法白名单"
-                        style={{ width: 200 }}
-                        rules={[
-                          {
-                            required: mode !== 'OFF',
-                            message: '请选择签名算法',
-                          },
-                        ]}
-                      >
-                        <Select
-                          mode="multiple"
-                          options={ALGORITHM_OPTIONS}
-                          placeholder="RS256 / ES256"
-                        />
-                      </Form.Item>
-                    </Space>
-                    <Space size="middle" wrap style={{ display: 'flex' }}>
-                      <Form.Item
-                        name={[field.name, 'key_source_type']}
-                        label="密钥来源"
-                        initialValue="STATIC_JWKS"
-                      >
-                        <Radio.Group
-                          options={[
-                            { value: 'STATIC_JWKS', label: '静态公钥 JWKS' },
-                            { value: 'REMOTE_JWKS', label: '远程 JWKS 地址' },
-                          ]}
-                          optionType="button"
-                          buttonStyle="solid"
-                          size="small"
-                        />
-                      </Form.Item>
-                      <Form.Item
-                        name={[field.name, 'clock_skew_seconds']}
-                        label="时钟偏移宽限（秒）"
-                        initialValue={JWT_TRUST_LIMITS.defaultClockSkew}
-                        rules={[
-                          {
-                            required: mode !== 'OFF',
-                            message: '请输入时钟偏移宽限',
-                          },
-                        ]}
-                      >
-                        <InputNumber
-                          min={0}
-                          max={JWT_TRUST_LIMITS.maxClockSkew}
-                          precision={0}
-                          style={{ width: 140 }}
-                        />
-                      </Form.Item>
-                      <Form.Item
-                        name={[field.name, 'tenant_claim']}
-                        label="租户声明名（可选）"
-                        extra="仅在验证通过后读取，不自动猜测"
-                        style={{ width: 220 }}
-                        rules={[
-                          {
-                            max: JWT_TRUST_LIMITS.maxTenantClaimLen,
-                            message: `租户声明名长度不能超过 ${JWT_TRUST_LIMITS.maxTenantClaimLen}`,
-                          },
-                          {
-                            pattern: /^[A-Za-z_][A-Za-z0-9_-]*$/,
-                            message:
-                              '字母/数字/下划线/短横线，字母或下划线开头',
-                          },
-                        ]}
-                      >
-                        <Input placeholder="如 tenant_id" autoComplete="off" />
-                      </Form.Item>
-                      <Form.Item
-                        name={[field.name, 'role_claims']}
-                        label="角色声明名（可选）"
-                        extra={`仅在验证通过后读取，不自动猜测；最多 ${JWT_TRUST_LIMITS.maxRoleClaims} 项`}
-                        style={{ minWidth: 280 }}
-                        rules={[
-                          {
-                            validator: (_, value: string[] | undefined) => {
-                              if (!value || value.length === 0)
-                                return Promise.resolve()
-                              const normalized: string[] = []
-                              const seen = new Set<string>()
-                              for (const raw of value) {
-                                const trimmed = raw.trim()
-                                if (!trimmed) continue
-                                if (
-                                  trimmed.length >
-                                    JWT_TRUST_LIMITS.maxRoleClaimLen ||
-                                  !/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(
-                                    trimmed,
-                                  )
-                                ) {
-                                  return Promise.reject(
-                                    new Error(
-                                      `角色声明名格式不合法（字母/数字/下划线/短横线，字母或下划线开头，最长 ${JWT_TRUST_LIMITS.maxRoleClaimLen} 字符）`,
-                                    ),
-                                  )
-                                }
-                                if (!seen.has(trimmed)) {
-                                  seen.add(trimmed)
-                                  normalized.push(trimmed)
-                                }
-                              }
-                              if (
-                                normalized.length >
-                                JWT_TRUST_LIMITS.maxRoleClaims
-                              ) {
-                                return Promise.reject(
-                                  new Error(
-                                    `角色声明名最多 ${JWT_TRUST_LIMITS.maxRoleClaims} 项`,
-                                  ),
-                                )
-                              }
-                              return Promise.resolve()
-                            },
-                          },
-                        ]}
-                      >
-                        <Select
-                          mode="tags"
-                          placeholder="如 roles、groups，输入后回车添加"
-                          open={false}
-                          tokenSeparators={[',']}
-                        />
-                      </Form.Item>
-                    </Space>
-                    <Form.Item
-                      noStyle
-                      shouldUpdate={(
-                        prev: PolicyFormValues,
-                        cur: PolicyFormValues,
-                      ) =>
-                        prev.issuers?.[field.name]?.key_source_type !==
-                        cur.issuers?.[field.name]?.key_source_type
-                      }
-                    >
-                      {({ getFieldValue }) =>
-                        getFieldValue([
-                          'issuers',
-                          field.name,
-                          'key_source_type',
-                        ]) === 'REMOTE_JWKS' ? (
-                          <Form.Item
-                            name={[field.name, 'url']}
-                            label="远程 JWKS 地址"
-                            extra="仅 HTTPS；默认拒绝私网/回环/云元数据地址，企业内网 IdP 须由系统管理员在系统设置中的远程 JWKS 白名单显式登记"
-                            rules={[
-                              {
-                                required: mode !== 'OFF',
-                                message: '请输入远程 JWKS 地址',
-                              },
-                              {
-                                validator: (_, v: string) => {
-                                  if (!v) return Promise.resolve()
-                                  if (!/^https:\/\//i.test(v.trim())) {
-                                    return Promise.reject(
-                                      new Error('仅允许 HTTPS 地址'),
-                                    )
-                                  }
-                                  return Promise.resolve()
-                                },
-                              },
-                            ]}
+                {fields.map((field) => {
+                  const curIssuer = issuersWatch?.[field.name]
+                  const keyType = curIssuer?.key_source_type ?? 'STATIC_JWKS'
+                  const issuerPreview = curIssuer?.issuer?.trim()
+                  return (
+                    <div key={field.key} className="jz-detail-subcard">
+                      <div className="jz-detail-subcard-head">
+                        <div className="jz-detail-subcard-title">
+                          <span className="jz-detail-subcard-index">
+                            #{field.name + 1}
+                          </span>
+                          <Typography.Text strong style={{ fontSize: 13 }}>
+                            {`发行方 #${field.name + 1}`}
+                          </Typography.Text>
+                          {issuerPreview && (
+                            <Typography.Text
+                              code
+                              style={{ fontSize: 12 }}
+                              ellipsis
+                            >
+                              {issuerPreview}
+                            </Typography.Text>
+                          )}
+                          <Tag
+                            icon={
+                              keyType === 'REMOTE_JWKS' ? (
+                                <LinkOutlined />
+                              ) : (
+                                <KeyOutlined />
+                              )
+                            }
+                            color={
+                              keyType === 'REMOTE_JWKS' ? 'geekblue' : 'cyan'
+                            }
+                            style={{ marginInlineEnd: 0 }}
                           >
-                            <Input
-                              placeholder="https://idp.example.com/.well-known/jwks.json"
-                              autoComplete="off"
-                            />
-                          </Form.Item>
-                        ) : (
+                            {keyType === 'REMOTE_JWKS'
+                              ? '远程 JWKS'
+                              : '静态 JWKS'}
+                          </Tag>
+                        </div>
+                        <Tooltip title="删除此发行方" placement="left">
+                          <Button
+                            type="text"
+                            danger
+                            size="small"
+                            icon={<MinusCircleOutlined />}
+                            aria-label={`删除发行方 #${field.name + 1}`}
+                            onClick={() => remove(field.name)}
+                          />
+                        </Tooltip>
+                      </div>
+
+                      <div className="jz-detail-subcard-body">
+                        <Row gutter={[16, 0]}>
+                          <Col xs={24} md={10}>
+                            <Form.Item
+                              name={[field.name, 'issuer']}
+                              label="发行方精确值（Issuer）"
+                              rules={[
+                                {
+                                  required: mode !== 'OFF',
+                                  message: '请输入发行方精确值',
+                                },
+                                {
+                                  max: 512,
+                                  message: '发行方长度不能超过 512',
+                                },
+                              ]}
+                            >
+                              <Input
+                                placeholder="如 https://idp.example.com/"
+                                autoComplete="off"
+                              />
+                            </Form.Item>
+                          </Col>
+                          <Col xs={24} md={8}>
+                            <Form.Item
+                              name={[field.name, 'audiences']}
+                              label="受众列表（Audience）"
+                              rules={[
+                                {
+                                  required: mode !== 'OFF',
+                                  message: '请至少填写一个受众',
+                                },
+                              ]}
+                            >
+                              <Select
+                                mode="tags"
+                                placeholder="输入后回车添加"
+                                open={false}
+                                tokenSeparators={[',']}
+                              />
+                            </Form.Item>
+                          </Col>
+                          <Col xs={24} md={6}>
+                            <Form.Item
+                              name={[field.name, 'algorithms']}
+                              label="算法白名单"
+                              rules={[
+                                {
+                                  required: mode !== 'OFF',
+                                  message: '请选择签名算法',
+                                },
+                              ]}
+                            >
+                              <Select
+                                mode="multiple"
+                                options={ALGORITHM_OPTIONS}
+                                placeholder="RS256 / ES256"
+                              />
+                            </Form.Item>
+                          </Col>
+                        </Row>
+
+                        <div className="jz-detail-subcard-group">
+                          <div className="jz-detail-subcard-group-title">
+                            验签密钥与时间校验
+                          </div>
+                          <Row gutter={[16, 0]}>
+                            <Col xs={24} sm={14} md={12}>
+                              <Form.Item
+                                name={[field.name, 'key_source_type']}
+                                label="密钥来源"
+                                initialValue="STATIC_JWKS"
+                              >
+                                <Radio.Group
+                                  options={[
+                                    {
+                                      value: 'STATIC_JWKS',
+                                      label: '静态公钥 JWKS',
+                                    },
+                                    {
+                                      value: 'REMOTE_JWKS',
+                                      label: '远程 JWKS 地址',
+                                    },
+                                  ]}
+                                  optionType="button"
+                                  buttonStyle="solid"
+                                  size="small"
+                                />
+                              </Form.Item>
+                            </Col>
+                            <Col xs={24} sm={10} md={6}>
+                              <Form.Item
+                                name={[field.name, 'clock_skew_seconds']}
+                                label="时钟偏移宽限（秒）"
+                                initialValue={JWT_TRUST_LIMITS.defaultClockSkew}
+                                rules={[
+                                  {
+                                    required: mode !== 'OFF',
+                                    message: '请输入时钟偏移宽限',
+                                  },
+                                ]}
+                              >
+                                <InputNumber
+                                  min={0}
+                                  max={JWT_TRUST_LIMITS.maxClockSkew}
+                                  precision={0}
+                                  style={{ width: '100%' }}
+                                />
+                              </Form.Item>
+                            </Col>
+                          </Row>
+
                           <Form.Item
-                            name={[field.name, 'jwks']}
-                            label="静态公钥 JWKS"
-                            extra={`仅公钥（≤${JWT_TRUST_LIMITS.maxJWKSBytes / 1024} KiB、≤${JWT_TRUST_LIMITS.maxJWKSKeys} 个公钥；RSA≥${JWT_TRUST_LIMITS.minRSAKeyBits} 位、EC 仅 P-256）；粘贴私钥将立即拒绝并清空`}
-                            rules={[
-                              {
-                                validator: (_, v: string) => {
-                                  if (!v || !v.trim()) {
-                                    return mode !== 'OFF'
-                                      ? Promise.reject(
-                                          new Error('请粘贴公钥 JWKS JSON'),
+                            noStyle
+                            shouldUpdate={(
+                              prev: PolicyFormValues,
+                              cur: PolicyFormValues,
+                            ) =>
+                              prev.issuers?.[field.name]?.key_source_type !==
+                              cur.issuers?.[field.name]?.key_source_type
+                            }
+                          >
+                            {({ getFieldValue }) =>
+                              getFieldValue([
+                                'issuers',
+                                field.name,
+                                'key_source_type',
+                              ]) === 'REMOTE_JWKS' ? (
+                                <Form.Item
+                                  name={[field.name, 'url']}
+                                  label="远程 JWKS 地址"
+                                  extra="仅 HTTPS；默认拒绝私网/回环/云元数据地址，企业内网 IdP 须由系统管理员在系统设置中的远程 JWKS 白名单显式登记"
+                                  rules={[
+                                    {
+                                      required: mode !== 'OFF',
+                                      message: '请输入远程 JWKS 地址',
+                                    },
+                                    {
+                                      validator: (_, v: string) => {
+                                        if (!v) return Promise.resolve()
+                                        if (!/^https:\/\//i.test(v.trim())) {
+                                          return Promise.reject(
+                                            new Error('仅允许 HTTPS 地址'),
+                                          )
+                                        }
+                                        return Promise.resolve()
+                                      },
+                                    },
+                                  ]}
+                                >
+                                  <Input
+                                    prefix={<LinkOutlined />}
+                                    placeholder="https://idp.example.com/.well-known/jwks.json"
+                                    autoComplete="off"
+                                  />
+                                </Form.Item>
+                              ) : (
+                                <Form.Item
+                                  name={[field.name, 'jwks']}
+                                  label="静态公钥 JWKS"
+                                  extra={`仅公钥（≤${JWT_TRUST_LIMITS.maxJWKSBytes / 1024} KiB、≤${JWT_TRUST_LIMITS.maxJWKSKeys} 个公钥；RSA≥${JWT_TRUST_LIMITS.minRSAKeyBits} 位、EC 仅 P-256）；粘贴私钥将立即拒绝并清空`}
+                                  rules={[
+                                    {
+                                      validator: (_, v: string) => {
+                                        if (!v || !v.trim()) {
+                                          return mode !== 'OFF'
+                                            ? Promise.reject(
+                                                new Error(
+                                                  '请粘贴公钥 JWKS JSON',
+                                                ),
+                                              )
+                                            : Promise.resolve()
+                                        }
+                                        const err = validateStaticJwks(v)
+                                        return err
+                                          ? Promise.reject(new Error(err))
+                                          : Promise.resolve()
+                                      },
+                                    },
+                                  ]}
+                                >
+                                  <Input.TextArea
+                                    rows={4}
+                                    className="jz-detail-code-textarea"
+                                    placeholder='{"keys":[{"kty":"RSA","kid":"...","n":"...","e":"AQAB"}]}'
+                                    onChange={(e) =>
+                                      onJwksChange(field.name, e.target.value)
+                                    }
+                                  />
+                                </Form.Item>
+                              )
+                            }
+                          </Form.Item>
+                        </div>
+
+                        <Row gutter={[16, 0]}>
+                          <Col xs={24} md={10}>
+                            <Form.Item
+                              name={[field.name, 'tenant_claim']}
+                              label="租户声明名（可选）"
+                              extra="仅在验证通过后读取，不自动猜测"
+                              rules={[
+                                {
+                                  max: JWT_TRUST_LIMITS.maxTenantClaimLen,
+                                  message: `租户声明名长度不能超过 ${JWT_TRUST_LIMITS.maxTenantClaimLen}`,
+                                },
+                                {
+                                  pattern: /^[A-Za-z_][A-Za-z0-9_-]*$/,
+                                  message:
+                                    '字母/数字/下划线/短横线，字母或下划线开头',
+                                },
+                              ]}
+                            >
+                              <Input
+                                placeholder="如 tenant_id"
+                                autoComplete="off"
+                              />
+                            </Form.Item>
+                          </Col>
+                          <Col xs={24} md={14}>
+                            <Form.Item
+                              name={[field.name, 'role_claims']}
+                              label="角色声明名（可选）"
+                              extra={`仅在验证通过后读取，不自动猜测；最多 ${JWT_TRUST_LIMITS.maxRoleClaims} 项`}
+                              rules={[
+                                {
+                                  validator: (
+                                    _,
+                                    value: string[] | undefined,
+                                  ) => {
+                                    if (!value || value.length === 0)
+                                      return Promise.resolve()
+                                    const normalized: string[] = []
+                                    const seen = new Set<string>()
+                                    for (const raw of value) {
+                                      const trimmed = raw.trim()
+                                      if (!trimmed) continue
+                                      if (
+                                        trimmed.length >
+                                          JWT_TRUST_LIMITS.maxRoleClaimLen ||
+                                        !/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(
+                                          trimmed,
                                         )
-                                      : Promise.resolve()
-                                  }
-                                  const err = validateStaticJwks(v)
-                                  return err
-                                    ? Promise.reject(new Error(err))
-                                    : Promise.resolve()
+                                      ) {
+                                        return Promise.reject(
+                                          new Error(
+                                            `角色声明名格式不合法（字母/数字/下划线/短横线，字母或下划线开头，最长 ${JWT_TRUST_LIMITS.maxRoleClaimLen} 字符）`,
+                                          ),
+                                        )
+                                      }
+                                      if (!seen.has(trimmed)) {
+                                        seen.add(trimmed)
+                                        normalized.push(trimmed)
+                                      }
+                                    }
+                                    if (
+                                      normalized.length >
+                                      JWT_TRUST_LIMITS.maxRoleClaims
+                                    ) {
+                                      return Promise.reject(
+                                        new Error(
+                                          `角色声明名最多 ${JWT_TRUST_LIMITS.maxRoleClaims} 项`,
+                                        ),
+                                      )
+                                    }
+                                    return Promise.resolve()
+                                  },
                                 },
-                              },
-                            ]}
-                          >
-                            <Input.TextArea
-                              rows={4}
-                              placeholder='{"keys":[{"kty":"RSA","kid":"...","n":"...","e":"AQAB"}]}'
-                              style={{ fontFamily: 'monospace', fontSize: 12 }}
-                              onChange={(e) =>
-                                onJwksChange(field.name, e.target.value)
-                              }
-                            />
-                          </Form.Item>
-                        )
-                      }
-                    </Form.Item>
-                  </Card>
-                ))}
+                              ]}
+                            >
+                              <Select
+                                mode="tags"
+                                placeholder="如 roles、groups，输入后回车添加"
+                                open={false}
+                                tokenSeparators={[',']}
+                              />
+                            </Form.Item>
+                          </Col>
+                        </Row>
+                      </div>
+                    </div>
+                  )
+                })}
                 <Button
                   block
                   type="dashed"
@@ -819,87 +1026,65 @@ export default function JwtTrustTab({
           </Form.List>
 
           {canManage && (
-            <Form.Item
-              name="reason"
-              label="变更理由"
-              style={{ marginTop: 24, maxWidth: 720 }}
-              extra="必填，进入操作审计与不可变版本记录"
-              rules={[
-                { required: true, message: '请填写变更理由' },
-                {
-                  max: JWT_TRUST_LIMITS.maxReasonLen,
-                  message: `变更理由不能超过 ${JWT_TRUST_LIMITS.maxReasonLen} 字符`,
-                },
-              ]}
-            >
-              <Input.TextArea
-                rows={2}
-                placeholder="说明本次变更原因，如：接入新的身份发行方"
-              />
-            </Form.Item>
+            <div className="jz-detail-audit-submit-box">
+              <Form.Item
+                name="reason"
+                label="变更理由"
+                style={{ marginBottom: 10, maxWidth: 760 }}
+                extra="必填，进入操作审计与不可变版本记录"
+                rules={[
+                  { required: true, message: '请填写变更理由' },
+                  {
+                    max: JWT_TRUST_LIMITS.maxReasonLen,
+                    message: `变更理由不能超过 ${JWT_TRUST_LIMITS.maxReasonLen} 字符`,
+                  },
+                ]}
+              >
+                <Input.TextArea
+                  rows={2}
+                  placeholder="说明本次变更原因，如：接入新的身份发行方"
+                />
+              </Form.Item>
+              <div className="jz-detail-audit-submit-actions">
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  <SafetyCertificateOutlined style={{ marginRight: 6 }} />
+                  本页面不提供粘贴真实业务 Token
+                  的在线调试；验证排障请通过安全事件详情中的 JWT
+                  验证信息与发布预检完成。
+                </Typography.Text>
+                <Space>
+                  <Button
+                    loading={preflightMutation.isPending}
+                    onClick={() => void runPreflight()}
+                  >
+                    发布预检
+                  </Button>
+                  <Button
+                    type="primary"
+                    loading={saveMutation.isPending}
+                    onClick={() => form.submit()}
+                  >
+                    保存草稿
+                  </Button>
+                </Space>
+              </div>
+            </div>
           )}
         </Form>
       </Card>
 
       {preflight && (
-        <Card title="发布预检结果">
-          <Alert
-            type={preflight.publishable ? 'success' : 'error'}
-            showIcon
-            style={{ marginBottom: 16 }}
-            message={
-              preflight.publishable
-                ? '预检通过，可经配置发布通道发布'
-                : '存在未通过项，发布链路将以同口径拒绝'
-            }
-            description="预检为管理端视角（含受限连通性检查），不代表各网关节点实际可达；节点实际密钥状态以发布回执为准。预检不保存、不发布。"
+        <div ref={preflightRef}>
+          <PreflightResultCard
+            publishable={preflight.publishable}
+            summaryDescription="预检为管理端视角（含受限连通性检查），不代表各网关节点实际可达；节点实际密钥状态以发布回执为准。预检不保存、不发布。"
+            checks={preflight.checks}
+            checkNameLabels={JWT_TRUST_CHECK_NAME_LABELS}
+            checkStatusMeta={JWT_TRUST_CHECK_STATUS_META}
+            footerNote="说明：远程 JWKS 连通性为管理端探测结果；「节点状态与能力」为各目标节点的注册与同步回执状态，已知同步失败的节点将阻断强制验证策略发布（防静默降级，避免部分节点未生效）。"
           />
-          <List
-            size="small"
-            dataSource={preflight.checks}
-            renderItem={(c) => (
-              <List.Item>
-                <Space direction="vertical" size={2} style={{ width: '100%' }}>
-                  <Space>
-                    <StatusTag
-                      value={c.status}
-                      map={JWT_TRUST_CHECK_STATUS_META}
-                    />
-                    <Typography.Text strong>
-                      {JWT_TRUST_CHECK_NAME_LABELS[c.name] ?? c.name}
-                    </Typography.Text>
-                  </Space>
-                  <Typography.Text
-                    type="secondary"
-                    style={{
-                      fontSize: 12,
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-all',
-                    }}
-                  >
-                    {c.message}
-                  </Typography.Text>
-                </Space>
-              </List.Item>
-            )}
-          />
-          <Typography.Paragraph
-            type="secondary"
-            style={{ fontSize: 12, marginTop: 12 }}
-          >
-            说明：远程 JWKS
-            连通性为管理端探测结果；「节点状态与能力」为各目标节点的注册与同步回执状态，已知同步失败的节点将阻断强制验证策略发布（防静默降级，避免部分节点未生效）。
-          </Typography.Paragraph>
-        </Card>
+        </div>
       )}
-
-      {canManage && (
-        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-          本页面不提供粘贴真实业务 Token
-          的在线调试；验证排障请通过安全事件详情中的 JWT
-          验证信息与发布预检完成。
-        </Typography.Paragraph>
-      )}
-    </Space>
+    </div>
   )
 }

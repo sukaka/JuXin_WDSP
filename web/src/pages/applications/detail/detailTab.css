@@ -1,0 +1,767 @@
+/* ==========================================================================
+ * 应用详情 4 个核心配置页签共享视觉样式（代理与头合规 / JWT 信任 / Bot 挑战 / 证书绑定）
+ * 原则：去三层套娃、轻边框微层级、24 栅格对齐、语义色彩克制、兼容 AntD 6 token 体系
+ * ========================================================================== */
+
+.jz-detail-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* 轻量主分区卡片：柔和边界与清晰顶栏，避免与外层应用详情 Card 形成厚重套娃 */
+.jz-detail-card.ant-card {
+  border-radius: 10px;
+  border: 1px solid #e6ebf5;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  overflow: visible;
+}
+
+.jz-detail-card.ant-card > .ant-card-head {
+  min-height: 48px;
+  padding: 0 20px;
+  background: linear-gradient(180deg, #fafbfe 0%, #ffffff 100%);
+  border-bottom: 1px solid #eef1f7;
+  border-radius: 10px 10px 0 0;
+}
+
+.jz-detail-card.ant-card > .ant-card-head .ant-card-head-title {
+  padding: 12px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.jz-detail-card.ant-card > .ant-card-body {
+  padding: 20px;
+}
+
+/* 分区标题头 */
+.jz-detail-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.jz-detail-section-header--spaced {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px dashed #e6ebf5;
+}
+
+.jz-detail-section-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.jz-detail-section-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.jz-detail-section-accent {
+  width: 3px;
+  height: 15px;
+  border-radius: 2px;
+  background: #2f54eb;
+  flex-shrink: 0;
+}
+
+.jz-detail-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+  line-height: 1.4;
+}
+
+.jz-detail-section-desc {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.55;
+  margin: 0;
+}
+
+/* 紧凑状态基线条（网关强制安全项） */
+.jz-detail-baseline-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 20px;
+  background: #f4fbf7;
+  border: 1px solid #ccebd8;
+  border-radius: 8px;
+}
+
+.jz-detail-baseline-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px;
+}
+
+.jz-detail-baseline-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.jz-detail-baseline-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #14532d;
+}
+
+.jz-detail-baseline-hint {
+  font-size: 11px;
+  color: #4b745d;
+  line-height: 1.45;
+}
+
+/* 轻量内联说明条（替代大面积蓝色 Alert 贴膏药） */
+.jz-detail-inline-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 16px;
+  background: #f5f7fc;
+  border: 1px solid #e4e9f5;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.55;
+}
+
+.jz-detail-inline-note--compact {
+  margin-bottom: 12px;
+}
+
+.jz-detail-inline-note .anticon {
+  color: #2f54eb;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+/* 3 栏卡片式单选模式组（基于 AntD Radio.Group，完整保留 .ant-radio-wrapper） */
+.jz-detail-mode-group.ant-radio-group {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.jz-detail-mode-group--2col.ant-radio-group {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.jz-detail-mode-card.ant-radio-wrapper {
+  margin-inline-end: 0 !important;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1.5px solid #e4e9f2;
+  background: #ffffff;
+  align-items: flex-start;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    box-shadow 0.2s ease;
+  height: 100%;
+}
+
+.jz-detail-mode-card.ant-radio-wrapper:hover:not(.ant-radio-wrapper-disabled) {
+  border-color: #9bb3f8;
+  box-shadow: 0 2px 8px rgba(47, 84, 235, 0.08);
+}
+
+.jz-detail-mode-card.ant-radio-wrapper .ant-radio {
+  margin-top: 2px;
+}
+
+.jz-detail-mode-card.ant-radio-wrapper > span:last-child {
+  flex: 1;
+  min-width: 0;
+  padding-inline-end: 0;
+}
+
+.jz-detail-mode-card--neutral.ant-radio-wrapper-checked {
+  border-color: #64748b;
+  background: #f8fafc;
+  box-shadow: 0 2px 6px rgba(100, 116, 139, 0.1);
+}
+
+.jz-detail-mode-card--info.ant-radio-wrapper-checked {
+  border-color: #2f54eb;
+  background: #f0f5ff;
+  box-shadow: 0 2px 8px rgba(47, 84, 235, 0.12);
+}
+
+.jz-detail-mode-card--success.ant-radio-wrapper-checked {
+  border-color: #16a34a;
+  background: #f0fdf4;
+  box-shadow: 0 2px 8px rgba(22, 163, 74, 0.12);
+}
+
+.jz-detail-mode-card--warning.ant-radio-wrapper-checked {
+  border-color: #d97706;
+  background: #fffbeb;
+  box-shadow: 0 2px 8px rgba(217, 119, 6, 0.12);
+}
+
+.jz-detail-mode-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.jz-detail-mode-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.jz-detail-mode-card-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  line-height: 1.4;
+}
+
+.jz-detail-mode-card-desc {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.45;
+}
+
+/* 等高开关卡片网格（Switch Tile Grid） */
+.jz-detail-switch-tile {
+  height: 100%;
+  padding: 12px 14px;
+  background: #fafbfe;
+  border: 1px solid #e8edf6;
+  border-radius: 8px;
+  transition:
+    border-color 0.18s ease,
+    background-color 0.18s ease;
+}
+
+.jz-detail-switch-tile:hover {
+  border-color: #c7d5f5;
+  background: #f5f8ff;
+}
+
+.jz-detail-switch-tile--active {
+  border-color: #adc6ff;
+  background: #f4f7ff;
+}
+
+.jz-detail-switch-form-item.ant-form-item {
+  margin-bottom: 0;
+}
+
+.jz-detail-switch-form-item.ant-form-item .ant-form-item-row {
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.jz-detail-switch-form-item.ant-form-item .ant-form-item-label {
+  padding: 0 !important;
+  text-align: left !important;
+  flex: 1 1 auto !important;
+  max-width: none !important;
+  white-space: normal !important;
+}
+
+.jz-detail-switch-form-item.ant-form-item .ant-form-item-label > label {
+  height: auto !important;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  color: #1f2937;
+  font-weight: 500;
+}
+
+.jz-detail-switch-form-item.ant-form-item .ant-form-item-label > label::after {
+  display: none !important;
+}
+
+.jz-detail-switch-form-item.ant-form-item .ant-form-item-control {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: 0;
+}
+
+.jz-detail-switch-desc {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.jz-detail-switch-subpanel {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed #d8e1f0;
+}
+
+/* 浅底规则列表盒（选择器 / 自定义头修改） */
+.jz-detail-rule-box {
+  background: #f8fafd;
+  border: 1px solid #e6ebf5;
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.jz-detail-rule-header {
+  margin-bottom: 8px;
+  padding: 0 4px 6px;
+  border-bottom: 1px solid #eaeef6;
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+}
+
+.jz-detail-rule-row {
+  padding: 8px 4px;
+  border-radius: 6px;
+  transition: background-color 0.15s ease;
+}
+
+.jz-detail-rule-row:hover {
+  background: rgba(47, 84, 235, 0.03);
+}
+
+.jz-detail-rule-row + .jz-detail-rule-row {
+  border-top: 1px solid #edf1f8;
+}
+
+.jz-detail-rule-empty {
+  text-align: center;
+  padding: 14px 12px 16px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+/* 子实体结构化卡片（JWT 发行方 / Bot 信号规则） */
+.jz-detail-subcard {
+  background: #ffffff;
+  border: 1px solid #e2e8f3;
+  border-radius: 10px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.jz-detail-subcard:hover {
+  border-color: #c5d3f2;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+}
+
+.jz-detail-subcard-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #f8fafd;
+  border-bottom: 1px solid #eaedf5;
+}
+
+.jz-detail-subcard-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.jz-detail-subcard-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: #e8eeff;
+  color: #2f54eb;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.jz-detail-subcard-body {
+  padding: 16px 16px 6px;
+}
+
+.jz-detail-subcard-group {
+  background: #f8fafd;
+  border: 1px solid #eaeef6;
+  border-radius: 8px;
+  padding: 12px 14px 2px;
+  margin-bottom: 14px;
+}
+
+.jz-detail-subcard-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  margin-bottom: 10px;
+}
+
+/* 等宽代码文本域（JWKS / CSP） */
+.jz-detail-code-textarea.ant-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  background: #fafbfe;
+  border-color: #dce3f0;
+}
+
+.jz-detail-code-textarea.ant-input:focus {
+  background: #ffffff;
+}
+
+/* 底部收口提交栏 */
+.jz-detail-action-bar {
+  margin-top: 20px;
+  padding: 14px 16px;
+  background: #f8fafd;
+  border: 1px solid #e4eaf5;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.jz-detail-action-bar--sticky {
+  position: sticky;
+  bottom: 12px;
+  z-index: 8;
+  background: rgba(248, 250, 253, 0.96);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.07);
+}
+
+.jz-detail-audit-submit-box {
+  margin-top: 20px;
+  padding: 16px;
+  background: #f8fafd;
+  border: 1px solid #e2e8f5;
+  border-radius: 10px;
+}
+
+.jz-detail-audit-submit-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  margin-top: 4px;
+  border-top: 1px dashed #dce3f0;
+}
+
+/* 预检结果列表（保留 .ant-list-item 类以兼容 E2E） */
+.jz-detail-preflight-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.jz-detail-preflight-item.ant-list-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid #eaedf5;
+  border-left-width: 3px;
+  background: #ffffff;
+}
+
+.jz-detail-preflight-item--PASS {
+  border-left-color: #22c55e;
+}
+
+.jz-detail-preflight-item--FAIL {
+  border-left-color: #ef4444;
+  background: #fffafa;
+}
+
+.jz-detail-preflight-item--WARN {
+  border-left-color: #f59e0b;
+  background: #fffdf5;
+}
+
+.jz-detail-preflight-item--SKIP {
+  border-left-color: #cbd5e1;
+  background: #fafbfc;
+}
+
+/* Bot 多节点同步状态栅格 */
+.jz-detail-node-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.jz-detail-node-card {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #e6ebf5;
+  background: #fafbfe;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.jz-detail-node-card--warn {
+  border-color: #fde68a;
+  background: #fffdf5;
+}
+
+/* Bot 实时信号组覆盖条 */
+.jz-detail-signal-coverage {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  background: #f5f7fc;
+  border: 1px solid #e2e8f5;
+  border-radius: 8px;
+}
+
+/* Bot 模拟浏览器预览框 */
+.jz-detail-browser-frame {
+  border: 1px solid #dce3f0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f5f7fb;
+  max-width: 640px;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.05);
+}
+
+.jz-detail-browser-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #edf1f8;
+  border-bottom: 1px solid #dce3f0;
+}
+
+.jz-detail-browser-dots {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.jz-detail-browser-dots span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #cbd5e1;
+}
+
+.jz-detail-browser-url {
+  flex: 1;
+  background: #ffffff;
+  border: 1px solid #dde3ee;
+  border-radius: 5px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jz-detail-browser-viewport {
+  padding: 24px 20px;
+  display: flex;
+  justify-content: center;
+}
+
+.jz-detail-browser-card {
+  width: 100%;
+  max-width: 460px;
+  background: #ffffff;
+  border: 1px solid #e4e9f2;
+  border-radius: 8px;
+  padding: 20px 22px;
+  color: #222;
+  line-height: 1.6;
+}
+
+/* 证书绑定凭证 Hero 卡片 */
+.jz-detail-cert-hero {
+  border-radius: 10px;
+  border: 1px solid #e2e8f3;
+  border-left: 4px solid #22c55e;
+  background: linear-gradient(135deg, #ffffff 0%, #f9fbff 100%);
+  padding: 18px 20px;
+  transition: box-shadow 0.2s ease;
+}
+
+.jz-detail-cert-hero--warning {
+  border-left-color: #f59e0b;
+  background: linear-gradient(135deg, #ffffff 0%, #fffdf5 100%);
+}
+
+.jz-detail-cert-hero--danger {
+  border-left-color: #ef4444;
+  background: linear-gradient(135deg, #ffffff 0%, #fff9f9 100%);
+}
+
+.jz-detail-cert-hero--default {
+  border-left-color: #2f54eb;
+}
+
+.jz-detail-cert-hero-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #edf1f8;
+}
+
+.jz-detail-cert-hero-identity {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.jz-detail-cert-hero-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: #edf2ff;
+  color: #2f54eb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.jz-detail-cert-hero--warning .jz-detail-cert-hero-icon {
+  background: #fef3c7;
+  color: #d97706;
+}
+
+.jz-detail-cert-hero--danger .jz-detail-cert-hero-icon {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.jz-detail-cert-hero-grid {
+  margin-top: 14px;
+}
+
+.jz-detail-cert-meta-label {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.jz-detail-cert-meta-value {
+  font-size: 13px;
+  color: #1e293b;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.jz-detail-cert-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 28px 20px;
+  border: 1px dashed #cfd8ea;
+  border-radius: 10px;
+  background: #fafbfe;
+  gap: 10px;
+}
+
+.jz-detail-cert-empty-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: #eef2ff;
+  color: #4f6ef7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+}
+
+.jz-detail-acme-panel {
+  height: 100%;
+  padding: 14px 16px;
+  background: #fafbfe;
+  border: 1px solid #eaeef6;
+  border-radius: 8px;
+}
+
+.jz-detail-acme-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #eaeef6;
+}
+
+/* 响应式适配 */
+@media (max-width: 991px) {
+  .jz-detail-baseline-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .jz-detail-mode-group.ant-radio-group {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 767px) {
+  .jz-detail-card.ant-card > .ant-card-body {
+    padding: 14px;
+  }
+
+  .jz-detail-rule-header {
+    display: none;
+  }
+
+  .jz-detail-action-bar--sticky {
+    position: static;
+    box-shadow: none;
+  }
+}
