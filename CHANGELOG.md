@@ -4,6 +4,34 @@
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-11-26
+
+### 新增
+
+- **客户端供应链安全防护（Magecart 防护 / PCI DSS 4.0 6.4.3 & 11.6.1，Phase 9B）**：
+  - **数据库迁移与备份拓扑**：新增迁移 `000246_client_side_security`（建立 `client_side_policies`、`client_side_policy_versions`、`client_script_inventory`、`client_side_violations` 及 `client_side.read`/`client_side.manage` 三权权限种子），同步纳入 `backups/tables.go` 恢复拓扑。
+  - **网关实时防护与上报端点**：`gateway/modules/jiuzhang_guard/clientside` 与 `clientside_step.go` 实现响应 HTML 外链脚本扫描与 SRI 校验、未授权脚本剥离、CSP 策略头生成（`REPORT_ONLY`/`ENFORCE`）、敏感表单页运行时探针注入以及本地合规上报端点与安全事件采集；`accesscontrolevents` 支持客户端供应链违规事件入库与中文导出标签。
+  - **管理后端与前端**：新增 `server/internal/clientside`（应用级策略草稿与版本历史、脚本资产台账与 PCI DSS 4.0 6.4.3 审批授权、篡改/CSP 违规告警处置与合规 CSV/报告导出）、`guardconfig/client_side.go`、`gatewayconfig` 能力门禁与下发、OpenAPI 片段 `27-client-side.yaml` 及合并规范 `wdsp-api.yaml`；前端新增独立菜单页 `ClientSideSecurityPage`（脚本资产台账 + 违规告警处置）与应用详情「客户端安全」页签 `ClientSideTab`。
+- **AI 爬虫治理、Web Bot Auth（RFC 9421）与离线 AI 迷宫诱捕（Phase 9A-2）**：
+  - **数据库迁移**：新增迁移 `000245_ai_crawl_governance`（建立 `ai_crawler_directories` 爬虫公钥目录、`ai_crawl_policies`、`ai_crawl_policy_versions` 及 `ai_crawl.read`/`ai_crawl.manage` 权限种子）。
+  - **网关校验与处置**：`gateway/dynamic_security/httpsig/web_bot_auth.go` 实现 RFC 9421 HTTP 签名与 Web Bot Auth 公钥验签；`gateway/modules/jiuzhang_guard/aicrawl` 与 `aicrawl_step.go` 实现 AI 爬虫分类识别、分级处置（`ALLOW`/`RATE_LIMIT`/`CHALLENGE`/`TARPIT`/`HTTP_402`/`BLOCK`）、响应头声明（`Content-Signal` 等）及基于 HMAC 路径签名的离线 AI 迷宫诱捕（`tarpit`）。
+  - **管理后端与前端**：新增 `server/internal/aicrawl`（内置/自定义/离线导入/SSRF 防护手动同步爬虫公钥目录、应用级治理策略草稿与校验）、`guardconfig/ai_crawl.go`、`gatewayconfig` 迷宫密钥解密下发与快照脱敏、OpenAPI 片段 `26-ai-crawl.yaml`；前端新增 `AiCrawlPage` 与应用详情 `AiCrawlTab`。
+- **JWT 令牌持有证明绑定（OAuth 2.0 DPoP RFC 9449 & mTLS RFC 8705，Phase 9A-1）**：
+  - 网关 `gateway/dynamic_security/jwtverify/{dpop,mtls_bind}.go` 与 `jiuzhang_guard/jwt_trust.go` 实现 `cnf.jkt` DPoP 证明验签（支持 `ES256`/`RS256`/`EdDSA`、防重放与可选 Nonce 质询）及 `cnf.x5t#S256` 客户端证书指纹绑定校验；
+  - 后端 `server/internal/jwttrust`、`gatewayconfig/guard.go` 与 `16-jwt-trust.yaml` 扩展发行方级 `token_binding`（`NONE`/`DPOP_OPTIONAL`/`DPOP_REQUIRED`/`MTLS_REQUIRED`/`DPOP_OR_MTLS`）存储、校验与下发；前端 `JwtTrustTab` 同步支持持有人绑定模式与参数可视化配置。
+- **大规模数据库读写稳定性、表分区治理、ClickHouse TTL 与 PostgreSQL 自适应调优**：
+  - **迁移与分区管理器**：新增迁移 `000242_db_read_stability_indexes`（热路径与留存清理索引重构、低基数冗余索引精简、高频更新表 `fillfactor=80` 与防御式 `pg_trgm` GIN 索引）、`000243_partition_default_split` 与 `000244_append_only_partitions_and_uuidv7`；新增 `server/internal/partitions` 自动预建与过期卸载分区管理器；
+  - **服务端双连接池与查询优化**：`server/internal/database` 与 `config` 实现交互 API 与后台采集/聚合/巡检双连接池物理隔离及会话超时护栏（`DB_MAX_CONNS`/`DB_BG_MAX_CONNS`/`DB_STATEMENT_TIMEOUT_MS` 等）；优化 `dashboards`、`accesslogs`、`securityevents`、`aggregations`、`apisecurity`、`apidataflow`、`apiassets`、`attacksessions`、`tlssessions` 与 `agents` 查询索引命中与批量写留存性能；
+  - **运维调优与 ClickHouse 分区 TTL**：新增 `ops/lib/pg-tune.sh`（按宿主机内存档位生成 PostgreSQL 调优参数并纳入裸机/离线白名单）及单测 `ops/system/tests/test_pg_tune.py`；`docker-compose.yml`、`deployment/docker-compose.stage5.yml` 与 `.env.example` 补齐 `shm_size` 与安全缺省调优参数；`deployment/apm/clickhouse/{004,005,006}` 与 `upgrade_wdsp_partition_ttl.sh` 完善观测/数据流表分区与 TTL 升级脚本。
+
+### 验证与边界
+
+- **网关**：`cd gateway && go build ./...`、`gateway/dynamic_security`（`httpsig`、`jwtverify`、`events`）与 `gateway/modules/jiuzhang_guard`（`aicrawl`、`clientside`、`events` 及根包 `TestClientSide|TestAICrawl|TestJwtTrust|TestBot`）全部通过。
+- **后端与 OpenAPI**：`cd server && go build ./...`、`go test -c ./tests` 及全部 22 个变更/新增包（`aicrawl`、`clientside`、`jwttrust`、`partitions`、`upgrades`、`database`、`config`、`backups`、`guardconfig`、`gatewayconfig`、`accesscontrolevents`、`accesslogs`、`agents`、`aggregations`、`apiassets`、`apidataflow`、`apiruntime`、`apisecurity`、`attacksessions`、`dashboards`、`securityevents`、`tlssessions`）全部通过；`python3 tools/check-api-reconcile.py` 确认 1.16.0 新增路由 0 缺失（仅余 18 条历史 `url-whitelists`/`geoip`/`tls-sessions` 既有缺口）。
+- **前端**：`cd web && npx tsc --noEmit && npm run lint && npx vite build` 0 报错通过（本次改动与新增文件 0 lint 警告）；8 个变更/新增 Vitest 测试文件（`ClientSideSecurityPage`、`ClientSideTab`、`AiCrawlPage`、`AiCrawlTab`、`JwtTrustTab`、`ApplicationDetailPage`、`menu`、`jwtTrust`，共 73/73 用例）全部通过。
+- **运维脚本**：全部变更 `.sh` `bash -n` 语法检查通过；`python3 -m pytest ops/system/tests/test_pg_tune.py` 14/14 用例通过。
+- **未执行项（`NOT_RUN`）**：目标 Linux/amd64 实机 PostgreSQL 迁移（`000242`–`000246`）、ClickHouse TTL 实机执行、完整升级介质（因涉及 `docker-compose.yml` 与 `deployment/` 变更，正式升级须走 `update-full`）实机升级/回滚验收及 Playwright E2E 均为 `NOT_RUN`。
+
 ## [1.15.1] - 2026-11-26
 
 ### 修复与体验优化
