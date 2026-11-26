@@ -110,15 +110,25 @@ type selectorRequest struct {
 	TokenRequired bool     `json:"token_required"`
 }
 
+// tokenBindingRequest 令牌持有证明绑定请求项（指针字段区分「未提供=默认值」与显式 0）。
+type tokenBindingRequest struct {
+	Mode               string   `json:"mode"`
+	RequireNonce       bool     `json:"require_nonce"`
+	MaxProofAgeSeconds *int     `json:"max_proof_age_seconds"`
+	NonceTTLSeconds    *int     `json:"nonce_ttl_seconds"`
+	AllowedDPoPAlgs    []string `json:"allowed_dpop_algs"`
+}
+
 // issuerRequest issuer 请求项（clock_skew_seconds 用指针区分「未提供=默认 30」与显式 0）。
 type issuerRequest struct {
-	Issuer           string    `json:"issuer"`
-	Audiences        []string  `json:"audiences"`
-	Algorithms       []string  `json:"algorithms"`
-	KeySource        KeySource `json:"key_source"`
-	ClockSkewSeconds *int      `json:"clock_skew_seconds"`
-	TenantClaim      string    `json:"tenant_claim"`
-	RoleClaims       []string  `json:"role_claims"`
+	Issuer           string               `json:"issuer"`
+	Audiences        []string             `json:"audiences"`
+	Algorithms       []string             `json:"algorithms"`
+	KeySource        KeySource            `json:"key_source"`
+	ClockSkewSeconds *int                 `json:"clock_skew_seconds"`
+	TenantClaim      string               `json:"tenant_claim"`
+	RoleClaims       []string             `json:"role_claims"`
+	TokenBinding     *tokenBindingRequest `json:"token_binding,omitempty"`
 }
 
 // putRequest PUT 请求体（全量草稿 + 乐观锁 + 变更理由）。
@@ -151,6 +161,27 @@ func (r *putRequest) toPolicy(appID uuid.UUID) *Policy {
 		if is.ClockSkewSeconds != nil {
 			skew = *is.ClockSkewSeconds
 		}
+		var tb *TokenBindingConfig
+		if is.TokenBinding != nil {
+			mode := strings.ToUpper(strings.TrimSpace(is.TokenBinding.Mode))
+			if mode != "" && mode != TokenBindingNone {
+				maxAge := DefaultDPoPMaxProofAgeSeconds
+				if is.TokenBinding.MaxProofAgeSeconds != nil {
+					maxAge = *is.TokenBinding.MaxProofAgeSeconds
+				}
+				nonceTTL := DefaultDPoPNonceTTLSeconds
+				if is.TokenBinding.NonceTTLSeconds != nil {
+					nonceTTL = *is.TokenBinding.NonceTTLSeconds
+				}
+				tb = &TokenBindingConfig{
+					Mode:               mode,
+					RequireNonce:       is.TokenBinding.RequireNonce,
+					MaxProofAgeSeconds: maxAge,
+					NonceTTLSeconds:    nonceTTL,
+					AllowedDPoPAlgs:    append([]string(nil), is.TokenBinding.AllowedDPoPAlgs...),
+				}
+			}
+		}
 		p.Issuers = append(p.Issuers, Issuer{
 			Issuer:           is.Issuer,
 			Audiences:        is.Audiences,
@@ -159,6 +190,7 @@ func (r *putRequest) toPolicy(appID uuid.UUID) *Policy {
 			ClockSkewSeconds: skew,
 			TenantClaim:      is.TenantClaim,
 			RoleClaims:       append([]string(nil), is.RoleClaims...),
+			TokenBinding:     tb,
 		})
 	}
 	return p
@@ -576,8 +608,9 @@ type auditIssuerDigest struct {
 	KeysetVersion    string   `json:"keyset_version,omitempty"`
 	RemoteURL        string   `json:"remote_url,omitempty"`
 	ClockSkewSeconds int      `json:"clock_skew_seconds"`
-	TenantClaim      string   `json:"tenant_claim,omitempty"`
-	RoleClaims       []string `json:"role_claims,omitempty"`
+	TenantClaim      string              `json:"tenant_claim,omitempty"`
+	RoleClaims       []string            `json:"role_claims,omitempty"`
+	TokenBinding     *TokenBindingConfig `json:"token_binding,omitempty"`
 }
 
 func summarizePolicy(p *Policy, reason string) auditSummary {
@@ -589,6 +622,12 @@ func summarizePolicy(p *Policy, reason string) auditSummary {
 		Issuers:   make([]auditIssuerDigest, 0, len(p.Issuers)),
 	}
 	for _, is := range p.Issuers {
+		var tbCopy *TokenBindingConfig
+		if is.TokenBinding.Active() {
+			cp := *is.TokenBinding
+			cp.AllowedDPoPAlgs = append([]string(nil), is.TokenBinding.AllowedDPoPAlgs...)
+			tbCopy = &cp
+		}
 		d := auditIssuerDigest{
 			Issuer:           is.Issuer,
 			Audiences:        is.Audiences,
@@ -598,6 +637,7 @@ func summarizePolicy(p *Policy, reason string) auditSummary {
 			ClockSkewSeconds: is.ClockSkewSeconds,
 			TenantClaim:      is.TenantClaim,
 			RoleClaims:       append([]string(nil), is.RoleClaims...),
+			TokenBinding:     tbCopy,
 		}
 		if is.KeySource.Type == KeySourceStaticJWKS && is.KeySource.JWKS != "" {
 			if v, err := KeysetVersion(is.KeySource.JWKS); err == nil {

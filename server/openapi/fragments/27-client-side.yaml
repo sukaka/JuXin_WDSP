@@ -1,0 +1,402 @@
+# 片段：客户端供应链安全防护（Magecart 防护 / PCI DSS 4.0 6.4.3 & 11.6.1，Phase 9B）
+# 路由源：server/internal/app/app.go（/applications/{id}/client-side-policy、/client-side/*）
+# 数据源：client_side_policies、client_side_policy_versions、client_script_inventory、
+# client_side_violations（迁移 000246；权限种子：client_side.read 授予 SECURITY_ADMIN/AUDIT_ADMIN，
+# client_side.manage 授予 SECURITY_ADMIN）。
+# 发布：草稿保存不自动发布，经既有 gateway-config 发布通道下发 client_side_policy 段（含已授权与已封禁脚本）。
+paths:
+  # ==================== 应用级客户端供应链安全策略 ====================
+  /applications/{id}/client-side-policy:
+    get:
+      operationId: clientSidePolicyGet
+      tags: [client-side]
+      summary: 读取应用客户端供应链安全策略
+      description: 读取应用客户端供应链安全策略草稿及发布状态摘要（无记录返回默认 OFF 策略 version=0）。权限：`client_side.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      responses:
+        '200':
+          description: 策略草稿与状态摘要
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientSidePolicyGetResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: clientSidePolicyUpdate
+      tags: [client-side]
+      summary: 保存应用客户端供应链安全策略草稿
+      description: 校验并保存应用客户端供应链安全策略草稿（expected_version 乐观锁冲突返回 409；reason 必填并记录不可变版本与操作审计；保存后经既有 gateway-config 发布通道下发 client_side_policy 段）。权限：`client_side.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClientSidePolicyUpdateRequest' }
+      responses:
+        '200':
+          description: 草稿保存成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientSidePolicyDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 脚本资产清单（PCI DSS 4.0 6.4.3） ====================
+  /client-side/scripts:
+    get:
+      operationId: clientSideScriptsList
+      tags: [client-side]
+      summary: 分页查询客户端脚本资产清单
+      description: 查询网关自动发现及管理员预授权/封禁的页面脚本资产与 SRI 完整性比对信息。权限：`client_side.read`
+      parameters:
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 按应用 ID 筛选 }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [DISCOVERED, AUTHORIZED, BLOCKED] }, description: 按授权状态筛选 }
+        - { name: keyword, in: query, required: false, schema: { type: string }, description: 按脚本地址/来源/业务说明/样例路径关键字模糊筛选 }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 20 }, description: 每页条数（默认 20） }
+      responses:
+        '200':
+          description: 脚本资产分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientSideScriptListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: clientSideScriptsCreate
+      tags: [client-side]
+      summary: 新增预授权/封禁脚本资产
+      description: 人工新增客户端脚本资产条目（status 为 AUTHORIZED 时按 PCI DSS 4.0 6.4.3 强制要求填写非空 justification 并记录审批人/审批时间）。权限：`client_side.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClientSideScriptCreateRequest' }
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientSideScriptDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /client-side/scripts/{id}:
+    put:
+      operationId: clientSideScriptsUpdate
+      tags: [client-side]
+      summary: 审批或编辑脚本资产
+      description: 更新脚本固定 SRI 哈希、授权状态与业务必要性说明（当 status=AUTHORIZED 时按 PCI DSS 4.0 6.4.3 强制要求非空 justification 并记录 approved_by/approved_at）。权限：`client_side.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 脚本记录 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClientSideScriptUpdateRequest' }
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientSideScriptDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: clientSideScriptsDelete
+      tags: [client-side]
+      summary: 删除脚本资产
+      description: 从脚本资产清单中删除指定记录并记录操作审计。权限：`client_side.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 脚本记录 ID }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  id: { type: string, format: uuid }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 篡改与 CSP 违规告警（PCI DSS 4.0 11.6.1） ====================
+  /client-side/violations:
+    get:
+      operationId: clientSideViolationsList
+      tags: [client-side]
+      summary: 分页查询客户端篡改与 CSP 违规告警
+      description: 查询未授权脚本、脚本 SRI 篡改、CSP 策略违规与敏感表单探针告警列表。权限：`client_side.read`
+      parameters:
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 按应用 ID 筛选 }
+        - { name: violation_type, in: query, required: false, schema: { type: string, enum: [UNAUTHORIZED_SCRIPT, SCRIPT_TAMPERED, CSP_VIOLATION, PROBE_ALERT] }, description: 按违规类型筛选 }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [OPEN, ACKNOWLEDGED, RESOLVED, FALSE_POSITIVE] }, description: 按处置状态筛选 }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 20 }, description: 每页条数（默认 20） }
+      responses:
+        '200':
+          description: 违规告警分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientSideViolationListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /client-side/violations/{id}/status:
+    put:
+      operationId: clientSideViolationsUpdateStatus
+      tags: [client-side]
+      summary: 处置客户端安全违规告警
+      description: 更新违规告警工单状态（OPEN/ACKNOWLEDGED/RESOLVED/FALSE_POSITIVE）与处置备注，记录处置人与处置时间及操作审计。权限：`client_side.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 违规记录 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClientSideViolationStatusRequest' }
+      responses:
+        '200':
+          description: 状态更新成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientSideViolationDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== PCI DSS 4.0 合规证据导出 ====================
+  /client-side/compliance-export:
+    get:
+      operationId: clientSideComplianceExport
+      tags: [client-side]
+      summary: 导出 PCI DSS 4.0 客户端供应链合规证据 CSV
+      description: 导出包含 UTF-8 BOM、中文表头与公式注入转义的 CSV 文件，涵盖 PCI DSS 4.0 6.4.3 脚本授权台账与 11.6.1 违规摘要及明细。权限：`client_side.read`
+      parameters:
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 可选，仅导出指定应用的合规证据 }
+      responses:
+        '200':
+          description: PCI DSS 4.0 合规证据 CSV 文件（UTF-8 BOM）
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    ClientSidePolicy:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        schema_version: { type: integer, enum: [1] }
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT], description: 运行模式（默认 OFF） }
+        version: { type: integer, description: 策略乐观锁版本号 }
+        csp_mode: { type: string, enum: [OFF, REPORT_ONLY, ENFORCE], description: CSP 响应头模式 }
+        sensitive_paths:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 512 }
+          description: 敏感表单页面路径前缀（须以 / 开头，不含 ?#）
+        probe_enabled: { type: boolean, description: 是否在敏感页面注入客户端防窃取探针 }
+        strip_unauthorized_scripts: { type: boolean, description: PROTECT 模式下是否剥离未授权或被篡改外链脚本 }
+        allowed_script_origins:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 512 }
+          description: 允许的 script-src CSP 源令牌
+        allowed_connect_origins:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 512 }
+          description: 允许的 connect-src CSP 源令牌
+        allowed_form_origins:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 512 }
+          description: 允许的 form-action CSP 源令牌
+        custom_csp_directives: { type: string, maxLength: 2048, description: 可选自定义 CSP 追加指令（禁 CR/LF/控制字符） }
+        updated_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ClientSideStatusSummary:
+      type: object
+      properties:
+        state: { type: string, enum: [NOT_CONFIGURED, DRAFT_PENDING, PUBLISHED] }
+        draft_version: { type: integer }
+        published_version: { type: integer }
+
+    ClientSidePolicyGetResponse:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/ClientSidePolicy' }
+        summary: { $ref: '#/components/schemas/ClientSideStatusSummary' }
+
+    ClientSidePolicyDetailResponse:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/ClientSidePolicy' }
+
+    ClientSidePolicyUpdateRequest:
+      type: object
+      required: [mode, expected_version, reason]
+      properties:
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+        expected_version: { type: integer, minimum: 0 }
+        csp_mode: { type: string, enum: [OFF, REPORT_ONLY, ENFORCE] }
+        sensitive_paths:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 512 }
+        probe_enabled: { type: boolean }
+        strip_unauthorized_scripts: { type: boolean }
+        allowed_script_origins:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 512 }
+        allowed_connect_origins:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 512 }
+        allowed_form_origins:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 512 }
+        custom_csp_directives: { type: string, maxLength: 2048 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+
+    ClientSideScript:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        application_code: { type: string }
+        application_name: { type: string }
+        script_url: { type: string, maxLength: 2048 }
+        script_origin: { type: string }
+        script_type: { type: string, enum: [EXTERNAL, INLINE_HASH] }
+        sri_hash: { type: string, maxLength: 256, description: 管理员固定的 SRI 完整性哈希 }
+        observed_sri: { type: string, maxLength: 256, description: 网关最近观测到的 SRI 哈希 }
+        status: { type: string, enum: [DISCOVERED, AUTHORIZED, BLOCKED] }
+        justification: { type: string, maxLength: 1000, description: PCI DSS 4.0 6.4.3 业务必要性说明 }
+        approved_by: { type: string }
+        approved_at: { type: string, format: date-time, nullable: true }
+        sample_page_path: { type: string }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        observed_count: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ClientSideScriptListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ClientSideScript' }
+        total: { type: integer, format: int64 }
+        page: { type: integer }
+        page_size: { type: integer }
+
+    ClientSideScriptDetailResponse:
+      type: object
+      properties:
+        script: { $ref: '#/components/schemas/ClientSideScript' }
+
+    ClientSideScriptCreateRequest:
+      type: object
+      required: [application_id, script_url, script_type]
+      properties:
+        application_id: { type: string, format: uuid }
+        script_url: { type: string, maxLength: 2048 }
+        script_type: { type: string, enum: [EXTERNAL, INLINE_HASH] }
+        sri_hash: { type: string, maxLength: 256 }
+        status: { type: string, enum: [DISCOVERED, AUTHORIZED, BLOCKED] }
+        justification: { type: string, maxLength: 1000 }
+
+    ClientSideScriptUpdateRequest:
+      type: object
+      required: [status]
+      properties:
+        sri_hash: { type: string, maxLength: 256 }
+        status: { type: string, enum: [DISCOVERED, AUTHORIZED, BLOCKED] }
+        justification: { type: string, maxLength: 1000 }
+
+    ClientSideViolation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        application_code: { type: string }
+        application_name: { type: string }
+        request_id: { type: string }
+        occurred_at: { type: string, format: date-time }
+        violation_type: { type: string, enum: [UNAUTHORIZED_SCRIPT, SCRIPT_TAMPERED, CSP_VIOLATION, PROBE_ALERT] }
+        script_url: { type: string }
+        script_origin: { type: string }
+        expected_sri: { type: string }
+        observed_sri: { type: string }
+        page_path: { type: string }
+        violated_directive: { type: string }
+        blocked_uri: { type: string }
+        action_taken: { type: string }
+        reason: { type: string }
+        client_ip: { type: string }
+        status: { type: string, enum: [OPEN, ACKNOWLEDGED, RESOLVED, FALSE_POSITIVE] }
+        note: { type: string }
+        handled_by: { type: string }
+        handled_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    ClientSideViolationListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ClientSideViolation' }
+        total: { type: integer, format: int64 }
+        page: { type: integer }
+        page_size: { type: integer }
+
+    ClientSideViolationDetailResponse:
+      type: object
+      properties:
+        violation: { $ref: '#/components/schemas/ClientSideViolation' }
+
+    ClientSideViolationStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [OPEN, ACKNOWLEDGED, RESOLVED, FALSE_POSITIVE] }
+        note: { type: string, maxLength: 1000 }

@@ -677,21 +677,32 @@ type GuardJWTSelector struct {
 	TokenRequired bool     `json:"token_required"`
 }
 
+// GuardJWTTokenBinding 发行方级令牌持有证明绑定配置（Phase 9A-1：OAuth 2.0 DPoP / mTLS）。
+// 跨分片契约与网关 jwtverify / jwt_trust.go 冻结一致，不得改名。
+type GuardJWTTokenBinding struct {
+	Mode               string   `json:"mode,omitempty"`                  // NONE|DPOP_OPTIONAL|DPOP_REQUIRED|MTLS_REQUIRED|DPOP_OR_MTLS
+	RequireNonce       bool     `json:"require_nonce,omitempty"`
+	MaxProofAgeSeconds int      `json:"max_proof_age_seconds,omitempty"` // default 60, range 5..120
+	NonceTTLSeconds    int      `json:"nonce_ttl_seconds,omitempty"`     // default 60, range 10..300
+	AllowedDPoPAlgs    []string `json:"allowed_dpop_algs,omitempty"`     // subset of ES256|RS256|EdDSA
+}
+
 // GuardJWTIssuer 受信发行方配置（下发网关；issuer_config_id 由管理面按
 // 应用+issuer 精确值派生并保持跨发布稳定；静态 JWKS 仅含公钥——公钥非秘密可以下发；
 // keyset_version 为密钥集内容哈希，供网关事件溯源与轮换比对）。
 type GuardJWTIssuer struct {
-	IssuerConfigID   string          `json:"issuer_config_id"`
-	Issuer           string          `json:"issuer"`
-	Audiences        []string        `json:"audiences"`
-	Algorithms       []string        `json:"algorithms"` // RS256/ES256 非空子集
-	ClockSkewSeconds int             `json:"clock_skew_seconds"`
-	TenantClaim      string          `json:"tenant_claim,omitempty"`
-	RoleClaims       []string        `json:"role_claims,omitempty"`
-	KeySourceType    string          `json:"key_source_type"` // STATIC_JWKS | REMOTE_JWKS
-	JWKS             json.RawMessage `json:"jwks,omitempty"`  // STATIC_JWKS：公钥集（已校验无私钥/对称密钥）
-	RemoteURL        string          `json:"remote_url,omitempty"`
-	KeysetVersion    string          `json:"keyset_version,omitempty"`
+	IssuerConfigID   string                `json:"issuer_config_id"`
+	Issuer           string                `json:"issuer"`
+	Audiences        []string              `json:"audiences"`
+	Algorithms       []string              `json:"algorithms"` // RS256/ES256 非空子集
+	ClockSkewSeconds int                   `json:"clock_skew_seconds"`
+	TenantClaim      string                `json:"tenant_claim,omitempty"`
+	RoleClaims       []string              `json:"role_claims,omitempty"`
+	KeySourceType    string                `json:"key_source_type"` // STATIC_JWKS | REMOTE_JWKS
+	JWKS             json.RawMessage       `json:"jwks,omitempty"`  // STATIC_JWKS：公钥集（已校验无私钥/对称密钥）
+	RemoteURL        string                `json:"remote_url,omitempty"`
+	KeysetVersion    string                `json:"keyset_version,omitempty"`
+	TokenBinding     *GuardJWTTokenBinding `json:"token_binding,omitempty"` // Phase 9A-1：DPoP/mTLS 绑定（schema_version=2 生效）
 }
 
 // GuardJWTTrustPolicy 应用 JWT 信任策略（下发网关 jwt_trust 段；schema_version
@@ -802,6 +813,97 @@ type GuardBotPolicy struct {
 type guardBotPolicyWithKeys struct {
 	*GuardBotPolicy
 	SigningKeys map[string]string `json:"signing_keys,omitempty"`
+}
+
+// ---------- Phase 9A-2：AI 爬虫治理、Web Bot Auth 与离线 AI 迷宫（ai_crawl_policy 段，跨分片契约已冻结） ----------
+
+// GuardAICrawlHTTP402 HTTP 402 Payment Required 响应参数。
+type GuardAICrawlHTTP402 struct {
+	Message       string `json:"message,omitempty"`
+	PriceHint     string `json:"price_hint,omitempty"`
+	ContactURL    string `json:"contact_url,omitempty"`
+	ReceiptHeader string `json:"receipt_header,omitempty"`
+}
+
+// GuardAICrawlRule AI 爬虫分级处置规则。
+type GuardAICrawlRule struct {
+	ID                 string   `json:"id"`
+	Name               string   `json:"name"`
+	Category           string   `json:"category"` // SEARCH_ENGINE|AI_TRAINING|AI_ASSISTANT|AI_AGENT|UNKNOWN_BOT
+	AgentID            string   `json:"agent_id,omitempty"`
+	UAPatterns         []string `json:"ua_patterns,omitempty"`
+	RequireVerifiedSig bool     `json:"require_verified_sig,omitempty"`
+	Action             string   `json:"action"` // ALLOW|RATE_LIMIT|CHALLENGE|TARPIT|HTTP_402|BLOCK
+	ExemptBotChallenge bool     `json:"exempt_bot_challenge,omitempty"`
+	RateLimitRPM       int      `json:"rate_limit_rpm,omitempty"`
+	Priority           int      `json:"priority"`
+}
+
+// GuardAICrawlerKey Web Bot Auth（RFC 9421）爬虫目录公钥条目。
+type GuardAICrawlerKey struct {
+	KID          string `json:"kid"`
+	Alg          string `json:"alg"` // ed25519 | ecdsa-p256-sha256
+	PublicKeyPEM string `json:"public_key_pem"`
+}
+
+// GuardAICrawlerDirectory Web Bot Auth 爬虫公钥目录。
+type GuardAICrawlerDirectory struct {
+	ID             string              `json:"id"`
+	Slug           string              `json:"slug"`
+	Name           string              `json:"name"`
+	Category       string              `json:"category"`
+	SignatureAgent string              `json:"signature_agent,omitempty"`
+	DirectoryURL   string              `json:"directory_url,omitempty"`
+	Keys           []GuardAICrawlerKey `json:"keys"`
+}
+
+// GuardAICrawlPolicy 应用级 AI 爬虫治理与离线 AI 迷宫策略（下发网关 ai_crawl_policy 段）。
+// LabyrinthKeyHex 为秘密材料：版本快照经 RedactGuardConfig / RedactConfigSecrets 脱敏为 "***"，
+// 回滚时由发布侧按当前设置重新解密注入，且绝不参与 api_policy_version 哈希。
+type GuardAICrawlPolicy struct {
+	SchemaVersion           int                       `json:"schema_version"`
+	ApplicationID           string                    `json:"application_id"`
+	Mode                    string                    `json:"mode"` // OFF | OBSERVE | PROTECT
+	Version                 int                       `json:"version"`
+	DefaultAIAction         string                    `json:"default_ai_action"` // ALLOW|RATE_LIMIT|CHALLENGE|TARPIT|HTTP_402|BLOCK
+	ContentSignal           string                    `json:"content_signal,omitempty"`
+	VerifyWebBotAuth        bool                      `json:"verify_web_bot_auth"`
+	LabyrinthEnabled        bool                      `json:"labyrinth_enabled"`
+	LabyrinthInjectLinks    bool                      `json:"labyrinth_inject_links"`
+	LabyrinthMaxDepth       int                       `json:"labyrinth_max_depth"`
+	LabyrinthMaxConcurrency int                       `json:"labyrinth_max_concurrency"`
+	LabyrinthDelayMs        int                       `json:"labyrinth_delay_ms"`
+	LabyrinthKeyHex         string                    `json:"labyrinth_key_hex,omitempty"`
+	HTTP402                 GuardAICrawlHTTP402       `json:"http_402"`
+	Rules                   []GuardAICrawlRule        `json:"rules"`
+	Directories             []GuardAICrawlerDirectory `json:"directories"`
+}
+
+// ---------- Phase 9B：客户端供应链安全防护（client_side_policy 段，跨分片契约已冻结） ----------
+
+// GuardClientSideScript 已授权或已封禁的客户端脚本条目（下发网关 client_side_policy.authorized_scripts）。
+type GuardClientSideScript struct {
+	ScriptURL  string `json:"script_url"`
+	ScriptType string `json:"script_type"` // EXTERNAL | INLINE_HASH
+	SRIHash    string `json:"sri_hash"`
+	Status     string `json:"status"` // AUTHORIZED | BLOCKED
+}
+
+// GuardClientSidePolicy 应用级客户端供应链安全策略（下发网关 client_side_policy 段；无任何秘密材料）。
+type GuardClientSidePolicy struct {
+	SchemaVersion            int                     `json:"schema_version"`
+	ApplicationID            string                  `json:"application_id"`
+	Mode                     string                  `json:"mode"` // OFF | OBSERVE | PROTECT
+	Version                  int                     `json:"version"`
+	CSPMode                  string                  `json:"csp_mode"` // OFF | REPORT_ONLY | ENFORCE
+	SensitivePaths           []string                `json:"sensitive_paths"`
+	ProbeEnabled             bool                    `json:"probe_enabled"`
+	StripUnauthorizedScripts bool                    `json:"strip_unauthorized_scripts"`
+	AllowedScriptOrigins     []string                `json:"allowed_script_origins"`
+	AllowedConnectOrigins    []string                `json:"allowed_connect_origins"`
+	AllowedFormOrigins       []string                `json:"allowed_form_origins"`
+	CustomCSPDirectives      string                  `json:"custom_csp_directives"`
+	AuthorizedScripts        []GuardClientSideScript `json:"authorized_scripts"`
 }
 
 // GuardAPIAdmissionPolicy API 准入策略（按应用；docs/API_ADMISSION_CONTROL_DESIGN.md §4.2，
@@ -1113,6 +1215,18 @@ type GuardConfig struct {
 	// 不进审计/日志/API 响应；渲染进应用 bot_policy 段时以 signing_keys 键并入
 	// （网关 bot_policy 段装配处按 key_ref 构造 botchallenge.NewKeyring）。
 	BotSigningKeys map[string]string `json:"bot_signing_keys,omitempty"`
+	// AICrawlPolicy 应用级 AI 爬虫治理策略（Phase 9A-2；ai_crawl_policies 表按应用行，
+	// 迁移 000245；key=应用编码，仅 WDSP 开启时下发并纳入 api_policy_version 版本戳，
+	// 读取失败中止发布 fail-hard；labyrinth_key_hex 秘密材料不进版本戳且在快照脱敏）。
+	AICrawlPolicy map[string]*GuardAICrawlPolicy `json:"ai_crawl_policy,omitempty"`
+	// AICrawlLabyrinthKeyHex AI 迷宫 HMAC-SHA256 路径签名密钥（32 字节 hex，来源
+	// system_settings gateway_runtime 组 ai_crawl_labyrinth_key 密文，发布时解密注入）。
+	// 快照经 RedactGuardConfig / RedactConfigSecrets 脱敏、回滚按当前设置重放、不进版本戳。
+	AICrawlLabyrinthKeyHex string `json:"ai_crawl_labyrinth_key_hex,omitempty"`
+	// ClientSidePolicy 应用级客户端供应链安全策略（Phase 9B；client_side_policies +
+	// client_script_inventory 已授权/封禁脚本，迁移 000246；key=应用编码，仅 WDSP 开启时下发
+	// 并纳入 api_policy_version 版本戳，读取失败中止发布 fail-hard；无任何秘密材料）。
+	ClientSidePolicy map[string]*GuardClientSidePolicy `json:"client_side_policy,omitempty"`
 	// APIExceptions API 引擎受限例外（WDSP P0-04；exception_policies 表
 	// target_engine='API' 且启用行，列由迁移 000130 建立；nil/空 map 时不下发——
 	// 网关 API 决策零行为变化；key 为应用编码，随 WDSP API 动态防护门控下发
@@ -1154,6 +1268,25 @@ func (g *GuardConfig) EffectiveTLSSessionTicketKeys() []string {
 		return []string{s}
 	}
 	return nil
+}
+
+// EffectiveAICrawlLabyrinthKeyHex 返回当前有效的 AI 迷宫签名密钥（排除脱敏占位符）。
+func (g *GuardConfig) EffectiveAICrawlLabyrinthKeyHex() string {
+	if g == nil {
+		return ""
+	}
+	if s := strings.TrimSpace(g.AICrawlLabyrinthKeyHex); s != "" && s != redactedSecretPlaceholder {
+		return s
+	}
+	for _, pol := range g.AICrawlPolicy {
+		if pol == nil {
+			continue
+		}
+		if s := strings.TrimSpace(pol.LabyrinthKeyHex); s != "" && s != redactedSecretPlaceholder {
+			return s
+		}
+	}
+	return ""
 }
 
 // buildGuardHandler 构建单应用路由的 jiuzhang_guard 处理器 JSON。
@@ -1570,6 +1703,20 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 			} else {
 				h["bot_policy"] = pol
 			}
+		}
+		// AI 爬虫治理与离线 AI 迷宫（Phase 9A-2 ai_crawl_policy 段；按应用注入本应用策略——
+		// OFF 同样下发以覆盖旧配置残留；labyrinth_enabled=true 时注入运行时 HMAC 签名密钥）
+		if pol, ok := g.AICrawlPolicy[app.Code]; ok && pol != nil {
+			cp := *pol
+			if cp.LabyrinthEnabled && cp.LabyrinthKeyHex == "" && g.AICrawlLabyrinthKeyHex != "" {
+				cp.LabyrinthKeyHex = g.AICrawlLabyrinthKeyHex
+			}
+			h["ai_crawl_policy"] = &cp
+		}
+		// 客户端供应链安全防护（Phase 9B client_side_policy 段；按应用注入本应用策略——
+		// OFF 同样下发以覆盖旧配置残留；无秘密材料）
+		if pol, ok := g.ClientSidePolicy[app.Code]; ok && pol != nil {
+			h["client_side_policy"] = pol
 		}
 		// API 引擎受限例外（P0-04 api_exceptions 段；按应用注入本应用例外集——
 		// 网关侧 ParseAPIExceptionsSection 以应用编码为 key 严格解码（fail-closed），

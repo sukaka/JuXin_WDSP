@@ -531,11 +531,27 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 	if err := g.validateRiskChallengeDependency(g.botPolicy); err != nil {
 		return err
 	}
+	// AI 爬虫治理与离线迷宫策略装配（Phase 9A-2；严格解码 DisallowUnknownFields，
+	// 非法配置 fail-closed 拒绝加载；段缺失/OFF = 零行为变化；热路径零网络 IO）
+	if err := g.assembleAICrawl(); err != nil {
+		return err
+	}
+	// 客户端供应链安全策略装配（Phase 9B / PCI DSS 4.0 6.4.3 & 11.6.1；严格解码
+	// DisallowUnknownFields，非法配置 fail-closed 拒绝加载；段缺失/OFF = 零开销直通）
+	if err := g.assembleClientSide(); err != nil {
+		return err
+	}
 	// 远程 JWKS 后台刷新（热路径零网络 IO；装配最后一步启动，Provision 失败不泄漏 goroutine）
 	if g.jwtVerifier != nil {
 		rctx, cancel := context.WithCancel(context.Background())
 		g.jwtCancel = cancel
 		g.jwtVerifier.StartBackgroundRefresh(rctx)
+	}
+	// AI 爬虫目录可选远程后台刷新（仅在配置了 directory_url 时启动；随 Cleanup 取消退出）
+	if g.aiCrawl != nil && g.aiCrawl.HasRemoteDirectories() {
+		actx, cancel := context.WithCancel(context.Background())
+		g.aiCrawlCancel = cancel
+		g.aiCrawl.StartBackgroundRefresh(actx)
 	}
 	// 节点能力清单自报（NG-COV-04；默认开启，CAPABILITY_REPORT_DISABLED=1 可关——
 	// 关闭后发布门禁按「清单缺失」fail-closed；进程级单例，本次 Provision 刷新
@@ -787,6 +803,20 @@ func (g *Guard) Validate() error {
 			return err
 		}
 	}
+	// AI 爬虫治理策略（ai_crawl_policy 段）装配期预检：严格解码 DisallowUnknownFields +
+	// 全量校验（PROTECT+labyrinth 必含密钥、SSRF directory_url 预检、公钥 PEM 校验）
+	if len(g.AICrawlPolicy) > 0 {
+		if err := g.validateAICrawlPolicy(); err != nil {
+			return err
+		}
+	}
+	// 客户端供应链安全策略（client_side_policy 段）装配期预检：严格解码 DisallowUnknownFields +
+	// 全量校验（CSP 来源令牌、无 CR/LF 控制字符、路径与 SRI 校验）
+	if len(g.ClientSidePolicy) > 0 {
+		if err := g.validateClientSidePolicy(); err != nil {
+			return err
+		}
+	}
 	if g.RedirectPortRewrite < 0 || g.RedirectPortRewrite > 65535 {
 		return fmt.Errorf("redirect_port_rewrite must be between 0 and 65535")
 	}
@@ -815,6 +845,15 @@ func (g *Guard) cleanup() error {
 	}
 	if g.jwtCancel != nil {
 		g.jwtCancel() // 只取消不置 nil（Cleanup 幂等纪律：请求路径无锁读字段不置空）
+	}
+	if g.aiCrawlCancel != nil {
+		g.aiCrawlCancel() // 只取消不置 nil（Cleanup 幂等纪律）
+		if g.aiCrawl != nil {
+			g.aiCrawl.WaitBackgroundRefresh()
+		}
+	}
+	if g.clientSide != nil {
+		g.clientSide.Close() // 只关资源不置 nil（Cleanup 幂等纪律）
 	}
 	// 身份与行为防护引擎（关闭其事件记录器与存储；Valkey 共享连接归引擎不在此关）
 	if g.ibh != nil {

@@ -99,6 +99,32 @@ components:
         jwks: { type: string, description: STATIC_JWKS 必填：公钥 JWKS JSON 文本（仅公钥；≤256KiB、≤32 个公钥；RSA≥2048 位、EC 仅 P-256；拒绝私钥参数/对称密钥/x5u/jku；kid 非空且集内唯一） }
         url: { type: string, description: 'REMOTE_JWKS 必填：HTTPS JWKS 地址（SSRF 校验：默认拒私网/回环/云元数据，内网 IdP 须经 jwt_trust:remote_jwks_allowlist 登记）' }
 
+    JwtTokenBindingConfig:
+      type: object
+      description: 发行方级令牌持有证明绑定配置（RFC 9449 DPoP / RFC 8705 mTLS，Phase 9A-1；mode 为 NONE 或省略时保持 schema_version=1 向后兼容）
+      properties:
+        mode:
+          type: string
+          enum: [NONE, DPOP_OPTIONAL, DPOP_REQUIRED, MTLS_REQUIRED, DPOP_OR_MTLS]
+          description: 持有证明绑定模式（默认 NONE 不启用）
+        require_nonce:
+          type: boolean
+          description: DPoP 模式下是否要求服务端签发短期 DPoP-Nonce（防预计算 Proof）
+        max_proof_age_seconds:
+          type: integer
+          minimum: 5
+          maximum: 120
+          description: DPoP Proof iat 最大允许时长（秒，默认 60，范围 5~120）
+        nonce_ttl_seconds:
+          type: integer
+          minimum: 10
+          maximum: 300
+          description: DPoP-Nonce 时间桶有效期（秒，默认 60，范围 10~300）
+        allowed_dpop_algs:
+          type: array
+          items: { type: string, enum: [ES256, RS256, EdDSA] }
+          description: 允许的 DPoP Proof 签名算法白名单（子集；拒绝 none 与 HS*）
+
     JwtTrustIssuer:
       type: object
       description: 受信发行方配置（issuer 为大小写敏感精确值，策略内唯一）
@@ -120,6 +146,7 @@ components:
           maxItems: 8
           items: { type: string, maxLength: 64 }
           description: 可选：显式受信角色声明名列表（仅 VERIFIED 后读取；不自动猜测；最多 8 项）
+        token_binding: { $ref: '#/components/schemas/JwtTokenBindingConfig' }
 
     JwtTrustPolicy:
       type: object

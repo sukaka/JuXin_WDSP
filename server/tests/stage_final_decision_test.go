@@ -185,12 +185,16 @@ func TestFinalDecisionAPIConditionalMerge(t *testing.T) {
 
 // ---------- security_events.final_decision（securityevents ParseAuditLine + InsertEvent） ----------
 
-// 含例外效果规则命中（id 8000002 + exc:/excv: tag）与真实攻击命中的审计行。
-const fdAuditLine = `{"transaction":{"timestamp":"2026/09/07 10:00:00","unix_timestamp":1788775200,"id":"txfd1","client_ip":"192.0.2.30","client_port":41000,"request":{"method":"POST","protocol":"HTTP/1.1","uri":"/api/orders?q=1' OR '1'='1","headers":{"host":["api.test"],"x-request-id":["%s"]}},"response":{"status":0},"producer":{"rule_engine":"On","rulesets":["OWASP_CRS/4.26.0"]},"is_interrupted":true},"messages":[{"error_message":"[client \"192.0.2.30\"] Coraza: Warning. SQL Injection [id \"942100\"] [msg \"SQL Injection Attack Detected via libinjection\"] [severity \"critical\"] [tag \"attack-sqli\"]"},{"error_message":"[client \"192.0.2.30\"] Coraza: Warning. exception applied [id \"8000002\"] [msg \"jiuzhang exception effect\"] [tag \"jiuzhang-exception\"] [tag \"exc:11111111-2222-3333-4444-555555555555\"] [tag \"excv:2\"]"}]}`
+// 含例外效果规则命中（id 8000002 + exc:/excv: tag）与真实攻击命中的审计行（使用动态 UTC 时间避免落出分区窗口）。
+func fdAuditLine(reqID string, at time.Time) string {
+	utc := at.UTC()
+	return fmt.Sprintf(`{"transaction":{"timestamp":%q,"unix_timestamp":%d,"id":"txfd1","client_ip":"192.0.2.30","client_port":41000,"request":{"method":"POST","protocol":"HTTP/1.1","uri":"/api/orders?q=1' OR '1'='1","headers":{"host":["api.test"],"x-request-id":[%q]}},"response":{"status":0},"producer":{"rule_engine":"On","rulesets":["OWASP_CRS/4.26.0"]},"is_interrupted":true},"messages":[{"error_message":"[client \"192.0.2.30\"] Coraza: Warning. SQL Injection [id \"942100\"] [msg \"SQL Injection Attack Detected via libinjection\"] [severity \"critical\"] [tag \"attack-sqli\"]"},{"error_message":"[client \"192.0.2.30\"] Coraza: Warning. exception applied [id \"8000002\"] [msg \"jiuzhang exception effect\"] [tag \"jiuzhang-exception\"] [tag \"exc:11111111-2222-3333-4444-555555555555\"] [tag \"excv:2\"]"}]}`,
+		utc.Format("2006/01/02 15:04:05"), utc.Unix(), reqID)
+}
 
 func TestFinalDecisionSecurityEventNormalize(t *testing.T) {
 	reqID := "fd-sec-" + uuid.NewString()
-	evt, err := securityevents.ParseAuditLine([]byte(fmt.Sprintf(fdAuditLine, reqID)), "gw-node-1")
+	evt, err := securityevents.ParseAuditLine([]byte(fdAuditLine(reqID, time.Now().UTC())), "gw-node-1")
 	if err != nil {
 		t.Fatalf("ParseAuditLine: %v", err)
 	}
@@ -229,8 +233,9 @@ func TestFinalDecisionSecurityEventStore(t *testing.T) {
 	ctx := context.Background()
 	store := securityevents.NewStore(env.db)
 	reqID := "fd-sec-store-" + uuid.NewString()
+	now := time.Now().UTC().Truncate(time.Second)
 
-	evt, err := securityevents.ParseAuditLine([]byte(fmt.Sprintf(fdAuditLine, reqID)), "gw-node-1")
+	evt, err := securityevents.ParseAuditLine([]byte(fdAuditLine(reqID, now)), "gw-node-1")
 	if err != nil {
 		t.Fatalf("ParseAuditLine: %v", err)
 	}
@@ -258,7 +263,7 @@ func TestFinalDecisionSecurityEventStore(t *testing.T) {
 	}
 
 	// 去重命中 + 「已确认拦截优先」：已有 ABORTED/BLOCK，晚到 COMPLETED/NONE 不覆盖
-	dup, err := securityevents.ParseAuditLine([]byte(fmt.Sprintf(fdAuditLine, reqID)), "gw-node-1")
+	dup, err := securityevents.ParseAuditLine([]byte(fdAuditLine(reqID, now)), "gw-node-1")
 	if err != nil {
 		t.Fatalf("ParseAuditLine dup: %v", err)
 	}

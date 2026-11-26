@@ -310,8 +310,8 @@ func (s *Store) RefreshAssetValue(ctx context.Context, id uuid.UUID, now time.Ti
 		return fmt.Errorf("序列化资产价值评分失败：%w", err)
 	}
 	tag, err := s.db.Exec(ctx, `
-UPDATE api_endpoints SET asset_value=$2, asset_value_explain=$3::jsonb WHERE id=$1`,
-		id, score.Level, string(raw))
+UPDATE api_endpoints SET asset_value=$2, asset_value_explain=$3::jsonb, asset_value_computed_at=$4 WHERE id=$1`,
+		id, score.Level, string(raw), now.UTC())
 	if err != nil {
 		return err
 	}
@@ -321,16 +321,31 @@ UPDATE api_endpoints SET asset_value=$2, asset_value_explain=$3::jsonb WHERE id=
 	return nil
 }
 
+// rfc3339TimestampRegex 用于在 PostgreSQL 侧安全守卫 asset_value_explain->>'computed_at' 的 ::timestamptz 强转，
+// 防止历史畸形值（如 'not-a-date'、'2026-11-25Tnot-a-date'、非闰年 02-29、0000 年、超 ±15:59 时区偏移）触发 22007/22008/22009/22023 运行时异常。
+const rfc3339TimestampRegex = `^(([1-9]\d{3}|0[1-9]\d{2}|00[1-9]\d|000[1-9])-((0[13578]|1[02])-(0[1-9]|[12]\d|3[01])|(0[469]|11)-(0[1-9]|[12]\d|30)|02-(0[1-9]|1\d|2[0-8]))|((0[48]|[2468][048]|[13579][26])00|\d{2}(0[48]|[2468][048]|[13579][26]))-02-29)T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d+)?(Z|[+-](0\d|1[0-5]):?[0-5]\d)$`
+
+const refreshAssetValuesSelectSQL = `
+SELECT id FROM api_endpoints
+WHERE asset_status <> 'IGNORED'
+  AND (
+    (asset_value_computed_at IS NOT NULL AND last_seen_at > asset_value_computed_at)
+    OR (asset_value_computed_at IS NULL
+        AND (asset_value_explain IS NULL
+             OR last_seen_at > CASE
+                 WHEN COALESCE(asset_value_explain->>'computed_at', '') ~ '` + rfc3339TimestampRegex + `'
+                  AND pg_input_is_valid(COALESCE(asset_value_explain->>'computed_at', ''), 'timestamptz')
+                 THEN (asset_value_explain->>'computed_at')::timestamptz
+                 ELSE '-infinity'::timestamptz
+             END))
+  )
+ORDER BY last_seen_at DESC
+LIMIT $1`
+
 // RefreshAssetValues 批量回填：未评分或评分后又有新流量（last_seen_at 晚于上次计算）的
 // 端点重算，单轮 limit 截断（IGNORED 端点不参与评分）。返回本轮处理数。
 func (s *Store) RefreshAssetValues(ctx context.Context, limit int) (int, error) {
-	rows, err := s.db.Query(ctx, `
-SELECT id FROM api_endpoints
-WHERE asset_status <> 'IGNORED'
-  AND (asset_value_explain IS NULL
-       OR last_seen_at > COALESCE((asset_value_explain->>'computed_at')::timestamptz, '-infinity'::timestamptz))
-ORDER BY last_seen_at DESC
-LIMIT $1`, limit)
+	rows, err := s.db.Query(ctx, refreshAssetValuesSelectSQL, limit)
 	if err != nil {
 		return 0, err
 	}

@@ -11,9 +11,10 @@
 | `001_otel_traces.sql` | `apm.otel_traces` 原始 span 表（对齐 otel-collector-contrib v0.154.0 clickhouse exporter 官方 DDL）+ `otel_traces_trace_id_ts` 检索表与物化视图 | 正常 7 天；错误/慢(≥2s)/高风险 14 天（TTL 表达式分层）；检索表 14 天 |
 | `002_aggregates.sql` | 服务/端点/SQL 指纹分钟聚合、小时/天滚动聚合、异常指纹表（均从 `otel_traces` 物化视图派生） | 分钟 30 天、小时 180 天、天 1 年（365 天）；异常指纹 30 天 |
 | `003_metrics.sql` | 运行时指标表（阶段3）：`otel_metrics_gauge/sum/histogram/exp_histogram/summary`（对齐 v0.154.0 exporter metrics DDL 默认表名；Collector `metrics_tables` 未覆写） | 原始指标点 7 天；小时聚合留待后续阶段 |
-| `004_api_observations.sql` | 脱敏 API 观测、字段 HMAC 证据与 DLQ 表；数据流消费者按 Trace ID 从这些共享表重建跨批次关联 | 未配置 TTL |
-| `005_data_flow_contributions.sql` | 数据流贡献表；按 `(agent_id,event_id,edge_id)` 幂等去重，保存配对边及单边边修正版本 | 未配置 TTL |
-| `006_network_boundary.sql` | 观测与贡献表的网络边界地址、分区和证据列升级 | 继承对应表 |
+| `004_api_observations.sql` | 脱敏 API 观测、字段 HMAC 证据与 DLQ 表；按天分区（`toDate(occurred_at)` / `toDate(created_at)`）、列级 `Delta`/`ZSTD(1)` 压缩与跳数索引（`trace_id`、`occurred_at`、`application_id`） | `api_observations` / `api_field_observations` 14 天；DLQ 7 天（均启用 `ttl_only_drop_parts = 1`） |
+| `005_data_flow_contributions.sql` | 数据流贡献表；按 `(agent_id,event_id,edge_id)` 幂等去重，按天分区（`toDate(occurred_at)`）、列级 `Delta`/`ZSTD(1)` 压缩与跳数索引（`occurred_at`、`edge_id`、`application_id`、`trace_id`） | 30 天（对齐分钟聚合及图谱 31 天查询上限，启用 `ttl_only_drop_parts = 1`） |
+| `006_network_boundary.sql` | 观测与贡献表的网络边界地址、分区和证据列升级（含 `CODEC(ZSTD(1))`） | 继承对应表 |
+| `upgrade/upgrade_wdsp_partition_ttl.sh` | 已有未分区数据卷幂等升级脚本（位于子目录，**不会**被 entrypoint 自动执行；见下文「已有数据卷升级」） | 同 004 / 005 |
 | `ha/001_ha_replicated.sql` | 阶段5 HA 变体：`otel_traces` 双副本（ReplicatedMergeTree + ON CLUSTER），与 `001_otel_traces.sql` 二选一；位于子目录，**不会**被 entrypoint 自动执行（见下文 HA 节） | 同 001 |
 
 ## 初始化与回滚
@@ -46,6 +47,33 @@ clickhouse-client --host <ch-host> --user default --password \
 ```sql
 DROP DATABASE IF EXISTS apm SYNC;
 ```
+
+## 已有数据卷升级（Existing Volume Upgrade）
+
+ClickHouse 不支持对已有表原地执行 `ALTER TABLE ... MODIFY PARTITION BY`。若既有环境在 `004`/`005`
+加入 `PARTITION BY toDate(occurred_at)`、`TTL`、`CODEC` 与跳数索引前已完成建表，仅重跑 `004`–`006`
+中的 `CREATE TABLE IF NOT EXISTS` 不会变更存量表分区结构。
+
+`upgrade/upgrade_wdsp_partition_ttl.sh` 提供面向存量卷的幂等升级能力（位于子目录，`/docker-entrypoint-initdb.d/`
+在全新初始化时会自动忽略，不会干扰首次启动）：
+
+1. 先补齐 `004`/`006` 增量列（`ADD COLUMN IF NOT EXISTS ... CODEC(ZSTD(1))`）；
+2. 检查 `system.tables.partition_key`：若尚未按天分区，则基于影子表 `wdsp.<table>_migrating`
+   以目标 DDL 重建、按显式列名拷贝存量数据、通过 `EXCHANGE TABLES` 原子切换，并在删除影子表前按写入时间戳做增量追平拷贝；
+3. 若表已按目标分区键分区，则跳过重建，仅幂等检查并补齐跳数索引（仅对新增索引执行 `MATERIALIZE INDEX`）、`ttl_only_drop_parts = 1` 及 `TTL`。
+
+执行示例（支持 `--host`/`--port`/`--user`/`--password`/`--container` 或同名 `CLICKHOUSE_*` 环境变量）：
+
+```bash
+# 直接连本机 ClickHouse
+CLICKHOUSE_PASSWORD="<ch-password>" ./upgrade/upgrade_wdsp_partition_ttl.sh --host 127.0.0.1 --port 9000
+
+# 通过容器内 clickhouse-client 执行
+CLICKHOUSE_PASSWORD="<ch-password>" ./upgrade/upgrade_wdsp_partition_ttl.sh --container <clickhouse-container>
+```
+
+> 建议在停写窗口或低峰期执行；`EXCHANGE TABLES` 后会执行基于 `received_at`/`ingested_at`/`created_at`
+> 的增量追平拷贝，但停止写入侧消费者后再升级仍是最稳妥方式。
 
 ## 容量估算（设计 §14.1）
 

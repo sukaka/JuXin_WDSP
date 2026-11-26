@@ -28495,6 +28495,41 @@ components:
         url:
           type: string
           description: REMOTE_JWKS 必填：HTTPS JWKS 地址（SSRF 校验：默认拒私网/回环/云元数据，内网 IdP 须经 jwt_trust:remote_jwks_allowlist 登记）
+    JwtTokenBindingConfig:
+      type: object
+      description: 发行方级令牌持有证明绑定配置（RFC 9449 DPoP / RFC 8705 mTLS，Phase 9A-1；mode 为 NONE 或省略时保持 schema_version=1 向后兼容）
+      properties:
+        mode:
+          type: string
+          enum:
+          - NONE
+          - DPOP_OPTIONAL
+          - DPOP_REQUIRED
+          - MTLS_REQUIRED
+          - DPOP_OR_MTLS
+          description: 持有证明绑定模式（默认 NONE 不启用）
+        require_nonce:
+          type: boolean
+          description: DPoP 模式下是否要求服务端签发短期 DPoP-Nonce（防预计算 Proof）
+        max_proof_age_seconds:
+          type: integer
+          minimum: 5
+          maximum: 120
+          description: DPoP Proof iat 最大允许时长（秒，默认 60，范围 5~120）
+        nonce_ttl_seconds:
+          type: integer
+          minimum: 10
+          maximum: 300
+          description: DPoP-Nonce 时间桶有效期（秒，默认 60，范围 10~300）
+        allowed_dpop_algs:
+          type: array
+          items:
+            type: string
+            enum:
+            - ES256
+            - RS256
+            - EdDSA
+          description: 允许的 DPoP Proof 签名算法白名单（子集；拒绝 none 与 HS*）
     JwtTrustIssuer:
       type: object
       description: 受信发行方配置（issuer 为大小写敏感精确值，策略内唯一）
@@ -28534,6 +28569,8 @@ components:
             type: string
             maxLength: 64
           description: 可选：显式受信角色声明名列表（仅 VERIFIED 后读取；不自动猜测；最多 8 项）
+        token_binding:
+          $ref: '#/components/schemas/JwtTokenBindingConfig'
     JwtTrustPolicy:
       type: object
       description: 应用 JWT 信任策略（当前草稿；version 乐观锁不可变递增）
@@ -31511,6 +31548,743 @@ components:
         drill_exact:
           type: boolean
           description: 是否能精确还原边对应的请求集合
+    AiCrawlerKey:
+      type: object
+      required:
+      - kid
+      - alg
+      - public_key_pem
+      properties:
+        kid:
+          type: string
+          maxLength: 256
+        alg:
+          type: string
+          enum:
+          - ed25519
+          - ecdsa-p256-sha256
+        public_key_pem:
+          type: string
+          description: PKIX PUBLIC KEY PEM（仅公钥）
+    AiCrawlerDirectory:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          maxLength: 64
+        name:
+          type: string
+          maxLength: 128
+        category:
+          type: string
+          enum:
+          - SEARCH_ENGINE
+          - AI_TRAINING
+          - AI_ASSISTANT
+          - AI_AGENT
+          - UNKNOWN_BOT
+        signature_agent:
+          type: string
+          maxLength: 512
+        directory_url:
+          type: string
+          maxLength: 1024
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiCrawlerKey'
+        is_builtin:
+          type: boolean
+        enabled:
+          type: boolean
+        last_synced_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_sync_error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AiCrawlerDirectoryRequest:
+      type: object
+      required:
+      - slug
+      - name
+      - category
+      properties:
+        slug:
+          type: string
+          maxLength: 64
+        name:
+          type: string
+          maxLength: 128
+        category:
+          type: string
+          enum:
+          - SEARCH_ENGINE
+          - AI_TRAINING
+          - AI_ASSISTANT
+          - AI_AGENT
+          - UNKNOWN_BOT
+        signature_agent:
+          type: string
+          maxLength: 512
+        directory_url:
+          type: string
+          maxLength: 1024
+        keys:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/AiCrawlerKey'
+        enabled:
+          type: boolean
+    AiCrawlerDirectoryListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiCrawlerDirectory'
+    AiCrawlerDirectoryDetailResponse:
+      type: object
+      properties:
+        directory:
+          $ref: '#/components/schemas/AiCrawlerDirectory'
+    AiCrawlerDirectoryImportRequest:
+      type: object
+      required:
+      - directories
+      properties:
+        directories:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/AiCrawlerDirectoryRequest'
+    AiCrawlerDirectoryImportResponse:
+      type: object
+      properties:
+        imported:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiCrawlerDirectory'
+    AiCrawlerDirectorySyncResponse:
+      type: object
+      properties:
+        directory:
+          $ref: '#/components/schemas/AiCrawlerDirectory'
+        keys_count:
+          type: integer
+    AiCrawlHTTP402Config:
+      type: object
+      properties:
+        message:
+          type: string
+          maxLength: 512
+        price_hint:
+          type: string
+          maxLength: 128
+        contact_url:
+          type: string
+          maxLength: 512
+        receipt_header:
+          type: string
+          maxLength: 64
+    AiCrawlRule:
+      type: object
+      required:
+      - id
+      - name
+      - action
+      - priority
+      properties:
+        id:
+          type: string
+          maxLength: 64
+        name:
+          type: string
+          maxLength: 128
+        category:
+          type: string
+          enum:
+          - SEARCH_ENGINE
+          - AI_TRAINING
+          - AI_ASSISTANT
+          - AI_AGENT
+          - UNKNOWN_BOT
+        agent_id:
+          type: string
+          maxLength: 256
+        ua_patterns:
+          type: array
+          maxItems: 32
+          items:
+            type: string
+            maxLength: 256
+        require_verified_sig:
+          type: boolean
+        action:
+          type: string
+          enum:
+          - ALLOW
+          - RATE_LIMIT
+          - CHALLENGE
+          - TARPIT
+          - HTTP_402
+          - BLOCK
+        exempt_bot_challenge:
+          type: boolean
+        rate_limit_rpm:
+          type: integer
+          minimum: 0
+          maximum: 1000000
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 10000
+    AiCrawlPolicy:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        application_id:
+          type: string
+          format: uuid
+        schema_version:
+          type: integer
+          enum:
+          - 1
+        mode:
+          type: string
+          enum:
+          - false
+          - OBSERVE
+          - PROTECT
+        version:
+          type: integer
+        default_ai_action:
+          type: string
+          enum:
+          - ALLOW
+          - RATE_LIMIT
+          - CHALLENGE
+          - TARPIT
+          - HTTP_402
+          - BLOCK
+        content_signal:
+          type: string
+          maxLength: 512
+        verify_web_bot_auth:
+          type: boolean
+        labyrinth_enabled:
+          type: boolean
+        labyrinth_inject_links:
+          type: boolean
+        labyrinth_max_depth:
+          type: integer
+          minimum: 1
+          maximum: 16
+        labyrinth_max_concurrency:
+          type: integer
+          minimum: 1
+          maximum: 4096
+        labyrinth_delay_ms:
+          type: integer
+          minimum: 0
+          maximum: 5000
+        http_402:
+          $ref: '#/components/schemas/AiCrawlHTTP402Config'
+        rules:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/AiCrawlRule'
+        updated_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AiCrawlStatusSummary:
+      type: object
+      properties:
+        state:
+          type: string
+          enum:
+          - NOT_CONFIGURED
+          - DRAFT_PENDING
+          - PUBLISHED
+        draft_version:
+          type: integer
+        published_version:
+          type: integer
+    AiCrawlPolicyGetResponse:
+      type: object
+      properties:
+        policy:
+          $ref: '#/components/schemas/AiCrawlPolicy'
+        summary:
+          $ref: '#/components/schemas/AiCrawlStatusSummary'
+    AiCrawlPolicyDetailResponse:
+      type: object
+      properties:
+        policy:
+          $ref: '#/components/schemas/AiCrawlPolicy'
+    AiCrawlPolicyUpdateRequest:
+      type: object
+      required:
+      - mode
+      - expected_version
+      - reason
+      properties:
+        mode:
+          type: string
+          enum:
+          - false
+          - OBSERVE
+          - PROTECT
+        expected_version:
+          type: integer
+          minimum: 0
+        default_ai_action:
+          type: string
+          enum:
+          - ALLOW
+          - RATE_LIMIT
+          - CHALLENGE
+          - TARPIT
+          - HTTP_402
+          - BLOCK
+        content_signal:
+          type: string
+          maxLength: 512
+        verify_web_bot_auth:
+          type: boolean
+        labyrinth_enabled:
+          type: boolean
+        labyrinth_inject_links:
+          type: boolean
+        labyrinth_max_depth:
+          type: integer
+          minimum: 1
+          maximum: 16
+        labyrinth_max_concurrency:
+          type: integer
+          minimum: 1
+          maximum: 4096
+        labyrinth_delay_ms:
+          type: integer
+          minimum: 0
+          maximum: 5000
+        http_402:
+          $ref: '#/components/schemas/AiCrawlHTTP402Config'
+        rules:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/AiCrawlRule'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+    ClientSidePolicy:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        application_id:
+          type: string
+          format: uuid
+        schema_version:
+          type: integer
+          enum:
+          - 1
+        mode:
+          type: string
+          enum:
+          - false
+          - OBSERVE
+          - PROTECT
+          description: 运行模式（默认 OFF）
+        version:
+          type: integer
+          description: 策略乐观锁版本号
+        csp_mode:
+          type: string
+          enum:
+          - false
+          - REPORT_ONLY
+          - ENFORCE
+          description: CSP 响应头模式
+        sensitive_paths:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 512
+          description: 敏感表单页面路径前缀（须以 / 开头，不含 ?#）
+        probe_enabled:
+          type: boolean
+          description: 是否在敏感页面注入客户端防窃取探针
+        strip_unauthorized_scripts:
+          type: boolean
+          description: PROTECT 模式下是否剥离未授权或被篡改外链脚本
+        allowed_script_origins:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 512
+          description: 允许的 script-src CSP 源令牌
+        allowed_connect_origins:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 512
+          description: 允许的 connect-src CSP 源令牌
+        allowed_form_origins:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 512
+          description: 允许的 form-action CSP 源令牌
+        custom_csp_directives:
+          type: string
+          maxLength: 2048
+          description: 可选自定义 CSP 追加指令（禁 CR/LF/控制字符）
+        updated_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ClientSideStatusSummary:
+      type: object
+      properties:
+        state:
+          type: string
+          enum:
+          - NOT_CONFIGURED
+          - DRAFT_PENDING
+          - PUBLISHED
+        draft_version:
+          type: integer
+        published_version:
+          type: integer
+    ClientSidePolicyGetResponse:
+      type: object
+      properties:
+        policy:
+          $ref: '#/components/schemas/ClientSidePolicy'
+        summary:
+          $ref: '#/components/schemas/ClientSideStatusSummary'
+    ClientSidePolicyDetailResponse:
+      type: object
+      properties:
+        policy:
+          $ref: '#/components/schemas/ClientSidePolicy'
+    ClientSidePolicyUpdateRequest:
+      type: object
+      required:
+      - mode
+      - expected_version
+      - reason
+      properties:
+        mode:
+          type: string
+          enum:
+          - false
+          - OBSERVE
+          - PROTECT
+        expected_version:
+          type: integer
+          minimum: 0
+        csp_mode:
+          type: string
+          enum:
+          - false
+          - REPORT_ONLY
+          - ENFORCE
+        sensitive_paths:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 512
+        probe_enabled:
+          type: boolean
+        strip_unauthorized_scripts:
+          type: boolean
+        allowed_script_origins:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 512
+        allowed_connect_origins:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 512
+        allowed_form_origins:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 512
+        custom_csp_directives:
+          type: string
+          maxLength: 2048
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+    ClientSideScript:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        application_id:
+          type: string
+          format: uuid
+        application_code:
+          type: string
+        application_name:
+          type: string
+        script_url:
+          type: string
+          maxLength: 2048
+        script_origin:
+          type: string
+        script_type:
+          type: string
+          enum:
+          - EXTERNAL
+          - INLINE_HASH
+        sri_hash:
+          type: string
+          maxLength: 256
+          description: 管理员固定的 SRI 完整性哈希
+        observed_sri:
+          type: string
+          maxLength: 256
+          description: 网关最近观测到的 SRI 哈希
+        status:
+          type: string
+          enum:
+          - DISCOVERED
+          - AUTHORIZED
+          - BLOCKED
+        justification:
+          type: string
+          maxLength: 1000
+          description: PCI DSS 4.0 6.4.3 业务必要性说明
+        approved_by:
+          type: string
+        approved_at:
+          type: string
+          format: date-time
+          nullable: true
+        sample_page_path:
+          type: string
+        first_seen_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        observed_count:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ClientSideScriptListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClientSideScript'
+        total:
+          type: integer
+          format: int64
+        page:
+          type: integer
+        page_size:
+          type: integer
+    ClientSideScriptDetailResponse:
+      type: object
+      properties:
+        script:
+          $ref: '#/components/schemas/ClientSideScript'
+    ClientSideScriptCreateRequest:
+      type: object
+      required:
+      - application_id
+      - script_url
+      - script_type
+      properties:
+        application_id:
+          type: string
+          format: uuid
+        script_url:
+          type: string
+          maxLength: 2048
+        script_type:
+          type: string
+          enum:
+          - EXTERNAL
+          - INLINE_HASH
+        sri_hash:
+          type: string
+          maxLength: 256
+        status:
+          type: string
+          enum:
+          - DISCOVERED
+          - AUTHORIZED
+          - BLOCKED
+        justification:
+          type: string
+          maxLength: 1000
+    ClientSideScriptUpdateRequest:
+      type: object
+      required:
+      - status
+      properties:
+        sri_hash:
+          type: string
+          maxLength: 256
+        status:
+          type: string
+          enum:
+          - DISCOVERED
+          - AUTHORIZED
+          - BLOCKED
+        justification:
+          type: string
+          maxLength: 1000
+    ClientSideViolation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        application_id:
+          type: string
+          format: uuid
+        application_code:
+          type: string
+        application_name:
+          type: string
+        request_id:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        violation_type:
+          type: string
+          enum:
+          - UNAUTHORIZED_SCRIPT
+          - SCRIPT_TAMPERED
+          - CSP_VIOLATION
+          - PROBE_ALERT
+        script_url:
+          type: string
+        script_origin:
+          type: string
+        expected_sri:
+          type: string
+        observed_sri:
+          type: string
+        page_path:
+          type: string
+        violated_directive:
+          type: string
+        blocked_uri:
+          type: string
+        action_taken:
+          type: string
+        reason:
+          type: string
+        client_ip:
+          type: string
+        status:
+          type: string
+          enum:
+          - OPEN
+          - ACKNOWLEDGED
+          - RESOLVED
+          - FALSE_POSITIVE
+        note:
+          type: string
+        handled_by:
+          type: string
+        handled_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+    ClientSideViolationListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClientSideViolation'
+        total:
+          type: integer
+          format: int64
+        page:
+          type: integer
+        page_size:
+          type: integer
+    ClientSideViolationDetailResponse:
+      type: object
+      properties:
+        violation:
+          $ref: '#/components/schemas/ClientSideViolation'
+    ClientSideViolationStatusRequest:
+      type: object
+      required:
+      - status
+      properties:
+        status:
+          type: string
+          enum:
+          - OPEN
+          - ACKNOWLEDGED
+          - RESOLVED
+          - FALSE_POSITIVE
+        note:
+          type: string
+          maxLength: 1000
 paths:
   /auth/captcha:
     get:
@@ -66133,6 +66907,660 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 25-audit-flow.yaml
+  /ai-crawl/directories:
+    get:
+      operationId: aiCrawlDirectoriesList
+      tags:
+      - ai-crawl
+      summary: 列出爬虫公钥目录
+      description: 列出内置及自定义的 Web Bot Auth（RFC 9421）爬虫公钥目录。仅含公钥 PEM，不含私钥材料。权限：`ai_crawl.read`
+      responses:
+        '200':
+          description: 爬虫目录列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiCrawlerDirectoryListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: aiCrawlDirectoriesCreate
+      tags:
+      - ai-crawl
+      summary: 新增爬虫公钥目录
+      description: 新增自定义 Web Bot Auth 爬虫公钥目录。公钥仅允许 Ed25519 或 ECDSA P-256 的 PKIX PUBLIC KEY PEM（拒绝私钥）；非空 directory_url 强制 HTTPS
+        与 SSRF 校验。权限：`ai_crawl.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiCrawlerDirectoryRequest'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiCrawlerDirectoryDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 26-ai-crawl.yaml
+  /ai-crawl/directories/{id}:
+    put:
+      operationId: aiCrawlDirectoriesUpdate
+      tags:
+      - ai-crawl
+      summary: 更新爬虫公钥目录
+      description: 更新爬虫公钥目录的元数据、公钥集合或启用状态（内置目录不可修改 slug）。权限：`ai_crawl.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 目录 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiCrawlerDirectoryRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiCrawlerDirectoryDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: aiCrawlDirectoriesDelete
+      tags:
+      - ai-crawl
+      summary: 删除爬虫公钥目录
+      description: 删除自定义爬虫公钥目录（内置目录不可删除，仅支持禁用）。权限：`ai_crawl.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 目录 ID
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                  id:
+                    type: string
+                    format: uuid
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 26-ai-crawl.yaml
+  /ai-crawl/directories/import:
+    post:
+      operationId: aiCrawlDirectoriesImport
+      tags:
+      - ai-crawl
+      summary: 离线 JSON 包批量导入爬虫目录
+      description: 面向离线/内网环境按 slug 幂等导入爬虫公钥目录包（事务原子校验并 upsert，拒绝私钥及非法 SSRF 地址）。权限：`ai_crawl.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiCrawlerDirectoryImportRequest'
+      responses:
+        '200':
+          description: 导入成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiCrawlerDirectoryImportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 26-ai-crawl.yaml
+  /ai-crawl/directories/{id}/sync:
+    post:
+      operationId: aiCrawlDirectoriesSync
+      tags:
+      - ai-crawl
+      summary: 手动同步远程爬虫公钥目录
+      description: 经 outboundhttp SSRF 防护客户端以 HTTPS 拉取 RFC 9421 /.well-known/http-message-signatures-directory JWK 公钥集并转换为
+        PKIX PEM 落库（禁重定向、5s 超时、拨号 DNS 复检、拒绝私钥参数）。权限：`ai_crawl.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 目录 ID
+      responses:
+        '200':
+          description: 同步成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiCrawlerDirectorySyncResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 26-ai-crawl.yaml
+  /applications/{id}/ai-crawl-policy:
+    get:
+      operationId: aiCrawlPolicyGet
+      tags:
+      - ai-crawl
+      summary: 读取应用 AI 爬虫治理策略
+      description: 读取应用 AI 爬虫治理与离线 AI 迷宫诱捕策略草稿及发布状态摘要（无记录返回默认 OFF 策略 version=0；不含迷宫 HMAC 密钥）。权限：`ai_crawl.read`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 应用 ID
+      responses:
+        '200':
+          description: 策略草稿与状态摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiCrawlPolicyGetResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: aiCrawlPolicyUpdate
+      tags:
+      - ai-crawl
+      summary: 保存应用 AI 爬虫治理策略草稿
+      description: 校验并保存应用 AI 爬虫治理策略草稿（expected_version 乐观锁冲突返回 409；reason 必填并记录不可变版本与操作审计；启用 AI 迷宫时自动确保加密 HMAC 签名密钥就绪；保存草稿后经既有
+        gateway-config 发布通道下发）。权限：`ai_crawl.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 应用 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiCrawlPolicyUpdateRequest'
+      responses:
+        '200':
+          description: 草稿保存成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiCrawlPolicyDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 26-ai-crawl.yaml
+  /applications/{id}/client-side-policy:
+    get:
+      operationId: clientSidePolicyGet
+      tags:
+      - client-side
+      summary: 读取应用客户端供应链安全策略
+      description: 读取应用客户端供应链安全策略草稿及发布状态摘要（无记录返回默认 OFF 策略 version=0）。权限：`client_side.read`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 应用 ID
+      responses:
+        '200':
+          description: 策略草稿与状态摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientSidePolicyGetResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: clientSidePolicyUpdate
+      tags:
+      - client-side
+      summary: 保存应用客户端供应链安全策略草稿
+      description: 校验并保存应用客户端供应链安全策略草稿（expected_version 乐观锁冲突返回 409；reason 必填并记录不可变版本与操作审计；保存后经既有 gateway-config 发布通道下发 client_side_policy
+        段）。权限：`client_side.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 应用 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientSidePolicyUpdateRequest'
+      responses:
+        '200':
+          description: 草稿保存成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientSidePolicyDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 27-client-side.yaml
+  /client-side/scripts:
+    get:
+      operationId: clientSideScriptsList
+      tags:
+      - client-side
+      summary: 分页查询客户端脚本资产清单
+      description: 查询网关自动发现及管理员预授权/封禁的页面脚本资产与 SRI 完整性比对信息。权限：`client_side.read`
+      parameters:
+      - name: application_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+        description: 按应用 ID 筛选
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - DISCOVERED
+          - AUTHORIZED
+          - BLOCKED
+        description: 按授权状态筛选
+      - name: keyword
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 按脚本地址/来源/业务说明/样例路径关键字模糊筛选
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+        description: 页码（默认 1）
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 20
+        description: 每页条数（默认 20）
+      responses:
+        '200':
+          description: 脚本资产分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientSideScriptListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: clientSideScriptsCreate
+      tags:
+      - client-side
+      summary: 新增预授权/封禁脚本资产
+      description: 人工新增客户端脚本资产条目（status 为 AUTHORIZED 时按 PCI DSS 4.0 6.4.3 强制要求填写非空 justification 并记录审批人/审批时间）。权限：`client_side.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientSideScriptCreateRequest'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientSideScriptDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 27-client-side.yaml
+  /client-side/scripts/{id}:
+    put:
+      operationId: clientSideScriptsUpdate
+      tags:
+      - client-side
+      summary: 审批或编辑脚本资产
+      description: 更新脚本固定 SRI 哈希、授权状态与业务必要性说明（当 status=AUTHORIZED 时按 PCI DSS 4.0 6.4.3 强制要求非空 justification 并记录 approved_by/approved_at）。权限：`client_side.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 脚本记录 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientSideScriptUpdateRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientSideScriptDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: clientSideScriptsDelete
+      tags:
+      - client-side
+      summary: 删除脚本资产
+      description: 从脚本资产清单中删除指定记录并记录操作审计。权限：`client_side.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 脚本记录 ID
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                  id:
+                    type: string
+                    format: uuid
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 27-client-side.yaml
+  /client-side/violations:
+    get:
+      operationId: clientSideViolationsList
+      tags:
+      - client-side
+      summary: 分页查询客户端篡改与 CSP 违规告警
+      description: 查询未授权脚本、脚本 SRI 篡改、CSP 策略违规与敏感表单探针告警列表。权限：`client_side.read`
+      parameters:
+      - name: application_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+        description: 按应用 ID 筛选
+      - name: violation_type
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - UNAUTHORIZED_SCRIPT
+          - SCRIPT_TAMPERED
+          - CSP_VIOLATION
+          - PROBE_ALERT
+        description: 按违规类型筛选
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - OPEN
+          - ACKNOWLEDGED
+          - RESOLVED
+          - FALSE_POSITIVE
+        description: 按处置状态筛选
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+        description: 页码（默认 1）
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 20
+        description: 每页条数（默认 20）
+      responses:
+        '200':
+          description: 违规告警分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientSideViolationListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 27-client-side.yaml
+  /client-side/violations/{id}/status:
+    put:
+      operationId: clientSideViolationsUpdateStatus
+      tags:
+      - client-side
+      summary: 处置客户端安全违规告警
+      description: 更新违规告警工单状态（OPEN/ACKNOWLEDGED/RESOLVED/FALSE_POSITIVE）与处置备注，记录处置人与处置时间及操作审计。权限：`client_side.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 违规记录 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientSideViolationStatusRequest'
+      responses:
+        '200':
+          description: 状态更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientSideViolationDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 27-client-side.yaml
+  /client-side/compliance-export:
+    get:
+      operationId: clientSideComplianceExport
+      tags:
+      - client-side
+      summary: 导出 PCI DSS 4.0 客户端供应链合规证据 CSV
+      description: 导出包含 UTF-8 BOM、中文表头与公式注入转义的 CSV 文件，涵盖 PCI DSS 4.0 6.4.3 脚本授权台账与 11.6.1 违规摘要及明细。权限：`client_side.read`
+      parameters:
+      - name: application_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+        description: 可选，仅导出指定应用的合规证据
+      responses:
+        '200':
+          description: PCI DSS 4.0 合规证据 CSV 文件（UTF-8 BOM）
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 27-client-side.yaml
 tags:
 - name: auth
   description: 身份认证
@@ -66208,6 +67636,10 @@ tags:
   description: JWT 信任策略（业务 JWT 信任链，WDSP P0-03）
 - name: bot-policy
   description: Bot 挑战策略（WDSP P1-02）
+- name: ai-crawl
+  description: AI 爬虫治理与 Web Bot Auth 爬虫公钥目录（Phase 9A-2）
+- name: client-side
+  description: 客户端供应链安全（Magecart 防护 / PCI DSS 4.0 6.4.3 & 11.6.1，Phase 9B）
 - name: security-regression
   description: 安全回归证据与发布门禁（WDSP P1-04）
 - name: attack-sessions

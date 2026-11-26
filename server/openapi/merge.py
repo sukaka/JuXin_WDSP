@@ -53,6 +53,8 @@ TAG_DESCRIPTIONS = {
     'risk-policy': '风险策略（身份风险处置）',
     'jwt-trust': 'JWT 信任策略（业务 JWT 信任链，WDSP P0-03）',
     'bot-policy': 'Bot 挑战策略（WDSP P1-02）',
+    'ai-crawl': 'AI 爬虫治理与 Web Bot Auth 爬虫公钥目录（Phase 9A-2）',
+    'client-side': '客户端供应链安全（Magecart 防护 / PCI DSS 4.0 6.4.3 & 11.6.1，Phase 9B）',
     'security-regression': '安全回归证据与发布门禁（WDSP P1-04）',
     'attack-sessions': '攻击活动（Attack Session）',
     'access-logs': '访问日志',

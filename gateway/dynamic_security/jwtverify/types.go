@@ -41,7 +41,78 @@ const (
 	ReasonKeysetUnavailable ReasonCode = "KEYSET_UNAVAILABLE"
 	ReasonVerifierError     ReasonCode = "VERIFIER_ERROR"
 	ReasonValid             ReasonCode = "VALID"
+	// 9A-1: OAuth 2.0 DPoP (RFC 9449) 与 mTLS 证书绑定 (RFC 8705) 固定原因码（均 ≤32 字节防事件截断）。
+	ReasonDPoPMissing           ReasonCode = "DPOP_MISSING"
+	ReasonDPoPMalformed         ReasonCode = "DPOP_MALFORMED"
+	ReasonDPoPAlgRejected       ReasonCode = "DPOP_ALGORITHM_REJECTED"
+	ReasonDPoPSigInvalid        ReasonCode = "DPOP_SIGNATURE_INVALID"
+	ReasonDPoPJKTMismatch       ReasonCode = "DPOP_JKT_MISMATCH"
+	ReasonDPoPHTMMismatch       ReasonCode = "DPOP_HTM_MISMATCH"
+	ReasonDPoPHTUMismatch       ReasonCode = "DPOP_HTU_MISMATCH"
+	ReasonDPoPATHMismatch       ReasonCode = "DPOP_ATH_MISMATCH"
+	ReasonDPoPExpired           ReasonCode = "DPOP_EXPIRED"
+	ReasonDPoPReplay            ReasonCode = "DPOP_REPLAY"
+	ReasonDPoPNonceRequired     ReasonCode = "DPOP_NONCE_REQUIRED"
+	ReasonDPoPReplayUnavailable ReasonCode = "DPOP_REPLAY_UNAVAILABLE"
+	ReasonMTLSNoCert            ReasonCode = "MTLS_CLIENT_CERT_MISSING"
+	ReasonMTLSCertMismatch      ReasonCode = "MTLS_CERT_MISMATCH"
+	ReasonBindingMissing        ReasonCode = "TOKEN_BINDING_MISSING"
 )
+
+// TokenBindingMode 令牌持有证明绑定模式（RFC 9449 DPoP / RFC 8705 mTLS）。
+type TokenBindingMode string
+
+const (
+	TokenBindingNone         TokenBindingMode = "NONE"
+	TokenBindingDPoPOptional TokenBindingMode = "DPOP_OPTIONAL"
+	TokenBindingDPoPRequired TokenBindingMode = "DPOP_REQUIRED"
+	TokenBindingMTLSRequired TokenBindingMode = "MTLS_REQUIRED"
+	TokenBindingDPoPOrMTLS   TokenBindingMode = "DPOP_OR_MTLS"
+)
+
+// DPoP 支持的签名算法白名单（RFC 9449 §4.2，严格排除 none 与对称 HS*）。
+const (
+	DPoPAlgES256 = "ES256"
+	DPoPAlgRS256 = "RS256"
+	DPoPAlgEdDSA = "EdDSA"
+)
+
+// DPoP 产品限制常量。
+const (
+	DefaultDPoPMaxProofAgeSeconds = 60
+	MinDPoPMaxProofAgeSeconds     = 5
+	MaxDPoPMaxProofAgeSeconds     = 120
+	DefaultDPoPNonceTTLSeconds    = 60
+	MinDPoPNonceTTLSeconds        = 10
+	MaxDPoPNonceTTLSeconds        = 300
+	MaxDPoPJTIBenchBytes          = 256
+)
+
+// TokenBindingConfig 发行方级令牌持有证明绑定配置（缺省 Mode=""/NONE 零行为变化）。
+type TokenBindingConfig struct {
+	Mode               TokenBindingMode
+	RequireNonce       bool
+	MaxProofAgeSeconds int      // 默认 60，范围 5..120
+	NonceTTLSeconds    int      // 默认 60，范围 10..300
+	AllowedDPoPAlgs    []string // 非空子集 ⊆ {ES256, RS256, EdDSA}；缺省全三项
+}
+
+// Active 返回该绑定配置是否启用（非空且非 NONE）。
+func (c *TokenBindingConfig) Active() bool {
+	return c != nil && c.Mode != "" && c.Mode != TokenBindingNone
+}
+
+// RequestVerifyInput 完整 HTTP 请求级 JWT+持有证明验证入参。
+type RequestVerifyInput struct {
+	AuthValues  []string // 全部 Authorization 请求头
+	Method      string   // HTTP 方法
+	Path        string   // 规范化路径（用于 selector 匹配）
+	RawPath     string   // 原始请求路径（用于 RFC 9449 htu 比对，空时回退 Path）
+	Scheme      string   // "https" 或 "http"
+	Host        string   // 请求 Host（用于 htu 比对）
+	DPoPHeaders []string // 全部 DPoP 请求头
+	PeerCertDER []byte   // 已经过 TLS 握手信任链校验的客户端叶证书原始 DER（未经校验不得传入）
+}
 
 // Mode 策略模式，默认 OFF。
 type Mode string
@@ -114,6 +185,12 @@ type VerificationResult struct {
 	// VerifiedRoles is populated only after the JWT signature and all claims
 	// required by the trust policy have been verified.
 	VerifiedRoles []string
+	// TokenBindingVerified 令牌持有证明校验结果（"" | "DPOP" | "MTLS"），仅 VERIFIED 且绑定通过时非空。
+	TokenBindingVerified string
+	// TokenScheme 实际解析出的认证方案（"Bearer" | "DPoP"），供 401 challenge 响应头选择。
+	TokenScheme string
+	// DPoPNonce 服务端签发的短期 DPoP-Nonce（仅 ReasonDPoPNonceRequired 时非空，透传给 DPoP-Nonce 响应头）。
+	DPoPNonce     string
 	EvaluatedAt   string // RFC3339 UTC
 	EnforceAction EnforceAction
 }
@@ -137,8 +214,9 @@ type IssuerConfig struct {
 	RemoteURL        string   // REMOTE_JWKS：预配置 HTTPS URL
 	RemoteAllowCIDRs []string // REMOTE_JWKS：管理员显式登记的允许 CIDR（仍禁元数据/链路本地）
 	ClockSkewSeconds int      // 0 表示默认 30；范围 0~120
-	TenantClaim      string   // 可选，单一受信 tenant 声明名，仅在 VERIFIED 后读取
-	RoleClaims       []string // 可选，显式受信 role 声明名，仅在 VERIFIED 后读取
+	TenantClaim      string              // 可选，单一受信 tenant 声明名，仅在 VERIFIED 后读取
+	RoleClaims       []string            // 可选，显式受信 role 声明名，仅在 VERIFIED 后读取
+	TokenBinding     *TokenBindingConfig // 可选，9A-1 DPoP / mTLS 令牌持有证明绑定配置
 }
 
 // Policy JWT 信任策略（按应用）。
@@ -269,6 +347,62 @@ func (p *Policy) Validate() error {
 		if iss.ID == "" {
 			iss.ID = derivedIssuerConfigID(iss.Issuer)
 		}
+		if err := normalizeTokenBinding(iss.Issuer, iss.TokenBinding); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func normalizeTokenBinding(issuer string, tb *TokenBindingConfig) error {
+	if tb == nil {
+		return nil
+	}
+	tb.Mode = TokenBindingMode(strings.ToUpper(strings.TrimSpace(string(tb.Mode))))
+	if tb.Mode == "" {
+		tb.Mode = TokenBindingNone
+	}
+	switch tb.Mode {
+	case TokenBindingNone, TokenBindingDPoPOptional, TokenBindingDPoPRequired,
+		TokenBindingMTLSRequired, TokenBindingDPoPOrMTLS:
+	default:
+		return policyErr("issuer %q token_binding.mode 取值非法: %q", issuer, tb.Mode)
+	}
+	if tb.Mode == TokenBindingNone {
+		return nil
+	}
+	if tb.MaxProofAgeSeconds == 0 {
+		tb.MaxProofAgeSeconds = DefaultDPoPMaxProofAgeSeconds
+	}
+	if tb.MaxProofAgeSeconds < MinDPoPMaxProofAgeSeconds || tb.MaxProofAgeSeconds > MaxDPoPMaxProofAgeSeconds {
+		return policyErr("issuer %q token_binding.max_proof_age_seconds 须在 %d~%d 秒",
+			issuer, MinDPoPMaxProofAgeSeconds, MaxDPoPMaxProofAgeSeconds)
+	}
+	if tb.NonceTTLSeconds == 0 {
+		tb.NonceTTLSeconds = DefaultDPoPNonceTTLSeconds
+	}
+	if tb.NonceTTLSeconds < MinDPoPNonceTTLSeconds || tb.NonceTTLSeconds > MaxDPoPNonceTTLSeconds {
+		return policyErr("issuer %q token_binding.nonce_ttl_seconds 须在 %d~%d 秒",
+			issuer, MinDPoPNonceTTLSeconds, MaxDPoPNonceTTLSeconds)
+	}
+	if len(tb.AllowedDPoPAlgs) == 0 {
+		tb.AllowedDPoPAlgs = []string{DPoPAlgES256, DPoPAlgRS256, DPoPAlgEdDSA}
+	} else {
+		seen := make(map[string]struct{}, len(tb.AllowedDPoPAlgs))
+		dedup := make([]string, 0, len(tb.AllowedDPoPAlgs))
+		for _, a := range tb.AllowedDPoPAlgs {
+			a = strings.TrimSpace(a)
+			switch a {
+			case DPoPAlgES256, DPoPAlgRS256, DPoPAlgEdDSA:
+			default:
+				return policyErr("issuer %q token_binding.allowed_dpop_algs 含不支持算法: %q", issuer, a)
+			}
+			if _, ok := seen[a]; !ok {
+				seen[a] = struct{}{}
+				dedup = append(dedup, a)
+			}
+		}
+		tb.AllowedDPoPAlgs = dedup
 	}
 	return nil
 }

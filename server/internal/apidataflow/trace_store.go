@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/agents"
@@ -34,7 +35,8 @@ func (s *CHContributionStore) SaveObservationContributions(ctx context.Context, 
 		traceIDs = append(traceIDs, traceID)
 	}
 	sort.Strings(traceIDs)
-	persisted, err := s.loadTraceObservations(ctx, traceIDs)
+	windowStart, windowEnd, hasWindow := computeTraceLookupWindow(records, s.effectiveTraceWindow())
+	persisted, err := s.loadTraceObservations(ctx, traceIDs, windowStart, windowEnd, hasWindow)
 	if err != nil {
 		return err
 	}
@@ -52,14 +54,54 @@ func (s *CHContributionStore) SaveObservationContributions(ctx context.Context, 
 	return s.SaveContributions(ctx, persistentContributions(merged))
 }
 
-func (s *CHContributionStore) loadTraceObservations(ctx context.Context, traceIDs []string) ([]agents.APIObservationEnvelope, error) {
+func computeTraceLookupWindow(records []agents.APIObservationEnvelope, window time.Duration) (time.Time, time.Time, bool) {
+	if window <= 0 {
+		window = defaultTraceLookupWindow
+	}
+	var minOccurred, maxOccurred time.Time
+	update := func(ts time.Time) {
+		if ts.IsZero() {
+			return
+		}
+		utc := ts.UTC()
+		if minOccurred.IsZero() || utc.Before(minOccurred) {
+			minOccurred = utc
+		}
+		if maxOccurred.IsZero() || utc.After(maxOccurred) {
+			maxOccurred = utc
+		}
+	}
+	for _, record := range records {
+		if record.Trace.TraceID != "" {
+			update(record.OccurredAt)
+		}
+	}
+	if minOccurred.IsZero() {
+		for _, record := range records {
+			update(record.OccurredAt)
+		}
+	}
+	if minOccurred.IsZero() {
+		return time.Time{}, time.Time{}, false
+	}
+	return minOccurred.Add(-window), maxOccurred.Add(window), true
+}
+
+func (s *CHContributionStore) loadTraceObservations(ctx context.Context, traceIDs []string, windowStart, windowEnd time.Time, hasWindow bool) ([]agents.APIObservationEnvelope, error) {
 	querier, err := (&CHReader{resolve: s.resolve}).querier(ctx)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := querier.Query(ctx, `
+	queryCtx := withCHQuerySettings(ctx)
+	obsWhere := "trace_id IN (?)"
+	obsArgs := []any{traceIDs}
+	if hasWindow {
+		obsWhere = "occurred_at >= ? AND occurred_at <= ? AND trace_id IN (?)"
+		obsArgs = []any{windowStart.UTC(), windowEnd.UTC(), traceIDs}
+	}
+	rows, err := querier.Query(queryCtx, `
 SELECT agent_id,event_id,
- argMax(occurred_at,received_at) AS occurred_at,
+ argMax(occurred_at,received_at) AS latest_occurred_at,
  argMax(ifNull(application_id,toUUID('00000000-0000-0000-0000-000000000000')),received_at) AS application_id,
  argMax(service_name,received_at) AS service_name,
  argMax(trace_id,received_at) AS latest_trace_id,
@@ -79,9 +121,9 @@ SELECT agent_id,event_id,
  argMax(messaging_system,received_at) AS messaging_system,
  argMax(messaging_destination,received_at) AS messaging_destination
 FROM wdsp.api_observations
-WHERE trace_id IN (?)
+WHERE `+obsWhere+`
 GROUP BY agent_id,event_id
-ORDER BY occurred_at,event_id`, traceIDs)
+ORDER BY latest_occurred_at,event_id`, obsArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("load persisted trace observations: %w", err)
 	}
@@ -117,19 +159,55 @@ ORDER BY occurred_at,event_id`, traceIDs)
 	if len(records) == 0 {
 		return records, nil
 	}
-	fieldRows, err := querier.Query(ctx, `
+
+	agentSet := make(map[uuid.UUID]struct{}, len(records))
+	eventSet := make(map[string]struct{}, len(records))
+	var minFieldOccurred, maxFieldOccurred time.Time
+	allFieldsDated := true
+	for _, record := range records {
+		agentSet[record.AgentID] = struct{}{}
+		eventSet[record.EventID] = struct{}{}
+		if record.OccurredAt.IsZero() {
+			allFieldsDated = false
+			continue
+		}
+		utc := record.OccurredAt.UTC()
+		if minFieldOccurred.IsZero() || utc.Before(minFieldOccurred) {
+			minFieldOccurred = utc
+		}
+		if maxFieldOccurred.IsZero() || utc.After(maxFieldOccurred) {
+			maxFieldOccurred = utc
+		}
+	}
+	agentIDs := make([]uuid.UUID, 0, len(agentSet))
+	for agentID := range agentSet {
+		agentIDs = append(agentIDs, agentID)
+	}
+	sort.Slice(agentIDs, func(i, j int) bool {
+		return agentIDs[i].String() < agentIDs[j].String()
+	})
+	eventIDs := make([]string, 0, len(eventSet))
+	for eventID := range eventSet {
+		eventIDs = append(eventIDs, eventID)
+	}
+	sort.Strings(eventIDs)
+
+	fieldWhere := "agent_id IN (?) AND event_id IN (?)"
+	fieldArgs := []any{agentIDs, eventIDs}
+	if allFieldsDated && !minFieldOccurred.IsZero() {
+		fieldWhere = "occurred_at >= ? AND occurred_at <= ? AND agent_id IN (?) AND event_id IN (?)"
+		fieldArgs = []any{minFieldOccurred.Add(-time.Second), maxFieldOccurred.Add(time.Second), agentIDs, eventIDs}
+	}
+
+	fieldRows, err := querier.Query(queryCtx, `
 SELECT agent_id,event_id,side,location,field_path,data_type,
  argMax(level,ingested_at) AS level,value_hmac,hmac_key_id,
  argMax(value_present,ingested_at) AS value_present,
  argMax(truncated,ingested_at) AS truncated
 FROM wdsp.api_field_observations
-WHERE (agent_id,event_id) IN (
- SELECT agent_id,event_id FROM wdsp.api_observations
- WHERE trace_id IN (?)
- GROUP BY agent_id,event_id
-)
+WHERE `+fieldWhere+`
 GROUP BY agent_id,event_id,side,location,field_path,data_type,value_hmac,hmac_key_id
-ORDER BY agent_id,event_id,side,field_path,data_type,value_hmac`, traceIDs)
+ORDER BY agent_id,event_id,side,field_path,data_type,value_hmac`, fieldArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("load persisted trace fields: %w", err)
 	}

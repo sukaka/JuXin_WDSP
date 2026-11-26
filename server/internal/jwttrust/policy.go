@@ -52,7 +52,50 @@ const (
 	// SchemaVersion 是下发网关 jwt_trust 段的配置结构版本（旧网关节点不识别该段时
 	// 必须拒绝加载而不是忽略强制语义——任务书 JWT-14；网关侧检查在集成步骤实现）。
 	SchemaVersion = 1
+	// SchemaVersionV2 启用令牌持有证明绑定（DPoP / mTLS，Phase 9A-1）时的配置结构版本；
+	// 仅当策略内至少一个 issuer 启用了非 NONE 的 token_binding 时下发 2，否则保持 1 向后兼容旧节点。
+	SchemaVersionV2 = 2
 )
+
+// 令牌持有证明绑定模式（RFC 9449 DPoP / RFC 8705 mTLS；默认 NONE 不改变既有行为）。
+const (
+	TokenBindingNone         = "NONE"
+	TokenBindingDPoPOptional = "DPOP_OPTIONAL"
+	TokenBindingDPoPRequired = "DPOP_REQUIRED"
+	TokenBindingMTLSRequired = "MTLS_REQUIRED"
+	TokenBindingDPoPOrMTLS   = "DPOP_OR_MTLS"
+)
+
+// DPoP Proof 签名算法白名单（RFC 9449；严格排除 none 与对称 HS*）。
+const (
+	DPoPAlgES256 = "ES256"
+	DPoPAlgRS256 = "RS256"
+	DPoPAlgEdDSA = "EdDSA"
+)
+
+// DPoP 参数边界（与网关 jwtverify 一致）。
+const (
+	DefaultDPoPMaxProofAgeSeconds = 60
+	MinDPoPMaxProofAgeSeconds     = 5
+	MaxDPoPMaxProofAgeSeconds     = 120
+	DefaultDPoPNonceTTLSeconds    = 60
+	MinDPoPNonceTTLSeconds        = 10
+	MaxDPoPNonceTTLSeconds        = 300
+)
+
+// TokenBindingConfig 发行方级令牌持有证明绑定配置（DPoP / mTLS）。
+type TokenBindingConfig struct {
+	Mode               string   `json:"mode,omitempty"`
+	RequireNonce       bool     `json:"require_nonce,omitempty"`
+	MaxProofAgeSeconds int      `json:"max_proof_age_seconds,omitempty"`
+	NonceTTLSeconds    int      `json:"nonce_ttl_seconds,omitempty"`
+	AllowedDPoPAlgs    []string `json:"allowed_dpop_algs,omitempty"`
+}
+
+// Active 返回该令牌持有证明绑定是否处于激活状态（mode 非空且非 NONE）。
+func (c *TokenBindingConfig) Active() bool {
+	return c != nil && c.Mode != "" && c.Mode != TokenBindingNone
+}
 
 // Selector 请求范围选择器：methods 大写去重；path_exact/path_prefix 二选一；
 // prefix 按完整路径段匹配（/api 匹配 /api 与 /api/orders，不匹配 /apix）；
@@ -85,6 +128,8 @@ type Issuer struct {
 	TenantClaim string `json:"tenant_claim,omitempty"`
 	// RoleClaims 可选、管理员显式选定的受信角色声明名；只在 VERIFIED 后读取。
 	RoleClaims []string `json:"role_claims,omitempty"`
+	// TokenBinding 可选：令牌持有证明绑定（OAuth 2.0 DPoP / mTLS，Phase 9A-1）。
+	TokenBinding *TokenBindingConfig `json:"token_binding,omitempty"`
 }
 
 // Policy 应用 JWT 信任策略（当前草稿；与 jwt_trust_policies 表列对应）。

@@ -58,7 +58,58 @@ export const JWT_VERIFICATION_STATUS_META: Record<
   UNVERIFIED: { color: 'blue', label: '未验证' },
 }
 
-/** JWT 验证原因码（result.go ReasonCode，16 项固定枚举） */
+/** 令牌持有证明绑定模式（RFC 9449 DPoP / RFC 8705 mTLS） */
+export const JWT_TOKEN_BINDING_MODE_META: Record<
+  string,
+  { color: string; label: string; description: string }
+> = {
+  NONE: {
+    color: 'default',
+    label: '关闭（仅 Bearer JWT）',
+    description: '不要求持有证明绑定，保持传统 Bearer 令牌校验行为',
+  },
+  DPOP_OPTIONAL: {
+    color: 'blue',
+    label: 'DPoP 可选（兼容模式）',
+    description: '携带 DPoP 证明或 cnf.jkt 时执行校验，兼容存量 Bearer 客户端',
+  },
+  DPOP_REQUIRED: {
+    color: 'purple',
+    label: '强制 DPoP（RFC 9449）',
+    description: '要求携带有效 DPoP 证明且公钥指纹与 Token cnf.jkt 一致',
+  },
+  MTLS_REQUIRED: {
+    color: 'cyan',
+    label: '强制 mTLS 证书绑定（RFC 8705）',
+    description: '要求经校验的客户端 TLS 证书指纹与 Token cnf.x5t#S256 一致',
+  },
+  DPOP_OR_MTLS: {
+    color: 'geekblue',
+    label: '强制 DPoP 或 mTLS 绑定',
+    description: '要求满足 DPoP 证明或 mTLS 客户端证书绑定中的至少一种',
+  },
+}
+
+/** DPoP 证明签名算法选项（RFC 9449，排除 none 与对称 HS*） */
+export const JWT_DPOP_ALG_OPTIONS = [
+  { value: 'ES256', label: 'ES256' },
+  { value: 'RS256', label: 'RS256' },
+  { value: 'EdDSA', label: 'EdDSA' },
+]
+
+export function isDPoPBindingMode(mode?: string): boolean {
+  return (
+    mode === 'DPOP_OPTIONAL' ||
+    mode === 'DPOP_REQUIRED' ||
+    mode === 'DPOP_OR_MTLS'
+  )
+}
+
+export function isMTLSBindingMode(mode?: string): boolean {
+  return mode === 'MTLS_REQUIRED' || mode === 'DPOP_OR_MTLS'
+}
+
+/** JWT 验证原因码（result.go ReasonCode + Phase 9A-1 DPoP/mTLS 原因码） */
 export const JWT_REASON_CODE_LABELS: Record<string, string> = {
   POLICY_OFF: '策略关闭',
   OUT_OF_SCOPE: '校验范围外',
@@ -76,6 +127,21 @@ export const JWT_REASON_CODE_LABELS: Record<string, string> = {
   KEYSET_UNAVAILABLE: '密钥集不可用',
   VERIFIER_ERROR: '验证器内部错误',
   VALID: '验证通过',
+  DPOP_MISSING: '缺少 DPoP 证明头',
+  DPOP_MALFORMED: 'DPoP 证明格式错误',
+  DPOP_ALGORITHM_REJECTED: 'DPoP 算法不被允许',
+  DPOP_SIGNATURE_INVALID: 'DPoP 证明签名无效',
+  DPOP_JKT_MISMATCH: 'DPoP 公钥指纹与 Token 不匹配',
+  DPOP_HTM_MISMATCH: 'DPoP 请求方法（htm）不匹配',
+  DPOP_HTU_MISMATCH: 'DPoP 请求地址（htu）不匹配',
+  DPOP_ATH_MISMATCH: 'DPoP 令牌摘要（ath）不匹配',
+  DPOP_EXPIRED: 'DPoP 证明已过期',
+  DPOP_REPLAY: '检测到 DPoP 证明重放',
+  DPOP_NONCE_REQUIRED: '需要 DPoP-Nonce 挑战',
+  DPOP_REPLAY_UNAVAILABLE: 'DPoP 防重放存储不可用',
+  MTLS_CLIENT_CERT_MISSING: '缺少已验链的客户端 TLS 证书',
+  MTLS_CERT_MISMATCH: '客户端证书指纹与 Token 不匹配',
+  TOKEN_BINDING_MISSING: '缺少必需的令牌持有证明绑定',
 }
 
 /** UNVERIFIED 补充说明（防止误读为「非法用户」） */
@@ -114,6 +180,17 @@ export function mapJwtTrustFieldErrorPath(
       return [base, idx, 'url']
     case 'key_source.type':
       return [base, idx, 'key_source_type']
+    case 'token_binding':
+    case 'token_binding.mode':
+      return [base, idx, 'token_binding_mode']
+    case 'token_binding.require_nonce':
+      return [base, idx, 'dpop_require_nonce']
+    case 'token_binding.max_proof_age_seconds':
+      return [base, idx, 'dpop_max_proof_age_seconds']
+    case 'token_binding.nonce_ttl_seconds':
+      return [base, idx, 'dpop_nonce_ttl_seconds']
+    case 'token_binding.allowed_dpop_algs':
+      return [base, idx, 'dpop_allowed_algs']
     default:
       return null
   }

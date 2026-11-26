@@ -74,57 +74,57 @@ type TodayCounters struct {
 	ExpiringCerts         int64   `json:"expiring_certs"`
 }
 
-// TodayCounters 汇总今日计数：计数类来自分钟聚合表，实时状态类来自业务表。
+// TodayCounters 汇总今日计数：计数类来自分钟聚合表（单条批量聚合），实时状态类来自业务表（单条合并查询）。
 func (s *Store) TodayCounters(ctx context.Context, start, end time.Time) (*TodayCounters, error) {
 	out := &TodayCounters{}
-	aggSums := []struct {
-		metric string
-		dst    *float64
-	}{
-		{metrics.HTTPRequestsTotal, &out.RequestsTotal},
-		{metrics.WAFEventsTotal, &out.WAFEvents},
-		{metrics.WAFBlocksTotal, &out.WAFBlocks},
-		{metrics.WAFObserveTotal, &out.WAFObserves},
-		{metrics.CCExceededTotal, &out.CCExceeded},
-		{metrics.IPDenyMatchesTotal, &out.IPDenyMatches},
+	metricNames := []string{
+		metrics.HTTPRequestsTotal,
+		metrics.WAFEventsTotal,
+		metrics.WAFBlocksTotal,
+		metrics.WAFObserveTotal,
+		metrics.CCExceededTotal,
+		metrics.IPDenyMatchesTotal,
 	}
-	for _, it := range aggSums {
-		v, err := s.agg.SumRange(ctx, "metric_minute_aggregates", it.metric, nil, start, end)
-		if err != nil {
-			return nil, fmt.Errorf("sum %s: %w", it.metric, err)
-		}
-		*it.dst = v
+	sums, err := s.agg.SumRangeBatch(ctx, "metric_minute_aggregates", metricNames, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("sum today metrics: %w", err)
 	}
-	// 实时状态（业务表）
-	if err := s.db.QueryRow(ctx, `
-SELECT count(*) FROM temporary_blocks WHERE status = 'ACTIVE' AND block_expires_at > now()`).Scan(&out.TempBlockedIPs); err != nil {
-		return nil, fmt.Errorf("temp blocks: %w", err)
-	}
-	if err := s.db.QueryRow(ctx, `
-SELECT count(*) FROM security_events WHERE disposition_status = 'UNPROCESSED' AND severity = 'HIGH'`).Scan(&out.UnprocessedHighEvents); err != nil {
-		return nil, fmt.Errorf("unprocessed high events: %w", err)
-	}
+	out.RequestsTotal = sums[metrics.HTTPRequestsTotal]
+	out.WAFEvents = sums[metrics.WAFEventsTotal]
+	out.WAFBlocks = sums[metrics.WAFBlocksTotal]
+	out.WAFObserves = sums[metrics.WAFObserveTotal]
+	out.CCExceeded = sums[metrics.CCExceededTotal]
+	out.IPDenyMatches = sums[metrics.IPDenyMatchesTotal]
+	// 实时状态（业务表单条往返合并）
 	if err := s.db.QueryRow(ctx, `
 SELECT
-  count(*) FILTER (WHERE status = 'ACTIVE'),
-  count(*) FILTER (WHERE status = 'ERROR' OR health_status IN ('UNHEALTHY', 'DOWN', 'DEGRADED'))
-FROM applications WHERE deleted_at IS NULL`).Scan(&out.ProtectedApps, &out.AbnormalApps); err != nil {
-		return nil, fmt.Errorf("applications: %w", err)
-	}
-	if err := s.db.QueryRow(ctx, `
-SELECT count(*) FROM upstreams u
-JOIN applications a ON a.id = u.application_id
-WHERE u.deleted_at IS NULL AND u.status = 'ACTIVE' AND u.health_check_enabled = TRUE
-  AND a.deleted_at IS NULL AND a.status = 'ACTIVE' AND a.deployment_mode <> 'MIRROR'
-  AND (SELECT h.status FROM upstream_health_records h
-       WHERE h.upstream_id = u.id ORDER BY h.checked_at DESC LIMIT 1) NOT IN ('HEALTHY', 'UP')`).Scan(&out.AbnormalUpstreams); err != nil {
-		return nil, fmt.Errorf("upstreams: %w", err)
-	}
-	if err := s.db.QueryRow(ctx, `
-SELECT count(*) FROM certificates
-WHERE deleted_at IS NULL AND not_after IS NOT NULL
-  AND not_after > now() AND not_after <= now() + interval '30 days'`).Scan(&out.ExpiringCerts); err != nil {
-		return nil, fmt.Errorf("certificates: %w", err)
+  (SELECT count(*) FROM temporary_blocks WHERE status = 'ACTIVE' AND block_expires_at > now()),
+  (SELECT count(*) FROM security_events WHERE disposition_status = 'UNPROCESSED' AND severity = 'HIGH'),
+  app_stats.protected_apps,
+  app_stats.abnormal_apps,
+  (SELECT count(*) FROM upstreams u
+   JOIN applications a ON a.id = u.application_id
+   WHERE u.deleted_at IS NULL AND u.status = 'ACTIVE' AND u.health_check_enabled = TRUE
+     AND a.deleted_at IS NULL AND a.status = 'ACTIVE' AND a.deployment_mode <> 'MIRROR'
+     AND (SELECT h.status FROM upstream_health_records h
+          WHERE h.upstream_id = u.id ORDER BY h.checked_at DESC LIMIT 1) NOT IN ('HEALTHY', 'UP')),
+  (SELECT count(*) FROM certificates
+   WHERE deleted_at IS NULL AND not_after IS NOT NULL
+     AND not_after > now() AND not_after <= now() + interval '30 days')
+FROM (
+  SELECT
+    count(*) FILTER (WHERE status = 'ACTIVE') AS protected_apps,
+    count(*) FILTER (WHERE status = 'ERROR' OR health_status IN ('UNHEALTHY', 'DOWN', 'DEGRADED')) AS abnormal_apps
+  FROM applications WHERE deleted_at IS NULL
+) AS app_stats`).Scan(
+		&out.TempBlockedIPs,
+		&out.UnprocessedHighEvents,
+		&out.ProtectedApps,
+		&out.AbnormalApps,
+		&out.AbnormalUpstreams,
+		&out.ExpiringCerts,
+	); err != nil {
+		return nil, fmt.Errorf("today live counters: %w", err)
 	}
 	return out, nil
 }
@@ -142,6 +142,11 @@ func (s *Store) metricSeries(ctx context.Context, table, metric string, start, e
 		values[i] = r.Value
 	}
 	return times, values, nil
+}
+
+// metricSeriesBatch 多指标批量原始点序列（单条 SQL 合并查询并按桶求和）。
+func (s *Store) metricSeriesBatch(ctx context.Context, table string, metricNames []string, start, end time.Time) (map[string][]time.Time, map[string][]float64, error) {
+	return s.agg.QueryRangeBatch(ctx, table, metricNames, start, end)
 }
 
 // severitySeries WAF 事件按严重度的原始点序列。
@@ -313,7 +318,7 @@ GROUP BY client_ip ORDER BY events DESC, ip LIMIT $3`, start, end, limit)
 SELECT host(client_ip) AS ip, count(*) AS events, count(*) FILTER (WHERE action = 'BLOCK') AS blocks
 FROM security_events
 WHERE occurred_at >= $1 AND occurred_at < $2 AND client_ip IS NOT NULL
-GROUP BY ip ORDER BY events DESC, ip LIMIT $3`, start, end, limit)
+GROUP BY client_ip ORDER BY events DESC, ip LIMIT $3`, start, end, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -456,13 +461,31 @@ type ComponentIssue struct {
 	TakenAt   time.Time `json:"taken_at"`
 }
 
-// ComponentIssues 最新状态非 UP 的组件。
+// ComponentIssues 最新状态非 UP 的组件（递归 CTE 索引跳跃扫描）。
 func (s *Store) ComponentIssues(ctx context.Context) ([]ComponentIssue, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT component, status, message, taken_at FROM (
-  SELECT DISTINCT ON (component) component, status, message, taken_at
-  FROM system_health_snapshots ORDER BY component, taken_at DESC
-) latest WHERE status <> 'UP'`)
+WITH RECURSIVE comps AS (
+  (SELECT component FROM system_health_snapshots ORDER BY component LIMIT 1)
+  UNION ALL
+  SELECT (
+    SELECT component FROM system_health_snapshots
+    WHERE component > c.component
+    ORDER BY component LIMIT 1
+  )
+  FROM comps c
+  WHERE c.component IS NOT NULL
+)
+SELECT s.component, s.status, s.message, s.taken_at
+FROM comps c
+CROSS JOIN LATERAL (
+  SELECT component, status, message, taken_at
+  FROM system_health_snapshots
+  WHERE component = c.component
+  ORDER BY taken_at DESC
+  LIMIT 1
+) s
+WHERE c.component IS NOT NULL AND s.status <> 'UP'
+ORDER BY s.component`)
 	if err != nil {
 		return nil, err
 	}
@@ -544,11 +567,31 @@ type ComponentStatus struct {
 	Metrics   map[string]interface{} `json:"metrics"`
 }
 
-// LatestComponentStatuses 各组件最新健康快照。
+// LatestComponentStatuses 各组件最新健康快照（递归 CTE 索引跳跃扫描）。
 func (s *Store) LatestComponentStatuses(ctx context.Context) ([]ComponentStatus, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT DISTINCT ON (component) component, status, latency_ms, message, taken_at, metrics
-FROM system_health_snapshots ORDER BY component, taken_at DESC`)
+WITH RECURSIVE comps AS (
+  (SELECT component FROM system_health_snapshots ORDER BY component LIMIT 1)
+  UNION ALL
+  SELECT (
+    SELECT component FROM system_health_snapshots
+    WHERE component > c.component
+    ORDER BY component LIMIT 1
+  )
+  FROM comps c
+  WHERE c.component IS NOT NULL
+)
+SELECT s.component, s.status, s.latency_ms, s.message, s.taken_at, s.metrics
+FROM comps c
+CROSS JOIN LATERAL (
+  SELECT component, status, latency_ms, message, taken_at, metrics
+  FROM system_health_snapshots
+  WHERE component = c.component
+  ORDER BY taken_at DESC
+  LIMIT 1
+) s
+WHERE c.component IS NOT NULL
+ORDER BY s.component`)
 	if err != nil {
 		return nil, err
 	}
@@ -679,9 +722,36 @@ func (s *Store) StorageStats(ctx context.Context) (*StorageStats, error) {
 	if err := s.db.QueryRow(ctx, `SELECT pg_database_size(current_database())`).Scan(&out.PGDatabaseSizeBytes); err != nil {
 		return nil, fmt.Errorf("pg database size: %w", err)
 	}
+	if err := s.fillStorageEnvStats(ctx, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func boundedCacheInfoMemory(ctx context.Context, c *cache.Client, timeout time.Duration) (string, error) {
+	infoCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	type infoRes struct {
+		val string
+		err error
+	}
+	ch := make(chan infoRes, 1)
+	go func() {
+		val, err := c.Redis().Info(infoCtx, "memory").Result()
+		ch <- infoRes{val: val, err: err}
+	}()
+	select {
+	case res := <-ch:
+		return res.val, res.err
+	case <-infoCtx.Done():
+		return "", infoCtx.Err()
+	}
+}
+
+func (s *Store) fillStorageEnvStats(ctx context.Context, out *StorageStats) error {
 	// valkey used_memory：优先 INFO 实时采集，未配置客户端时回退最新组件快照
-	if s.cache != nil {
-		info, err := s.cache.Redis().Info(ctx, "memory").Result()
+	if s.cache != nil && s.cache.Redis() != nil {
+		info, err := boundedCacheInfoMemory(ctx, s.cache, defaultCacheOpTimeout)
 		if err != nil {
 			slog.Warn("valkey INFO failed", "error", err)
 			out.ValkeyError = "valkey INFO 采集失败"
@@ -705,7 +775,7 @@ WHERE component IN ('valkey', 'cache', 'redis') ORDER BY taken_at DESC LIMIT 1`)
 		case errors.Is(err, pgx.ErrNoRows):
 			// 无快照且无客户端：保留空值
 		default:
-			return nil, err
+			return err
 		}
 	}
 	// 磁盘用量
@@ -719,7 +789,54 @@ WHERE component IN ('valkey', 'cache', 'redis') ORDER BY taken_at DESC LIMIT 1`)
 		out.DiskTotalBytes = &total
 		out.DiskFreeBytes = &free
 	}
-	return out, nil
+	return nil
+}
+
+// runtimeOverviewStats 合并查询发布统计、报告统计与 PG 数据库大小（3 -> 1 往返）。
+func (s *Store) runtimeOverviewStats(ctx context.Context, windowDays int) (*PublishStats, *ReportStats, *StorageStats, error) {
+	publish := &PublishStats{WindowDays: windowDays}
+	reports := &ReportStats{WindowDays: windowDays}
+	storage := &StorageStats{DiskPath: diskPath}
+	since := time.Now().UTC().Add(-time.Duration(windowDays) * 24 * time.Hour)
+	var avg *float64
+	if err := s.db.QueryRow(ctx, `
+SELECT
+  p.total, p.success, p.failed, p.avg_duration_seconds,
+  r.total, r.success, r.failed,
+  pg_database_size(current_database())
+FROM (
+  SELECT count(*) AS total,
+    count(*) FILTER (WHERE status = 'SUCCESS') AS success,
+    count(*) FILTER (WHERE status = 'FAILED') AS failed,
+    AVG(EXTRACT(EPOCH FROM (finished_at - started_at)))
+      FILTER (WHERE status = 'SUCCESS' AND started_at IS NOT NULL AND finished_at IS NOT NULL) AS avg_duration_seconds
+  FROM gateway_publish_tasks WHERE requested_at >= $1
+) p
+CROSS JOIN (
+  SELECT count(*) AS total,
+    count(*) FILTER (WHERE status = 'SUCCESS') AS success,
+    count(*) FILTER (WHERE status = 'FAILED') AS failed
+  FROM report_jobs WHERE requested_at >= $1
+) r`, since).Scan(
+		&publish.Total, &publish.Success, &publish.Failed, &avg,
+		&reports.Total, &reports.Success, &reports.Failed,
+		&storage.PGDatabaseSizeBytes,
+	); err != nil {
+		return nil, nil, nil, err
+	}
+	if publish.Total > 0 {
+		publish.SuccessRate = float64(publish.Success) / float64(publish.Total)
+	}
+	if avg != nil {
+		publish.AvgDurationSeconds = *avg
+	}
+	if reports.Total > 0 {
+		reports.SuccessRate = float64(reports.Success) / float64(reports.Total)
+	}
+	if err := s.fillStorageEnvStats(ctx, storage); err != nil {
+		return nil, nil, nil, err
+	}
+	return publish, reports, storage, nil
 }
 
 // ---------- 审计态势 ----------
@@ -755,23 +872,95 @@ type AuditCounters struct {
 	TodayAudits       int64 `json:"today_audits"`
 }
 
-// AuditCounters 今日处置数 / 未处置数 / 今日审计条数。
+// AuditCounters 今日处置数 / 未处置数 / 今日审计条数（单条往返合并）。
 func (s *Store) AuditCounters(ctx context.Context, dayStart, now time.Time) (*AuditCounters, error) {
 	out := &AuditCounters{}
 	if err := s.db.QueryRow(ctx, `
-SELECT count(*) FROM security_events
-WHERE disposition_at >= $1 AND disposition_at < $2`, dayStart, now).Scan(&out.TodayDispositions); err != nil {
-		return nil, fmt.Errorf("today dispositions: %w", err)
-	}
-	if err := s.db.QueryRow(ctx, `
-SELECT count(*) FROM security_events WHERE disposition_status = 'UNPROCESSED'`).Scan(&out.UnprocessedEvents); err != nil {
-		return nil, fmt.Errorf("unprocessed events: %w", err)
-	}
-	if err := s.db.QueryRow(ctx, `
-SELECT count(*) FROM operation_audits WHERE occurred_at >= $1 AND occurred_at < $2`, dayStart, now).Scan(&out.TodayAudits); err != nil {
-		return nil, fmt.Errorf("today audits: %w", err)
+SELECT
+  count(*) FILTER (WHERE disposition_at >= $1 AND disposition_at < $2),
+  count(*) FILTER (WHERE disposition_status = 'UNPROCESSED'),
+  (SELECT count(*) FROM operation_audits WHERE occurred_at >= $1 AND occurred_at < $2)
+FROM security_events`, dayStart, now).Scan(
+		&out.TodayDispositions,
+		&out.UnprocessedEvents,
+		&out.TodayAudits,
+	); err != nil {
+		return nil, fmt.Errorf("audit counters: %w", err)
 	}
 	return out, nil
+}
+
+// auditSecurityOverviewStats 单次扫描 security_events 同时算出今日处置数、未处置数与处置状态分布。
+func (s *Store) auditSecurityOverviewStats(ctx context.Context, dayStart, now time.Time) (int64, int64, []StatusCount, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT
+  disposition_status,
+  count(*) AS total_count,
+  count(*) FILTER (WHERE disposition_at >= $1 AND disposition_at < $2) AS today_disp_count
+FROM security_events
+GROUP BY disposition_status
+ORDER BY total_count DESC`, dayStart, now)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	defer rows.Close()
+	var todayDispositions, unprocessedEvents int64
+	dist := []StatusCount{}
+	for rows.Next() {
+		var status string
+		var totalCount, todayDispCount int64
+		if err := rows.Scan(&status, &totalCount, &todayDispCount); err != nil {
+			return 0, 0, nil, err
+		}
+		todayDispositions += todayDispCount
+		if status == "UNPROCESSED" {
+			unprocessedEvents = totalCount
+		}
+		dist = append(dist, StatusCount{Status: status, Count: totalCount})
+	}
+	return todayDispositions, unprocessedEvents, dist, rows.Err()
+}
+
+// auditOperationOverviewStats 单次扫描 operation_audits 同时算出今日审计条数与操作类型 TopN。
+func (s *Store) auditOperationOverviewStats(ctx context.Context, dayStart, now time.Time, limit int) (int64, []ActionCount, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 10
+	}
+	rows, err := s.db.Query(ctx, `
+WITH today_ops AS MATERIALIZED (
+  SELECT module || '.' || action AS op
+  FROM operation_audits
+  WHERE occurred_at >= $1 AND occurred_at < $2
+)
+SELECT ''::text AS op, count(*) AS cnt, true AS is_total FROM today_ops
+UNION ALL
+SELECT op, cnt, false AS is_total FROM (
+  SELECT op, count(*) AS cnt
+  FROM today_ops
+  GROUP BY op
+  ORDER BY cnt DESC
+  LIMIT $3
+) top_ops`, dayStart, now, limit)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+	var todayAudits int64
+	actions := []ActionCount{}
+	for rows.Next() {
+		var op string
+		var cnt int64
+		var isTotal bool
+		if err := rows.Scan(&op, &cnt, &isTotal); err != nil {
+			return 0, nil, err
+		}
+		if isTotal {
+			todayAudits = cnt
+		} else {
+			actions = append(actions, ActionCount{Action: op, Count: cnt})
+		}
+	}
+	return todayAudits, actions, rows.Err()
 }
 
 // RecentAudits 最近审计记录。

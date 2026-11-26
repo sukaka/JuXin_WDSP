@@ -140,6 +140,13 @@ type Provider struct {
 	// 解密；nil/未配置时不下发 bot_signing_keys，存在 PROTECT 策略时由就绪门禁拒绝发布；
 	// 读取/解密失败中止发布——fail-hard，与 scanVerification/fileSignature 同一纪律）
 	botSigningKeys BotSigningKeysLoader
+	// AI 爬虫治理策略与离线迷宫签名密钥（Phase 9A-2；迁移 000245；仅 WDSP 开启时下发
+	// ai_crawl_policy 段，读取失败 fail-hard，迷宫密钥单独经加密设置注入并脱敏）
+	aiCrawl             AICrawlLister
+	aiCrawlLabyrinthKey AICrawlLabyrinthKeyLoader
+	// 客户端供应链安全策略读取（Phase 9B；迁移 000246；仅 WDSP 开启时下发
+	// client_side_policy 段，读取失败 fail-hard，无任何秘密材料）
+	clientSide ClientSideLister
 	// API 引擎受限例外读取（exception_policies 表 target_engine='API' 的 ENABLED+VALID
 	// 行，列由迁移 000130 建立；仅 WDSP 开启时下发 api_exceptions 段；读取失败中止
 	// 发布——fail-hard，与 jwt_trust 同一口径；nil 时不下发该段，网关零行为变化）
@@ -730,6 +737,16 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		if err := p.loadBotPolicy(ctx, cfg); err != nil {
 			return nil, err
 		}
+		// Phase 9A-2：AI 爬虫治理策略随发布下发 ai_crawl_policy 段（迁移 000245；
+		// 读取失败或 PROTECT+Labyrinth 缺签名密钥中止发布 fail-hard）
+		if err := p.loadAICrawlPolicy(ctx, cfg); err != nil {
+			return nil, err
+		}
+		// Phase 9B：客户端供应链安全策略随发布下发 client_side_policy 段（迁移 000246；
+		// 读取失败中止发布 fail-hard；无任何秘密材料）
+		if err := p.loadClientSidePolicy(ctx, cfg); err != nil {
+			return nil, err
+		}
 		// P0-04 A：API 引擎受限例外随发布下发 api_exceptions 段（列由迁移 000130
 		// 建立；读取失败中止发布 fail-hard——不静默丢失已启用例外；无启用行/未注入
 		// lister 时不下发该段，网关零行为变化；key=应用编码，仅 OBSERVE_RULE）
@@ -872,6 +889,25 @@ func RedactGuardConfig(cfg *gatewayconfig.GuardConfig) *gatewayconfig.GuardConfi
 			}
 		}
 		cp.BotSigningKeys = v
+	}
+	// ai_crawl_labyrinth_key_hex 及 ai_crawl_policy[*].labyrinth_key_hex 为 AI 迷宫签名密钥，
+	// 快照脱敏为 "***"（回滚时由 replayRuntimeSecrets / reinjectConfigSecrets 重新解密注入）
+	if cfg.AICrawlLabyrinthKeyHex != "" {
+		cp.AICrawlLabyrinthKeyHex = "***"
+	}
+	if cfg.AICrawlPolicy != nil {
+		cp.AICrawlPolicy = make(map[string]*gatewayconfig.GuardAICrawlPolicy, len(cfg.AICrawlPolicy))
+		for code, pol := range cfg.AICrawlPolicy {
+			if pol == nil {
+				cp.AICrawlPolicy[code] = nil
+				continue
+			}
+			polCopy := *pol
+			if polCopy.LabyrinthKeyHex != "" {
+				polCopy.LabyrinthKeyHex = "***"
+			}
+			cp.AICrawlPolicy[code] = &polCopy
+		}
 	}
 	// 深拷贝 AppRules map，避免调用方修改影响快照
 	if cfg.AppRules != nil {
@@ -1062,6 +1098,29 @@ func (p *Provider) replayRuntimeSecrets(ctx context.Context, cfg *gatewayconfig.
 		}
 		cfg.BotSigningKeys = botKeys
 	}
+	// Phase 9A-2：ai_crawl_labyrinth_key_hex 快照已脱敏为占位，清零后按当前加密设置重放
+	if p.aiCrawlLabyrinthKey != nil {
+		cfg.AICrawlLabyrinthKeyHex = ""
+		anyLabyrinth := false
+		for _, pol := range cfg.AICrawlPolicy {
+			if pol == nil {
+				continue
+			}
+			if pol.LabyrinthKeyHex == redactPlaceholder {
+				pol.LabyrinthKeyHex = ""
+			}
+			if pol.LabyrinthEnabled {
+				anyLabyrinth = true
+			}
+		}
+		keyHex, err := p.aiCrawlLabyrinthKey(ctx, anyLabyrinth)
+		if err != nil {
+			return fmt.Errorf("load ai crawl labyrinth key: %w", err)
+		}
+		if keyHex != "" {
+			cfg.AICrawlLabyrinthKeyHex = keyHex
+		}
+	}
 	// AUTHZ-01 对象引用 HMAC 密钥快照已脱敏，按当前加密设置重新注入。
 	keyHex, err := p.ensureAuthzSnapshotKey(ctx, "", len(cfg.APIAuthzModels) > 0, cfg.APIAuthzPreviousValid)
 	if err != nil {
@@ -1101,6 +1160,21 @@ func (p *Provider) replayRuntimeSecrets(ctx context.Context, cfg *gatewayconfig.
 		if len(protectApps) > 0 {
 			sort.Strings(protectApps)
 			if err := checkBotPolicyDeps(cfg, protectApps, cfg.BotPolicy); err != nil {
+				return err
+			}
+		}
+	}
+	// Phase 9A-2 回滚门禁：快照含 PROTECT + Labyrinth AI 爬虫策略而迷宫密钥未就绪时失败
+	if len(cfg.AICrawlPolicy) > 0 {
+		protectLabyrinthApps := []string{}
+		for code, pol := range cfg.AICrawlPolicy {
+			if pol != nil && pol.Mode == "PROTECT" && pol.LabyrinthEnabled {
+				protectLabyrinthApps = append(protectLabyrinthApps, code)
+			}
+		}
+		if len(protectLabyrinthApps) > 0 {
+			sort.Strings(protectLabyrinthApps)
+			if err := checkAICrawlLabyrinthKey(cfg, protectLabyrinthApps); err != nil {
 				return err
 			}
 		}

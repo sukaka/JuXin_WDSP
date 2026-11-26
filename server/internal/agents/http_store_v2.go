@@ -1,8 +1,8 @@
 // http_store_v2.go HTTP 事件 schema v2 仓储（契约 WDSP_AGENT_HTTP_EVENT_V2_CONTRACT.md
 // §4/§5/§6）：
-//   - InsertHTTPEventsV2：单事务逐条 INSERT ... ON CONFLICT (agent_id, event_id)
-//     WHERE event_id IS NOT NULL DO NOTHING——(agent_id, event_id) 幂等去重（部分唯一
-//     索引，迁移 000133）；重复确认但不重复入库，返回新入库记录的输入下标与重复条数；
+//   - InsertHTTPEventsV2：单事务逐条 INSERT ... ON CONFLICT (agent_id, event_id, ts)
+//     WHERE event_id IS NOT NULL DO NOTHING——(agent_id, event_id, ts) 幂等去重（部分唯一
+//     索引，迁移 000133/000244）；重复确认但不重复入库，返回新入库记录的输入下标与重复条数；
 //     任何错误整批回滚（500 → Agent 有界重试/补传）；
 //   - UpsertHTTPAssetSource：资产来源关系 upsert（唯一键 agent_id+host+method+
 //     path_template+source_type+source_instance——多来源各自成行，不覆盖资产所有权）；
@@ -139,7 +139,14 @@ func nonNilHeaderValues(h HTTPHeaderValues) HTTPHeaderValues {
 	return h
 }
 
-// InsertHTTPEventsV2 v2 批次幂等入库（契约 §4：单事务；按 (agent_id, event_id) 去重；
+func buildInsertHTTPEventV2SQL() string {
+	return `INSERT INTO agent_http_events (` + joinCols(httpEventV2Cols) + `)
+VALUES (` + placeholders(len(httpEventV2Cols)) + `)
+ON CONFLICT (agent_id, event_id, ts) WHERE event_id IS NOT NULL DO NOTHING
+RETURNING id`
+}
+
+// InsertHTTPEventsV2 v2 批次幂等入库（契约 §4：单事务；按 (agent_id, event_id, ts) 去重；
 // 返回新入库记录的输入下标（供资产联动——重复记录不扩大资产计数）与重复条数）。
 func (s *Store) InsertHTTPEventsV2(ctx context.Context, agentID uuid.UUID, records []HTTPRecordV2, ingestionTS time.Time) ([]int, int, error) {
 	tx, err := s.db.Begin(ctx)
@@ -148,10 +155,7 @@ func (s *Store) InsertHTTPEventsV2(ctx context.Context, agentID uuid.UUID, recor
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	insertSQL := `INSERT INTO agent_http_events (` + joinCols(httpEventV2Cols) + `)
-VALUES (` + placeholders(len(httpEventV2Cols)) + `)
-ON CONFLICT (agent_id, event_id) WHERE event_id IS NOT NULL DO NOTHING
-RETURNING id`
+	insertSQL := buildInsertHTTPEventV2SQL()
 
 	acceptedIdx := make([]int, 0, len(records))
 	duplicates := 0

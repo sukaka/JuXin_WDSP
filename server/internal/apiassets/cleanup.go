@@ -208,7 +208,7 @@ SELECT e.id, e.application_id, COALESCE(a.name, ''), e.http_method, e.normalized
     e.asset_status = 'CONFIRMED'
     OR e.current_model_version_id IS NOT NULL
     OR e.learning_status IN ('LEARNING', 'LEARNED')
-    OR EXISTS (SELECT 1 FROM api_model_versions mv WHERE mv.endpoint_id = e.id)
+    OR EXISTS (SELECT 1 FROM api_model_versions mv WHERE mv.api_endpoint_id = e.id)
     OR EXISTS (SELECT 1 FROM api_runtime_policies rp WHERE rp.endpoint_id = e.id)
     OR EXISTS (SELECT 1 FROM api_role_baselines rb WHERE rb.endpoint_id = e.id)
     OR EXISTS (SELECT 1 FROM api_field_permissions fp WHERE fp.endpoint_id = e.id)

@@ -33,6 +33,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/applications"
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/cache"
+	"github.com/jiuzhang-waf/server/internal/clientside"
 	"github.com/jiuzhang-waf/server/internal/config"
 	"github.com/jiuzhang-waf/server/internal/coverage"
 	"github.com/jiuzhang-waf/server/internal/database"
@@ -41,6 +42,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/identityevents"
 	"github.com/jiuzhang-waf/server/internal/learningjobs"
 	"github.com/jiuzhang-waf/server/internal/nodeinterfaces"
+	"github.com/jiuzhang-waf/server/internal/partitions"
 	"github.com/jiuzhang-waf/server/internal/protectedaddresses"
 	"github.com/jiuzhang-waf/server/internal/securityevents"
 	"github.com/jiuzhang-waf/server/internal/settings"
@@ -80,12 +82,18 @@ func run() error {
 		return runMigrate(ctx, cfg, os.Args[2:])
 	}
 
-	// 连接数据库
-	db, err := database.Connect(ctx, cfg.DB)
+	// 连接数据库：交互 API 池与后台采集/聚合/巡检池物理隔离，避免后台批量任务饿死前台读请求
+	db, err := database.ConnectWithProfile(ctx, cfg.DB, database.ProfileAPI)
 	if err != nil {
-		return fmt.Errorf("connect database: %w", err)
+		return fmt.Errorf("connect api database pool: %w", err)
 	}
 	defer db.Close()
+
+	bgDB, err := database.ConnectWithProfile(ctx, cfg.DB, database.ProfileBackground)
+	if err != nil {
+		return fmt.Errorf("connect background database pool: %w", err)
+	}
+	defer bgDB.Close()
 
 	// 连接 Valkey
 	cacheClient, err := cache.New(ctx, cfg.Cache)
@@ -118,7 +126,7 @@ func run() error {
 	go func() {
 		syncCtx, cancel := context.WithTimeout(collectorCtx, 2*time.Minute)
 		defer cancel()
-		syncSvc := wafrules.NewSyncService(db)
+		syncSvc := wafrules.NewSyncService(bgDB)
 		report, err := syncSvc.SyncFromSources(syncCtx, cfg.WAF.CRSVersion, wafrules.BuildSyncSources(cfg.WAF.CRSDir))
 		if err != nil {
 			slog.Warn("startup waf rules sync failed", "crs_dir", cfg.WAF.CRSDir, "error", err)
@@ -134,18 +142,18 @@ func run() error {
 	}()
 
 	// 阶段4：启动安全事件采集器（后台 goroutine）
-	eventCollector := securityevents.NewCollector(db, "collector-01", cfg.WAF.AuditLogPath, cfg.WAF.GatewayNodeName)
+	eventCollector := securityevents.NewCollector(bgDB, "collector-01", cfg.WAF.AuditLogPath, cfg.WAF.GatewayNodeName)
 	eventCollector.SetSyslogForwarder(syslogFw)
 	go eventCollector.Run(collectorCtx, 2*time.Second)
 
 	// 阶段5：启动访问控制/CC 事件采集器（断点续传，封禁与命中联动）
 	// 注意：checkpoint 必须落在可写数据目录（日志卷以只读方式挂载，不能存放断点）
-	acEventStore := accesscontrolevents.NewStore(db)
-	acTempBlocks := temporaryblocks.NewStore(db, cacheClient)
+	acEventStore := accesscontrolevents.NewStore(bgDB)
+	acTempBlocks := temporaryblocks.NewStore(bgDB, cacheClient)
 	// 阶段5 §十五：CC 自动封禁前的共享出口（NAT）风险检查——命中疑似共享出口
 	// 降档缩短封禁时长并写 CC_TEMP_BLOCK_DOWNGRADED 审计事件（配置走
 	// system_settings cc_auto_block 组，种子见迁移 000153）。
-	acTempBlocks.SetNATGuardSettings(settings.NewService(db))
+	acTempBlocks.SetNATGuardSettings(settings.NewService(bgDB))
 	acTempBlocks.SetNATDowngradeEmitter(func(ctx context.Context, b *temporaryblocks.Block, d temporaryblocks.NATDowngrade) {
 		if b == nil {
 			return
@@ -167,37 +175,38 @@ func run() error {
 			slog.Error("write CC_TEMP_BLOCK_DOWNGRADED event failed", "error", err, "block_id", b.ID)
 		}
 	})
-	acRules := accessrules.NewStore(db)
-	urlWhitelistStore := urlwhitelists.NewStore(db)
+	acRules := accessrules.NewStore(bgDB)
+	urlWhitelistStore := urlwhitelists.NewStore(bgDB)
 	acCollector := accesscontrolevents.NewCollector(acEventStore, "ac-collector-01",
 		cfg.WAF.GuardEventsLog, filepath.Join(cfg.Gateway.DataDir, "guard-events.checkpoint"), cfg.WAF.GatewayNodeName)
 	acCollector.SetBlockUpserter(acTempBlocks)
 	acCollector.SetHitRecorder(acRules)
 	acCollector.SetURLWhitelistHitRecorder(urlWhitelistStore)
+	acCollector.SetClientSideIngester(clientside.NewStore(bgDB))
 	acCollector.SetSyslogForwarder(syslogFw)
 	go acCollector.Run(collectorCtx, 2*time.Second)
 
 	// 阶段5：到期自动失效调度（临时规则/URL白名单/临时封禁/临时例外标记 EXPIRED + 系统审计）
-	auditSvcForJanitor := audits.NewService(db)
+	auditSvcForJanitor := audits.NewService(bgDB)
 	auditSvcForJanitor.SetSyslogForwarder(func(severityHint string, payload interface{}) {
 		syslogFw.Enqueue(syslogfw.KindOperationAudit, severityHint, payload)
 	})
-	exceptionStoreForJanitor := exceptions.NewStore(db)
+	exceptionStoreForJanitor := exceptions.NewStore(bgDB)
 	go guardjanitor.RunWithURLWhitelists(collectorCtx, time.Minute, acRules, urlWhitelistStore, acTempBlocks, exceptionStoreForJanitor, auditSvcForJanitor, acEventStore)
 
 	// 阶段5 §七：保护地址自动维护（系统自动登记；启动时一次 + 周期刷新，
 	// 周期由 PROTECTED_ADDRESS_REFRESH_INTERVAL 配置，默认 1 小时；
 	// 单次刷新失败仅记错误日志，不阻断启动与后续调度；手动刷新端点保留）
-	go protectedaddresses.NewRefresher(protectedaddresses.NewStore(db),
+	go protectedaddresses.NewRefresher(protectedaddresses.NewStore(bgDB),
 		protectedaddresses.RefreshIntervalFromEnv(os.Getenv)).Run(collectorCtx)
 
 	// 阶段7 §26.4：AI 数据保留清理（会话/Tool 调用/草稿/用量分批限量清理 + 系统审计；
 	// 审计表哈希链只校验不删除；保留天数经 system_settings ai 组配置，默认 90/90/90/180/365 天）
-	aiRetentionCleaner := guardjanitor.NewAIRetentionCleaner(db, settings.NewService(db), auditSvcForJanitor, aiaudit.NewService(db))
+	aiRetentionCleaner := guardjanitor.NewAIRetentionCleaner(bgDB, settings.NewService(bgDB), auditSvcForJanitor, aiaudit.NewService(bgDB))
 	go aiRetentionCleaner.Run(collectorCtx, guardjanitor.DefaultAIRetentionInterval)
 
 	// 阶段6：访问日志采集器与数据聚合任务
-	aggStore := aggregations.NewStore(db)
+	aggStore := aggregations.NewStore(bgDB)
 	accessCollector := aggregations.NewAccessLogCollector(aggStore,
 		cfg.WAF.AccessLogPath, filepath.Join(cfg.Gateway.DataDir, "access-log.checkpoint"))
 	go accessCollector.Run(collectorCtx, 2*time.Second)
@@ -205,33 +214,37 @@ func run() error {
 	go aggJobs.Run(collectorCtx)
 
 	// 全量访问日志（二期）：JSON Lines 采集器 + 留存清理（开关默认关闭，无日志文件时采集器空转）
-	accessFullCollector := accesslogs.NewCollector(db, "accesslog-01", cfg.WAF.AccessFullLog)
+	accessFullCollector := accesslogs.NewCollector(bgDB, "accesslog-01", cfg.WAF.AccessFullLog)
 	accessFullCollector.SetSyslogForwarder(syslogFw)
 	accessFullCollector.SetFlushPolicy(cfg.WAF.CollectorFlushBatch, cfg.WAF.CollectorFlushInterval)
 	// W22 事务批量化（与 apiruntime 采集器同手法）：每个 flush 批次一个 DB 事务，
 	// 行数据 + 失败队列 + 断点原子提交，消除逐行 commit 开销；失败回滚、断点不前移
-	accessFullCollector.SetBatchTxFactory(db.Begin)
+	accessFullCollector.SetBatchTxFactory(bgDB.Begin)
 	go accessFullCollector.Run(collectorCtx, 2*time.Second)
-	go accesslogs.NewRetentionCleaner(db, settings.NewService(db)).Run(collectorCtx, 10*time.Minute)
+	go accesslogs.NewRetentionCleaner(bgDB, settings.NewService(bgDB)).Run(collectorCtx, 10*time.Minute)
 
 	// SSL/HTTPS 加密会话分析：TLS/TLCP 握手事件 JSONL 采集器 + 留存清理（无日志文件时采集器空转）
-	tlsSessionCollector := tlssessions.NewCollector(db, tlssessions.DefaultCollectorID, cfg.WAF.TLSSessionLogPath)
+	tlsSessionCollector := tlssessions.NewCollector(bgDB, tlssessions.DefaultCollectorID, cfg.WAF.TLSSessionLogPath)
 	tlsSessionCollector.SetFlushPolicy(cfg.WAF.CollectorFlushBatch, cfg.WAF.CollectorFlushInterval)
-	tlsSessionCollector.SetBatchTxFactory(db.Begin)
+	tlsSessionCollector.SetBatchTxFactory(bgDB.Begin)
 	go tlsSessionCollector.Run(collectorCtx, 2*time.Second)
-	go tlssessions.NewRetentionCleaner(db, settings.NewService(db)).Run(collectorCtx, 10*time.Minute)
+	go tlssessions.NewRetentionCleaner(bgDB, settings.NewService(bgDB)).Run(collectorCtx, 10*time.Minute)
+
+	// 阶段3：PostgreSQL 分区生命周期管理器（后台预建未来分区 + DETACH CONCURRENTLY / DROP 过期清理）
+	partitionMgr := partitions.NewManager(bgDB, settings.NewService(bgDB))
+	go partitionMgr.Start(collectorCtx)
 
 	application.StartRequestPCAP(collectorCtx)
 
 	// 站点资产被动发现：mirrorcap site-discovery.jsonl 断点续传 upsert（幂等键 domain+ip+port；
 	// 日志文件未生成时采集器空转；checkpoint 落在可写数据目录，日志卷只读挂载）
-	siteDiscoveryCollector := sitediscovery.NewCollector(sitediscovery.NewStore(db), "site-discovery-01",
+	siteDiscoveryCollector := sitediscovery.NewCollector(sitediscovery.NewStore(bgDB), "site-discovery-01",
 		cfg.WAF.SiteDiscoveryLog, filepath.Join(cfg.Gateway.DataDir, "site-discovery.checkpoint"), cfg.WAF.GatewayNodeName)
 	go siteDiscoveryCollector.Run(collectorCtx, 2*time.Second)
 
 	// 节点网口清单采集（网关/mirrorcap node-interfaces.jsonl 全量快照，60s 周期重建；
 	// 全产品形态均常驻，保留用户 sort_order/role，新口排末尾，消失口置 present=false）
-	ifaceCollector := nodeinterfaces.NewCollector(nodeinterfaces.NewStore(db),
+	ifaceCollector := nodeinterfaces.NewCollector(nodeinterfaces.NewStore(bgDB),
 		"iface-collector-01", cfg.WAF.NodeIfacesLog)
 	go ifaceCollector.Run(collectorCtx, 60*time.Second)
 
@@ -239,7 +252,7 @@ func run() error {
 	// 身份观测/行为快照/侦察信号，断点名 identity-events.checkpoint；WAF_IDENTITY_EVENTS_LOG
 	// 为空 = 不启动该采集器；checkpoint 落在可写数据目录，日志卷只读挂载）
 	if cfg.WAF.IdentityEventsLog != "" {
-		identityCollector := identityevents.NewCollector(identityevents.NewStore(db), db.Begin,
+		identityCollector := identityevents.NewCollector(identityevents.NewStore(bgDB), bgDB.Begin,
 			"identity-events-01", cfg.WAF.IdentityEventsLog,
 			filepath.Join(cfg.Gateway.DataDir, "identity-events.checkpoint"), cfg.WAF.GatewayNodeName)
 		go identityCollector.Run(collectorCtx, 2*time.Second)
@@ -249,7 +262,7 @@ func run() error {
 	// 明细 1/N 采样落 coverage_observations、五态聚合 upsert coverage_minute_agg、
 	// 每次 flush 落 coverage_counter_snapshots 阶段计数；checkpoint 落在可写数据目录
 	// （日志卷只读挂载）；观测日志未生成时采集器空转不 crash（与其他采集器同一缺文件行为）
-	coverageCollector := coverage.NewCollector(coverage.NewStore(db), db.Begin,
+	coverageCollector := coverage.NewCollector(coverage.NewStore(bgDB), bgDB.Begin,
 		"coverage-obs-01", cfg.WAF.CoverageObsLog,
 		filepath.Join(cfg.Gateway.DataDir, "coverage-observations.checkpoint"), cfg.WAF.GatewayNodeName)
 	coverageCollector.SetSampleN(uint64(cfg.WAF.CoverageSampleN))
@@ -259,8 +272,8 @@ func run() error {
 	// 阶段8 / WDSP：API 运行时事件采集器（仅 WDSP 且开关开启时启动；
 	// checkpoint 落在可写数据目录，日志卷只读挂载）
 	if cfg.Product.APIDynamicProtectionEnabled() {
-		apiRuntimeStore := apiruntime.NewStore(db)
-		apiAssetStore := apiassets.NewStore(db)
+		apiRuntimeStore := apiruntime.NewStore(bgDB)
+		apiAssetStore := apiassets.NewStore(bgDB)
 		apiCollector := apiruntime.NewCollector(apiRuntimeStore, "api-collector-01",
 			cfg.WAF.APIEventsLog, filepath.Join(cfg.Gateway.DataDir, "api-runtime-events.checkpoint"), cfg.WAF.GatewayNodeName)
 		apiCollector.SetDiscoveryUpserter(apiAssetStore)
@@ -268,7 +281,7 @@ func run() error {
 			apiCollector.SetDiscoveryFilter(df.Get)
 		}
 		// 端点归属解析：app_code → application_id，host → domain_id
-		apiCollector.SetResolver(apiruntime.NewAppResolver(applications.NewStore(db)))
+		apiCollector.SetResolver(apiruntime.NewAppResolver(applications.NewStore(bgDB)))
 		// 学习自动化闭环（P0-1）：样本按学习任务落库 + 达阈值自动完成学习并生成候选模型
 		apiCollector.SetSampleRecorder(apiAssetStore)
 		// 参数约束/Schema 偏离专项落库（P0-2）：schema 类明细写 api_schema_violations（request_id 幂等）
@@ -276,31 +289,31 @@ func run() error {
 		// 风险发现物化（P0-13）：检测明细按 dedup 指纹 upsert 进 api_runtime_findings（风险中心数据源）
 		apiCollector.SetFindingSaver(apiRuntimeStore)
 		// 参数值脱敏观测聚合（三微模型增强批）：param_observations → api_parameter_value_obs
-		apiCollector.SetParamObsRecorder(apiruntime.NewParamObsStore(db))
+		apiCollector.SetParamObsRecorder(apiruntime.NewParamObsStore(bgDB))
 		// 响应 Schema 学习（P0-06）：response_observations → api_response_schemas（运行时学习行）
-		apiCollector.SetRespSchemaRecorder(apiruntime.NewRespSchemaStore(db))
+		apiCollector.SetRespSchemaRecorder(apiruntime.NewRespSchemaStore(bgDB))
 		// 接口访问趋势波形图：端点 × 5 分钟桶全量流量计数（api_endpoint_traffic_buckets）
 		apiCollector.SetTrafficRecorder(apiAssetStore)
 		// 文件资产观测（P1-04）：file_observations → api_file_assets（去重键 UPSERT）
-		apiCollector.SetFileObsRecorder(apiruntime.NewFileObsStore(db))
+		apiCollector.SetFileObsRecorder(apiruntime.NewFileObsStore(bgDB))
 		// LLM 调用观测（P2-04）：llm_observation → api_llm_observations（request_id 派生幂等）
-		apiCollector.SetLLMObsRecorder(apillm.NewObsStore(db))
+		apiCollector.SetLLMObsRecorder(apillm.NewObsStore(bgDB))
 		// W20 批量化修复：批量/周期 flush 阈值（默认 2000 行 / 2s，深 backlog 下入库滞后与重扫量有界）
 		apiCollector.SetFlushPolicy(cfg.WAF.CollectorFlushBatch, cfg.WAF.CollectorFlushInterval)
 		// W22 事务批量化：每个 flush 批次一个 DB 事务（副作用 + 主事件整批一次 COMMIT），
 		// 消除逐语句 commit 开销（§11.8 入库瓶颈）；失败整体回滚、断点不前移、重放幂等
-		apiCollector.SetBatchTxFactory(db.Begin)
+		apiCollector.SetBatchTxFactory(bgDB.Begin)
 		// 节点心跳（W17-HB）：heartbeat 记录仅透传节点活性聚合（不落事件表、不产业务数据），
 		// 节点视图 ACTIVE/STALE/SILENT 不再依赖业务流量
-		apiCollector.SetHeartbeatRecorder(apinodes.NewStore(db))
+		apiCollector.SetHeartbeatRecorder(apinodes.NewStore(bgDB))
 		// 强流程事件（NG-FLOW-02）：strong_flow 对象透传落实例/步骤事件表
 		// （迁移 000177；表缺失时消费报错仅记日志不阻断采集——同心跳纪律）
-		apiCollector.SetStrongFlowRecorder(strongflow.NewStrongFlowEventStore(db))
+		apiCollector.SetStrongFlowRecorder(strongflow.NewStrongFlowEventStore(bgDB))
 		// 暴露面来源聚合（迁移 000190）：每条事件按 client_ip 范围（内网/公网/合作方出口）
 		// 落自然日计数桶 + 盐化指纹去重明细；partner CIDR 分类在 apiexposure 侧读 settings
 		// 缓存完成；fail-open 仅限此聚合（失败记日志不影响主事件链路）
 		apiCollector.SetSourceRecorder(apiexposure.NewSourceRecorder(
-			apiexposure.NewStore(db), settings.NewService(db)))
+			apiexposure.NewStore(bgDB), settings.NewService(bgDB)))
 		// 离线授权：端点发现配额强制（license 内存状态无 IO；无效授权返回 0=不限制——
 		// 无效态下网关透传无 API 事件，管理面已被授权门控锁定，此处不重复强制）
 		if licSvc := application.LicenseService(); licSvc != nil {
@@ -325,29 +338,29 @@ func run() error {
 		go apiCollector.Run(collectorCtx, 2*time.Second)
 
 		// 学习闭环审计同样纳入 syslog 外发（setter 注入，可为 nil 时跳过）
-		learningAuditSvc := audits.NewService(db)
+		learningAuditSvc := audits.NewService(bgDB)
 		learningAuditSvc.SetSyslogForwarder(func(severityHint string, payload interface{}) {
 			syslogFw.Enqueue(syslogfw.KindOperationAudit, severityHint, payload)
 		})
-		learningWorker := learningjobs.NewWorker(apiAssetStore, apimodels.NewStore(db),
-			learningAuditSvc, settings.NewService(db))
+		learningWorker := learningjobs.NewWorker(apiAssetStore, apimodels.NewStore(bgDB),
+			learningAuditSvc, settings.NewService(bgDB))
 		// 参数统计画像（三微模型 §四.5，第二批）：学习样本离线聚合 →
 		// api_parameter_statistics + observed/recommended（幂等可重算，随学习调度周期刷新）
 		// 增强批：合并 value_obs 回填长度/值域/基数 + semantic_type 推断 + 关系候选
-		modelStore := apimodels.NewStore(db)
+		modelStore := apimodels.NewStore(bgDB)
 		learningWorker.SetProfileRefresher(modelStore)
 		learningWorker.SetRelationRefresher(modelStore)
 		go learningWorker.Run(collectorCtx)
 
 		// 弱点派生（P0-13）、敏感字段台账回流（P0-19）、对象权属学习（P0-15）与
 		// 资产生命周期作业（Zombie 判定/价值评分回填）：周期扫描；失败仅告警，不影响采集主流程
-		weaknessSweeper := apiweakness.NewSweeper(db)
-		sensitiveStore := apidata.NewStore(db)
-		authzModelStore := apiauthz.NewStore(db)
+		weaknessSweeper := apiweakness.NewSweeper(bgDB)
+		sensitiveStore := apidata.NewStore(bgDB)
+		authzModelStore := apiauthz.NewStore(bgDB)
 		assetSweeper := apiassets.NewSweeper(apiAssetStore, apiassets.SweepOptions{})
-		geoSweeper := apigeo.NewSweeper(apigeo.NewStore(db), application.APIGeoLookup(), settings.NewService(db))
+		geoSweeper := apigeo.NewSweeper(apigeo.NewStore(bgDB), application.APIGeoLookup(), settings.NewService(bgDB))
 		// 文件风险 v1（§107 子集）：同身份批量下载 → FILE_BULK_DOWNLOAD 风险发现
-		fileRiskSweeper := apifiles.NewRiskSweeper(apifiles.NewStore(db), apiruntime.NewStore(db), settings.NewService(db))
+		fileRiskSweeper := apifiles.NewRiskSweeper(apifiles.NewStore(bgDB), apiruntime.NewStore(bgDB), settings.NewService(bgDB))
 		go func() {
 			t := time.NewTicker(5 * time.Minute)
 			defer t.Stop()
@@ -470,7 +483,7 @@ func runMigrate(ctx context.Context, cfg *config.Config, args []string) error {
 	if len(args) > 0 {
 		direction = args[0]
 	}
-	db, err := database.Connect(ctx, cfg.DB)
+	db, err := database.ConnectWithProfile(ctx, cfg.DB, database.ProfileMigrate)
 	if err != nil {
 		return err
 	}

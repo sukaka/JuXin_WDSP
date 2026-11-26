@@ -276,14 +276,21 @@ const (
 
 // DBConfig 是主业务数据库配置。空 Dialect 按 PostgreSQL 处理，兼容既有调用方。
 type DBConfig struct {
-	Dialect  string
-	Host     string
-	Port     int
-	Database string
-	User     string
-	Password string
-	SSLMode  string
-	MaxConns int32
+	Dialect              string
+	Host                 string
+	Port                 int
+	Database             string
+	User                 string
+	Password             string
+	SSLMode              string
+	MaxConns             int32
+	MinConns             int32
+	BGMaxConns           int32
+	BGMinConns           int32
+	StatementTimeoutMs   int
+	BGStatementTimeoutMs int
+	LockTimeoutMs        int
+	IdleInTxTimeoutMs    int
 }
 
 // DialectName 返回归一化后的数据库方言。
@@ -372,14 +379,21 @@ func (c HTTPConfig) HTTPAddr() string {
 
 func loadDBConfig(dialect string) DBConfig {
 	cfg := DBConfig{
-		Dialect:  dialect,
-		Host:     getEnv("DB_HOST", "127.0.0.1"),
-		Port:     getEnvInt("DB_PORT", defaultDBPort(dialect)),
-		Database: getEnv("DB_NAME", "jiuzhang_waf"),
-		User:     getEnv("DB_USER", "jiuzhang"),
-		Password: os.Getenv("DB_PASSWORD"),
-		SSLMode:  getEnv("DB_SSLMODE", "disable"),
-		MaxConns: int32(getEnvInt("DB_MAX_CONNS", 10)),
+		Dialect:              dialect,
+		Host:                 getEnv("DB_HOST", "127.0.0.1"),
+		Port:                 getEnvInt("DB_PORT", defaultDBPort(dialect)),
+		Database:             getEnv("DB_NAME", "jiuzhang_waf"),
+		User:                 getEnv("DB_USER", "jiuzhang"),
+		Password:             os.Getenv("DB_PASSWORD"),
+		SSLMode:              getEnv("DB_SSLMODE", "disable"),
+		MaxConns:             int32(getEnvInt("DB_MAX_CONNS", 32)),
+		MinConns:             int32(getEnvInt("DB_MIN_CONNS", 4)),
+		BGMaxConns:           int32(getEnvInt("DB_BG_MAX_CONNS", 16)),
+		BGMinConns:           int32(getEnvInt("DB_BG_MIN_CONNS", 2)),
+		StatementTimeoutMs:   getEnvInt("DB_STATEMENT_TIMEOUT_MS", 15000),
+		BGStatementTimeoutMs: getEnvInt("DB_BG_STATEMENT_TIMEOUT_MS", 120000),
+		LockTimeoutMs:        getEnvInt("DB_LOCK_TIMEOUT_MS", 5000),
+		IdleInTxTimeoutMs:    getEnvInt("DB_IDLE_IN_TX_TIMEOUT_MS", 30000),
 	}
 	if dialect == DBDialectPostgres {
 		cfg.Host = getEnv("DB_HOST", getEnv("POSTGRES_HOST", "127.0.0.1"))
@@ -388,7 +402,7 @@ func loadDBConfig(dialect string) DBConfig {
 		cfg.User = getEnv("DB_USER", getEnv("POSTGRES_USER", "jiuzhang"))
 		cfg.Password = getEnv("DB_PASSWORD", os.Getenv("POSTGRES_PASSWORD"))
 		cfg.SSLMode = getEnv("DB_SSLMODE", getEnv("POSTGRES_SSLMODE", "disable"))
-		cfg.MaxConns = int32(getEnvInt("DB_MAX_CONNS", getEnvInt("POSTGRES_MAX_CONNS", 10)))
+		cfg.MaxConns = int32(getEnvInt("DB_MAX_CONNS", getEnvInt("POSTGRES_MAX_CONNS", 32)))
 	}
 	return cfg
 }

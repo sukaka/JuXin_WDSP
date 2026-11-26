@@ -54,7 +54,7 @@ INSERT INTO access_logs (occurred_at, request_id, application_id, domain, gatewa
   response_headers, response_body, response_body_truncated,
   tls_protocol, tls_cipher_suite, tls_is_gm, tls_ja3, client_hello_version)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
-ON CONFLICT (request_id) WHERE request_id <> '' DO NOTHING`,
+ON CONFLICT (request_id, occurred_at) WHERE request_id <> '' DO NOTHING`,
 		e.OccurredAt, e.RequestID, appID, e.Domain, e.GatewayNodeID,
 		nullableIP(e.ClientIP), e.ClientPort, e.RequestMethod, e.RequestURI, e.RequestPath, e.QuerySummary,
 		e.HTTPVersion, e.ContentType, e.UserAgentSummary, e.RefererSummary,
@@ -182,7 +182,12 @@ func buildListWhere(f ListFilter) (string, []interface{}) {
 		add("domain ILIKE $%d", "%"+f.Domain+"%")
 	}
 	if f.ClientIP != "" {
-		add("host(client_ip) = $%d", f.ClientIP)
+		if addr, err := netip.ParseAddr(strings.TrimSpace(f.ClientIP)); err == nil && addr.Zone() == "" {
+			add("client_ip = $%d::inet", addr.Unmap().String())
+		} else {
+			// 非合法 IP（含带 zone ID 的链路本地 IPv6）不可能匹配 INET 列：短路恒假，避免 PG 22P02 异常且不破坏索引命中
+			where += " AND 1=0"
+		}
 	}
 	if f.Method != "" {
 		add("request_method = $%d", f.Method)

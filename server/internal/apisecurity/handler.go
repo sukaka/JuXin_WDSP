@@ -251,8 +251,8 @@ func (h *Handler) PutEndpointClassification(w http.ResponseWriter, r *http.Reque
 // ---------- 51.4 调用图谱 / 拓扑 ----------
 
 // parseEdgeFilter 解析图谱/拓扑边过滤参数（W6-A）：start/end（RFC3339，边活跃窗口：
-// last_seen_at >= start 且 first_seen_at <= end）与 min_count（最小调用次数）。
-// 非法值明确 400，不静默忽略；节点始终全量返回，过滤只作用于边。
+// last_seen_at >= start 且 first_seen_at <= end）、min_count（最小调用次数）与可选 limit（1..MaxGraphEdgeLimit）。
+// 非法值明确 400，不静默忽略；未传 limit 时保持 0（仓储层按 DefaultGraphEdgeLimit 处理）。
 func parseEdgeFilter(w http.ResponseWriter, r *http.Request) (EdgeFilter, bool) {
 	var f EdgeFilter
 	q := r.URL.Query()
@@ -283,6 +283,14 @@ func parseEdgeFilter(w http.ResponseWriter, r *http.Request) (EdgeFilter, bool) 
 			return f, false
 		}
 		f.MinCount = n
+	}
+	if limRaw := strings.TrimSpace(q.Get("limit")); limRaw != "" {
+		n, err := strconv.Atoi(limRaw)
+		if err != nil || n < 1 || n > MaxGraphEdgeLimit {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, fmt.Sprintf("无效的 limit（需 1~%d 整数）", MaxGraphEdgeLimit))
+			return f, false
+		}
+		f.Limit = n
 	}
 	return f, true
 }

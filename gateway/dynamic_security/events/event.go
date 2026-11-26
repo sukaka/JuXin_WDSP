@@ -21,6 +21,7 @@ type JWTVerification struct {
 	VerifiedPrincipalID  string `json:"verified_principal_id,omitempty"`
 	VerifiedTenantID     string `json:"verified_tenant_id,omitempty"`
 	VerifiedIdentityType string `json:"verified_identity_type,omitempty"`
+	TokenBindingVerified string `json:"token_binding_verified,omitempty"`
 	EvaluatedAt          string `json:"evaluated_at,omitempty"`
 }
 

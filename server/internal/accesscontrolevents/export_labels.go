@@ -46,8 +46,13 @@ var acEventTypeLabels = map[string]string{
 	"MID_OBSERVED":                "机器身份观察",
 	"MID_AUTH_FAILED":             "机器身份认证失败",
 	"MID_UNAVAILABLE":             "机器身份服务不可用",
-	"MID_SCOPE_DENIED":            "机器身份越权拒绝",
-	"MID_BOT_EXEMPT":              "机器身份豁免 Bot 挑战",
+	"MID_SCOPE_DENIED":                      "机器身份越权拒绝",
+	"MID_BOT_EXEMPT":                        "机器身份豁免 Bot 挑战",
+	EventTypeClientSideScriptObserved:       "客户端脚本观测",
+	EventTypeClientSideUnauthorizedScript:   "客户端未授权脚本",
+	EventTypeClientSideScriptTampered:       "客户端脚本篡改",
+	EventTypeClientSideCSPViolation:         "客户端 CSP 违规",
+	EventTypeClientSideProbeAlert:           "客户端探针告警",
 }
 
 // acEventActionLabels 访问控制事件动作中文映射（与 web/src/utils/stage5.ts AC_EVENT_ACTION_META 对齐，

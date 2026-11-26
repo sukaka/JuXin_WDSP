@@ -400,6 +400,21 @@ func TestHTTPEventSweeper(t *testing.T) {
 			t.Error("错误不得静默吞掉")
 		}
 	})
+	t.Run("分区表跳过 HTTP 事件逐行删除时仍执行定向采集规则清理", func(t *testing.T) {
+		cl := &fakeHTTPCleaner{n: 0, overrideN: 5}
+		s := NewHTTPEventSweeper(cl).SetClock(func() time.Time { return fixed })
+		n, err := s.SweepOnce(context.Background())
+		if err != nil {
+			t.Fatalf("SweepOnce: %v", err)
+		}
+		if n != 5 {
+			t.Fatalf("total deleted = %d, want 5 (override cleanup must still run)", n)
+		}
+		wantOverrideBefore := fixed.Add(-CaptureOverrideRetention)
+		if !cl.overrideBefore.Equal(wantOverrideBefore) {
+			t.Fatalf("overrideBefore = %v, want %v", cl.overrideBefore, wantOverrideBefore)
+		}
+	})
 }
 
 func TestHTTPRecordV1BodyNulRejected(t *testing.T) {
@@ -412,5 +427,15 @@ func TestHTTPRecordV1BodyNulRejected(t *testing.T) {
 	req2.Records[0].Response.Body = "ok\x00bad"
 	if err := req2.Validate(); err == nil {
 		t.Fatal("v1 response.body containing NUL must fail validation (400)")
+	}
+}
+
+func TestInsertHTTPEventV2SQLIncludesPartitionKeyInOnConflict(t *testing.T) {
+	sql := buildInsertHTTPEventV2SQL()
+	if !strings.Contains(sql, "ON CONFLICT (agent_id, event_id, ts) WHERE event_id IS NOT NULL DO NOTHING") {
+		t.Fatalf("v2 insert SQL must include ts in ON CONFLICT: %s", sql)
+	}
+	if strings.Contains(sql, "ON CONFLICT (agent_id, event_id) ") {
+		t.Fatalf("v2 insert SQL must not use non-partitioned ON CONFLICT: %s", sql)
 	}
 }

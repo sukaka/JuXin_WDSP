@@ -69,6 +69,7 @@ sed 's|source "$SCRIPT_DIR/../lib/common.sh"|source "$SCRIPT_DIR/lib/common.sh"|
 grep -q 'source "$SCRIPT_DIR/lib/common.sh"' "${DIST_DIR}/ops/console-cert.sh" \
   || die "console-cert.sh 的 common.sh 引用路径改写失败"
 cp "${REPO_ROOT}/ops/lib/fingerprint.sh" "${DIST_DIR}/ops/fingerprint.sh"
+cp "${REPO_ROOT}/ops/lib/pg-tune.sh" "${DIST_DIR}/ops/pg-tune.sh"
 cp "${REPO_ROOT}/ops/lib/common.sh" "${DIST_DIR}/ops/lib/common.sh"
 
 # ---------- 4. 拷贝静态包源（模板/单元/脚本/README） ----------
@@ -86,6 +87,7 @@ cp "${PKG_SRC}/gateway/Caddyfile.bootstrap.template" \
 chmod 755 "${DIST_DIR}/install.sh" "${DIST_DIR}/uninstall.sh" \
   "${DIST_DIR}/backup.sh" "${DIST_DIR}/restore.sh" \
   "${DIST_DIR}/ops/console-cert.sh" "${DIST_DIR}/ops/fingerprint.sh" \
+  "${DIST_DIR}/ops/pg-tune.sh" \
   "${DIST_DIR}/bin/logrotator.sh"
 find "${DIST_DIR}" -name '.DS_Store' -delete 2>/dev/null || true
 

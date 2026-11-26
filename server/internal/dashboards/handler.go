@@ -2,7 +2,15 @@
 package dashboards
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"reflect"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -10,20 +18,229 @@ import (
 	"github.com/jiuzhang-waf/server/internal/cache"
 	"github.com/jiuzhang-waf/server/internal/metrics"
 	"github.com/jiuzhang-waf/server/internal/response"
+	"github.com/redis/go-redis/v9"
 )
+
+const (
+	defaultOverviewCacheTTL = 20 * time.Second
+	defaultCacheOpTimeout   = 500 * time.Millisecond
+	defaultLoadTimeout      = 15 * time.Second
+
+	cacheKeySecurityOverviewPrefix = "jiuzhang:dashboard:v1:security-overview:"
+	cacheKeyRuntimeOverview        = "jiuzhang:dashboard:v1:runtime-overview"
+	cacheKeyAuditOverview          = "jiuzhang:dashboard:v1:audit-overview"
+)
+
+type overviewCache interface {
+	Get(ctx context.Context, key string) (string, error)
+	Set(ctx context.Context, key, value string, ttl time.Duration) error
+}
+
+type sfCall struct {
+	done chan struct{}
+	val  any
+	err  error
+}
+
+type singleflightGroup struct {
+	mu sync.Mutex
+	m  map[string]*sfCall
+}
+
+func (g *singleflightGroup) do(ctx context.Context, key string, loadTimeout time.Duration, fn func(context.Context) (any, error)) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	g.mu.Lock()
+	if g.m == nil {
+		g.m = make(map[string]*sfCall)
+	}
+	if c, ok := g.m[key]; ok {
+		g.mu.Unlock()
+		select {
+		case <-c.done:
+			return c.val, c.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	c := &sfCall{done: make(chan struct{})}
+	g.m[key] = c
+	g.mu.Unlock()
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c.err = fmt.Errorf("dashboard singleflight panic: %v", r)
+			}
+			g.mu.Lock()
+			delete(g.m, key)
+			g.mu.Unlock()
+			close(c.done)
+		}()
+		loadCtx := context.WithoutCancel(ctx)
+		if loadTimeout > 0 {
+			var cancel context.CancelFunc
+			loadCtx, cancel = context.WithTimeout(loadCtx, loadTimeout)
+			defer cancel()
+		}
+		c.val, c.err = fn(loadCtx)
+	}()
+
+	select {
+	case <-c.done:
+		return c.val, c.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func isCacheAvailable(c overviewCache) bool {
+	if c == nil {
+		return false
+	}
+	v := reflect.ValueOf(c)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func:
+		return !v.IsNil()
+	default:
+		return true
+	}
+}
 
 // Handler 态势首页处理器。
 type Handler struct {
-	store *Store
+	store          *Store
+	ovCache        overviewCache
+	cacheTTL       time.Duration
+	cacheOpTimeout time.Duration
+	loadTimeout    time.Duration
+	sf             singleflightGroup
+
+	loadSecurity func(ctx context.Context, rangeName string, d time.Duration) (*SecurityOverviewData, error)
+	loadRuntime  func(ctx context.Context) (*RuntimeOverviewData, error)
+	loadAudit    func(ctx context.Context) (*AuditOverviewData, error)
 }
 
 // NewHandler 创建态势首页处理器。
 func NewHandler(aggStore *aggregations.Store, db *pgxpool.Pool) *Handler {
-	return &Handler{store: NewStore(db, aggStore)}
+	h := &Handler{
+		store:          NewStore(db, aggStore),
+		cacheTTL:       defaultOverviewCacheTTL,
+		cacheOpTimeout: defaultCacheOpTimeout,
+		loadTimeout:    defaultLoadTimeout,
+	}
+	h.loadSecurity = h.loadSecurityOverview
+	h.loadRuntime = h.loadRuntimeOverview
+	h.loadAudit = h.loadAuditOverview
+	return h
 }
 
-// SetCache 设置 Valkey 客户端（可选，用于运行态势存储采集）。
-func (h *Handler) SetCache(c *cache.Client) { h.store.SetCache(c) }
+// SetCache 设置 Valkey 客户端（可选，用于态势短 TTL 缓存与运行态势存储采集）。
+func (h *Handler) SetCache(c *cache.Client) {
+	h.store.SetCache(c)
+	if c != nil && c.Redis() != nil {
+		h.ovCache = c
+	} else {
+		h.ovCache = nil
+	}
+}
+
+type cacheGetResult struct {
+	raw string
+	err error
+}
+
+func boundedCacheGet(ctx context.Context, c overviewCache, key string, timeout time.Duration) (string, error) {
+	gCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ch := make(chan cacheGetResult, 1)
+	go func() {
+		raw, err := c.Get(gCtx, key)
+		ch <- cacheGetResult{raw: raw, err: err}
+	}()
+	select {
+	case res := <-ch:
+		return res.raw, res.err
+	case <-gCtx.Done():
+		return "", gCtx.Err()
+	}
+}
+
+func boundedCacheSet(ctx context.Context, c overviewCache, key, value string, ttl, timeout time.Duration) error {
+	sCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ch := make(chan error, 1)
+	go func() {
+		ch <- c.Set(sCtx, key, value, ttl)
+	}()
+	select {
+	case err := <-ch:
+		return err
+	case <-sCtx.Done():
+		return sCtx.Err()
+	}
+}
+
+func getOrLoadCached[T any](
+	ctx context.Context,
+	h *Handler,
+	key string,
+	load func(context.Context) (*T, error),
+) (*T, error) {
+	c := h.ovCache
+	ttl := h.cacheTTL
+	opTimeout := h.cacheOpTimeout
+	if opTimeout <= 0 {
+		opTimeout = defaultCacheOpTimeout
+	}
+	cacheEnabled := isCacheAvailable(c) && ttl > 0
+
+	if cacheEnabled {
+		raw, err := boundedCacheGet(ctx, c, key, opTimeout)
+		switch {
+		case err == nil:
+			var cached T
+			if uErr := json.Unmarshal([]byte(raw), &cached); uErr == nil {
+				return &cached, nil
+			} else {
+				slog.Warn("dashboard cache unmarshal failed, falling back to db", "key", key, "error", uErr)
+			}
+		case errors.Is(err, redis.Nil):
+			// normal cache miss
+		default:
+			if ctx.Err() == nil {
+				slog.Warn("dashboard cache get failed, falling back to db", "key", key, "error", err)
+			}
+		}
+	}
+
+	valAny, err := h.sf.do(ctx, key, h.loadTimeout, func(loadCtx context.Context) (any, error) {
+		val, lErr := load(loadCtx)
+		if lErr != nil {
+			return nil, lErr
+		}
+		if cacheEnabled && loadCtx.Err() == nil {
+			payload, mErr := json.Marshal(val)
+			if mErr != nil {
+				slog.Warn("dashboard cache marshal failed", "key", key, "error", mErr)
+			} else {
+				if sErr := boundedCacheSet(loadCtx, c, key, string(payload), ttl, opTimeout); sErr != nil && loadCtx.Err() == nil {
+					slog.Warn("dashboard cache set failed", "key", key, "error", sErr)
+				}
+			}
+		}
+		return val, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	val, ok := valAny.(*T)
+	if !ok {
+		return nil, fmt.Errorf("unexpected singleflight value type %T", valAny)
+	}
+	return val, nil
+}
 
 // ---------- 安全态势 ----------
 
@@ -81,7 +298,18 @@ func (h *Handler) SecurityOverview(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
-	ctx := r.Context()
+	key := cacheKeySecurityOverviewPrefix + rangeName
+	out, err := getOrLoadCached(r.Context(), h, key, func(loadCtx context.Context) (*SecurityOverviewData, error) {
+		return h.loadSecurity(loadCtx, rangeName, d)
+	})
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, out)
+}
+
+func (h *Handler) loadSecurityOverview(ctx context.Context, rangeName string, d time.Duration) (*SecurityOverviewData, error) {
 	now := time.Now().UTC()
 	start := now.Add(-d)
 	table := AggTableFor(d)
@@ -94,8 +322,7 @@ func (h *Handler) SecurityOverview(w http.ResponseWriter, r *http.Request) {
 	// 今日计数
 	today, err := h.store.TodayCounters(ctx, dayStart, now)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
 	out.Today = today
 
@@ -115,24 +342,25 @@ func (h *Handler) SecurityOverview(w http.ResponseWriter, r *http.Request) {
 		{metrics.CCExceededTotal, &trends.CCExceeded},
 		{metrics.IPDenyMatchesTotal, &trends.IPDeny},
 	}
+	simpleNames := make([]string, len(simple))
+	for i, it := range simple {
+		simpleNames[i] = it.metric
+	}
+	seriesTimes, seriesVals, err := h.store.metricSeriesBatch(ctx, table, simpleNames, start, now)
+	if err != nil {
+		return nil, err
+	}
 	for _, it := range simple {
-		times, values, err := h.store.metricSeries(ctx, table, it.metric, start, now)
-		if err != nil {
-			response.InternalError(w, r, err)
-			return
-		}
-		*it.dst = SeriesInto(buckets, times, values, step)
+		*it.dst = SeriesInto(buckets, seriesTimes[it.metric], seriesVals[it.metric], step)
 	}
 	sev, err := h.store.severitySeries(ctx, table, start, now)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
 	trends.RiskLevels = SeriesMapInto(buckets, sev, step)
 	disp, err := h.store.dispositionSeries(ctx, start, now, StepTrunc(step))
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
 	trends.Disposition = SeriesMapInto(buckets, disp, step)
 	out.Trends = trends
@@ -140,28 +368,23 @@ func (h *Handler) SecurityOverview(w http.ResponseWriter, r *http.Request) {
 	// 排行
 	attackTypes, err := h.store.TopAttackTypes(ctx, table, start, now, 5)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
 	sourceIPs, err := h.store.TopSourceIPs(ctx, start, now, 10)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
 	apps, err := h.store.TopApplications(ctx, table, start, now, 5)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
 	rules, err := h.store.TopRules(ctx, table, start, now, 10)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
 	uris, err := h.store.TopURIs(ctx, start, now, 10)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
 	out.Top = &TopData{
 		AttackTypes: attackTypes, SourceIPs: sourceIPs,
@@ -171,23 +394,19 @@ func (h *Handler) SecurityOverview(w http.ResponseWriter, r *http.Request) {
 	// 风险
 	highEvents, err := h.store.RecentHighUnprocessed(ctx, 10)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
 	failedPublishes, err := h.store.RecentFailedPublishes(ctx, 5)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
 	issues, err := h.store.ComponentIssues(ctx)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
 	lag, err := h.store.CollectorLag(ctx)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
 	out.Risks = &RiskData{
 		HighUnprocessedEvents: highEvents,
@@ -195,7 +414,7 @@ func (h *Handler) SecurityOverview(w http.ResponseWriter, r *http.Request) {
 		GatewayIssues:         issues,
 		CollectorLag:          lag,
 	}
-	response.JSON(w, r, http.StatusOK, out)
+	return out, nil
 }
 
 // ---------- 运行态势 ----------
@@ -212,40 +431,58 @@ type RuntimeOverviewData struct {
 
 // RuntimeOverview GET /api/v1/dashboard/runtime-overview
 func (h *Handler) RuntimeOverview(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	out, err := getOrLoadCached(r.Context(), h, cacheKeyRuntimeOverview, h.loadRuntime)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, out)
+}
+
+func (h *Handler) loadRuntimeOverview(ctx context.Context) (*RuntimeOverviewData, error) {
 	components, err := h.store.LatestComponentStatuses(ctx)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
-	gateway, err := h.store.GatewayRuntime(ctx)
+	gateway := deriveGatewayRuntime(components)
+	publish, reports, storage, err := h.store.runtimeOverviewStats(ctx, 30)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
-	publish, err := h.store.PublishStats(ctx, 30)
-	if err != nil {
-		response.InternalError(w, r, err)
-		return
-	}
-	reports, err := h.store.ReportStats(ctx, 30)
-	if err != nil {
-		response.InternalError(w, r, err)
-		return
-	}
-	storage, err := h.store.StorageStats(ctx)
-	if err != nil {
-		response.InternalError(w, r, err)
-		return
-	}
-	response.JSON(w, r, http.StatusOK, &RuntimeOverviewData{
+	return &RuntimeOverviewData{
 		GeneratedAt: time.Now().UTC(),
 		Components:  components,
 		Gateway:     gateway,
 		Publish:     publish,
 		Reports:     reports,
 		Storage:     storage,
-	})
+	}, nil
+}
+
+func deriveGatewayRuntime(components []ComponentStatus) *GatewayRuntime {
+	out := &GatewayRuntime{Status: "UNKNOWN"}
+	var latest *ComponentStatus
+	for i := range components {
+		c := &components[i]
+		if !strings.Contains(strings.ToLower(c.Component), "gateway") {
+			continue
+		}
+		if latest == nil || c.TakenAt.After(latest.TakenAt) {
+			latest = c
+		}
+	}
+	if latest == nil {
+		return out
+	}
+	out.Status = latest.Status
+	t := latest.TakenAt
+	out.SnapshotAt = &t
+	if latest.Metrics != nil {
+		if v, ok := latest.Metrics["uptime_seconds"].(float64); ok {
+			out.UptimeSeconds = &v
+		}
+	}
+	return out
 }
 
 // ---------- 审计态势 ----------
@@ -263,36 +500,36 @@ type AuditOverviewData struct {
 
 // AuditOverview GET /api/v1/dashboard/audit-overview
 func (h *Handler) AuditOverview(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	now := time.Now().UTC()
-	dayStart, _ := TodayWindowUTC(now)
-	counters, err := h.store.AuditCounters(ctx, dayStart, now)
+	out, err := getOrLoadCached(r.Context(), h, cacheKeyAuditOverview, h.loadAudit)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
+	}
+	response.JSON(w, r, http.StatusOK, out)
+}
+
+func (h *Handler) loadAuditOverview(ctx context.Context) (*AuditOverviewData, error) {
+	now := time.Now().UTC()
+	dayStart, _ := TodayWindowUTC(now)
+	todayDispositions, unprocessedEvents, dist, err := h.store.auditSecurityOverviewStats(ctx, dayStart, now)
+	if err != nil {
+		return nil, err
 	}
 	recent, err := h.store.RecentAudits(ctx, 10)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
-	dist, err := h.store.DispositionDistribution(ctx)
+	todayAudits, actions, err := h.store.auditOperationOverviewStats(ctx, dayStart, now, 10)
 	if err != nil {
-		response.InternalError(w, r, err)
-		return
+		return nil, err
 	}
-	actions, err := h.store.AuditActionStats(ctx, dayStart, now, 10)
-	if err != nil {
-		response.InternalError(w, r, err)
-		return
-	}
-	response.JSON(w, r, http.StatusOK, &AuditOverviewData{
+	return &AuditOverviewData{
 		GeneratedAt:             now,
-		TodayDispositions:       counters.TodayDispositions,
-		UnprocessedEvents:       counters.UnprocessedEvents,
-		TodayAudits:             counters.TodayAudits,
+		TodayDispositions:       todayDispositions,
+		UnprocessedEvents:       unprocessedEvents,
+		TodayAudits:             todayAudits,
 		RecentAudits:            recent,
 		DispositionDistribution: dist,
 		ActionStats:             actions,
-	})
+	}, nil
 }

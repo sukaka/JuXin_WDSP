@@ -95,6 +95,10 @@ const AccessControlEventsPage = lazy(
 const AccessControlVersionsPage = lazy(
   () => import('../pages/access-control-versions/AccessControlVersionsPage'),
 )
+const AiCrawlPage = lazy(() => import('../pages/ai-crawl/AiCrawlPage'))
+const ClientSideSecurityPage = lazy(
+  () => import('../pages/client-side-security/ClientSideSecurityPage'),
+)
 const ApiEndpointsPage = lazy(
   () => import('../pages/api-endpoints/ApiEndpointsPage'),
 )
@@ -816,6 +820,24 @@ export default function AppRoutes() {
                   <AccessControlVersionsPage />
                 </RequirePermission>
               </RequireWebWaf>
+            }
+          />
+          {/* WDSP Phase 9A-2：AI 爬虫公钥目录（Web Bot Auth） */}
+          <Route
+            path="ai-crawl"
+            element={
+              <RequirePermission permission="ai_crawl.read">
+                <AiCrawlPage />
+              </RequirePermission>
+            }
+          />
+          {/* WDSP Phase 9B：客户端供应链安全（PCI DSS 4.0 6.4.3 & 11.6.1） */}
+          <Route
+            path="client-side-security"
+            element={
+              <RequirePermission permission="client_side.read">
+                <ClientSideSecurityPage />
+              </RequirePermission>
             }
           />
           <Route

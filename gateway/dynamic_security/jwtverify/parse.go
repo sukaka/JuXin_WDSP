@@ -31,26 +31,41 @@ const tokenCharset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345
 // 重复 Authorization、多 Token、错误 Bearer 格式均有界拒绝（MALFORMED_TOKEN）。
 // 返回值 present=false 表示完全没有 Authorization 头（非错误）。
 func extractBearer(values []string) (token string, present bool, err error) {
+	tok, _, present, err := extractAuthToken(values, false)
+	return tok, present, err
+}
+
+// extractAuthToken 从 Authorization 头值集合中提取认证令牌与方案（"Bearer" 或 allowDPoP=true 时的 "DPoP"）。
+// 重复 Authorization、多 Token、非法方案或字符均有界拒绝（MALFORMED_TOKEN）。
+func extractAuthToken(values []string, allowDPoP bool) (token, scheme string, present bool, err error) {
 	if len(values) == 0 {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	if len(values) > 1 {
-		return "", false, tokErr(ReasonMalformedToken, "重复 Authorization 头")
+		return "", "", false, tokErr(ReasonMalformedToken, "重复 Authorization 头")
 	}
 	fields := strings.Fields(values[0])
-	if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
-		return "", false, tokErr(ReasonMalformedToken, "Bearer 格式错误")
+	if len(fields) != 2 {
+		return "", "", false, tokErr(ReasonMalformedToken, "Authorization 格式错误")
+	}
+	switch {
+	case strings.EqualFold(fields[0], "Bearer"):
+		scheme = "Bearer"
+	case allowDPoP && strings.EqualFold(fields[0], "DPoP"):
+		scheme = "DPoP"
+	default:
+		return "", "", false, tokErr(ReasonMalformedToken, "Bearer 格式错误")
 	}
 	token = fields[1]
 	if len(token) > MaxTokenBytes {
-		return "", false, tokErr(ReasonMalformedToken, "Token 超过 16KiB 上限")
+		return "", "", false, tokErr(ReasonMalformedToken, "Token 超过 16KiB 上限")
 	}
 	if strings.ContainsAny(token, ", ") || strings.IndexFunc(token, func(r rune) bool {
 		return !strings.ContainsRune(tokenCharset, r)
 	}) >= 0 {
-		return "", false, tokErr(ReasonMalformedToken, "Token 含非法字符")
+		return "", "", false, tokErr(ReasonMalformedToken, "Token 含非法字符")
 	}
-	return token, true, nil
+	return token, scheme, true, nil
 }
 
 // parsedToken 严格解析后的 JWS/JWT 结构；claims 尚未验签，不得信任。

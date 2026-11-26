@@ -71,6 +71,23 @@ const (
 	MIDUnavailable Type = "MID_UNAVAILABLE"
 	MIDScopeDenied Type = "MID_SCOPE_DENIED"
 	MIDBotExempt   Type = "MID_BOT_EXEMPT"
+	// AI 爬虫治理与离线迷宫事件（Phase 9A-2；网关 ai_crawl_policy 产生——
+	// AI_CRAWL_VERIFIED 为 Web Bot Auth 签名验签通过，
+	// AI_CRAWL_OBSERVED 为 OBSERVE 模式观察命中（不实断），
+	// AI_CRAWL_ACTION 为 PROTECT 模式策略处置（ALLOW/RATE_LIMIT/CHALLENGE/TARPIT/HTTP_402/BLOCK），
+	// AI_CRAWL_TRAP_HIT 为命中 /_wdsp/labyrinth/v1/ 保留命名空间陷阱。
+	// 明细嵌套在 ai_crawl 对象下，绝不落签名原文/公钥原文/迷宫 HMAC 密钥。）
+	AICrawlVerified Type = "AI_CRAWL_VERIFIED"
+	AICrawlObserved Type = "AI_CRAWL_OBSERVED"
+	AICrawlAction   Type = "AI_CRAWL_ACTION"
+	AICrawlTrapHit  Type = "AI_CRAWL_TRAP_HIT"
+	// 客户端供应链安全事件（Phase 9B / Magecart 防护 / PCI DSS 4.0 6.4.3 & 11.6.1；
+	// 网关 client_side_policy 产生——明细嵌套在 client_side 对象下，URL 剥离凭据与查询串）。
+	ClientSideScriptObserved     Type = "CLIENT_SIDE_SCRIPT_OBSERVED"
+	ClientSideUnauthorizedScript Type = "CLIENT_SIDE_UNAUTHORIZED_SCRIPT"
+	ClientSideScriptTampered     Type = "CLIENT_SIDE_SCRIPT_TAMPERED"
+	ClientSideCSPViolation       Type = "CLIENT_SIDE_CSP_VIOLATION"
+	ClientSideProbeAlert         Type = "CLIENT_SIDE_PROBE_ALERT"
 )
 
 // Event 访问控制/CC 事件（字段与数据库 access_control_events 对应）。
@@ -118,6 +135,12 @@ type Event struct {
 	// 公钥原文/体原文——身份为 HMAC 指纹，nonce 仅以 sha256 摘要参与存储与事件；
 	// 其余事件为 nil 零变化）
 	MachineID *MachineIDDetail `json:"machine_id,omitempty"`
+	// AICrawl AI 爬虫治理与离线迷宫明细（仅 AI_CRAWL_* 事件携带；不落签名原文/
+	// 公钥原文/迷宫 HMAC 密钥；其余事件为 nil 零变化）
+	AICrawl *AICrawlDetail `json:"ai_crawl,omitempty"`
+	// ClientSide 客户端供应链安全明细（仅 CLIENT_SIDE_* 事件携带；URL 均已剥离查询串与凭据；
+	// 其余事件为 nil 零变化）
+	ClientSide *ClientSideDetail `json:"client_side,omitempty"`
 	// FinalDecision 请求最终处置上下文快照（WDSP P0-04，final_decision JSON
 	// schema_version=1）：仅终止分支事件挂载（RecordTerminal 后取，内容完整——
 	// 终止后不再产生新事实）；放行/观察事件不挂（请求未完成，提前 Finalize 会
@@ -175,6 +198,46 @@ type BotDetail struct {
 	KeyID         string `json:"key_id,omitempty"`   // 验签密钥引用名（非密钥材料）
 	Attempts      int    `json:"attempts,omitempty"` // 已消费验证尝试次数（verify 结果事件）
 	ResponseNote  string `json:"note,omitempty"`     // 补充说明（静态文本，不携带外部输入原文）
+}
+
+// AICrawlDetail AI 爬虫治理与离线迷宫明细（Phase 9A-2）：
+// 仅承载策略版本/模式/验证状态/代理元信息/命中规则与迷宫深度——
+// 绝不出现签名原文、公钥原文或迷宫 HMAC 密钥材料。
+type AICrawlDetail struct {
+	PolicyVersion      int    `json:"policy_version,omitempty"`
+	Mode               string `json:"mode,omitempty"`
+	Category           string `json:"category,omitempty"`
+	AgentID            string `json:"agent_id,omitempty"`
+	AgentSlug          string `json:"agent_slug,omitempty"`
+	AgentName          string `json:"agent_name,omitempty"`
+	SignatureAgent     string `json:"signature_agent,omitempty"`
+	SignatureVerified  bool   `json:"signature_verified,omitempty"`
+	SignatureKeyID     string `json:"signature_key_id,omitempty"`
+	SignatureReason    string `json:"signature_reason,omitempty"`
+	RuleID             string `json:"rule_id,omitempty"`
+	RuleName           string `json:"rule_name,omitempty"`
+	Action             string `json:"action,omitempty"`
+	ExemptBotChallenge bool   `json:"exempt_bot_challenge,omitempty"`
+	LabyrinthDepth     int    `json:"labyrinth_depth,omitempty"`
+	TrapValid          bool   `json:"trap_valid,omitempty"`
+}
+
+// ClientSideDetail 客户端供应链安全明细（Phase 9B / PCI DSS 4.0 6.4.3 & 11.6.1）：
+// 承载策略版本/模式、违规类型、脱敏脚本 URL 与来源、SRI 比对、违规指令与处置动作。
+type ClientSideDetail struct {
+	PolicyVersion     int    `json:"policy_version,omitempty"`
+	Mode              string `json:"mode,omitempty"`
+	ViolationType     string `json:"violation_type,omitempty"`
+	ScriptURL         string `json:"script_url,omitempty"`
+	ScriptOrigin      string `json:"script_origin,omitempty"`
+	ScriptType        string `json:"script_type,omitempty"`
+	ExpectedSRI       string `json:"expected_sri,omitempty"`
+	ObservedSRI       string `json:"observed_sri,omitempty"`
+	PagePath          string `json:"page_path,omitempty"`
+	ViolatedDirective string `json:"violated_directive,omitempty"`
+	BlockedURI        string `json:"blocked_uri,omitempty"`
+	ActionTaken       string `json:"action_taken,omitempty"`
+	Reason            string `json:"reason,omitempty"`
 }
 
 // 字段长度上限（防超大输入撑爆日志）。
@@ -244,6 +307,7 @@ func (l *Logger) Emit(e Event) error {
 		e.JWT.VerifiedPrincipalID = sanitize(e.JWT.VerifiedPrincipalID, maxVerLen)
 		e.JWT.VerifiedTenantID = sanitize(e.JWT.VerifiedTenantID, maxVerLen)
 		e.JWT.VerifiedIdentityType = sanitize(e.JWT.VerifiedIdentityType, 32)
+		e.JWT.TokenBindingVerified = sanitize(e.JWT.TokenBindingVerified, 32)
 		e.JWT.EvaluatedAt = sanitize(e.JWT.EvaluatedAt, 64)
 	}
 	if e.Bot != nil {
@@ -252,6 +316,37 @@ func (l *Logger) Emit(e Event) error {
 		e.Bot.FlowID = sanitize(e.Bot.FlowID, 32)
 		e.Bot.KeyID = sanitize(e.Bot.KeyID, 64)
 		e.Bot.ResponseNote = sanitize(e.Bot.ResponseNote, maxMsgLen)
+	}
+	if e.AICrawl != nil {
+		ac := *e.AICrawl
+		ac.Mode = sanitize(ac.Mode, 16)
+		ac.Category = sanitize(ac.Category, 32)
+		ac.AgentID = sanitize(ac.AgentID, maxVerLen)
+		ac.AgentSlug = sanitize(ac.AgentSlug, maxVerLen)
+		ac.AgentName = sanitize(ac.AgentName, maxVerLen)
+		ac.SignatureAgent = sanitize(ac.SignatureAgent, maxChainSummaryLen)
+		ac.SignatureKeyID = sanitize(ac.SignatureKeyID, maxVerLen)
+		ac.SignatureReason = sanitize(ac.SignatureReason, 64)
+		ac.RuleID = sanitize(ac.RuleID, maxVerLen)
+		ac.RuleName = sanitize(ac.RuleName, maxVerLen)
+		ac.Action = sanitize(ac.Action, 32)
+		e.AICrawl = &ac
+	}
+	if e.ClientSide != nil {
+		cs := *e.ClientSide
+		cs.Mode = sanitize(cs.Mode, 16)
+		cs.ViolationType = sanitize(cs.ViolationType, 32)
+		cs.ScriptURL = sanitize(cs.ScriptURL, 1024)
+		cs.ScriptOrigin = sanitize(cs.ScriptOrigin, 256)
+		cs.ScriptType = sanitize(cs.ScriptType, 16)
+		cs.ExpectedSRI = sanitize(cs.ExpectedSRI, 256)
+		cs.ObservedSRI = sanitize(cs.ObservedSRI, 256)
+		cs.PagePath = sanitize(cs.PagePath, maxPathLen)
+		cs.ViolatedDirective = sanitize(cs.ViolatedDirective, 128)
+		cs.BlockedURI = sanitize(cs.BlockedURI, 1024)
+		cs.ActionTaken = sanitize(cs.ActionTaken, 32)
+		cs.Reason = sanitize(cs.Reason, maxMsgLen)
+		e.ClientSide = &cs
 	}
 	data, err := json.Marshal(e)
 	if err != nil {

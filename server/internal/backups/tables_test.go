@@ -102,7 +102,11 @@ func TestTablesForBackup(t *testing.T) {
 func TestTablesIncludeWDSPStateAndRestoreDependencies(t *testing.T) {
 	required := []string{
 		"application_policies", "jwt_trust_policies", "jwt_trust_policy_versions",
-		"bot_policies", "bot_policy_versions", "api_endpoints", "api_model_versions",
+		"bot_policies", "bot_policy_versions",
+		"ai_crawler_directories", "ai_crawl_policies", "ai_crawl_policy_versions",
+		"client_side_policies", "client_side_policy_versions",
+		"client_script_inventory", "client_side_violations",
+		"api_endpoints", "api_model_versions",
 		"api_runtime_policies", "api_runtime_events", "api_runtime_findings",
 		"api_schema_violations", "api_object_models", "api_object_relations",
 		"api_authorization_decisions", "api_role_baselines", "api_object_ownership",
@@ -130,14 +134,54 @@ func TestTablesIncludeWDSPStateAndRestoreDependencies(t *testing.T) {
 		pos[name] = i
 	}
 	for child, parent := range map[string]string{
-		"application_policies": "applications",
-		"api_endpoints":        "applications",
-		"api_model_versions":   "api_endpoints",
-		"api_runtime_policies": "api_model_versions",
+		"application_policies":       "applications",
+		"api_endpoints":              "applications",
+		"api_model_versions":         "api_endpoints",
+		"api_runtime_policies":       "api_model_versions",
+		"client_side_policies":       "applications",
+		"client_side_policy_versions": "client_side_policies",
+		"client_script_inventory":    "applications",
 	} {
+		// 仅检查传入子集内的边
+		if _, okC := pos[child]; !okC {
+			continue
+		}
+		if _, okP := pos[parent]; !okP {
+			continue
+		}
 		if pos[parent] >= pos[child] {
 			t.Errorf("%s must restore before %s: %v", parent, child, order)
 		}
+	}
+	// Phase 9B 客户端供应链安全四表分组与拓扑校验
+	csGroups := map[string]string{
+		"client_side_policies":        GroupConfig,
+		"client_side_policy_versions": GroupConfig,
+		"client_script_inventory":     GroupConfig,
+		"client_side_violations":      GroupAudit,
+	}
+	for tbl, wantGroup := range csGroups {
+		td, ok := TableByName(tbl)
+		if !ok {
+			t.Errorf("missing client-side table %q", tbl)
+			continue
+		}
+		if td.Group != wantGroup {
+			t.Errorf("table %q group = %q, want %q", tbl, td.Group, wantGroup)
+		}
+	}
+	csOrder, err := RestoreOrder([]string{"client_side_policy_versions", "client_script_inventory", "client_side_policies", "applications"})
+	if err != nil {
+		t.Fatalf("RestoreOrder(client_side) error = %v", err)
+	}
+	csPos := map[string]int{}
+	for i, n := range csOrder {
+		csPos[n] = i
+	}
+	if csPos["applications"] >= csPos["client_side_policies"] ||
+		csPos["client_side_policies"] >= csPos["client_side_policy_versions"] ||
+		csPos["applications"] >= csPos["client_script_inventory"] {
+		t.Errorf("invalid client-side restore order: %v", csOrder)
 	}
 }
 

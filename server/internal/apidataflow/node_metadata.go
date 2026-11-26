@@ -3,6 +3,7 @@ package apidataflow
 import (
 	"context"
 	"fmt"
+	"sort"
 )
 
 type serviceNodeMetadata struct {
@@ -13,35 +14,49 @@ type serviceNodeMetadata struct {
 }
 
 func (s *CHReader) addNodeMetadata(ctx context.Context, filter GraphFilter, graph *Graph) error {
-	querier, err := s.querier(ctx)
-	if err != nil {
-		return err
+	serviceSet := map[string]struct{}{}
+	for i := range graph.Nodes {
+		if graph.Nodes[i].Type == "SERVICE" && graph.Nodes[i].Name != "" {
+			serviceSet[graph.Nodes[i].Name] = struct{}{}
+		}
 	}
-	where, args := graphWhere(filter, true)
-	rows, err := querier.Query(ctx, `
+	metadata := map[string]serviceNodeMetadata{}
+	if len(serviceSet) > 0 {
+		querier, err := s.querier(ctx)
+		if err != nil {
+			return err
+		}
+		serviceNames := make([]string, 0, len(serviceSet))
+		for name := range serviceSet {
+			serviceNames = append(serviceNames, name)
+		}
+		sort.Strings(serviceNames)
+		where, args := graphWhere(filter, true)
+		args = append(args, serviceNames)
+		rows, err := querier.Query(withCHQuerySettings(ctx), `
 SELECT service_name,
  argMax(environment,received_at),
  argMax(namespace,received_at),
  argMax(cluster,received_at),
  groupUniqArrayIf(10)(host,host != '')
 FROM wdsp.api_observations
-WHERE `+where+` AND direction = 'SERVER'
+WHERE `+where+` AND direction = 'SERVER' AND wdsp.api_observations.service_name IN (?)
 GROUP BY service_name`, args...)
-	if err != nil {
-		return fmt.Errorf("query dataflow node metadata: %w", err)
-	}
-	defer rows.Close()
-	metadata := map[string]serviceNodeMetadata{}
-	for rows.Next() {
-		var name string
-		var item serviceNodeMetadata
-		if err := rows.Scan(&name, &item.environment, &item.namespace, &item.cluster, &item.addresses); err != nil {
+		if err != nil {
+			return fmt.Errorf("query dataflow node metadata: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			var item serviceNodeMetadata
+			if err := rows.Scan(&name, &item.environment, &item.namespace, &item.cluster, &item.addresses); err != nil {
+				return err
+			}
+			metadata[name] = item
+		}
+		if err := rows.Err(); err != nil {
 			return err
 		}
-		metadata[name] = item
-	}
-	if err := rows.Err(); err != nil {
-		return err
 	}
 	for i := range graph.Nodes {
 		node := &graph.Nodes[i]

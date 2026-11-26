@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -67,18 +68,26 @@ func (s *Store) upsert(ctx context.Context, table string, bucket time.Time, rows
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	n := 0
-	for _, r := range rows {
-		_, err := tx.Exec(ctx, fmt.Sprintf(`
+	stmt := fmt.Sprintf(`
 INSERT INTO %s (bucket_start, metric, labels, value, extra, updated_at)
 VALUES ($1, $2, $3, $4, $5, now())
 ON CONFLICT (bucket_start, metric, labels)
-DO UPDATE SET value = EXCLUDED.value, extra = EXCLUDED.extra, updated_at = now()`, table),
-			bucket, r.Metric, labelsJSON(r.Labels), r.Value, extraJSON(r.Extra))
-		if err != nil {
+DO UPDATE SET value = EXCLUDED.value, extra = EXCLUDED.extra, updated_at = now()`, table)
+	b := &pgx.Batch{}
+	for _, r := range rows {
+		b.Queue(stmt, bucket, r.Metric, labelsJSON(r.Labels), r.Value, extraJSON(r.Extra))
+	}
+	br := tx.SendBatch(ctx, b)
+	n := 0
+	for range rows {
+		if _, err := br.Exec(); err != nil {
+			_ = br.Close()
 			return n, fmt.Errorf("upsert %s: %w", table, err)
 		}
 		n++
+	}
+	if err := br.Close(); err != nil {
+		return n, fmt.Errorf("upsert %s batch close: %w", table, err)
 	}
 	return n, tx.Commit(ctx)
 }
@@ -159,6 +168,63 @@ func (s *Store) SumRange(ctx context.Context, table, metric string, labels map[s
 	var sum float64
 	err := s.db.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(SUM(value),0) FROM %s WHERE %s`, table, where), args...).Scan(&sum)
 	return sum, err
+}
+
+// SumRangeBatch 批量汇总多个无标签过滤的区间指标（单条 SQL 替代多次往返）。
+func (s *Store) SumRangeBatch(ctx context.Context, table string, metricNames []string, start, end time.Time) (map[string]float64, error) {
+	out := make(map[string]float64, len(metricNames))
+	if len(metricNames) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, fmt.Sprintf(`
+SELECT metric, COALESCE(SUM(value), 0)
+FROM %s
+WHERE metric = ANY($1) AND bucket_start >= $2 AND bucket_start < $3
+GROUP BY metric`, table), metricNames, start, end)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var m string
+		var v float64
+		if err := rows.Scan(&m, &v); err != nil {
+			return nil, err
+		}
+		out[m] = v
+	}
+	return out, rows.Err()
+}
+
+// QueryRangeBatch 批量查询多个指标的时间桶序列（按 metric + bucket_start 在库侧合并求和，
+// 降低往返次数与网络传输量，口径与逐指标 QueryRange 后再按桶累加完全一致）。
+func (s *Store) QueryRangeBatch(ctx context.Context, table string, metricNames []string, start, end time.Time) (map[string][]time.Time, map[string][]float64, error) {
+	times := make(map[string][]time.Time, len(metricNames))
+	vals := make(map[string][]float64, len(metricNames))
+	if len(metricNames) == 0 {
+		return times, vals, nil
+	}
+	rows, err := s.db.Query(ctx, fmt.Sprintf(`
+SELECT metric, bucket_start, SUM(value)
+FROM %s
+WHERE metric = ANY($1) AND bucket_start >= $2 AND bucket_start < $3
+GROUP BY metric, bucket_start
+ORDER BY metric, bucket_start`, table), metricNames, start, end)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var m string
+		var t time.Time
+		var v float64
+		if err := rows.Scan(&m, &t, &v); err != nil {
+			return nil, nil, err
+		}
+		times[m] = append(times[m], t)
+		vals[m] = append(vals[m], v)
+	}
+	return times, vals, rows.Err()
 }
 
 // TopLabels 按值排序取标签排行（如攻击类型/IP/应用）。

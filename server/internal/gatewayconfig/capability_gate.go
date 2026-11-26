@@ -89,6 +89,15 @@ type CapabilityFacts struct {
 	// TLCPRequired 表示发布配置包含国密 SM_TLCP 双证书、TLCP1.1 协议策略或 tlcp 回源源站
 	// （需要节点能力 protocols.tlcp="1.1"）。
 	TLCPRequired bool
+	// JWTBindingProtect Phase 9A-1：jwt_trust 含任一 mode=PROTECT 且至少一个 issuer 启用了
+	// 非 NONE 的 token_binding（DPoP / mTLS）——需要节点自报 detectors.jwt.binding="jwtbind/1"。
+	JWTBindingProtect bool
+	// AICrawlProtect Phase 9A-2：ai_crawl_policy 含任一 mode=PROTECT 策略——
+	// 需要节点自报 detectors.aicrawl="aicrawl/1" 与 actions "tarpit" / "http_402"。
+	AICrawlProtect bool
+	// ClientSideProtect Phase 9B：client_side_policy 含任一 mode=PROTECT 或 csp_mode=ENFORCE 策略——
+	// 需要节点自报 detectors.clientside="clientside/1"。
+	ClientSideProtect bool
 }
 
 // capabilityFactsFromApps 从发布应用快照推导 TLS Mux 与国密 TLCP 能力需求。
@@ -226,6 +235,35 @@ func capabilityFactsFromGuard(guardCfg *GuardConfig, targetAppIDs ...uuid.UUID) 
 			break
 		}
 	}
+	// Phase 9A-1：JWT 信任策略 PROTECT 且至少一个 issuer 启用了非 NONE 的 token_binding → jwt.binding
+	for _, pol := range guardCfg.JWTTrust {
+		if pol == nil || pol.Mode != "PROTECT" {
+			continue
+		}
+		for _, iss := range pol.Issuers {
+			if iss.TokenBinding != nil && iss.TokenBinding.Mode != "" && iss.TokenBinding.Mode != "NONE" {
+				facts.JWTBindingProtect = true
+				break
+			}
+		}
+		if facts.JWTBindingProtect {
+			break
+		}
+	}
+	// Phase 9A-2：AI 爬虫治理策略含任一 PROTECT → aicrawl + tarpit/http_402
+	for _, pol := range guardCfg.AICrawlPolicy {
+		if pol != nil && pol.Mode == "PROTECT" {
+			facts.AICrawlProtect = true
+			break
+		}
+	}
+	// Phase 9B：客户端供应链安全策略含任一 PROTECT 或 CSP ENFORCE → clientside/1
+	for _, pol := range guardCfg.ClientSidePolicy {
+		if pol != nil && (pol.Mode == "PROTECT" || pol.CSPMode == "ENFORCE") {
+			facts.ClientSideProtect = true
+			break
+		}
+	}
 	facts.RiskChallenge = riskChallengeRequired(guardCfg, targetAppIDs)
 	return facts
 }
@@ -318,6 +356,16 @@ func RequiredCapabilities(f CapabilityFacts) capability.Manifest {
 	// ProtocolLevels 不动（机器身份是检测器能力不是协议层级）
 	if f.MachineIDProtect {
 		detectors = append(detectors, capability.DetectorCap{Name: "machineid", Version: "mid/1"})
+	}
+	if f.JWTBindingProtect {
+		detectors = append(detectors, capability.DetectorCap{Name: "jwt.binding", Version: "jwtbind/1"})
+	}
+	if f.AICrawlProtect {
+		detectors = append(detectors, capability.DetectorCap{Name: "aicrawl", Version: "aicrawl/1"})
+		actions = append(actions, "tarpit", "http_402")
+	}
+	if f.ClientSideProtect {
+		detectors = append(detectors, capability.DetectorCap{Name: "clientside", Version: "clientside/1"})
 	}
 	if f.RiskChallenge {
 		actions = append(actions, "risk_challenge")

@@ -40,6 +40,8 @@ func (s *SQLEventSource) FetchWAF(ctx context.Context, start, end time.Time, lim
 SELECT e.id, e.application_id, COALESCE(e.domain,''), COALESCE(e.request_path,''),
   COALESCE(host(e.client_ip),''),
   (SELECT m.rule_id FROM security_event_matches m WHERE m.event_id = e.id
+   AND m.event_occurred_at = e.occurred_at
+   AND m.event_occurred_at >= $1 AND m.event_occurred_at < $2
    ORDER BY m.anomaly_score DESC, m.rule_id LIMIT 1),
   e.occurred_at
 FROM security_events e

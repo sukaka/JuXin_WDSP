@@ -481,4 +481,147 @@ describe('JwtTrustTab', () => {
       await screen.findByText('role_claims 数量不能超过 8'),
     ).toBeInTheDocument()
   })
+
+  it('9A-1: token_binding 缺省/NONE 时隐藏 DPoP 控件且 PUT 省略 token_binding 字段', async () => {
+    vi.stubGlobal('fetch', mockFetch(DRAFT_PENDING))
+    useAuthStore.setState({
+      user: makeUser(['jwt_trust.read', 'jwt_trust.manage']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderTab()
+    expect(
+      await screen.findByText('令牌持有证明绑定（DPoP / mTLS）'),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('要求 DPoP-Nonce 挑战'),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('证明最大有效期（秒）'),
+    ).not.toBeInTheDocument()
+
+    fireEvent.change(
+      screen.getByPlaceholderText('说明本次变更原因，如：接入新的身份发行方'),
+      { target: { value: '保持兼容模式' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }))
+    await waitFor(() => {
+      const putCall = (fetch as Mock).mock.calls.find(
+        (c) =>
+          String(c[0]).endsWith(`/applications/${APP_ID}/jwt-trust-policy`) &&
+          c[1]?.method === 'PUT',
+      )
+      expect(putCall).toBeTruthy()
+      const body = JSON.parse(String(putCall![1]?.body)) as {
+        issuers: Record<string, unknown>[]
+      }
+      expect('token_binding' in body.issuers[0]).toBe(false)
+    })
+  })
+
+  it('9A-1: 回显并序列化 DPoP token_binding 配置（含 require_nonce/有效期/算法）', async () => {
+    const withDPoP = {
+      ...DRAFT_PENDING,
+      policy: {
+        ...DRAFT_PENDING.policy,
+        issuers: [
+          {
+            ...DRAFT_PENDING.policy.issuers[0],
+            token_binding: {
+              mode: 'DPOP_REQUIRED',
+              require_nonce: true,
+              max_proof_age_seconds: 30,
+              nonce_ttl_seconds: 90,
+              allowed_dpop_algs: ['ES256', 'EdDSA'],
+            },
+          },
+        ],
+      },
+    }
+    vi.stubGlobal('fetch', mockFetch(withDPoP))
+    useAuthStore.setState({
+      user: makeUser(['jwt_trust.read', 'jwt_trust.manage']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderTab()
+    expect(
+      await screen.findByLabelText('要求 DPoP-Nonce 挑战'),
+    ).toBeInTheDocument()
+    expect(screen.getByLabelText('证明最大有效期（秒）')).toHaveValue('30')
+    expect(screen.getByLabelText('Nonce 有效期（秒）')).toHaveValue('90')
+    expect(screen.getByText('EdDSA')).toBeInTheDocument()
+
+    fireEvent.change(
+      screen.getByPlaceholderText('说明本次变更原因，如：接入新的身份发行方'),
+      { target: { value: '启用 DPoP 强绑定' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }))
+    await waitFor(() => {
+      const putCall = (fetch as Mock).mock.calls.find(
+        (c) =>
+          String(c[0]).endsWith(`/applications/${APP_ID}/jwt-trust-policy`) &&
+          c[1]?.method === 'PUT',
+      )
+      expect(putCall).toBeTruthy()
+      const body = JSON.parse(String(putCall![1]?.body)) as {
+        issuers: { token_binding?: Record<string, unknown> }[]
+      }
+      expect(body.issuers[0].token_binding).toEqual({
+        mode: 'DPOP_REQUIRED',
+        require_nonce: true,
+        max_proof_age_seconds: 30,
+        nonce_ttl_seconds: 90,
+        allowed_dpop_algs: ['ES256', 'EdDSA'],
+      })
+    })
+  })
+
+  it('9A-1: MTLS_REQUIRED 隐藏 DPoP 控件、展示 mTLS 说明且仅提交 mode', async () => {
+    const withMTLS = {
+      ...DRAFT_PENDING,
+      policy: {
+        ...DRAFT_PENDING.policy,
+        issuers: [
+          {
+            ...DRAFT_PENDING.policy.issuers[0],
+            token_binding: {
+              mode: 'MTLS_REQUIRED',
+            },
+          },
+        ],
+      },
+    }
+    vi.stubGlobal('fetch', mockFetch(withMTLS))
+    useAuthStore.setState({
+      user: makeUser(['jwt_trust.read', 'jwt_trust.manage']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderTab()
+    expect(await screen.findByText(/cnf\.x5t#S256/)).toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('要求 DPoP-Nonce 挑战'),
+    ).not.toBeInTheDocument()
+
+    fireEvent.change(
+      screen.getByPlaceholderText('说明本次变更原因，如：接入新的身份发行方'),
+      { target: { value: '启用 mTLS 证书绑定' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }))
+    await waitFor(() => {
+      const putCall = (fetch as Mock).mock.calls.find(
+        (c) =>
+          String(c[0]).endsWith(`/applications/${APP_ID}/jwt-trust-policy`) &&
+          c[1]?.method === 'PUT',
+      )
+      expect(putCall).toBeTruthy()
+      const body = JSON.parse(String(putCall![1]?.body)) as {
+        issuers: { token_binding?: Record<string, unknown> }[]
+      }
+      expect(body.issuers[0].token_binding).toEqual({
+        mode: 'MTLS_REQUIRED',
+      })
+    })
+  })
 })

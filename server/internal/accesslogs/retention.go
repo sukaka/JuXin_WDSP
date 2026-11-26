@@ -15,20 +15,55 @@ const retentionBatchSize = 10000
 // retentionBatchSleep 批间暂停（给业务查询让行）。
 const retentionBatchSleep = time.Second
 
+// RetentionDaysProvider 返回留存天数（解耦 settings.Service，方便测试）。
+type RetentionDaysProvider interface {
+	GetInt(ctx context.Context, group, key string, def int) int
+}
+
 // RetentionCleaner 访问日志留存清理（按 logging.retention_days 定期批量删除）。
+// 当 access_logs 已迁移为按日声明式分区表（relkind = 'p'）时跳过逐行 DELETE，
+// 由 partitions.Manager 通过 DETACH PARTITION CONCURRENTLY / DROP TABLE 完成 O(1) 清理。
 type RetentionCleaner struct {
-	db       *pgxpool.Pool
-	settings *settings.Service
+	db       DBTX
+	settings RetentionDaysProvider
 }
 
 // NewRetentionCleaner 创建留存清理器。
 func NewRetentionCleaner(db *pgxpool.Pool, settingsSvc *settings.Service) *RetentionCleaner {
-	return &RetentionCleaner{db: db, settings: settingsSvc}
+	var d DBTX
+	if db != nil {
+		d = db
+	}
+	var p RetentionDaysProvider
+	if settingsSvc != nil {
+		p = settingsSvc
+	}
+	return &RetentionCleaner{db: d, settings: p}
 }
 
 // CleanOnce 执行一轮清理（分批删除，直到删完）；返回删除总行数。
 func (rc *RetentionCleaner) CleanOnce(ctx context.Context) (int64, error) {
-	days := rc.settings.GetInt(ctx, "logging", "retention_days", 7)
+	if rc.db == nil {
+		return 0, nil
+	}
+	if row := rc.db.QueryRow(ctx, `
+SELECT c.relkind::text
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = current_schema() AND c.relname = 'access_logs'
+LIMIT 1`); row != nil {
+		var relkind string
+		if err := row.Scan(&relkind); err == nil && relkind == "p" {
+			return 0, nil
+		} else if err != nil && ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+	}
+
+	days := 7
+	if rc.settings != nil {
+		days = rc.settings.GetInt(ctx, "logging", "retention_days", 7)
+	}
 	if days <= 0 {
 		days = 7
 	}

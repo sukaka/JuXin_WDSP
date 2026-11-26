@@ -448,6 +448,10 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		JWTTrust map[string]*gatewayconfig.GuardJWTTrustPolicy `json:"jwt_trust,omitempty"`
 		// P1-02：Bot 挑战策略段（按应用；策略内容非密钥——key_ref 仅引用名——纳入版本戳）
 		BotPolicy map[string]*gatewayconfig.GuardBotPolicy `json:"bot_policy,omitempty"`
+		// Phase 9A-2：AI 爬虫治理策略段（按应用；不含 labyrinth_key_hex 秘密材料——纳入版本戳）
+		AICrawlPolicy map[string]*gatewayconfig.GuardAICrawlPolicy `json:"ai_crawl_policy,omitempty"`
+		// Phase 9B：客户端供应链安全策略段（按应用；含已授权/已封禁脚本清单，无秘密材料——纳入版本戳）
+		ClientSidePolicy map[string]*gatewayconfig.GuardClientSidePolicy `json:"client_side_policy,omitempty"`
 		// P0-04：API 引擎受限例外段（按应用；exception_id/version 与规则引用非密钥——纳入版本戳）
 		APIExceptions map[string][]gatewayconfig.GuardAPIException `json:"api_exceptions,omitempty"`
 		// WDSP P1：API 准入策略段（按 application_id；模式与确认集非密钥——纳入版本戳，
@@ -496,6 +500,8 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		FileWatermark:     cfg.APIFileWatermark,
 		GRPCMaxFrameBytes: cfg.APIGRPCMaxFrameBytes, GRPCAllowCompression: cfg.APIGRPCAllowCompression,
 		JWTTrust: cfg.JWTTrust, BotPolicy: cfg.BotPolicy,
+		AICrawlPolicy:        aiCrawlPolicyForVersionHash(cfg.AICrawlPolicy),
+		ClientSidePolicy:     cfg.ClientSidePolicy,
 		APIExceptions:        cfg.APIExceptions,
 		APIAdmission:         cfg.APIAdmission,
 		APIGraphQL:           cfg.APIGraphQL,

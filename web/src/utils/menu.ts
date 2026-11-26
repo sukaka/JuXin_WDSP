@@ -183,6 +183,20 @@ export const MENU_ITEMS: MenuDef[] = [
     capability: 'web_waf',
     group: '访问控制',
   },
+  // WDSP Phase 9A-2：Web Bot Auth AI 爬虫公钥目录（按 ai_crawl.read 权限门控）
+  {
+    key: '/ai-crawl',
+    label: 'AI 爬虫目录',
+    permissions: ['ai_crawl.read'],
+    group: '访问控制',
+  },
+  // WDSP Phase 9B：客户端供应链安全（PCI DSS 4.0 6.4.3 & 11.6.1，按 client_side.read 权限门控）
+  {
+    key: '/client-side-security',
+    label: '客户端供应链安全',
+    permissions: ['client_side.read'],
+    group: '访问控制',
+  },
   // 阶段8 / WDSP：API 动态防护
   {
     key: '/api-posture',

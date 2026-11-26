@@ -21,7 +21,7 @@ func TestStage8RuntimeEventIdentity(t *testing.T) {
 	cookies, _ := env.s5Login(t, "s8id", "SECURITY_ADMIN")
 	ctx := context.Background()
 
-	// 迁移落位：两列存在；身份部分索引存在（匿名空串不占索引）
+	// 迁移落位：两列存在；身份部分索引存在（匿名空串不占索引；000242 将 000029 的单列部分索引升级为复合部分索引 idx_api_runtime_events_identity_occurred）
 	if n := s8Count(t, env, `
 SELECT count(*) FROM information_schema.columns
 WHERE table_name='api_runtime_events' AND column_name IN ('identity_fingerprint','auth_type')`); n != 2 {
@@ -29,8 +29,8 @@ WHERE table_name='api_runtime_events' AND column_name IN ('identity_fingerprint'
 	}
 	if n := s8Count(t, env, `
 SELECT count(*) FROM pg_indexes
-WHERE tablename='api_runtime_events' AND indexname='idx_api_runtime_events_identity'`); n != 1 {
-		t.Fatalf("idx_api_runtime_events_identity index missing")
+WHERE tablename='api_runtime_events' AND indexname='idx_api_runtime_events_identity_occurred'`); n != 1 {
+		t.Fatalf("idx_api_runtime_events_identity_occurred index missing")
 	}
 
 	// 写入：两条带身份（api_key / bearer_or_basic）+ 一条匿名（空串）

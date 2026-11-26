@@ -22,7 +22,7 @@ func TestAccessLogDetailTraceIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	if err := database.Migrate(ctx, pool, "../../migrations", "up"); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -34,6 +34,12 @@ func TestAccessLogDetailTraceIntegration(t *testing.T) {
 		EndpointKey: "POST /v1/login", PathTemplate: "/v1/login", TTFBMs: &ttfb,
 		RequestHeaders: map[string][]string{}, ResponseHeaders: map[string][]string{},
 	}
+	if _, err := pool.Exec(ctx, `DELETE FROM access_logs WHERE request_id = $1`, entry.RequestID); err != nil {
+		t.Fatalf("cleanup stale row: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM access_logs WHERE request_id = $1`, entry.RequestID)
+	})
 	inserted, err := NewStore(pool).Insert(ctx, entry)
 	if err != nil || !inserted {
 		t.Fatalf("insert: inserted=%v err=%v", inserted, err)

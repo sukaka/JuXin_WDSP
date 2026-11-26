@@ -197,7 +197,7 @@ ORDER BY e.occurred_at ASC, e.id ASC LIMIT $2`, since, limit)
 const identityResolveSQL = `
 LEFT JOIN LATERAL (
   SELECT ibe.identity_id FROM identity_behavior_events ibe
-  WHERE %s AND ibe.identity_id IS NOT NULL
+  WHERE %s AND ibe.request_id IS NOT NULL AND ibe.request_id <> '' AND ibe.identity_id IS NOT NULL
   ORDER BY ibe.occurred_at DESC LIMIT 1
 ) via_req ON true
 LEFT JOIN LATERAL (
@@ -205,10 +205,8 @@ LEFT JOIN LATERAL (
   FROM identity_ip_history h WHERE %s
 ) via_ip ON true`
 
-// FetchSecurityEvents 安全事件（request_id 首选 / IP 反查兜底；SQLi 等仅 IP 事件
-// 反查失败不硬挂——identity_id NULL 行由聚合器跳过并计数，代码路径见 aggregator.go）。
-func (s *Store) FetchSecurityEvents(ctx context.Context, since time.Time, limit int) ([]Event, error) {
-	q := fmt.Sprintf(`
+func fetchSecurityEventsSQL() string {
+	return fmt.Sprintf(`
 SELECT se.id::text, se.occurred_at, se.request_id, se.anomaly_score, se.attack_type,
        COALESCE(via_req.identity_id, via_ip.identity_id) AS identity_id, ci.identity_key
 FROM security_events se
@@ -219,6 +217,26 @@ ORDER BY se.occurred_at ASC, se.id ASC LIMIT $2`,
 		fmt.Sprintf(identityResolveSQL,
 			`ibe.request_id = se.request_id AND se.request_id <> ''`,
 			`se.client_ip IS NOT NULL AND h.ip = host(se.client_ip)`))
+}
+
+func fetchAPIRuntimeEventsSQL() string {
+	return fmt.Sprintf(`
+SELECT are.id::text, are.occurred_at, are.request_id, are.risk_score, are.details_json,
+       COALESCE(via_req.identity_id, via_ip.identity_id) AS identity_id, ci.identity_key
+FROM api_runtime_events are
+%s
+LEFT JOIN client_identity ci ON ci.id = COALESCE(via_req.identity_id, via_ip.identity_id)
+WHERE are.occurred_at >= $1
+ORDER BY are.occurred_at ASC, are.id ASC LIMIT $2`,
+		fmt.Sprintf(identityResolveSQL,
+			`ibe.request_id = are.request_id AND are.request_id <> ''`,
+			`are.client_ip IS NOT NULL AND h.ip = are.client_ip`))
+}
+
+// FetchSecurityEvents 安全事件（request_id 首选 / IP 反查兜底；SQLi 等仅 IP 事件
+// 反查失败不硬挂——identity_id NULL 行由聚合器跳过并计数，代码路径见 aggregator.go）。
+func (s *Store) FetchSecurityEvents(ctx context.Context, since time.Time, limit int) ([]Event, error) {
+	q := fetchSecurityEventsSQL()
 	rows, err := s.db.Query(ctx, q, since, limit)
 	if err != nil {
 		return nil, err
@@ -247,17 +265,7 @@ ORDER BY se.occurred_at ASC, se.id ASC LIMIT $2`,
 // details_json 在 Go 侧解析推断阶段——SCHEMA_*/api_parser/waf 明细 EXPLOIT、
 // lifecycle.new_endpoint DISCOVERY、sensitive.value DATA_ACCESS 等，见 stage.go）。
 func (s *Store) FetchAPIRuntimeEvents(ctx context.Context, since time.Time, limit int) ([]Event, error) {
-	q := fmt.Sprintf(`
-SELECT are.id::text, are.occurred_at, are.request_id, are.risk_score, are.details_json,
-       COALESCE(via_req.identity_id, via_ip.identity_id) AS identity_id, ci.identity_key
-FROM api_runtime_events are
-%s
-LEFT JOIN client_identity ci ON ci.id = COALESCE(via_req.identity_id, via_ip.identity_id)
-WHERE are.occurred_at >= $1
-ORDER BY are.occurred_at ASC, are.id ASC LIMIT $2`,
-		fmt.Sprintf(identityResolveSQL,
-			`ibe.request_id = are.request_id AND are.request_id <> ''`,
-			`are.client_ip IS NOT NULL AND h.ip = are.client_ip`))
+	q := fetchAPIRuntimeEventsSQL()
 	rows, err := s.db.Query(ctx, q, since, limit)
 	if err != nil {
 		return nil, err

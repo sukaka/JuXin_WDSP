@@ -2128,6 +2128,9 @@ func stripAPIGuardSections(g *GuardConfig) *GuardConfig {
 	// P1-02 B3 预备：Bot 签名密钥随 bot_policy 段同一门控剥除（秘密材料不得
 	// 在 WDSP 关闭形态下随回滚快照回放）
 	cp.BotSigningKeys = nil
+	cp.AICrawlPolicy = nil
+	cp.AICrawlLabyrinthKeyHex = ""
+	cp.ClientSidePolicy = nil
 	return &cp
 }
 

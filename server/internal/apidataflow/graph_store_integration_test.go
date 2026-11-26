@@ -449,3 +449,72 @@ func TestCHReaderRuntimeFieldEnrichmentIntegration(t *testing.T) {
 		t.Fatalf("runtime-only field did not survive ClickHouse evidence filtering: %+v", evidence)
 	}
 }
+
+func TestCHContributionStoreCrossMidnightPartitionIntegration(t *testing.T) {
+	dsn := os.Getenv("WDSP_CLICKHOUSE_TEST_DSN")
+	if dsn == "" {
+		t.Skip("WDSP_CLICKHOUSE_TEST_DSN is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	querier, err := apm.OpenClickHouse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	applicationID := uuid.New()
+	traceID := strings.ReplaceAll(uuid.NewString(), "-", "")
+
+	client := observationForTest("orders", "CLIENT", midnight.Add(-5*time.Minute))
+	client.AgentID = uuid.New()
+	client.EventID = "midnight-client-" + uuid.NewString()
+	client.ApplicationID = &applicationID
+	client.Trace.TraceID = traceID
+	client.Trace.SpanID = strings.Repeat("1", 16)
+	client.Fields = []agents.APIObservationField{sensitiveField("REQUEST", "midnight-req-"+traceID)}
+
+	server := observationForTest("profile", "SERVER", midnight.Add(5*time.Minute))
+	server.AgentID = uuid.New()
+	server.EventID = "midnight-server-" + uuid.NewString()
+	server.ApplicationID = &applicationID
+	server.Trace.TraceID = traceID
+	server.Trace.SpanID = strings.Repeat("a", 16)
+	server.Trace.ParentSpanID = client.Trace.SpanID
+	server.Fields = []agents.APIObservationField{
+		sensitiveField("REQUEST", "midnight-req-"+traceID),
+		sensitiveField("RESPONSE", "midnight-resp-"+traceID),
+	}
+
+	writerA := NewCHContributionStore(func(context.Context) apm.CHQuerier { return querier })
+	writerB := NewCHContributionStore(func(context.Context) apm.CHQuerier { return querier })
+	if err := writerA.SaveObservationContributions(ctx, []agents.APIObservationEnvelope{client}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writerB.SaveObservationContributions(ctx, []agents.APIObservationEnvelope{server}); err != nil {
+		t.Fatal(err)
+	}
+
+	reader := NewCHReader(func(context.Context) apm.CHQuerier { return querier })
+	filter := GraphFilter{
+		Start:         midnight.Add(-time.Hour),
+		End:           midnight.Add(time.Hour),
+		ApplicationID: &applicationID,
+		MaxEdges:      10,
+		View:          "service",
+	}
+	graph, err := reader.Graph(ctx, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.Edges) != 1 || graph.Edges[0].Calls != 1 || graph.Edges[0].SourceName != "orders" || graph.Edges[0].TargetName != "profile" {
+		t.Fatalf("cross-midnight multi-partition trace did not correlate: %+v", graph.Edges)
+	}
+	evidence, err := reader.Evidence(ctx, graph.Edges[0].ID, filter, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 1 || len(evidence[0].Fields) != 2 || evidence[0].Fields[0].Match != "CORRELATED_FIELD" {
+		t.Fatalf("cross-midnight field observations did not correlate: %+v", evidence)
+	}
+}

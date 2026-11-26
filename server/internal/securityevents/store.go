@@ -239,9 +239,20 @@ func buildListWhere(f ListFilter) (string, []interface{}) {
 		add("gateway_node_id = $%d", f.GatewayNode)
 	}
 	if f.RuleID != nil {
-		where += fmt.Sprintf(" AND id IN (SELECT event_id FROM security_event_matches WHERE rule_id = $%d)", argIdx)
+		cond := fmt.Sprintf("EXISTS (SELECT 1 FROM security_event_matches m WHERE m.event_id = security_events.id AND m.event_occurred_at = security_events.occurred_at AND m.rule_id = $%d", argIdx)
 		args = append(args, *f.RuleID)
 		argIdx++
+		if f.StartTime != nil {
+			cond += fmt.Sprintf(" AND m.event_occurred_at >= $%d", argIdx)
+			args = append(args, *f.StartTime)
+			argIdx++
+		}
+		if f.EndTime != nil {
+			cond += fmt.Sprintf(" AND m.event_occurred_at <= $%d", argIdx)
+			args = append(args, *f.EndTime)
+			argIdx++
+		}
+		where += " AND " + cond + ")"
 	}
 	if len(f.IDs) > 0 {
 		add("id = ANY($%d::uuid[])", f.IDs)
@@ -296,6 +307,10 @@ FROM security_events WHERE ` + where + fmt.Sprintf(" ORDER BY occurred_at DESC L
 	return out, total, rows.Err()
 }
 
+const getByIDMatchesSQL = `
+SELECT rule_id, rule_name, rule_source, rule_version, severity, message, matched_variable, matched_data_masked, tags, phase
+FROM security_event_matches WHERE event_id = $1 AND event_occurred_at = $2 ORDER BY id`
+
 // GetByID 查询事件详情（含请求/响应头体留痕）。
 func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*Event, []MatchInfo, error) {
 	row := s.db.QueryRow(ctx, `
@@ -334,10 +349,8 @@ FROM security_events WHERE id = $1`, id)
 		e.FinalDecision = &fd
 	}
 
-	// 匹配记录
-	matchRows, err := s.db.Query(ctx, `
-SELECT rule_id, rule_name, rule_source, rule_version, severity, message, matched_variable, matched_data_masked, tags, phase
-FROM security_event_matches WHERE event_id = $1 ORDER BY id`, id)
+	// 匹配记录（带分区键 event_occurred_at 触发分区裁剪）
+	matchRows, err := s.db.Query(ctx, getByIDMatchesSQL, id, e.OccurredAt)
 	if err != nil {
 		return nil, nil, err
 	}

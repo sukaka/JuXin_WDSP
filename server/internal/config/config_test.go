@@ -210,6 +210,13 @@ func TestLoadDatabaseDialectDefaultsToPostgres(t *testing.T) {
 	if cfg.DB.Port != 5432 {
 		t.Fatalf("DB.Port = %d, want 5432", cfg.DB.Port)
 	}
+	if cfg.DB.MaxConns != 32 || cfg.DB.MinConns != 4 || cfg.DB.BGMaxConns != 16 || cfg.DB.BGMinConns != 2 {
+		t.Fatalf("unexpected default DB pool config: %+v", cfg.DB)
+	}
+	if cfg.DB.StatementTimeoutMs != 15000 || cfg.DB.BGStatementTimeoutMs != 120000 ||
+		cfg.DB.LockTimeoutMs != 5000 || cfg.DB.IdleInTxTimeoutMs != 30000 {
+		t.Fatalf("unexpected default DB timeout config: %+v", cfg.DB)
+	}
 }
 
 func TestLoadDatabaseDialectFromGenericEnv(t *testing.T) {
@@ -489,5 +496,30 @@ func TestLoadTLSSessionLogPathDefaultAndOverride(t *testing.T) {
 	}
 	if cfg.WAF.TLSSessionLogPath != "/var/log/caddy-audit/tls-handshake-events.jsonl" {
 		t.Fatalf("TLSSessionLogPath override = %q", cfg.WAF.TLSSessionLogPath)
+	}
+}
+
+func TestLoadDatabasePoolAndTimeoutEnvOverrides(t *testing.T) {
+	t.Setenv("POSTGRES_PASSWORD", "test-postgres-password")
+	t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+	t.Setenv("DB_MAX_CONNS", "48")
+	t.Setenv("DB_MIN_CONNS", "8")
+	t.Setenv("DB_BG_MAX_CONNS", "24")
+	t.Setenv("DB_BG_MIN_CONNS", "6")
+	t.Setenv("DB_STATEMENT_TIMEOUT_MS", "20000")
+	t.Setenv("DB_BG_STATEMENT_TIMEOUT_MS", "180000")
+	t.Setenv("DB_LOCK_TIMEOUT_MS", "8000")
+	t.Setenv("DB_IDLE_IN_TX_TIMEOUT_MS", "45000")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.DB.MaxConns != 48 || cfg.DB.MinConns != 8 || cfg.DB.BGMaxConns != 24 || cfg.DB.BGMinConns != 6 {
+		t.Fatalf("DB pool override mismatch: %+v", cfg.DB)
+	}
+	if cfg.DB.StatementTimeoutMs != 20000 || cfg.DB.BGStatementTimeoutMs != 180000 ||
+		cfg.DB.LockTimeoutMs != 8000 || cfg.DB.IdleInTxTimeoutMs != 45000 {
+		t.Fatalf("DB timeout override mismatch: %+v", cfg.DB)
 	}
 }

@@ -232,12 +232,35 @@ type Graph struct {
 	Summary *GraphSummary `json:"summary,omitempty"`
 }
 
-// EdgeFilter 调用边过滤（W6-A 图谱/拓扑读接口增强）。零值 = 不过滤（全量边）。
+const (
+	// DefaultGraphEdgeLimit 图谱/拓扑调用边默认返回上限（兼顾响应体大小与性能）。
+	DefaultGraphEdgeLimit = 5000
+	// MaxGraphEdgeLimit 图谱/拓扑调用边单次最大允许返回上限。
+	MaxGraphEdgeLimit = 10000
+	// graphCandidateArrayThreshold 小规模候选节点直接用 = ANY(uuid[]) 命中目标边索引；
+	// 大规模候选节点改用 JOIN api_endpoints（附带少数静态噪声排除 ID），避免大数组线性退化。
+	graphCandidateArrayThreshold = 2000
+	// findingsNodeIDBatchThreshold 可见节点数不超过该阈值时按 endpoint_id = ANY($1) 精准聚合未闭环发现数。
+	findingsNodeIDBatchThreshold = 5000
+)
+
+func normalizeGraphEdgeLimit(limit int) int {
+	if limit <= 0 {
+		return DefaultGraphEdgeLimit
+	}
+	if limit > MaxGraphEdgeLimit {
+		return MaxGraphEdgeLimit
+	}
+	return limit
+}
+
+// EdgeFilter 调用边过滤（W6-A 图谱/拓扑读接口增强）。零值 = 不过滤（按 DefaultGraphEdgeLimit 上限返回）。
 // 时间窗按「边在窗口内有观测」语义匹配：last_seen_at >= Start 且 first_seen_at <= End。
 type EdgeFilter struct {
 	Start    *time.Time // 边活跃窗口下界（last_seen_at 不早于 Start）
 	End      *time.Time // 边活跃窗口上界（first_seen_at 不晚于 End）
 	MinCount int64      // 最小调用次数（call_count >= MinCount）
+	Limit    int        // 返回边数上限（<=0 默认 DefaultGraphEdgeLimit，上限 MaxGraphEdgeLimit）
 }
 
 // GraphFilter 图谱读接口完整过滤条件（含节点与边过滤；零值完全兼容历史全量返回语义）。
@@ -249,6 +272,17 @@ type GraphFilter struct {
 	ExcludeStatic  bool       // 排除静态资源与非 API 噪声节点（永不排除 CONFIRMED）
 	ExcludeIgnored bool       // 排除 IGNORED 状态节点
 	OnlyConnected  bool       // 仅保留至少有 1 条边关联的节点
+}
+
+type pgQueryer interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+type edgeQueryScope struct {
+	candidateIDs      []uuid.UUID
+	excludedStaticIDs []uuid.UUID
+	nodeFilter        *GraphFilter
 }
 
 // isGraphStaticNoiseNode 判断图谱节点是否属于静态资源或非 API 噪声（保护 CONFIRMED 正式资产）。
@@ -263,6 +297,147 @@ func isGraphStaticNoiseNode(n GraphNode) bool {
 		return true
 	}
 	return false
+}
+
+// buildGraphNodeWhere 构建 api_endpoints (e) / applications (a) 节点过滤 WHERE 子句（不含 WHERE）。
+func buildGraphNodeWhere(f GraphFilter) (where string, args []any, hasNodeFilter bool, needsAppJoin bool) {
+	return buildGraphNodeWhereWithAliases(f, "e", "a", 1)
+}
+
+func buildGraphNodeWhereWithAliases(f GraphFilter, epAlias, appAlias string, startArgIdx int) (where string, args []any, hasNodeFilter bool, needsAppJoin bool) {
+	clauses := []string{}
+	epPrefix := ""
+	if epAlias != "" {
+		epPrefix = epAlias + "."
+	}
+	appPrefix := ""
+	if appAlias != "" {
+		appPrefix = appAlias + "."
+	}
+	if f.ExcludeIgnored {
+		clauses = append(clauses, epPrefix+"asset_status <> 'IGNORED'")
+		hasNodeFilter = true
+	}
+	if f.ExcludeStatic {
+		clauses = append(clauses, fmt.Sprintf("(%sasset_status = 'CONFIRMED' OR %sis_api = TRUE)", epPrefix, epPrefix))
+		hasNodeFilter = true
+	}
+	if f.ApplicationID != nil {
+		args = append(args, *f.ApplicationID)
+		clauses = append(clauses, fmt.Sprintf("%sapplication_id = $%d", epPrefix, startArgIdx+len(args)-1))
+		hasNodeFilter = true
+	}
+	if st := strings.ToUpper(strings.TrimSpace(f.Status)); st != "" {
+		args = append(args, st)
+		clauses = append(clauses, fmt.Sprintf("%sasset_status = $%d", epPrefix, startArgIdx+len(args)-1))
+		hasNodeFilter = true
+	}
+	if kw := strings.ToLower(strings.TrimSpace(f.Keyword)); kw != "" {
+		args = append(args, kw)
+		clauses = append(clauses, fmt.Sprintf(
+			"strpos(lower(COALESCE(%sendpoint_key, '') || ' ' || COALESCE(%snormalized_path, '') || ' ' || COALESCE(%sname, '') || ' ' || COALESCE(%shost, '')), $%d) > 0",
+			epPrefix, epPrefix, appPrefix, epPrefix, startArgIdx+len(args)-1,
+		))
+		hasNodeFilter = true
+		needsAppJoin = true
+	}
+	if len(clauses) == 0 {
+		return "TRUE", args, false, false
+	}
+	return strings.Join(clauses, " AND "), args, true, needsAppJoin
+}
+
+func buildEdgeWhere(alias string, f EdgeFilter, startArgIdx int) (string, []any) {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	clauses := []string{}
+	args := []any{}
+	if f.Start != nil {
+		args = append(args, *f.Start)
+		clauses = append(clauses, fmt.Sprintf("%slast_seen_at >= $%d", prefix, startArgIdx+len(args)-1))
+	}
+	if f.End != nil {
+		args = append(args, *f.End)
+		clauses = append(clauses, fmt.Sprintf("%sfirst_seen_at <= $%d", prefix, startArgIdx+len(args)-1))
+	}
+	if f.MinCount > 0 {
+		args = append(args, f.MinCount)
+		clauses = append(clauses, fmt.Sprintf("%scall_count >= $%d", prefix, startArgIdx+len(args)-1))
+	}
+	if len(clauses) == 0 {
+		return "TRUE", args
+	}
+	return strings.Join(clauses, " AND "), args
+}
+
+const graphEdgeColumns = `id, caller_fingerprint, source_endpoint_id, target_endpoint_id, call_count, identity_count, first_seen_at, last_seen_at`
+
+func shouldUseTwoPhaseEdgeFetch(f EdgeFilter, scope edgeQueryScope) bool {
+	return scope.candidateIDs != nil || scope.nodeFilter != nil || f.Start != nil || f.End != nil
+}
+
+func buildListEdgesByIDsQuery() string {
+	return `SELECT ` + graphEdgeColumns + ` FROM api_call_edges WHERE id = ANY($1::uuid[])`
+}
+
+func restoreGraphEdgeOrder(ids []uuid.UUID, byID map[uuid.UUID]GraphEdge) []GraphEdge {
+	out := make([]GraphEdge, 0, len(ids))
+	for _, id := range ids {
+		if e, ok := byID[id]; ok {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func buildListEdgesQuery(f EdgeFilter, scope edgeQueryScope) (query string, args []any, idOnly bool) {
+	limit := normalizeGraphEdgeLimit(f.Limit)
+	if scope.candidateIDs != nil && len(scope.candidateIDs) > graphCandidateArrayThreshold && scope.nodeFilter != nil {
+		edgeWhere, args := buildEdgeWhere("e", f, 1)
+		teWhere, nodeArgs, hasNode, needsAppJoin := buildGraphNodeWhereWithAliases(*scope.nodeFilter, "te", "ta", len(args)+1)
+		if hasNode {
+			seWhere, _, _, _ := buildGraphNodeWhereWithAliases(*scope.nodeFilter, "se", "sa", len(args)+1)
+			args = append(args, nodeArgs...)
+			joins := "JOIN api_endpoints te ON te.id = e.target_endpoint_id\nLEFT JOIN api_endpoints se ON se.id = e.source_endpoint_id"
+			if needsAppJoin {
+				joins += "\nLEFT JOIN applications ta ON ta.id = te.application_id\nLEFT JOIN applications sa ON sa.id = se.application_id"
+			}
+			where := fmt.Sprintf("%s AND (%s) AND (e.source_endpoint_id IS NULL OR (%s))", edgeWhere, teWhere, seWhere)
+			if len(scope.excludedStaticIDs) > 0 {
+				args = append(args, scope.excludedStaticIDs)
+				idx := len(args)
+				where += fmt.Sprintf(" AND NOT (e.target_endpoint_id = ANY($%d::uuid[])) AND (e.source_endpoint_id IS NULL OR NOT (e.source_endpoint_id = ANY($%d::uuid[])))", idx, idx)
+			}
+			args = append(args, limit)
+			query := fmt.Sprintf(`
+SELECT e.id
+FROM api_call_edges e
+%s
+WHERE %s
+ORDER BY e.call_count DESC, e.id
+LIMIT $%d`, joins, where, len(args))
+			return query, args, true
+		}
+	}
+
+	where, args := buildEdgeWhere("", f, 1)
+	if scope.candidateIDs != nil {
+		args = append(args, scope.candidateIDs)
+		idx := len(args)
+		where += fmt.Sprintf(" AND target_endpoint_id = ANY($%d::uuid[]) AND (source_endpoint_id IS NULL OR source_endpoint_id = ANY($%d::uuid[]))", idx, idx)
+	}
+	args = append(args, limit)
+	idOnly = shouldUseTwoPhaseEdgeFetch(f, scope)
+	selectCols := graphEdgeColumns
+	if idOnly {
+		selectCols = "id"
+	}
+	query = fmt.Sprintf(`
+SELECT %s
+FROM api_call_edges WHERE %s ORDER BY call_count DESC, id LIMIT $%d`, selectCols, where, len(args))
+	return query, args, idOnly
 }
 
 // applyGraphFilter 对原始图谱执行节点/边过滤并生成摘要统计（纯逻辑，不依赖数据库）。
@@ -354,14 +529,14 @@ func applyGraphFilter(raw *Graph, f GraphFilter) *Graph {
 }
 
 // activeFindingsJoin 未闭环 findings 计数子查询（活动状态口径同 GetPosture），
-// 供图谱/拓扑节点 LEFT JOIN 附带 open_findings_count。
+// 供拓扑接口 LEFT JOIN 附带 open_findings_count（排除 endpoint_id IS NULL 行）。
 const activeFindingsJoin = `
 LEFT JOIN (
     SELECT endpoint_id, count(*) AS open_count FROM api_runtime_findings
-    WHERE status IN ('NEW','CONFIRMED','IN_PROGRESS') GROUP BY endpoint_id
+    WHERE endpoint_id IS NOT NULL AND status IN ('NEW','CONFIRMED','IN_PROGRESS') GROUP BY endpoint_id
 ) f ON f.endpoint_id = e.id`
 
-// ListGraph 全量节点与调用边（不过滤；aitools.APISecurityReader 契约保持无参形态）。
+// ListGraph 全量节点与调用边（边按 DefaultGraphEdgeLimit 封顶；aitools.APISecurityReader 契约保持无参形态）。
 func (s *Store) ListGraph(ctx context.Context) (*Graph, error) {
 	return s.ListGraphWithFilter(ctx, GraphFilter{})
 }
@@ -371,39 +546,422 @@ func (s *Store) ListGraphFiltered(ctx context.Context, f EdgeFilter) (*Graph, er
 	return s.ListGraphWithFilter(ctx, GraphFilter{EdgeFilter: f})
 }
 
-// ListGraphWithFilter 节点与调用边按 GraphFilter 过滤并返回过滤前后摘要统计。
-func (s *Store) ListGraphWithFilter(ctx context.Context, f GraphFilter) (*Graph, error) {
-	raw := &Graph{Nodes: []GraphNode{}, Edges: []GraphEdge{}}
-	rows, err := s.db.Query(ctx, `
-SELECT e.id, e.endpoint_key, e.http_method, e.normalized_path, e.application_id,
-       COALESCE(a.name, ''), COALESCE(e.host, ''), COALESCE(e.protocol_type, 'REST'), e.is_api,
-       e.asset_status, e.learning_status, e.hit_count, COALESCE(f.open_count, 0)
-FROM api_endpoints e
-LEFT JOIN applications a ON a.id = e.application_id`+activeFindingsJoin+`
-ORDER BY e.endpoint_key, e.host, e.id`)
+func (s *Store) loadGraphNodeSummary(ctx context.Context, q pgQueryer) (*GraphSummary, error) {
+	summary := &GraphSummary{}
+	var nonAPINoiseNodes int
+	err := q.QueryRow(ctx, `
+SELECT
+    count(*)::int,
+    count(*) FILTER (WHERE upper(btrim(asset_status)) = 'IGNORED')::int,
+    count(*) FILTER (WHERE upper(btrim(asset_status)) <> 'CONFIRMED' AND NOT is_api)::int
+FROM api_endpoints`).Scan(&summary.TotalNodes, &summary.IgnoredNodes, &nonAPINoiseNodes)
+	if err != nil {
+		return nil, err
+	}
+	summary.StaticNoiseNodes = nonAPINoiseNodes
+	if summary.TotalNodes == 0 {
+		return summary, nil
+	}
+	rows, err := q.Query(ctx, `
+SELECT http_method, normalized_path
+FROM api_endpoints
+WHERE upper(btrim(asset_status)) <> 'CONFIRMED'
+  AND is_api = TRUE
+  AND upper(btrim(http_method)) IN ('', 'GET', 'HEAD', 'OPTIONS')
+  AND normalized_path LIKE '%.%'`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	staticFilter := classifier.DefaultStaticFilter()
 	for rows.Next() {
-		var n GraphNode
-		if err := rows.Scan(&n.ID, &n.EndpointKey, &n.HTTPMethod, &n.NormalizedPath,
-			&n.ApplicationID, &n.ApplicationName, &n.Host, &n.ProtocolType, &n.IsAPI,
-			&n.AssetStatus, &n.LearningStatus, &n.HitCount, &n.OpenFindingsCount); err != nil {
+		var method, normPath string
+		if err := rows.Scan(&method, &normPath); err != nil {
 			return nil, err
 		}
-		raw.Nodes = append(raw.Nodes, n)
+		if matched, _ := staticFilter.MatchStaticPath(method, normPath); matched {
+			summary.StaticNoiseNodes++
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	return summary, nil
+}
 
-	edges, err := s.listEdges(ctx, f.EdgeFilter)
+func (s *Store) queryFullGraphNodes(ctx context.Context, q pgQueryer, where string, args ...any) ([]GraphNode, error) {
+	rows, err := q.Query(ctx, `
+SELECT e.id, e.endpoint_key, e.http_method, e.normalized_path, e.application_id,
+       COALESCE(a.name, ''), COALESCE(e.host, ''), COALESCE(e.protocol_type, 'REST'), e.is_api,
+       e.asset_status, e.learning_status, e.hit_count
+FROM api_endpoints e
+LEFT JOIN applications a ON a.id = e.application_id
+WHERE `+where+`
+ORDER BY e.endpoint_key, e.host, e.id`, args...)
 	if err != nil {
 		return nil, err
 	}
-	raw.Edges = edges
-	return applyGraphFilter(raw, f), nil
+	defer rows.Close()
+	nodes := []GraphNode{}
+	for rows.Next() {
+		var n GraphNode
+		if err := rows.Scan(&n.ID, &n.EndpointKey, &n.HTTPMethod, &n.NormalizedPath,
+			&n.ApplicationID, &n.ApplicationName, &n.Host, &n.ProtocolType, &n.IsAPI,
+			&n.AssetStatus, &n.LearningStatus, &n.HitCount); err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, rows.Err()
+}
+
+func (s *Store) populateOpenFindingsCounts(ctx context.Context, q pgQueryer, nodes []GraphNode) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if len(nodes) <= findingsNodeIDBatchThreshold {
+		ids := make([]uuid.UUID, len(nodes))
+		for i := range nodes {
+			ids[i] = nodes[i].ID
+		}
+		rows, err = q.Query(ctx, `
+SELECT endpoint_id, count(*)
+FROM api_runtime_findings
+WHERE status IN ('NEW','CONFIRMED','IN_PROGRESS')
+  AND endpoint_id = ANY($1::uuid[])
+GROUP BY endpoint_id`, ids)
+	} else {
+		rows, err = q.Query(ctx, `
+SELECT endpoint_id, count(*)
+FROM api_runtime_findings
+WHERE endpoint_id IS NOT NULL
+  AND status IN ('NEW','CONFIRMED','IN_PROGRESS')
+GROUP BY endpoint_id`)
+	}
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	counts := make(map[uuid.UUID]int64, len(nodes))
+	for rows.Next() {
+		var epID uuid.UUID
+		var cnt int64
+		if err := rows.Scan(&epID, &cnt); err != nil {
+			return err
+		}
+		counts[epID] = cnt
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range nodes {
+		if cnt, ok := counts[nodes[i].ID]; ok {
+			nodes[i].OpenFindingsCount = cnt
+		}
+	}
+	return nil
+}
+
+func collectConnectedNodeIDs(edges []GraphEdge) ([]uuid.UUID, map[uuid.UUID]struct{}) {
+	seen := make(map[uuid.UUID]struct{}, len(edges)*2)
+	ids := make([]uuid.UUID, 0, len(edges)*2)
+	for _, e := range edges {
+		if _, ok := seen[e.TargetEndpointID]; !ok {
+			seen[e.TargetEndpointID] = struct{}{}
+			ids = append(ids, e.TargetEndpointID)
+		}
+		if e.SourceEndpointID != nil {
+			if _, ok := seen[*e.SourceEndpointID]; !ok {
+				seen[*e.SourceEndpointID] = struct{}{}
+				ids = append(ids, *e.SourceEndpointID)
+			}
+		}
+	}
+	return ids, seen
+}
+
+func (s *Store) countEdgesWithQueryer(ctx context.Context, q pgQueryer, f EdgeFilter) (int, error) {
+	where, args := buildEdgeWhere("", f, 1)
+	var total int
+	err := q.QueryRow(ctx, `SELECT count(*)::int FROM api_call_edges WHERE `+where, args...).Scan(&total)
+	return total, err
+}
+
+func (s *Store) listEdgesWithQueryer(ctx context.Context, q pgQueryer, f EdgeFilter, scope edgeQueryScope) ([]GraphEdge, error) {
+	if scope.candidateIDs != nil && len(scope.candidateIDs) == 0 {
+		return []GraphEdge{}, nil
+	}
+	query, args, idOnly := buildListEdgesQuery(f, scope)
+	if !idOnly {
+		rows, err := q.Query(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := []GraphEdge{}
+		for rows.Next() {
+			var e GraphEdge
+			if err := rows.Scan(&e.ID, &e.CallerFingerprint, &e.SourceEndpointID,
+				&e.TargetEndpointID, &e.CallCount, &e.IdentityCount, &e.FirstSeenAt, &e.LastSeenAt); err != nil {
+				return nil, err
+			}
+			out = append(out, e)
+		}
+		return out, rows.Err()
+	}
+
+	// 两阶段窄排序：Step 1 仅对 (call_count DESC, id) 排序并取 id（避免 Sort 携带宽 caller_fingerprint 溢出 4MB work_mem），
+	// Step 2 按主键 ANY($1::uuid[]) 无序回表并在 Go 侧按 Step 1 顺序恢复。
+	idRows, err := q.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer idRows.Close()
+	ids := []uuid.UUID{}
+	for idRows.Next() {
+		var id uuid.UUID
+		if err := idRows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := idRows.Err(); err != nil {
+		return nil, err
+	}
+	idRows.Close()
+
+	if len(ids) == 0 {
+		return []GraphEdge{}, nil
+	}
+
+	detailRows, err := q.Query(ctx, buildListEdgesByIDsQuery(), ids)
+	if err != nil {
+		return nil, err
+	}
+	defer detailRows.Close()
+	byID := make(map[uuid.UUID]GraphEdge, len(ids))
+	for detailRows.Next() {
+		var e GraphEdge
+		if err := detailRows.Scan(&e.ID, &e.CallerFingerprint, &e.SourceEndpointID,
+			&e.TargetEndpointID, &e.CallCount, &e.IdentityCount, &e.FirstSeenAt, &e.LastSeenAt); err != nil {
+			return nil, err
+		}
+		byID[e.ID] = e
+	}
+	if err := detailRows.Err(); err != nil {
+		return nil, err
+	}
+	return restoreGraphEdgeOrder(ids, byID), nil
+}
+
+// ListGraphWithFilter 节点与调用边按 GraphFilter SQL 下推过滤并返回过滤前后精确摘要统计。
+func (s *Store) ListGraphWithFilter(ctx context.Context, f GraphFilter) (*Graph, error) {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	edgeLimit := normalizeGraphEdgeLimit(f.Limit)
+	nodeWhere, nodeArgs, hasNodeFilter, needsAppJoin := buildGraphNodeWhere(f)
+
+	if !hasNodeFilter && !f.OnlyConnected {
+		nodes, err := s.queryFullGraphNodes(ctx, tx, "TRUE")
+		if err != nil {
+			return nil, err
+		}
+		summary := &GraphSummary{TotalNodes: len(nodes)}
+		for _, n := range nodes {
+			if isGraphStaticNoiseNode(n) {
+				summary.StaticNoiseNodes++
+			}
+			if strings.EqualFold(strings.TrimSpace(n.AssetStatus), "IGNORED") {
+				summary.IgnoredNodes++
+			}
+		}
+		edges, err := s.listEdgesWithQueryer(ctx, tx, f.EdgeFilter, edgeQueryScope{})
+		if err != nil {
+			return nil, err
+		}
+		if len(edges) < edgeLimit {
+			summary.TotalEdges = len(edges)
+		} else {
+			summary.TotalEdges, err = s.countEdgesWithQueryer(ctx, tx, f.EdgeFilter)
+			if err != nil {
+				return nil, err
+			}
+		}
+		_, connectedSet := collectConnectedNodeIDs(edges)
+		for _, n := range nodes {
+			if _, ok := connectedSet[n.ID]; !ok {
+				summary.IsolatedNodes++
+			}
+		}
+		summary.VisibleNodes = len(nodes)
+		summary.VisibleEdges = len(edges)
+		if err := s.populateOpenFindingsCounts(ctx, tx, nodes); err != nil {
+			return nil, err
+		}
+		return &Graph{Nodes: nodes, Edges: edges, Summary: summary}, nil
+	}
+
+	summary, err := s.loadGraphNodeSummary(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if summary.TotalNodes == 0 {
+		return &Graph{Nodes: []GraphNode{}, Edges: []GraphEdge{}, Summary: summary}, nil
+	}
+
+	if !hasNodeFilter && f.OnlyConnected {
+		edges, err := s.listEdgesWithQueryer(ctx, tx, f.EdgeFilter, edgeQueryScope{})
+		if err != nil {
+			return nil, err
+		}
+		if len(edges) < edgeLimit {
+			summary.TotalEdges = len(edges)
+		} else {
+			summary.TotalEdges, err = s.countEdgesWithQueryer(ctx, tx, f.EdgeFilter)
+			if err != nil {
+				return nil, err
+			}
+		}
+		connectedIDs, _ := collectConnectedNodeIDs(edges)
+		nodes := []GraphNode{}
+		if len(connectedIDs) > 0 {
+			nodes, err = s.queryFullGraphNodes(ctx, tx, "e.id = ANY($1::uuid[])", connectedIDs)
+			if err != nil {
+				return nil, err
+			}
+		}
+		summary.VisibleNodes = len(nodes)
+		summary.VisibleEdges = len(edges)
+		summary.IsolatedNodes = summary.TotalNodes - len(nodes)
+		if err := s.populateOpenFindingsCounts(ctx, tx, nodes); err != nil {
+			return nil, err
+		}
+		return &Graph{Nodes: nodes, Edges: edges, Summary: summary}, nil
+	}
+
+	totalEdges, err := s.countEdgesWithQueryer(ctx, tx, f.EdgeFilter)
+	if err != nil {
+		return nil, err
+	}
+	summary.TotalEdges = totalEdges
+
+	if !f.OnlyConnected {
+		rawNodes, err := s.queryFullGraphNodes(ctx, tx, nodeWhere, nodeArgs...)
+		if err != nil {
+			return nil, err
+		}
+		nodes := make([]GraphNode, 0, len(rawNodes))
+		candidateIDs := make([]uuid.UUID, 0, len(rawNodes))
+		var excludedStaticIDs []uuid.UUID
+		for _, n := range rawNodes {
+			if f.ExcludeStatic && isGraphStaticNoiseNode(n) {
+				excludedStaticIDs = append(excludedStaticIDs, n.ID)
+				continue
+			}
+			nodes = append(nodes, n)
+			candidateIDs = append(candidateIDs, n.ID)
+		}
+		edges, err := s.listEdgesWithQueryer(ctx, tx, f.EdgeFilter, edgeQueryScope{
+			candidateIDs:      candidateIDs,
+			excludedStaticIDs: excludedStaticIDs,
+			nodeFilter:        &f,
+		})
+		if err != nil {
+			return nil, err
+		}
+		_, connectedSet := collectConnectedNodeIDs(edges)
+		for _, n := range nodes {
+			if _, ok := connectedSet[n.ID]; !ok {
+				summary.IsolatedNodes++
+			}
+		}
+		summary.VisibleNodes = len(nodes)
+		summary.VisibleEdges = len(edges)
+		if err := s.populateOpenFindingsCounts(ctx, tx, nodes); err != nil {
+			return nil, err
+		}
+		return &Graph{Nodes: nodes, Edges: edges, Summary: summary}, nil
+	}
+
+	// hasNodeFilter && f.OnlyConnected：轻量级筛选候选端点 ID，避免对大量孤立节点做应用 JOIN 与全字段拉取。
+	candidateSQL := `SELECT e.id, e.http_method, e.normalized_path, e.is_api, e.asset_status FROM api_endpoints e`
+	if needsAppJoin {
+		candidateSQL += ` LEFT JOIN applications a ON a.id = e.application_id`
+	}
+	candidateSQL += ` WHERE ` + nodeWhere
+	candRows, err := tx.Query(ctx, candidateSQL, nodeArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer candRows.Close()
+	candidateIDs := []uuid.UUID{}
+	var excludedStaticIDs []uuid.UUID
+	for candRows.Next() {
+		var (
+			id       uuid.UUID
+			method   string
+			normPath string
+			isAPI    bool
+			status   string
+		)
+		if err := candRows.Scan(&id, &method, &normPath, &isAPI, &status); err != nil {
+			return nil, err
+		}
+		if f.ExcludeStatic && isGraphStaticNoiseNode(GraphNode{
+			HTTPMethod:     method,
+			NormalizedPath: normPath,
+			IsAPI:          isAPI,
+			AssetStatus:    status,
+		}) {
+			excludedStaticIDs = append(excludedStaticIDs, id)
+			continue
+		}
+		candidateIDs = append(candidateIDs, id)
+	}
+	if err := candRows.Err(); err != nil {
+		return nil, err
+	}
+	candRows.Close()
+
+	if len(candidateIDs) == 0 {
+		return &Graph{Nodes: []GraphNode{}, Edges: []GraphEdge{}, Summary: summary}, nil
+	}
+
+	edges, err := s.listEdgesWithQueryer(ctx, tx, f.EdgeFilter, edgeQueryScope{
+		candidateIDs:      candidateIDs,
+		excludedStaticIDs: excludedStaticIDs,
+		nodeFilter:        &f,
+	})
+	if err != nil {
+		return nil, err
+	}
+	connectedIDs, _ := collectConnectedNodeIDs(edges)
+	summary.IsolatedNodes = len(candidateIDs) - len(connectedIDs)
+
+	nodes := []GraphNode{}
+	if len(connectedIDs) > 0 {
+		nodes, err = s.queryFullGraphNodes(ctx, tx, "e.id = ANY($1::uuid[])", connectedIDs)
+		if err != nil {
+			return nil, err
+		}
+	}
+	summary.VisibleNodes = len(nodes)
+	summary.VisibleEdges = len(edges)
+	if err := s.populateOpenFindingsCounts(ctx, tx, nodes); err != nil {
+		return nil, err
+	}
+	return &Graph{Nodes: nodes, Edges: edges, Summary: summary}, nil
 }
 
 // TopologyGroup 按应用分组的端点树节点。
@@ -419,7 +977,7 @@ type Topology struct {
 	Edges        []GraphEdge     `json:"edges"`
 }
 
-// ListTopology 端点按应用分组，附调用边（不过滤；契约同 ListGraph）。
+// ListTopology 端点按应用分组，附调用边（边按 DefaultGraphEdgeLimit 封顶；契约同 ListGraph）。
 func (s *Store) ListTopology(ctx context.Context) (*Topology, error) {
 	return s.ListTopologyFiltered(ctx, EdgeFilter{})
 }
@@ -480,39 +1038,9 @@ ORDER BY e.application_id NULLS LAST, e.endpoint_key, e.host, e.id`)
 	return t, nil
 }
 
-// listEdges 按 EdgeFilter 过滤的调用边（条件由白名单拼接，值一律参数化）。
+// listEdges 按 EdgeFilter 过滤并受 DefaultGraphEdgeLimit/MaxGraphEdgeLimit 约束的调用边（按 call_count DESC, id 索引顺序返回）。
 func (s *Store) listEdges(ctx context.Context, f EdgeFilter) ([]GraphEdge, error) {
-	where := "TRUE"
-	args := []any{}
-	if f.Start != nil {
-		args = append(args, *f.Start)
-		where += fmt.Sprintf(" AND last_seen_at >= $%d", len(args))
-	}
-	if f.End != nil {
-		args = append(args, *f.End)
-		where += fmt.Sprintf(" AND first_seen_at <= $%d", len(args))
-	}
-	if f.MinCount > 0 {
-		args = append(args, f.MinCount)
-		where += fmt.Sprintf(" AND call_count >= $%d", len(args))
-	}
-	rows, err := s.db.Query(ctx, `
-SELECT id, caller_fingerprint, source_endpoint_id, target_endpoint_id, call_count, identity_count, first_seen_at, last_seen_at
-FROM api_call_edges WHERE `+where+` ORDER BY call_count DESC`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []GraphEdge{}
-	for rows.Next() {
-		var e GraphEdge
-		if err := rows.Scan(&e.ID, &e.CallerFingerprint, &e.SourceEndpointID,
-			&e.TargetEndpointID, &e.CallCount, &e.IdentityCount, &e.FirstSeenAt, &e.LastSeenAt); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
+	return s.listEdgesWithQueryer(ctx, s.db, f, edgeQueryScope{})
 }
 
 // ---------- 通用辅助 ----------

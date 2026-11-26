@@ -33,6 +33,11 @@ type RuleHitRecorder interface {
 	IncrementHit(ctx context.Context, ruleID uuid.UUID, at time.Time) error
 }
 
+// ClientSideIngester 是客户端供应链安全事件消费接口（*clientside.Store 实现，可为 nil）。
+type ClientSideIngester interface {
+	IngestEvent(ctx context.Context, evt *Event) error
+}
+
 // Collector 是访问控制事件采集器。
 // 读取网关 guard 事件 JSONL 文件，断点续传（checkpoint 文件记录 offset、inode
 // 和文件前缀指纹，用于轮转检测），批量插入 access_control_events；
@@ -42,6 +47,7 @@ type Collector struct {
 	blocks         BlockUpserter       // nil 时跳过封禁入库
 	hits           RuleHitRecorder     // nil 时跳过命中计数
 	urlHits        RuleHitRecorder     // nil 时跳过 URL 白名单命中计数
+	clientSide     ClientSideIngester  // nil 时跳过客户端供应链事件回流
 	syslog         *syslogfw.Forwarder // nil 时跳过 syslog 外发
 	collectorID    string
 	logPath        string
@@ -79,6 +85,9 @@ func (c *Collector) SetHitRecorder(h RuleHitRecorder) { c.hits = h }
 
 // SetURLWhitelistHitRecorder 设置 URL 白名单命中计数接口（应用装配时使用）。
 func (c *Collector) SetURLWhitelistHitRecorder(h RuleHitRecorder) { c.urlHits = h }
+
+// SetClientSideIngester 设置客户端供应链安全事件消费接口（应用装配时使用，可为 nil）。
+func (c *Collector) SetClientSideIngester(i ClientSideIngester) { c.clientSide = i }
 
 // SetSyslogForwarder 设置 syslog 外发器（应用装配时使用，可为 nil）。
 func (c *Collector) SetSyslogForwarder(fw *syslogfw.Forwarder) { c.syslog = fw }
@@ -380,6 +389,18 @@ func (c *Collector) handleSideEffects(ctx context.Context, evt *Event) {
 		if err := c.hits.IncrementHit(ctx, ruleID, evt.OccurredAt); err != nil {
 			slog.Error("increment rule hit failed",
 				"collector", c.collectorID, "access_rule_id", evt.AccessRuleID, "error", err)
+		}
+	case EventTypeClientSideScriptObserved,
+		EventTypeClientSideUnauthorizedScript,
+		EventTypeClientSideScriptTampered,
+		EventTypeClientSideCSPViolation,
+		EventTypeClientSideProbeAlert:
+		if c.clientSide == nil {
+			return
+		}
+		if err := c.clientSide.IngestEvent(ctx, evt); err != nil {
+			slog.Warn("ingest client side event failed (fail-open)",
+				"collector", c.collectorID, "event_type", evt.EventType, "request_id", evt.RequestID, "error", err)
 		}
 	}
 }

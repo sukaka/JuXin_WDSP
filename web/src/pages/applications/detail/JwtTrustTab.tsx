@@ -30,12 +30,15 @@ import {
 } from '@ant-design/icons'
 import { ApiError } from '../../../api/client'
 import {
+  JWT_DPOP_ALGS,
   JWT_TRUST_LIMITS,
   jwtTrustApi,
   jwksHasPrivateMaterial,
   validateStaticJwks,
 } from '../../../api/jwtTrust'
 import type {
+  JwtTokenBindingConfig,
+  JwtTokenBindingMode,
   JwtTrustIssuer,
   JwtTrustMode,
   JwtTrustPreflightResult,
@@ -47,10 +50,14 @@ import { useAuthStore } from '../../../stores/auth'
 import { formatDateTime } from '../../../utils/format'
 import { hasPermission } from '../../../utils/permission'
 import {
+  JWT_DPOP_ALG_OPTIONS,
+  JWT_TOKEN_BINDING_MODE_META,
   JWT_TRUST_CHECK_NAME_LABELS,
   JWT_TRUST_CHECK_STATUS_META,
   JWT_TRUST_MODE_META,
   JWT_TRUST_STATE_META,
+  isDPoPBindingMode,
+  isMTLSBindingMode,
   mapJwtTrustFieldErrorPath,
 } from '../../../utils/jwtTrust'
 import {
@@ -114,6 +121,19 @@ interface SelectorFormValue {
   token_required: boolean
 }
 
+const TOKEN_BINDING_MODE_OPTIONS = (
+  [
+    'NONE',
+    'DPOP_OPTIONAL',
+    'DPOP_REQUIRED',
+    'MTLS_REQUIRED',
+    'DPOP_OR_MTLS',
+  ] as const
+).map((value) => ({
+  value,
+  label: JWT_TOKEN_BINDING_MODE_META[value].label,
+}))
+
 interface IssuerFormValue {
   issuer: string
   audiences: string[]
@@ -124,6 +144,11 @@ interface IssuerFormValue {
   clock_skew_seconds: number
   tenant_claim?: string
   role_claims?: string[]
+  token_binding_mode?: JwtTokenBindingMode
+  dpop_require_nonce?: boolean
+  dpop_max_proof_age_seconds?: number
+  dpop_nonce_ttl_seconds?: number
+  dpop_allowed_algs?: string[]
 }
 
 interface PolicyFormValues {
@@ -149,27 +174,55 @@ function toSelectors(values: SelectorFormValue[]): JwtTrustSelector[] {
   }))
 }
 
+function toTokenBinding(
+  is: IssuerFormValue,
+): JwtTokenBindingConfig | undefined {
+  const tbMode = is.token_binding_mode
+  if (!tbMode || tbMode === 'NONE') {
+    return undefined
+  }
+  if (!isDPoPBindingMode(tbMode)) {
+    return { mode: tbMode }
+  }
+  const allowedAlgs = Array.from(
+    new Set((is.dpop_allowed_algs ?? []).map((a) => a.trim()).filter(Boolean)),
+  )
+  return {
+    mode: tbMode,
+    require_nonce: Boolean(is.dpop_require_nonce),
+    max_proof_age_seconds:
+      is.dpop_max_proof_age_seconds ?? JWT_TRUST_LIMITS.defaultDPoPMaxProofAge,
+    nonce_ttl_seconds:
+      is.dpop_nonce_ttl_seconds ?? JWT_TRUST_LIMITS.defaultDPoPNonceTTL,
+    ...(allowedAlgs.length > 0 ? { allowed_dpop_algs: allowedAlgs } : {}),
+  }
+}
+
 function toIssuers(values: IssuerFormValue[]): JwtTrustIssuer[] {
-  return (values ?? []).map((is) => ({
-    issuer: is.issuer ?? '',
-    audiences: is.audiences ?? [],
-    algorithms: is.algorithms ?? [],
-    key_source: {
-      type: is.key_source_type,
-      jwks: is.key_source_type === 'STATIC_JWKS' ? (is.jwks ?? '') : undefined,
-      url: is.key_source_type === 'REMOTE_JWKS' ? (is.url ?? '') : undefined,
-    },
-    clock_skew_seconds:
-      is.clock_skew_seconds ?? JWT_TRUST_LIMITS.defaultClockSkew,
-    tenant_claim: is.tenant_claim?.trim() ? is.tenant_claim.trim() : undefined,
-    role_claims: Array.from(
-      new Set(
-        (is.role_claims ?? [])
-          .map((c) => c.trim())
-          .filter((c) => c.length > 0),
+  return (values ?? []).map((is) => {
+    const tokenBinding = toTokenBinding(is)
+    return {
+      issuer: is.issuer ?? '',
+      audiences: is.audiences ?? [],
+      algorithms: is.algorithms ?? [],
+      key_source: {
+        type: is.key_source_type,
+        jwks: is.key_source_type === 'STATIC_JWKS' ? (is.jwks ?? '') : undefined,
+        url: is.key_source_type === 'REMOTE_JWKS' ? (is.url ?? '') : undefined,
+      },
+      clock_skew_seconds:
+        is.clock_skew_seconds ?? JWT_TRUST_LIMITS.defaultClockSkew,
+      tenant_claim: is.tenant_claim?.trim() ? is.tenant_claim.trim() : undefined,
+      role_claims: Array.from(
+        new Set(
+          (is.role_claims ?? [])
+            .map((c) => c.trim())
+            .filter((c) => c.length > 0),
+        ),
       ),
-    ),
-  }))
+      ...(tokenBinding ? { token_binding: tokenBinding } : {}),
+    }
+  })
 }
 
 export default function JwtTrustTab({
@@ -222,6 +275,19 @@ export default function JwtTrustTab({
           is.clock_skew_seconds ?? JWT_TRUST_LIMITS.defaultClockSkew,
         tenant_claim: is.tenant_claim ?? '',
         role_claims: is.role_claims ?? [],
+        token_binding_mode: is.token_binding?.mode ?? 'NONE',
+        dpop_require_nonce: is.token_binding?.require_nonce ?? false,
+        dpop_max_proof_age_seconds:
+          is.token_binding?.max_proof_age_seconds ??
+          JWT_TRUST_LIMITS.defaultDPoPMaxProofAge,
+        dpop_nonce_ttl_seconds:
+          is.token_binding?.nonce_ttl_seconds ??
+          JWT_TRUST_LIMITS.defaultDPoPNonceTTL,
+        dpop_allowed_algs:
+          is.token_binding?.allowed_dpop_algs &&
+          is.token_binding.allowed_dpop_algs.length > 0
+            ? is.token_binding.allowed_dpop_algs
+            : [...JWT_DPOP_ALGS],
       })),
       reason: '',
     })
@@ -668,6 +734,7 @@ export default function JwtTrustTab({
                   const curIssuer = issuersWatch?.[field.name]
                   const keyType = curIssuer?.key_source_type ?? 'STATIC_JWKS'
                   const issuerPreview = curIssuer?.issuer?.trim()
+                  const tbMode = curIssuer?.token_binding_mode ?? 'NONE'
                   return (
                     <div key={field.key} className="jz-detail-subcard">
                       <div className="jz-detail-subcard-head">
@@ -704,6 +771,18 @@ export default function JwtTrustTab({
                               ? '远程 JWKS'
                               : '静态 JWKS'}
                           </Tag>
+                          {tbMode !== 'NONE' && (
+                            <Tag
+                              color={
+                                JWT_TOKEN_BINDING_MODE_META[tbMode]?.color ??
+                                'purple'
+                              }
+                              style={{ marginInlineEnd: 0 }}
+                            >
+                              {JWT_TOKEN_BINDING_MODE_META[tbMode]?.label ??
+                                tbMode}
+                            </Tag>
+                          )}
                         </div>
                         <Tooltip title="删除此发行方" placement="left">
                           <Button
@@ -996,6 +1075,167 @@ export default function JwtTrustTab({
                             </Form.Item>
                           </Col>
                         </Row>
+                        <div className="jz-detail-subcard-group">
+                          <div className="jz-detail-subcard-group-title">
+                            令牌持有证明绑定（DPoP / mTLS）
+                          </div>
+                          <Row gutter={[16, 0]}>
+                            <Col xs={24} md={12}>
+                              <Form.Item
+                                name={[field.name, 'token_binding_mode']}
+                                label="绑定模式"
+                                initialValue="NONE"
+                                extra={
+                                  JWT_TOKEN_BINDING_MODE_META[tbMode]
+                                    ?.description
+                                }
+                              >
+                                <Select options={TOKEN_BINDING_MODE_OPTIONS} />
+                              </Form.Item>
+                            </Col>
+                          </Row>
+
+                          <Form.Item
+                            noStyle
+                            shouldUpdate={(
+                              prev: PolicyFormValues,
+                              cur: PolicyFormValues,
+                            ) =>
+                              prev.issuers?.[field.name]?.token_binding_mode !==
+                              cur.issuers?.[field.name]?.token_binding_mode
+                            }
+                          >
+                            {({ getFieldValue }) => {
+                              const currentBindingMode =
+                                (getFieldValue([
+                                  'issuers',
+                                  field.name,
+                                  'token_binding_mode',
+                                ]) as JwtTokenBindingMode | undefined) ?? 'NONE'
+                              const showDPoP =
+                                isDPoPBindingMode(currentBindingMode)
+                              const showMTLS =
+                                isMTLSBindingMode(currentBindingMode)
+                              if (!showDPoP && !showMTLS) return null
+                              return (
+                                <>
+                                  {showDPoP && (
+                                    <Row gutter={[16, 0]}>
+                                      <Col xs={24} sm={12} md={6}>
+                                        <Form.Item
+                                          name={[
+                                            field.name,
+                                            'dpop_require_nonce',
+                                          ]}
+                                          label="要求 DPoP-Nonce 挑战"
+                                          valuePropName="checked"
+                                          initialValue={false}
+                                        >
+                                          <Switch
+                                            checkedChildren="开启"
+                                            unCheckedChildren="关闭"
+                                          />
+                                        </Form.Item>
+                                      </Col>
+                                      <Col xs={24} sm={12} md={6}>
+                                        <Form.Item
+                                          name={[
+                                            field.name,
+                                            'dpop_max_proof_age_seconds',
+                                          ]}
+                                          label="证明最大有效期（秒）"
+                                          initialValue={
+                                            JWT_TRUST_LIMITS.defaultDPoPMaxProofAge
+                                          }
+                                          rules={[
+                                            {
+                                              type: 'number',
+                                              min: JWT_TRUST_LIMITS.minDPoPMaxProofAge,
+                                              max: JWT_TRUST_LIMITS.maxDPoPMaxProofAge,
+                                              message: `须在 ${JWT_TRUST_LIMITS.minDPoPMaxProofAge}–${JWT_TRUST_LIMITS.maxDPoPMaxProofAge} 秒之间`,
+                                            },
+                                          ]}
+                                        >
+                                          <InputNumber
+                                            min={
+                                              JWT_TRUST_LIMITS.minDPoPMaxProofAge
+                                            }
+                                            max={
+                                              JWT_TRUST_LIMITS.maxDPoPMaxProofAge
+                                            }
+                                            precision={0}
+                                            style={{ width: '100%' }}
+                                          />
+                                        </Form.Item>
+                                      </Col>
+                                      <Col xs={24} sm={12} md={6}>
+                                        <Form.Item
+                                          name={[
+                                            field.name,
+                                            'dpop_nonce_ttl_seconds',
+                                          ]}
+                                          label="Nonce 有效期（秒）"
+                                          initialValue={
+                                            JWT_TRUST_LIMITS.defaultDPoPNonceTTL
+                                          }
+                                          rules={[
+                                            {
+                                              type: 'number',
+                                              min: JWT_TRUST_LIMITS.minDPoPNonceTTL,
+                                              max: JWT_TRUST_LIMITS.maxDPoPNonceTTL,
+                                              message: `须在 ${JWT_TRUST_LIMITS.minDPoPNonceTTL}–${JWT_TRUST_LIMITS.maxDPoPNonceTTL} 秒之间`,
+                                            },
+                                          ]}
+                                        >
+                                          <InputNumber
+                                            min={
+                                              JWT_TRUST_LIMITS.minDPoPNonceTTL
+                                            }
+                                            max={
+                                              JWT_TRUST_LIMITS.maxDPoPNonceTTL
+                                            }
+                                            precision={0}
+                                            style={{ width: '100%' }}
+                                          />
+                                        </Form.Item>
+                                      </Col>
+                                      <Col xs={24} sm={12} md={6}>
+                                        <Form.Item
+                                          name={[
+                                            field.name,
+                                            'dpop_allowed_algs',
+                                          ]}
+                                          label="允许的 DPoP 算法"
+                                          initialValue={[...JWT_DPOP_ALGS]}
+                                        >
+                                          <Select
+                                            mode="multiple"
+                                            options={JWT_DPOP_ALG_OPTIONS}
+                                            placeholder="ES256 / RS256 / EdDSA"
+                                          />
+                                        </Form.Item>
+                                      </Col>
+                                    </Row>
+                                  )}
+                                  {showMTLS && (
+                                    <Typography.Paragraph
+                                      type="secondary"
+                                      style={{
+                                        fontSize: 12,
+                                        marginBottom: 10,
+                                      }}
+                                    >
+                                      mTLS 证书绑定依据 RFC 8705 核验已通过 TLS
+                                      信任链校验的客户端证书指纹（
+                                      <code>cnf.x5t#S256</code>
+                                      ），未验链证书将被忽略。
+                                    </Typography.Paragraph>
+                                  )}
+                                </>
+                              )
+                            }}
+                          </Form.Item>
+                        </div>
                       </div>
                     </div>
                   )
@@ -1016,6 +1256,13 @@ export default function JwtTrustTab({
                       clock_skew_seconds: JWT_TRUST_LIMITS.defaultClockSkew,
                       tenant_claim: '',
                       role_claims: [],
+                      token_binding_mode: 'NONE',
+                      dpop_require_nonce: false,
+                      dpop_max_proof_age_seconds:
+                        JWT_TRUST_LIMITS.defaultDPoPMaxProofAge,
+                      dpop_nonce_ttl_seconds:
+                        JWT_TRUST_LIMITS.defaultDPoPNonceTTL,
+                      dpop_allowed_algs: [...JWT_DPOP_ALGS],
                     })
                   }
                 >

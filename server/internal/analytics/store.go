@@ -521,6 +521,7 @@ func (s *Store) TopRules(ctx context.Context, r Range, appID *uuid.UUID, limit i
 			ids = append(ids, it.RuleID)
 		}
 		where := `e.occurred_at >= $1 AND e.occurred_at < $2
+  AND m.event_occurred_at >= $1 AND m.event_occurred_at < $2
   AND e.disposition_status = 'CONFIRMED_FALSE_POSITIVE' AND m.rule_id = ANY($3)`
 		args := []interface{}{r.Start, r.End, ids}
 		if appID != nil {
@@ -529,7 +530,7 @@ func (s *Store) TopRules(ctx context.Context, r Range, appID *uuid.UUID, limit i
 		}
 		fpRows, err := s.db.Query(ctx, fmt.Sprintf(`
 SELECT m.rule_id, count(*) FROM security_event_matches m
-JOIN security_events e ON e.id = m.event_id
+JOIN security_events e ON e.id = m.event_id AND e.occurred_at = m.event_occurred_at
 WHERE %s GROUP BY m.rule_id`, where), args...)
 		if err != nil {
 			return nil, err

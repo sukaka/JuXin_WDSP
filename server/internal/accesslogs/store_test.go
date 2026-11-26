@@ -40,10 +40,39 @@ func TestBuildListWhere(t *testing.T) {
 			name:   "full filter",
 			filter: ListFilter{Domain: "waf", ClientIP: "203.0.113.10", Method: "POST", URI: "/login", Status: &status, WAFAction: "BLOCK", RequestID: "req-1"},
 			wantConds: []string{
-				"domain ILIKE $1", "host(client_ip) = $2", "request_method = $3",
+				"domain ILIKE $1", "client_ip = $2::inet", "request_method = $3",
 				"request_uri ILIKE $4", "response_status = $5", "waf_action = $6", "request_id = $7",
 			},
-			wantArgs: 7,
+			wantNotConds: []string{"host(client_ip)"},
+			wantArgs:     7,
+		},
+		{
+			name:         "ipv6 client_ip uses inet index predicate",
+			filter:       ListFilter{ClientIP: "2001:db8::1"},
+			wantConds:    []string{"client_ip = $1::inet"},
+			wantNotConds: []string{"host(client_ip)", "1=0"},
+			wantArgs:     1,
+		},
+		{
+			name:         "invalid client_ip short-circuits without inet cast error",
+			filter:       ListFilter{ClientIP: "not-an-ip"},
+			wantConds:    []string{"1=0"},
+			wantNotConds: []string{"client_ip ="},
+			wantArgs:     0,
+		},
+		{
+			name:         "scoped ipv6 with zone id short-circuits without inet cast error",
+			filter:       ListFilter{ClientIP: "fe80::1%eth0"},
+			wantConds:    []string{"1=0"},
+			wantNotConds: []string{"client_ip ="},
+			wantArgs:     0,
+		},
+		{
+			name:         "percent-encoded scoped ipv6 short-circuits without inet cast error",
+			filter:       ListFilter{ClientIP: "fe80::1%25eth0"},
+			wantConds:    []string{"1=0"},
+			wantNotConds: []string{"client_ip ="},
+			wantArgs:     0,
 		},
 		{
 			name:         "no injection from user input",
@@ -129,6 +158,12 @@ func TestInsertAPMFields(t *testing.T) {
 		}
 		if !strings.Contains(db.sql, "trace_id") || !strings.Contains(db.sql, "ttfb_ms") {
 			t.Errorf("insert sql missing apm columns: %s", db.sql)
+		}
+		if !strings.Contains(db.sql, "ON CONFLICT (request_id, occurred_at) WHERE request_id <> '' DO NOTHING") {
+			t.Errorf("insert sql must include partition key occurred_at in ON CONFLICT: %s", db.sql)
+		}
+		if strings.Contains(db.sql, "ON CONFLICT (request_id) ") {
+			t.Errorf("insert sql must not use non-partitioned ON CONFLICT (request_id): %s", db.sql)
 		}
 		if db.args[argWAFAction] != "ALLOW" {
 			t.Errorf("empty waf_action must normalize to ALLOW, got %v", db.args[argWAFAction])

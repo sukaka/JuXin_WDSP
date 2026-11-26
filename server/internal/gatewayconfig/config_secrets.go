@@ -139,6 +139,9 @@ func RedactConfigSecrets(configJSON string) (string, error) {
 					}
 				}
 			}
+			if acp, ok := m["ai_crawl_policy"].(mapT); ok {
+				redactMapSecret(acp, "labyrinth_key_hex")
+			}
 		}
 		if isACMEHTTP01HandlerNode(m) {
 			if v, ok := m["valkey"].(mapT); ok {
@@ -189,18 +192,19 @@ func RedactConfigSecrets(configJSON string) (string, error) {
 
 // configSecretNeeds 记录历史配置中出现的密钥类字段（决定回滚需从当前设置取哪些值）。
 type configSecretNeeds struct {
-	valkey         bool
-	identitySalt   bool
-	scanVerify     bool
-	fileSignature  bool
-	maskCrypto     bool
-	authzObjectKey bool
-	tlsTicketKey   bool
-	botSigningKeys bool
+	valkey              bool
+	identitySalt        bool
+	scanVerify          bool
+	fileSignature       bool
+	maskCrypto          bool
+	authzObjectKey      bool
+	tlsTicketKey        bool
+	botSigningKeys      bool
+	aiCrawlLabyrinthKey bool
 }
 
 func (n *configSecretNeeds) any() bool {
-	return n.valkey || n.identitySalt || n.scanVerify || n.fileSignature || n.maskCrypto || n.authzObjectKey || n.tlsTicketKey || n.botSigningKeys
+	return n.valkey || n.identitySalt || n.scanVerify || n.fileSignature || n.maskCrypto || n.authzObjectKey || n.tlsTicketKey || n.botSigningKeys || n.aiCrawlLabyrinthKey
 }
 
 // reinjectConfigSecrets 回滚重放前将历史配置 JSON 中 guard 段与 jiuzhang_tls_mux 密钥类字段替换为当前设置值
@@ -243,6 +247,11 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 			if bp, ok := m["bot_policy"].(mapT); ok {
 				if sk, ok := bp["signing_keys"].(mapT); ok && len(sk) > 0 {
 					needs.botSigningKeys = true
+				}
+			}
+			if acp, ok := m["ai_crawl_policy"].(mapT); ok {
+				if hasNonEmptyStringField(acp, "labyrinth_key_hex") {
+					needs.aiCrawlLabyrinthKey = true
 				}
 			}
 		}
@@ -299,6 +308,10 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 		if needs.botSigningKeys && len(cur.BotSigningKeys) == 0 {
 			return "", fmt.Errorf("回滚重注入当前密钥失败：历史配置含 bot_policy.signing_keys，但当前未配置 Bot 签名密钥")
 		}
+		labyrinthKey := cur.EffectiveAICrawlLabyrinthKeyHex()
+		if needs.aiCrawlLabyrinthKey && labyrinthKey == "" {
+			return "", fmt.Errorf("回滚重注入当前密钥失败：历史配置含 ai_crawl_policy.labyrinth_key_hex，但当前未配置 AI 迷宫签名密钥")
+		}
 		// 重注入：valkey 段整体按当前运行时替换（地址/凭据/库同口径，与 InjectRuntimeSecrets 一致）；
 		// 其余密钥字段替换为当前设置值
 		walkConfigMaps(root, func(m mapT) {
@@ -329,6 +342,11 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 				if bp, ok := m["bot_policy"].(mapT); ok {
 					if sk, ok := bp["signing_keys"].(mapT); ok && len(sk) > 0 {
 						bp["signing_keys"] = cur.BotSigningKeys
+					}
+				}
+				if acp, ok := m["ai_crawl_policy"].(mapT); ok {
+					if hasNonEmptyStringField(acp, "labyrinth_key_hex") {
+						acp["labyrinth_key_hex"] = labyrinthKey
 					}
 				}
 			}

@@ -33,27 +33,97 @@ import (
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/aicrawl"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/botchallenge"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/clientip"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/clientside"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/events"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/identitybehavior"
 )
 
-// serveNextViaBot 是 CC 之后、serveNext 之前的统一收口：先处理独立发布探针，
-// 再进入 Bot 步骤。保护地址/白名单/L7 allow 三个直达分支与常规链路全部经此进入——
-// 白名单/L7 allow 不隐式跳过 Bot（BOT-015）。
+// serveNextViaBot 是 CC 之后、serveNext 之前的统一收口：先处理独立发布探针与
+// AI Labyrinth 保留命名空间，再执行 AI 爬虫治理（Web Bot Auth / 策略处置 / Content-Signal）
+// 与 Bot 挑战步骤。保护地址/白名单/L7 allow 三个直达分支与常规链路全部经此进入——
+// 白名单/L7 allow 不隐式跳过 AI 爬虫治理与 Bot（BOT-015 / Phase 9A-2）。
 func (g *Guard) serveNextViaBot(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler, base events.Event, res clientip.Result) error {
 	// 发布冒烟是独立 WDSP 内部精确端点：必须在 bp==nil 与 RELEASED 分支之前处理，
-	// 且无论认证成败都不得进入 Bot、API/WAF 或 reverse_proxy 下游。
+	// 且无论认证成败都不得进入 AI 爬虫治理、Bot、API/WAF 或 reverse_proxy 下游。
 	canonPath := normalizer.CanonicalPath(r.URL.Path)
 	if canonPath == publishSmokePath {
 		return g.servePublishSmoke(w, r)
 	}
-	bp := g.botPolicy
-	if bp == nil {
-		return g.serveNext(w, r, next)
+	// AI Labyrinth 保留命名空间 /_wdsp/labyrinth/v1/：一律本地处理（绝不反向代理），
+	// 并强制上报 AI_CRAWL_TRAP_HIT 事件。
+	if strings.HasPrefix(canonPath, aicrawl.LabyrinthReservedNamespace) {
+		return g.serveAICrawlLabyrinth(w, r, canonPath, base)
 	}
+	// 客户端供应链安全保留命名空间 /_wdsp/csp/v1/ 与 /_wdsp/cs/v1/：
+	// 一律本地处理（绝不反向代理），无论策略开关或白名单状态。
+	if strings.HasPrefix(canonPath, clientside.CSPReservedNamespace) {
+		return g.serveClientSideReportNamespace(w, r, canonPath, base, res)
+	}
+	if strings.HasPrefix(canonPath, clientside.CSReservedNamespace) {
+		return g.serveClientSideProbeNamespace(w, r, canonPath)
+	}
+
+	bp := g.botPolicy
 	dispo := DispositionFrom(r.Context())
+
+	// 1. Bot 保留命名空间最前置本地处理（verify 固定协议端点 / 墓碑；全部结局本地响应，
+	// 结构上不可能反向代理——任务书 §3.2 末段）。在 AI 爬虫判定之前处理，确保挑战验证提交
+	// 不被 AI 爬虫策略误拦截。
+	if bp != nil && strings.HasPrefix(canonPath, botReservedNamespace) {
+		if g.botSvc != nil || botNamespaceActive(bp) {
+			cc := g.buildBotCallContext(bp, base, res, dispo)
+			return g.serveBotNamespace(w, r, bp, cc)
+		}
+	}
+
+	// 1.5 Content-Signal 响应头（配置且模式非 OFF 时对业务与网关响应统一附带）。
+	if g.aiCrawl != nil {
+		if cs := g.aiCrawl.ContentSignal(); cs != "" {
+			w = aicrawl.NewContentSignalWriter(w, cs)
+		}
+	}
+
+	// 1.6 Web Bot Auth（RFC 9421）与 AI 爬虫治理评估（白名单/L7 allow 不可绕过）。
+	var aiRes aiCrawlStepOutcome
+	if g.aiCrawl != nil {
+		var handled bool
+		var err error
+		aiRes, handled, err = g.evaluateAndEnforceAICrawl(w, r, canonPath, base, res, dispo)
+		if handled {
+			return err
+		}
+	}
+
+	// 1.7 未验证可疑爬虫的 HTML GET 响应可选注入不可见陷阱链接（labyrinth_inject_links）。
+	var trapInjector *aicrawl.TrapLinkInjectorWriter
+	if aiRes.injectTrapLink && g.aiCrawl != nil {
+		trapInjector = g.aiCrawl.Labyrinth().NewTrapLinkInjectorWriter(w, r.Host, canonPath)
+		w = trapInjector
+	}
+
+	// 1.8 客户端供应链安全 HTML 响应包装器（策略开启时启用：CSP 头注入 + 有界 HTML 脚本扫描/
+	// 篡改检测/可选未授权脚本剥离 + 敏感路径防窃取探针注入；缺省/OFF 零开销直通）。
+	var csWrapper *clientside.HTMLResponseWrapper
+	if g.clientSide != nil {
+		csWrapper = g.wrapClientSideResponse(w, r, canonPath, base)
+		w = csWrapper
+	}
+
+	err := g.serveBotStep(w, r, next, canonPath, base, res, bp, dispo, aiRes)
+	skipRewrite := err != nil || (dispo != nil && dispo.Terminated())
+	if csWrapper != nil {
+		csWrapper.Finish(skipRewrite)
+	}
+	if trapInjector != nil {
+		trapInjector.Finish(skipRewrite)
+	}
+	return err
+}
+
+func (g *Guard) buildBotCallContext(bp *botPolicyJSON, base events.Event, res clientip.Result, dispo *Disposition) botchallenge.CallContext {
 	cc := botchallenge.CallContext{
 		RequestID:    base.RequestID,
 		ClientIP:     res.ClientIP.String(),
@@ -75,22 +145,49 @@ func (g *Guard) serveNextViaBot(w http.ResponseWriter, r *http.Request, next cad
 		}
 		return dispo.JSON()
 	}
+	return cc
+}
 
-	svc := g.botSvc
-	// 1. 保留命名空间最前置本地处理（verify 固定协议端点 / 墓碑；全部结局本地响应，
-	// 结构上不可能反向代理——任务书 §3.2 末段）。服务未装配且保留已解除（RELEASED）
-	// 时不抢占业务路径（首次 OFF 且从未启用的应用不注册保留路由）。
-	if strings.HasPrefix(canonPath, botReservedNamespace) {
-		if svc != nil || botNamespaceActive(bp) {
-			return g.serveBotNamespace(w, r, bp, cc)
-		}
+func (g *Guard) serveBotStep(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler, canonPath string, base events.Event, res clientip.Result, bp *botPolicyJSON, dispo *Disposition, aiRes aiCrawlStepOutcome) error {
+	// Web Bot Auth 验签通过且命中规则显式开启 exempt_bot_challenge=true：
+	// 仅跳过 Bot JS 挑战，仍完整经过后续 JWT / MachineID / API 动态防护 / Coraza WAF。
+	if aiRes.exemptBotChallenge {
+		dispo.RecordStep(ExecutorBot, StepObserved, "AI-CRAWL-BOT-EXEMPT agent="+aiRes.agentSlug)
 		return g.serveNext(w, r, next)
 	}
 
+	// AI 爬虫策略在 PROTECT 模式命中 CHALLENGE 动作：优先复用 Bot PROTECT JS 挑战，
+	// 若已持有效通行 Cookie 则放行至 serveNext；Bot 未启用/不可挑战时 fail-closed 403。
+	if aiRes.forceBotChallenge {
+		if bp != nil && g.botSvc != nil && bp.Mode == botModeProtect {
+			cc := g.buildBotCallContext(bp, base, res, dispo)
+			if cl, cerr := g.botSvc.ValidateClearance(r, cc); cerr == nil {
+				dispo.RecordStep(ExecutorBot, StepExecuted, "clearance accepted flow="+cl.FlowID)
+				return g.serveNext(w, r, next)
+			}
+			if eligOK, _ := botRiskChallengeEligibility(r); eligOK {
+				g.offerBotChallenge(w, r, g.botSvc, cc, base, res, "AI_CRAWL_POLICY")
+				g.emitAICrawlEvent(base, events.AICrawlAction, "CHALLENGE", http.StatusForbidden, aiRes.eval, dispo.JSON())
+				return nil
+			}
+		}
+		aicrawl.WriteBlock(w, r, g.aiCrawl.ContentSignal(), base.RequestID, "Automated AI crawler challenge required.")
+		dispo.RecordTerminal(ExecutorBot, DisActionBlock, http.StatusForbidden, true,
+			[]string{"AI_CRAWL_CHALLENGE_REQUIRED"}, aiCrawlRuleRefs(aiRes.eval))
+		g.emitAICrawlEvent(base, events.AICrawlAction, "CHALLENGE", http.StatusForbidden, aiRes.eval, dispo.JSON())
+		accessLogAnnotate(r.Context(), wafActionBlock)
+		return nil
+	}
+
+	if bp == nil {
+		return g.serveNext(w, r, next)
+	}
+	svc := g.botSvc
 	if svc == nil {
 		// OFF（无服务）或 OBSERVE 依赖缺失降级：请求链零变化（观测降级已在装配期 Warn）
 		return g.serveNext(w, r, next)
 	}
+	cc := g.buildBotCallContext(bp, base, res, dispo)
 
 	// 2. 选择器（显式配置路径；不匹配零行为）
 	if !botSelectorMatch(bp.Selectors, canonPath) {

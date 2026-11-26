@@ -17,10 +17,12 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/pipeline"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/response"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/accesscontrol"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/aicrawl"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/apievents"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/botchallenge"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/cidr"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/clientip"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/clientside"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/events"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/identitybehavior"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/l7rules"
@@ -437,6 +439,19 @@ type Guard struct {
 	// 原始 JSON 保留，装配期经 parseAndValidateBotPolicy 严格解码）
 	BotPolicy json.RawMessage `json:"bot_policy,omitempty"`
 
+	// AI 爬虫治理与离线迷宫策略（Phase 9A-2；发布通道下发 ai_crawl_policy 处理器段；
+	// 缺省 = 未下发，零行为变化。与 jwt_trust/bot_policy 同一 fail-closed 纪律：
+	// 严格解码 DisallowUnknownFields + 全量校验，非法配置拒绝加载。
+	// 原始 JSON 保留，装配期经 assembleAICrawl 严格解码）
+	AICrawlPolicy json.RawMessage `json:"ai_crawl_policy,omitempty"`
+
+	// 客户端供应链安全策略（Phase 9B / Magecart 防护 / PCI DSS 4.0 6.4.3 & 11.6.1；
+	// 发布通道下发 client_side_policy 处理器段；缺省 = 未下发，零行为变化。
+	// 与 jwt_trust/bot_policy/ai_crawl_policy 同一 fail-closed 纪律：
+	// 严格解码 DisallowUnknownFields + 全量校验，非法配置拒绝加载。
+	// 原始 JSON 保留，装配期经 assembleClientSide 严格解码）
+	ClientSidePolicy json.RawMessage `json:"client_side_policy,omitempty"`
+
 	// 全量访问日志（二期）：默认关闭（nil 或 enabled=false 时零行为变化）
 	AccessLog *accessLogJSON `json:"access_log,omitempty"`
 
@@ -533,6 +548,10 @@ type Guard struct {
 	jwtCancel                 context.CancelFunc                      // 远程 JWKS 后台刷新取消（nil = 未启动；Cleanup 调用）
 	botPolicy                 *botPolicyJSON                          // 按 BotPolicy 装配（nil = 未下发；OFF 也保留段内容以维持 verify 命名空间墓碑；B3 起请求链经 serveNextViaBot 消费）
 	botSvc                    *botchallenge.Service                   // Bot 挑战服务（nil = OFF/未下发/OBSERVE 依赖缺失降级；PROTECT 依赖缺失在装配期 fail-closed 拒载）
+	aiCrawl                   *aicrawl.Engine                         // 按 AICrawlPolicy 装配（nil = 未下发/OFF，热路径零网络 IO）
+	aiCrawlCancel             context.CancelFunc                      // AI 爬虫远程目录后台刷新取消（nil = 未启动；Cleanup 调用）
+	aiCrawlFetcher            *aicrawl.Fetcher                        // 测试注入钩子（nil = 装配期建默认 SSRF 受限获取器）
+	clientSide                *clientside.Engine                      // 按 ClientSidePolicy 装配（nil = 未下发/OFF，零开销直通）
 	publishSmokeKey           []byte                                  // 按 PublishSmoke 解码（单次发布独立秘密，不落日志/快照）
 }
 

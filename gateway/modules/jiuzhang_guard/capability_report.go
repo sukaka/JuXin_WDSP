@@ -104,6 +104,9 @@ func buildCapabilityManifest(in capabilityInputs, now time.Time) capability.Mani
 		{Name: "mcp.observe", Version: "mcp/1"},    // detectors/mcp.go 观察线索
 		{Name: "mcp.toolcall", Version: "mcp/2"},   // detectors/mcpguard G1 完成态（NG-MCP D13：目录消费+转发前检查链+结果检查+协议化执行；mcp/1=观察线索——恒报进程能力不绑配置态，S5 偏差 2 教训承接）
 		{Name: "machineid", Version: "mid/1"},      // detectors/machineid G1 完成态（NG-ID D11：登记册消费+十步验证链+重放原子存储+轮换撤销水位+协议化执行——恒报进程能力不绑配置态）
+		{Name: "jwt.binding", Version: "jwtbind/1"}, // Phase 9A-1：OAuth 2.0 DPoP (RFC 9449) + mTLS (RFC 8705) 令牌持有证明绑定
+		{Name: "aicrawl", Version: "aicrawl/1"},     // Phase 9A-2：Web Bot Auth (RFC 9421) + AI 爬虫治理 + 离线 AI Labyrinth
+		{Name: "clientside", Version: "clientside/1"}, // Phase 9B：客户端供应链安全（Magecart 防护 / PCI DSS 4.0 6.4.3 & 11.6.1）
 	}
 	if in.GRPCUnary {
 		grpcLevel = "unary_g1"
@@ -127,7 +130,7 @@ func buildCapabilityManifest(in capabilityInputs, now time.Time) capability.Mani
 			"tlcp":    "1.1",    // gotlcp TLCP 1.1（SM2/SM3/SM4）双证自识别与加密回源能力
 		},
 		Detectors:   detectors,
-		Actions:     []string{"block", "temp_block", "rate_limit", "risk_challenge", "mask_response", "observe", "allow"},
+		Actions:     []string{"block", "temp_block", "rate_limit", "risk_challenge", "mask_response", "observe", "allow", "tarpit", "http_402"},
 		Limits:      map[string]int64{"max_grpc_frame_bytes": maxFrame},
 		GeneratedAt: now.UTC().Format(time.RFC3339),
 	}

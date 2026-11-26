@@ -121,7 +121,7 @@ else
   log_info "已在安装根内执行，跳过自复制"
 fi
 chmod 755 "${R}/install.sh" "${R}/uninstall.sh" "${R}/backup.sh" "${R}/restore.sh"
-chmod 755 "${R}/ops/console-cert.sh" "${R}/ops/fingerprint.sh"
+chmod 755 "${R}/ops/console-cert.sh" "${R}/ops/fingerprint.sh" "${R}/ops/pg-tune.sh"
 # backup.sh / restore.sh 同时装到 ops/ 下（日常运维入口，见 README）
 cp -a "${R}/backup.sh" "${R}/ops/backup.sh"
 cp -a "${R}/restore.sh" "${R}/ops/restore.sh"
@@ -257,6 +257,22 @@ EOF
   log_info "PostgreSQL 初始化完成（业务库就绪，服务随后由 systemd 拉起）"
 else
   log_info "pgdata 非空，跳过 initdb（保留既有数据）"
+fi
+
+# 幂等写入内存自适应 PostgreSQL 调优配置（4G/8G/16G/32G/64G 同机混部安全档）
+if [[ -f "${R}/data/pgdata/postgresql.conf" && -f "${R}/ops/pg-tune.sh" ]]; then
+  mkdir -p "${R}/data/pgdata/conf.d"
+  if ! grep -qE "^[[:space:]]*include_dir[[:space:]]*=[[:space:]]*'conf\.d'" "${R}/data/pgdata/postgresql.conf"; then
+    printf "\n# 九章内存自适应调优片段目录（pg-tune.sh 维护）\ninclude_dir = 'conf.d'\n" >> "${R}/data/pgdata/postgresql.conf"
+  fi
+  bash "${R}/ops/pg-tune.sh" --format conf \
+    --profile "${PG_MEMORY_PROFILE:-auto}" \
+    --pg-lib "${R}/bin/pg/lib/postgresql/16/lib" \
+    > "${R}/data/pgdata/conf.d/90-jiuzhang-tuning.conf"
+  chown -R "${RUN_USER}:${RUN_USER}" "${R}/data/pgdata/conf.d" "${R}/data/pgdata/postgresql.conf"
+  chmod 0700 "${R}/data/pgdata/conf.d"
+  chmod 0600 "${R}/data/pgdata/conf.d/90-jiuzhang-tuning.conf"
+  log_info "已刷新 PostgreSQL 内存自适应调优配置 ${R}/data/pgdata/conf.d/90-jiuzhang-tuning.conf（profile=${PG_MEMORY_PROFILE:-auto}）"
 fi
 
 # ---------- 7. Valkey 配置 ----------

@@ -495,8 +495,8 @@ FROM security_events WHERE %s GROUP BY 1 ORDER BY 2 DESC LIMIT 10`, where), args
 		return err
 	}
 
-	// 命中规则 TOP10（仅规则ID/名称/次数，不含匹配载荷）
-	ruleWhere := `e.occurred_at >= $1 AND e.occurred_at < $2`
+	// 命中规则 TOP10（仅规则ID/名称/次数，不含匹配载荷；带分区键裁剪）
+	ruleWhere := `e.occurred_at >= $1 AND e.occurred_at < $2 AND m.event_occurred_at >= $1 AND m.event_occurred_at < $2`
 	ruleArgs := []interface{}{d.RangeStart, d.RangeEnd}
 	if len(appIDs) > 0 {
 		ruleWhere += ` AND e.application_id = ANY($3)`
@@ -505,7 +505,7 @@ FROM security_events WHERE %s GROUP BY 1 ORDER BY 2 DESC LIMIT 10`, where), args
 	ruleRows, err := c.db.Query(ctx, fmt.Sprintf(`
 SELECT m.rule_id, COALESCE(MAX(m.rule_name),''), count(*)
 FROM security_event_matches m
-JOIN security_events e ON e.id = m.event_id
+JOIN security_events e ON e.id = m.event_id AND e.occurred_at = m.event_occurred_at
 WHERE %s AND m.rule_id > 0
 GROUP BY 1 ORDER BY 3 DESC LIMIT 10`, ruleWhere), ruleArgs...)
 	if err != nil {

@@ -35,9 +35,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// jwtTrustSchemaVersion 本网关支持的 jwt_trust 配置结构版本
-// （与 server/internal/jwttrust.SchemaVersion 对应；不一致即拒绝加载）。
-const jwtTrustSchemaVersion = 1
+// jwtTrustSchemaVersion / jwtTrustSchemaVersionV2 本网关支持的 jwt_trust 配置结构版本
+// （1=基础 JWT 信任链，2=含 9A-1 token_binding DPoP/mTLS；不支持的版本与 v1 夹带 token_binding 均拒绝加载）。
+const (
+	jwtTrustSchemaVersion   = 1
+	jwtTrustSchemaVersionV2 = 2
+)
 
 // jwtTrustJSON 发布通道下发 jwt_trust 处理器段（json tag 为跨分片契约，不得改动；
 // 与 server/internal/gatewayconfig.GuardJWTTrustPolicy 同形）。
@@ -57,18 +60,28 @@ type jwtSelectorJSON struct {
 	TokenRequired bool     `json:"token_required"`
 }
 
+// jwtTokenBindingJSON 发行方级令牌持有证明绑定配置（9A-1 冻结契约，与 server/web 同形）。
+type jwtTokenBindingJSON struct {
+	Mode               string   `json:"mode,omitempty"`                  // NONE|DPOP_OPTIONAL|DPOP_REQUIRED|MTLS_REQUIRED|DPOP_OR_MTLS
+	RequireNonce       bool     `json:"require_nonce,omitempty"`
+	MaxProofAgeSeconds int      `json:"max_proof_age_seconds,omitempty"` // default 60, range 5..120
+	NonceTTLSeconds    int      `json:"nonce_ttl_seconds,omitempty"`     // default 60, range 10..300
+	AllowedDPoPAlgs    []string `json:"allowed_dpop_algs,omitempty"`     // subset of ES256|RS256|EdDSA
+}
+
 type jwtIssuerJSON struct {
-	IssuerConfigID   string          `json:"issuer_config_id"`
-	Issuer           string          `json:"issuer"`
-	Audiences        []string        `json:"audiences"`
-	Algorithms       []string        `json:"algorithms"`
-	ClockSkewSeconds int             `json:"clock_skew_seconds"`
-	TenantClaim      string          `json:"tenant_claim,omitempty"`
-	RoleClaims       []string        `json:"role_claims,omitempty"`
-	KeySourceType    string          `json:"key_source_type"` // STATIC_JWKS | REMOTE_JWKS
-	JWKS             json.RawMessage `json:"jwks,omitempty"`  // STATIC_JWKS：公钥集（公钥非秘密）
-	RemoteURL        string          `json:"remote_url,omitempty"`
-	KeysetVersion    string          `json:"keyset_version,omitempty"` // 溯源标识；运行期版本由验证器按密钥材料派生
+	IssuerConfigID   string               `json:"issuer_config_id"`
+	Issuer           string               `json:"issuer"`
+	Audiences        []string             `json:"audiences"`
+	Algorithms       []string             `json:"algorithms"`
+	ClockSkewSeconds int                  `json:"clock_skew_seconds"`
+	TenantClaim      string               `json:"tenant_claim,omitempty"`
+	RoleClaims       []string             `json:"role_claims,omitempty"`
+	KeySourceType    string               `json:"key_source_type"` // STATIC_JWKS | REMOTE_JWKS
+	JWKS             json.RawMessage      `json:"jwks,omitempty"`  // STATIC_JWKS：公钥集（公钥非秘密）
+	RemoteURL        string               `json:"remote_url,omitempty"`
+	KeysetVersion    string               `json:"keyset_version,omitempty"` // 溯源标识；运行期版本由验证器按密钥材料派生
+	TokenBinding     *jwtTokenBindingJSON `json:"token_binding,omitempty"`  // 9A-1：DPoP/mTLS 持有证明绑定（需 schema_version=2）
 }
 
 // parseJWTTrustSection 严格解码 jwt_trust 段并校验结构版本与强制语义。
@@ -85,9 +98,17 @@ func parseJWTTrustSection(raw json.RawMessage) (*jwtTrustJSON, error) {
 	if dec.More() {
 		return nil, fmt.Errorf("jwt_trust: 配置含多余内容（拒绝加载）")
 	}
-	if sec.SchemaVersion != jwtTrustSchemaVersion {
-		return nil, fmt.Errorf("jwt_trust: 不支持的 schema_version %d（本网关支持 %d；拒绝加载而非忽略强制语义）",
-			sec.SchemaVersion, jwtTrustSchemaVersion)
+	if sec.SchemaVersion != jwtTrustSchemaVersion && sec.SchemaVersion != jwtTrustSchemaVersionV2 {
+		return nil, fmt.Errorf("jwt_trust: 不支持的 schema_version %d（本网关支持 %d/%d；拒绝加载而非忽略强制语义）",
+			sec.SchemaVersion, jwtTrustSchemaVersion, jwtTrustSchemaVersionV2)
+	}
+	if sec.SchemaVersion == jwtTrustSchemaVersion {
+		for _, is := range sec.Issuers {
+			if is.TokenBinding != nil {
+				return nil, fmt.Errorf("jwt_trust: schema_version=%d 不允许携带 token_binding（须升级为 schema_version=%d；拒绝加载）",
+					jwtTrustSchemaVersion, jwtTrustSchemaVersionV2)
+			}
+		}
 	}
 	switch jwtverify.Mode(sec.Mode) {
 	case jwtverify.ModeOff, jwtverify.ModeObserve, jwtverify.ModeProtect:
@@ -167,11 +188,24 @@ func (g *Guard) buildJWTVerifier(sec *jwtTrustJSON) (*jwtverify.Verifier, error)
 			ic.RemoteURL = is.RemoteURL
 			hasRemote = true
 		}
+		if is.TokenBinding != nil {
+			ic.TokenBinding = &jwtverify.TokenBindingConfig{
+				Mode:               jwtverify.TokenBindingMode(is.TokenBinding.Mode),
+				RequireNonce:       is.TokenBinding.RequireNonce,
+				MaxProofAgeSeconds: is.TokenBinding.MaxProofAgeSeconds,
+				NonceTTLSeconds:    is.TokenBinding.NonceTTLSeconds,
+				AllowedDPoPAlgs:    append([]string(nil), is.TokenBinding.AllowedDPoPAlgs...),
+			}
+		}
 		pol.Issuers = append(pol.Issuers, ic)
 	}
 	fetcher := g.jwtFetcher // 测试注入钩子；生产为 nil → 默认受限获取器
 	if fetcher == nil && hasRemote {
 		fetcher = jwtverify.NewFetcher(jwtverify.FetcherConfig{})
+	}
+	var dpopReplay jwtverify.DPoPReplayStore
+	if g.engine != nil && g.engine.valkey != nil {
+		dpopReplay = jwtverify.NewValkeyDPoPReplayStore(g.engine.valkey)
 	}
 	cfg := jwtverify.VerifierConfig{
 		Policy: pol,
@@ -180,6 +214,7 @@ func (g *Guard) buildJWTVerifier(sec *jwtTrustJSON) (*jwtverify.Verifier, error)
 		// 可信主体；PROTECT 由 NewVerifier 返回 ErrIdentitySecretRequired（fail-closed）
 		IdentitySecret: []byte(g.IdentitySalt),
 		Fetcher:        fetcher,
+		DPoPReplay:     dpopReplay,
 	}
 	if g.logger != nil {
 		cfg.OnRefreshError = func(issuerID string, err error) {
@@ -210,7 +245,26 @@ func jwtResultFrom(ctx context.Context) (jwtverify.VerificationResult, bool) {
 // identity_type 语义）。纯本地、热路径零网络 IO；Verifier.Verify 内部 recover，
 // 任何异常落成 UNAVAILABLE/VERIFIER_ERROR，绝不 panic 到请求链。
 func (g *Guard) verifyJWTTrust(r *http.Request) {
-	res := g.jwtVerifier.Verify(r.Header.Values("Authorization"), r.Method, normalizer.CanonicalPath(r.URL.Path))
+	scheme := "http"
+	var peerCertDER []byte
+	if r.TLS != nil {
+		scheme = "https"
+		// 安全底线：仅在 TLS 握手客户端证书链已通过 CA 验证后才透传叶证书 DER，
+		// 绝不信任未经校验的 PeerCertificates（防自签名证书伪造 mTLS 绑定）。
+		if len(r.TLS.VerifiedChains) > 0 && len(r.TLS.PeerCertificates) > 0 && r.TLS.PeerCertificates[0] != nil {
+			peerCertDER = r.TLS.PeerCertificates[0].Raw
+		}
+	}
+	res := g.jwtVerifier.VerifyRequest(jwtverify.RequestVerifyInput{
+		AuthValues:  r.Header.Values("Authorization"),
+		Method:      r.Method,
+		Path:        normalizer.CanonicalPath(r.URL.Path),
+		RawPath:     r.URL.Path,
+		Scheme:      scheme,
+		Host:        r.Host,
+		DPoPHeaders: r.Header.Values("DPoP"),
+		PeerCertDER: peerCertDER,
+	})
 	*r = *r.WithContext(context.WithValue(r.Context(), jwtResultKey{}, res))
 	// P0-04：身份验证状态/主体指纹写入处置上下文（指纹为 HMAC 值，不落明文 sub）
 	DispositionFrom(r.Context()).SetIdentityVerification(string(res.Status), res.VerifiedPrincipalID)
@@ -265,7 +319,7 @@ func (g *Guard) enforceJWTTrust(w http.ResponseWriter, r *http.Request) (bool, e
 		accessLogAnnotate(r.Context(), wafActionBlock)
 		return true, nil
 	}
-	g.writeJWTAuthFailed(w, ev.RequestID)
+	g.writeJWTAuthFailed(w, ev.RequestID, res)
 	dispo.RecordTerminal(ExecutorJWT, DisActionBlock, http.StatusUnauthorized, true,
 		[]string{"JWT_AUTH_FAILED"}, nil)
 	ev.FinalDecision = dispo.JSON()
@@ -305,13 +359,14 @@ func (g *Guard) jwtEventBase(r *http.Request, res jwtverify.VerificationResult) 
 // 域分隔前缀区别于身份键指纹）。
 func (g *Guard) jwtEventDetail(res jwtverify.VerificationResult) *dsevents.JWTVerification {
 	d := &dsevents.JWTVerification{
-		Status:              string(res.Status),
-		ReasonCode:          string(res.ReasonCode),
-		PolicyVersion:       res.PolicyVersion,
-		IssuerConfigID:      res.IssuerConfigID,
-		KeysetVersion:       res.KeysetVersion,
-		VerifiedPrincipalID: res.VerifiedPrincipalID,
-		EvaluatedAt:         res.EvaluatedAt,
+		Status:               string(res.Status),
+		ReasonCode:           string(res.ReasonCode),
+		PolicyVersion:        res.PolicyVersion,
+		IssuerConfigID:       res.IssuerConfigID,
+		KeysetVersion:        res.KeysetVersion,
+		VerifiedPrincipalID:  res.VerifiedPrincipalID,
+		TokenBindingVerified: res.TokenBindingVerified,
+		EvaluatedAt:          res.EvaluatedAt,
 	}
 	if res.VerifiedTenantID != "" {
 		d.VerifiedTenantID = detectors.Fingerprint(g.IdentitySalt, "jwt-tenant:"+res.VerifiedTenantID)
@@ -319,10 +374,20 @@ func (g *Guard) jwtEventDetail(res jwtverify.VerificationResult) *dsevents.JWTVe
 	return d
 }
 
-// writeJWTAuthFailed PROTECT 认证失败响应：401 + 规范 Bearer challenge +
+// writeJWTAuthFailed PROTECT 认证失败响应：401 + 规范 Bearer/DPoP challenge +
 // 统一简短文案，不回显签名/发行方内部原因（详细 reason_code 仅事件与管理面可见）。
-func (g *Guard) writeJWTAuthFailed(w http.ResponseWriter, requestID string) {
-	w.Header().Set("WWW-Authenticate", `Bearer realm="jiuzhang-waf"`)
+func (g *Guard) writeJWTAuthFailed(w http.ResponseWriter, requestID string, res jwtverify.VerificationResult) {
+	switch {
+	case res.DPoPNonce != "":
+		w.Header().Set("DPoP-Nonce", res.DPoPNonce)
+		w.Header().Set("WWW-Authenticate", `DPoP realm="jiuzhang-waf", error="use_dpop_nonce"`)
+	case jwtverify.IsDPoPReason(res.ReasonCode):
+		w.Header().Set("WWW-Authenticate", `DPoP realm="jiuzhang-waf", error="invalid_dpop_proof"`)
+	case res.TokenScheme == "DPoP":
+		w.Header().Set("WWW-Authenticate", `DPoP realm="jiuzhang-waf", error="invalid_token"`)
+	default:
+		w.Header().Set("WWW-Authenticate", `Bearer realm="jiuzhang-waf"`)
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("X-Jiuzhang-Request-ID", requestID)
 	w.WriteHeader(http.StatusUnauthorized)
@@ -331,7 +396,7 @@ func (g *Guard) writeJWTAuthFailed(w http.ResponseWriter, requestID string) {
 		"message":    "认证失败",
 		"request_id": requestID,
 	})
-	if _, err := w.Write(body); err != nil {
+	if _, err := w.Write(body); err != nil && g.logger != nil {
 		g.logger.Warn("jwt auth failed response write failed", zap.Error(err), zap.String("request_id", requestID))
 	}
 }

@@ -250,3 +250,42 @@ func findDecisionInsertArgs(t *testing.T, db *captureArgsTx) []any {
 	t.Fatalf("未找到决策 INSERT: %v", db.sqls)
 	return nil
 }
+
+func TestSavePrimaryGeneratesUUIDv7(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		initialID string
+		wantV7    bool
+	}{
+		{name: "empty_id_generates_v7", initialID: "", wantV7: true},
+		{name: "invalid_id_regenerates_v7", initialID: "not-a-uuid", wantV7: true},
+		{name: "explicit_v4_preserved", initialID: uuid.New().String(), wantV7: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := &captureArgsTx{}
+			ev := &PrimaryEvent{
+				PrimaryEvent: dsevents.PrimaryEvent{
+					ID:         tc.initialID,
+					RequestID:  "req-uuidv7-" + tc.name,
+					OccurredAt: time.Now().UTC(),
+				},
+			}
+			if err := (&Store{db: db}).SavePrimary(context.Background(), ev); err != nil {
+				t.Fatalf("SavePrimary: %v", err)
+			}
+			parsed, err := uuid.Parse(ev.ID)
+			if err != nil {
+				t.Fatalf("invalid ev.ID %q: %v", ev.ID, err)
+			}
+			if parsed.Variant() != uuid.RFC4122 {
+				t.Fatalf("variant = %v, want RFC4122", parsed.Variant())
+			}
+			if tc.wantV7 && parsed.Version() != 7 {
+				t.Fatalf("version = %d, want 7", parsed.Version())
+			}
+			if !tc.wantV7 && ev.ID != tc.initialID {
+				t.Fatalf("explicit ID overwritten: got %s, want %s", ev.ID, tc.initialID)
+			}
+		})
+	}
+}

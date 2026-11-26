@@ -5,6 +5,8 @@ package apiassets
 import (
 	"context"
 	"encoding/json"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -281,5 +283,68 @@ func TestMemRefreshAssetValues(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("refresh after new traffic=%d, want 1", n)
+	}
+}
+
+func TestRFC3339TimestampRegexAndRefreshSQL(t *testing.T) {
+	re := regexp.MustCompile(rfc3339TimestampRegex)
+
+	// Valid RFC3339 / RFC3339Nano outputs from Go time package
+	now := time.Date(2026, 11, 25, 16, 4, 5, 123456789, time.UTC)
+	bj := time.FixedZone("CST", 8*3600)
+	ny := time.FixedZone("EST", -5*3600)
+	leap := time.Date(2024, 2, 29, 23, 59, 59, 0, time.UTC)
+	validSamples := []string{
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339Nano),
+		now.In(bj).Format(time.RFC3339),
+		now.In(bj).Format(time.RFC3339Nano),
+		now.In(ny).Format(time.RFC3339),
+		leap.Format(time.RFC3339),
+		"2024-02-29T12:00:00Z",
+		"2000-02-29T12:00:00Z",
+		"2026-11-25T10:00:00+0000",
+		"2026-11-25T10:00:00+15:59",
+		"2026-11-25T10:00:00-15:59",
+	}
+	for _, s := range validSamples {
+		if !re.MatchString(s) {
+			t.Errorf("valid RFC3339 timestamp %q must match rfc3339TimestampRegex", s)
+		}
+	}
+
+	// Malformed or partial strings that previously crashed ::timestamptz
+	invalidSamples := []string{
+		"",
+		"not-a-date",
+		"today",
+		"infinity",
+		"2026-11-25Tnot-a-date",
+		"2026-11-25T",
+		"2026-11-25",
+		"2026-11-25T10:00:00",
+		"0000-01-01T00:00:00Z",
+		"2026-13-01T10:00:00Z",
+		"2026-02-29T10:00:00Z",
+		"1900-02-29T10:00:00Z",
+		"2026-02-30T10:00:00Z",
+		"2026-04-31T10:00:00Z",
+		"2026-11-25T25:00:00Z",
+		"2026-11-25T10:60:00Z",
+		"2026-11-25T10:00:00+16:00",
+		"2026-11-25T10:00:00-16:00",
+		"2026-11-25T10:00:00+25:00",
+		"2026-11-25T10:00:00Z trailing",
+	}
+	for _, s := range invalidSamples {
+		if re.MatchString(s) {
+			t.Errorf("malformed timestamp %q must NOT match rfc3339TimestampRegex", s)
+		}
+	}
+
+	if !strings.Contains(refreshAssetValuesSelectSQL, "CASE") ||
+		!strings.Contains(refreshAssetValuesSelectSQL, "pg_input_is_valid") ||
+		!strings.Contains(refreshAssetValuesSelectSQL, "'-infinity'::timestamptz") {
+		t.Fatalf("refreshAssetValuesSelectSQL must guard ::timestamptz with CASE + pg_input_is_valid fallback:\n%s", refreshAssetValuesSelectSQL)
 	}
 }

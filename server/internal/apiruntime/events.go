@@ -15,6 +15,13 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/events"
 )
 
+func newEventUUID() uuid.UUID {
+	if id, err := uuid.NewV7(); err == nil {
+		return id
+	}
+	return uuid.New()
+}
+
 // Store 事件仓储。
 type Store struct {
 	db DBTX
@@ -74,7 +81,7 @@ func (s *Store) SavePrimary(ctx context.Context, ev *PrimaryEvent) error {
 		return err
 	}
 	if ev.ID == "" {
-		ev.ID = uuid.New().String()
+		ev.ID = newEventUUID().String()
 	}
 	raw, err := json.Marshal(ev.Details)
 	if err != nil {
@@ -82,7 +89,7 @@ func (s *Store) SavePrimary(ctx context.Context, ev *PrimaryEvent) error {
 	}
 	id, err := uuid.Parse(ev.ID)
 	if err != nil {
-		id = uuid.New()
+		id = newEventUUID()
 		ev.ID = id.String()
 	}
 	var jwtRaw any

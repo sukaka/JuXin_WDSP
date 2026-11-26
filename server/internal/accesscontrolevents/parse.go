@@ -92,6 +92,27 @@ var BotEventTypes = []string{
 	EventTypeBotChallengeExpired, EventTypeBotStateUnavailable, EventTypeBotClearanceAccepted,
 }
 
+// 客户端供应链安全事件类型（Phase 9B；PCI DSS 4.0 6.4.3 & 11.6.1；
+// 网关 jiuzhang_guard clientside 包产生——明细嵌套在 client_side 对象下，
+// 落 access_control_events.details.client_side JSONB 列，并经 Collector 旁路回流
+// client_script_inventory / client_side_violations 表）。
+const (
+	EventTypeClientSideScriptObserved     = "CLIENT_SIDE_SCRIPT_OBSERVED"
+	EventTypeClientSideUnauthorizedScript = "CLIENT_SIDE_UNAUTHORIZED_SCRIPT"
+	EventTypeClientSideScriptTampered     = "CLIENT_SIDE_SCRIPT_TAMPERED"
+	EventTypeClientSideCSPViolation       = "CLIENT_SIDE_CSP_VIOLATION"
+	EventTypeClientSideProbeAlert         = "CLIENT_SIDE_PROBE_ALERT"
+)
+
+// ClientSideEventTypes 全部客户端供应链安全事件类型。
+var ClientSideEventTypes = []string{
+	EventTypeClientSideScriptObserved,
+	EventTypeClientSideUnauthorizedScript,
+	EventTypeClientSideScriptTampered,
+	EventTypeClientSideCSPViolation,
+	EventTypeClientSideProbeAlert,
+}
+
 // 风险处置动作契约（action_taken → 事件 action 列映射；blocked/rate_limited
 // 为实际拒绝记 REJECT，challenged 记 CHALLENGE，OBSERVE 模式的 would_* 记 OBSERVE）。
 var riskPolicyActionTaken = map[string]string{
@@ -193,6 +214,27 @@ type rawEvent struct {
 	// 无此键，不回填）。采集端仅按声明字段落 details.bot：未声明字段
 	// （nonce/solution/Cookie/签名材料等）在解码期即被丢弃，不落库。
 	Bot *rawBotDetail `json:"bot"`
+	// ClientSide 客户端供应链安全事件明细（CLIENT_SIDE_* 契约：网关将明细嵌套在
+	// "client_side" 对象下，仅按声明字段落 details.client_side，未声明字段解码期丢弃）。
+	ClientSide *rawClientSideDetail `json:"client_side"`
+}
+
+// rawClientSideDetail CLIENT_SIDE_* 事件的嵌套明细（与网关 events.ClientSideDetail 同形；
+// 独立定义防循环依赖，且由类型系统保证未声明字段在解码期丢弃）。
+type rawClientSideDetail struct {
+	PolicyVersion     *int   `json:"policy_version"`
+	Mode              string `json:"mode"`
+	ViolationType     string `json:"violation_type"`
+	ScriptURL         string `json:"script_url"`
+	ScriptOrigin      string `json:"script_origin"`
+	ScriptType        string `json:"script_type"`
+	ExpectedSRI       string `json:"expected_sri"`
+	ObservedSRI       string `json:"observed_sri"`
+	PagePath          string `json:"page_path"`
+	ViolatedDirective string `json:"violated_directive"`
+	BlockedURI        string `json:"blocked_uri"`
+	ActionTaken       string `json:"action_taken"`
+	Reason            string `json:"reason"`
 }
 
 // rawBotDetail BOT_* 事件的嵌套挑战明细（与网关 events.BotDetail 同形；
@@ -325,6 +367,11 @@ func ParseEventLine(line []byte, defaultNode string) (*Event, error) {
 			return nil, err
 		}
 	}
+	if isClientSideEventType(evt.EventType) {
+		if err := applyClientSideEvent(evt, &raw); err != nil {
+			return nil, err
+		}
+	}
 	// P0-04：final_decision 统一合并进 details（所有事件类型；risk/jwt 分支已设
 	// Details 时合并而非覆盖）。校验是合法 JSON 对象，非法则解析失败入错误文件
 	// （与 applyRiskPolicyEvent 同一纪律：不静默落库）
@@ -420,6 +467,70 @@ func applyBotEvent(evt *Event, raw *rawEvent) error {
 		details["note"] = truncate(bot.ResponseNote, 256)
 	}
 	evt.Details = map[string]interface{}{"bot": details}
+	return nil
+}
+
+// isClientSideEventType 判定客户端供应链安全事件类型（CLIENT_SIDE_*）。
+func isClientSideEventType(t string) bool {
+	switch t {
+	case EventTypeClientSideScriptObserved,
+		EventTypeClientSideUnauthorizedScript,
+		EventTypeClientSideScriptTampered,
+		EventTypeClientSideCSPViolation,
+		EventTypeClientSideProbeAlert:
+		return true
+	}
+	return false
+}
+
+// applyClientSideEvent 校验 CLIENT_SIDE_* 事件并填充 details.client_side 证据载荷
+// （client_side 对象缺失 → 解析失败入错误文件，不静默落库；未声明字段由类型系统丢弃）。
+func applyClientSideEvent(evt *Event, raw *rawEvent) error {
+	cs := raw.ClientSide
+	if cs == nil {
+		return fmt.Errorf("client side event missing client_side details")
+	}
+	details := map[string]interface{}{}
+	if cs.PolicyVersion != nil {
+		details["policy_version"] = *cs.PolicyVersion
+	}
+	if cs.Mode != "" {
+		details["mode"] = truncate(cs.Mode, 16)
+	}
+	if cs.ViolationType != "" {
+		details["violation_type"] = truncate(cs.ViolationType, 32)
+	}
+	if cs.ScriptURL != "" {
+		details["script_url"] = truncate(cs.ScriptURL, 2048)
+	}
+	if cs.ScriptOrigin != "" {
+		details["script_origin"] = truncate(cs.ScriptOrigin, 512)
+	}
+	if cs.ScriptType != "" {
+		details["script_type"] = truncate(cs.ScriptType, 16)
+	}
+	if cs.ExpectedSRI != "" {
+		details["expected_sri"] = truncate(cs.ExpectedSRI, 256)
+	}
+	if cs.ObservedSRI != "" {
+		details["observed_sri"] = truncate(cs.ObservedSRI, 256)
+	}
+	if cs.PagePath != "" {
+		details["page_path"] = truncate(cs.PagePath, 512)
+	}
+	if cs.ViolatedDirective != "" {
+		details["violated_directive"] = truncate(cs.ViolatedDirective, 128)
+	}
+	if cs.BlockedURI != "" {
+		details["blocked_uri"] = truncate(cs.BlockedURI, 2048)
+	}
+	if cs.ActionTaken != "" {
+		details["action_taken"] = truncate(cs.ActionTaken, 32)
+	}
+	if cs.Reason != "" {
+		details["reason"] = truncate(cs.Reason, 512)
+	}
+	evt.Details = map[string]interface{}{"client_side": details}
 	return nil
 }
 

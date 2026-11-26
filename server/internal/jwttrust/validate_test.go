@@ -267,3 +267,157 @@ func TestNodePublishGuard(t *testing.T) {
 		t.Error("节点读取失败应中止发布（不静默跳过）")
 	}
 }
+
+// TestTokenBindingNormalizeAndValidate 9A-1 令牌持有证明绑定归一化与字段级校验矩阵。
+func TestTokenBindingNormalizeAndValidate(t *testing.T) {
+	base := basePolicy(t)
+	cloneBase := func() *Policy {
+		cp := *base
+		cp.Selectors = append([]Selector(nil), base.Selectors...)
+		cp.Issuers = append([]Issuer(nil), base.Issuers...)
+		return &cp
+	}
+
+	// 1. NONE 归一化为 nil（不污染旧节点 schema）
+	p := cloneBase()
+	p.Issuers[0].TokenBinding = &TokenBindingConfig{Mode: " none "}
+	Normalize(p)
+	if p.Issuers[0].TokenBinding != nil {
+		t.Fatalf("NONE mode should normalize to nil, got %+v", p.Issuers[0].TokenBinding)
+	}
+
+	// 2. EdDSA 混合大小写保留、算法去重
+	p = cloneBase()
+	p.Issuers[0].TokenBinding = &TokenBindingConfig{
+		Mode:               " dpop_required ",
+		RequireNonce:       true,
+		MaxProofAgeSeconds: 45,
+		NonceTTLSeconds:    90,
+		AllowedDPoPAlgs:    []string{"es256", "eddsa", "RS256", "EdDSA"},
+	}
+	Normalize(p)
+	tb := p.Issuers[0].TokenBinding
+	if tb.Mode != TokenBindingDPoPRequired {
+		t.Fatalf("mode = %q, want %q", tb.Mode, TokenBindingDPoPRequired)
+	}
+	if len(tb.AllowedDPoPAlgs) != 3 || tb.AllowedDPoPAlgs[0] != "ES256" || tb.AllowedDPoPAlgs[1] != "EdDSA" || tb.AllowedDPoPAlgs[2] != "RS256" {
+		t.Fatalf("allowed_dpop_algs = %v, want [ES256 EdDSA RS256]", tb.AllowedDPoPAlgs)
+	}
+	if errs := ValidateStructure(p); len(errs) > 0 {
+		t.Fatalf("valid DPoP token_binding rejected: %+v", errs)
+	}
+
+	// 3. 字段级错误矩阵
+	cases := []struct {
+		name  string
+		tb    *TokenBindingConfig
+		field string
+	}{
+		{"非法mode", &TokenBindingConfig{Mode: "BEARER_ONLY", MaxProofAgeSeconds: 60, NonceTTLSeconds: 60}, "issuers[0].token_binding.mode"},
+		{"max_proof_age过小", &TokenBindingConfig{Mode: TokenBindingDPoPRequired, MaxProofAgeSeconds: 4, NonceTTLSeconds: 60}, "issuers[0].token_binding.max_proof_age_seconds"},
+		{"max_proof_age过大", &TokenBindingConfig{Mode: TokenBindingDPoPRequired, MaxProofAgeSeconds: 121, NonceTTLSeconds: 60}, "issuers[0].token_binding.max_proof_age_seconds"},
+		{"nonce_ttl过小", &TokenBindingConfig{Mode: TokenBindingDPoPRequired, MaxProofAgeSeconds: 60, NonceTTLSeconds: 9}, "issuers[0].token_binding.nonce_ttl_seconds"},
+		{"nonce_ttl过大", &TokenBindingConfig{Mode: TokenBindingDPoPRequired, MaxProofAgeSeconds: 60, NonceTTLSeconds: 301}, "issuers[0].token_binding.nonce_ttl_seconds"},
+		{"禁止HS256", &TokenBindingConfig{Mode: TokenBindingDPoPOptional, MaxProofAgeSeconds: 60, NonceTTLSeconds: 60, AllowedDPoPAlgs: []string{"HS256"}}, "issuers[0].token_binding.allowed_dpop_algs"},
+		{"禁止none", &TokenBindingConfig{Mode: TokenBindingDPoPOrMTLS, MaxProofAgeSeconds: 60, NonceTTLSeconds: 60, AllowedDPoPAlgs: []string{"none"}}, "issuers[0].token_binding.allowed_dpop_algs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := cloneBase()
+			cp.Issuers[0].TokenBinding = tc.tb
+			Normalize(cp)
+			errs := ValidateStructure(cp)
+			if !fieldSet(errs)[tc.field] {
+				t.Fatalf("expected field %q error, got %+v", tc.field, errs)
+			}
+		})
+	}
+}
+
+// TestPutRequestTokenBindingDefaults PUT 请求缺省值回填与 NONE 忽略语义。
+func TestPutRequestTokenBindingDefaults(t *testing.T) {
+	req := putRequest{
+		Mode: ModeProtect,
+		Issuers: []issuerRequest{
+			{
+				Issuer:       "https://idp.example.com/",
+				TokenBinding: &tokenBindingRequest{Mode: "DPOP_REQUIRED", RequireNonce: true},
+			},
+			{
+				Issuer:       "https://idp2.example.com/",
+				TokenBinding: &tokenBindingRequest{Mode: "NONE"},
+			},
+		},
+	}
+	p := req.toPolicy(uuid.New())
+	if p.Issuers[0].TokenBinding == nil {
+		t.Fatal("active token_binding lost")
+	}
+	if p.Issuers[0].TokenBinding.MaxProofAgeSeconds != DefaultDPoPMaxProofAgeSeconds ||
+		p.Issuers[0].TokenBinding.NonceTTLSeconds != DefaultDPoPNonceTTLSeconds {
+		t.Fatalf("defaults not applied: %+v", p.Issuers[0].TokenBinding)
+	}
+	if p.Issuers[1].TokenBinding != nil {
+		t.Fatalf("NONE mode should become nil, got %+v", p.Issuers[1].TokenBinding)
+	}
+}
+
+// TestToGuardPolicySchemaVersion 仅启用活跃 TokenBinding 时升 schema_version=2，否则保持 1 向后兼容。
+func TestToGuardPolicySchemaVersion(t *testing.T) {
+	base := basePolicy(t)
+	cloneBase := func() *Policy {
+		cp := *base
+		cp.Selectors = append([]Selector(nil), base.Selectors...)
+		cp.Issuers = append([]Issuer(nil), base.Issuers...)
+		return &cp
+	}
+
+	p := cloneBase()
+	gp1, err := toGuardPolicy(p.ApplicationID, "shop", ModeProtect, 1, p.Selectors, p.Issuers)
+	if err != nil {
+		t.Fatalf("toGuardPolicy v1: %v", err)
+	}
+	if gp1.SchemaVersion != SchemaVersion || gp1.Issuers[0].TokenBinding != nil {
+		t.Fatalf("without active binding expected schema_version=1 & nil binding, got v=%d tb=%+v",
+			gp1.SchemaVersion, gp1.Issuers[0].TokenBinding)
+	}
+
+	// 显式 NONE 同样保持 schema_version=1 且不下发 token_binding（防旧节点 fail-closed 拒载）
+	pNone := cloneBase()
+	pNone.Issuers[0].TokenBinding = &TokenBindingConfig{Mode: TokenBindingNone}
+	gpNone, err := toGuardPolicy(pNone.ApplicationID, "shop", ModeProtect, 1, pNone.Selectors, pNone.Issuers)
+	if err != nil {
+		t.Fatalf("toGuardPolicy NONE: %v", err)
+	}
+	if gpNone.SchemaVersion != SchemaVersion || gpNone.Issuers[0].TokenBinding != nil {
+		t.Fatalf("NONE binding must keep schema_version=1 & nil binding, got v=%d tb=%+v",
+			gpNone.SchemaVersion, gpNone.Issuers[0].TokenBinding)
+	}
+
+	// 启用 DPoP / mTLS 绑定 → schema_version=2 且仅活跃 issuer 携带 token_binding
+	p2 := cloneBase()
+	second := p2.Issuers[0]
+	second.Issuer = "https://idp2.example.com/"
+	p2.Issuers[0].TokenBinding = &TokenBindingConfig{
+		Mode:               TokenBindingDPoPOrMTLS,
+		RequireNonce:       true,
+		MaxProofAgeSeconds: 30,
+		NonceTTLSeconds:    120,
+		AllowedDPoPAlgs:    []string{DPoPAlgES256, DPoPAlgEdDSA},
+	}
+	p2.Issuers = append(p2.Issuers, second)
+	gp2, err := toGuardPolicy(p2.ApplicationID, "shop", ModeProtect, 2, p2.Selectors, p2.Issuers)
+	if err != nil {
+		t.Fatalf("toGuardPolicy v2: %v", err)
+	}
+	if gp2.SchemaVersion != SchemaVersionV2 {
+		t.Fatalf("active binding expected schema_version=2, got %d", gp2.SchemaVersion)
+	}
+	if gp2.Issuers[0].TokenBinding == nil || gp2.Issuers[0].TokenBinding.Mode != TokenBindingDPoPOrMTLS ||
+		!gp2.Issuers[0].TokenBinding.RequireNonce || gp2.Issuers[0].TokenBinding.MaxProofAgeSeconds != 30 {
+		t.Fatalf("issuer[0] token_binding mismatch: %+v", gp2.Issuers[0].TokenBinding)
+	}
+	if gp2.Issuers[1].TokenBinding != nil {
+		t.Fatalf("inactive issuer[1] token_binding should be nil, got %+v", gp2.Issuers[1].TokenBinding)
+	}
+}

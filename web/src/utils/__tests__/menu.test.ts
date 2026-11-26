@@ -692,4 +692,29 @@ describe('filterMenusByRoles', () => {
       expect(keys).not.toContain('/security-regressions')
     }
   })
+
+  it('客户端供应链安全菜单按 client_side.read 权限门控并归属访问控制分组', () => {
+    const visible = filterMenusByRoles(['SECURITY_ADMIN'], ['client_side.read'], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    const entry = visible.find((m) => m.key === '/client-side-security')
+    expect(entry).toMatchObject({
+      key: '/client-side-security',
+      label: '客户端供应链安全',
+      group: '访问控制',
+    })
+
+    const auditVisible = filterMenusByRoles(['AUDIT_ADMIN'], ['client_side.read'], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    expect(auditVisible.map((m) => m.key)).toContain('/client-side-security')
+
+    const hidden = filterMenusByRoles(['SYSTEM_ADMIN'], [], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    expect(hidden.map((m) => m.key)).not.toContain('/client-side-security')
+  })
 })

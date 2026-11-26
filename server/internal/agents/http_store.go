@@ -202,12 +202,50 @@ WHERE agent_id = $1 AND id = $2`, agentID, id)
 	return &e, nil
 }
 
-// DeleteExpiredHTTPEvents 保留清理：删除 created_at 早于 before 的记录
-// （契约 §6/设计 §68.9 硬上限；sweeper 每日调用，返回删除行数）。
+// httpEventRetentionBatchSize 单批清理行数上限（分批防长事务锁表与 WAL 尖峰）。
+const httpEventRetentionBatchSize = 10000
+
+// DeleteExpiredHTTPEvents 保留清理：分批删除 created_at 早于 before 的记录
+// （契约 §6/设计 §68.9 硬上限；命中 idx_agent_http_events_created_at，sweeper 每日调用，返回删除总行数）。
+// 当 agent_http_events 已迁移为按日声明式分区表（relkind = 'p'）时跳过逐行 DELETE，
+// 由 partitions.Manager 通过 DETACH PARTITION CONCURRENTLY / DROP TABLE 完成 O(1) 清理。
 func (s *Store) DeleteExpiredHTTPEvents(ctx context.Context, before time.Time) (int64, error) {
-	res, err := s.db.Exec(ctx, `DELETE FROM agent_http_events WHERE created_at < $1`, before.UTC())
-	if err != nil {
-		return 0, err
+	if s == nil || s.db == nil {
+		return 0, nil
 	}
-	return res.RowsAffected(), nil
+	if row := s.db.QueryRow(ctx, `
+SELECT c.relkind::text
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = current_schema() AND c.relname = 'agent_http_events'
+LIMIT 1`); row != nil {
+		var relkind string
+		if err := row.Scan(&relkind); err == nil && relkind == "p" {
+			return 0, nil
+		} else if err != nil && ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+	}
+
+	cutoff := before.UTC()
+	var total int64
+	for {
+		res, err := s.db.Exec(ctx, `
+DELETE FROM agent_http_events WHERE id IN (
+  SELECT id FROM agent_http_events WHERE created_at < $1 LIMIT $2
+)`, cutoff, httpEventRetentionBatchSize)
+		if err != nil {
+			return total, err
+		}
+		n := res.RowsAffected()
+		total += n
+		if n < httpEventRetentionBatchSize {
+			return total, nil
+		}
+		select {
+		case <-ctx.Done():
+			return total, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }

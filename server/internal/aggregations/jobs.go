@@ -118,11 +118,14 @@ GROUP BY 1,2`, start, end)
 	}
 	rows2.Close()
 
-	// 规则命中（WAF 匹配明细）
+	// 规则命中（WAF 匹配明细；补全 event_occurred_at 区间与分区键等值 JOIN，命中 000118 索引与分区裁剪）
 	rows3, err := db.Query(ctx, `
 SELECT m.rule_id, COALESCE(e.attack_type,'OTHER'), count(*)
-FROM security_event_matches m JOIN security_events e ON e.id = m.event_id AND e.occurred_at >= $1 AND e.occurred_at < $2
-WHERE m.rule_id > 0
+FROM security_event_matches m
+JOIN security_events e ON e.id = m.event_id AND e.occurred_at = m.event_occurred_at
+WHERE m.event_occurred_at >= $1 AND m.event_occurred_at < $2
+  AND e.occurred_at >= $1 AND e.occurred_at < $2
+  AND m.rule_id > 0
 GROUP BY 1,2`, start, end)
 	if err == nil {
 		for rows3.Next() {
@@ -251,8 +254,9 @@ SELECT CONCAT(m.rule_source, ':', m.rule_id::text), m.rule_id, m.rule_name, m.ru
        COUNT(*) FILTER (WHERE COALESCE(e.disposition_status, 'UNPROCESSED') NOT IN ('CONFIRMED_ATTACK', 'CONFIRMED_FALSE_POSITIVE')),
        now()
 FROM security_event_matches m
-JOIN security_events e ON e.id = m.event_id
-WHERE e.occurred_at >= $1 AND e.occurred_at < $2
+JOIN security_events e ON e.id = m.event_id AND e.occurred_at = m.event_occurred_at
+WHERE m.event_occurred_at >= $1 AND m.event_occurred_at < $2
+  AND e.occurred_at >= $1 AND e.occurred_at < $2
 GROUP BY 1, 2, 3, 4, 5, 6
 ON CONFLICT (rule_key, rule_version, stat_date) DO UPDATE SET
   rule_id = EXCLUDED.rule_id,

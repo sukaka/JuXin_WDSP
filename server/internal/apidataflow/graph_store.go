@@ -122,7 +122,7 @@ LIMIT ?`
 		candidateLimit = runtimeGraphCandidateLimit + 1
 	}
 	args = append(args, candidateLimit)
-	rows, err := querier.Query(ctx, query, args...)
+	rows, err := querier.Query(withCHQuerySettings(ctx), query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query dataflow graph: %w", err)
 	}
@@ -266,7 +266,7 @@ func (s *CHReader) apiCounts(ctx context.Context, filter GraphFilter) (map[strin
 	if filter.View == "service" {
 		where += " AND direction IN ('CLIENT','SERVER')"
 	}
-	rows, err := querier.Query(ctx, `
+	rows, err := querier.Query(withCHQuerySettings(ctx), `
 SELECT service_name,countDistinct((method,path_template)) FROM (
  SELECT agent_id,event_id,
   argMax(service_name,received_at) AS service_name,
@@ -326,7 +326,7 @@ func (s *CHReader) Evidence(ctx context.Context, edgeID string, filter GraphFilt
 	if filterRuntimeDataType {
 		candidateLimit = runtimeEvidenceCandidateLimit + 1
 	}
-	rows, err := querier.Query(ctx, `
+	rows, err := querier.Query(withCHQuerySettings(ctx), `
 SELECT agent_id,event_id,edge_id,
  event_time,
  if(latest_evidence_type = 'OBSERVED_SERVER',latest_target_node,latest_source_node) AS service_name,
@@ -461,10 +461,10 @@ func (s *CHReader) Quality(ctx context.Context, filter GraphFilter) (DataQuality
 		return DataQuality{}, err
 	}
 	where, args := graphWhere(filter, true)
-	rows, err := querier.Query(ctx, `
+	rows, err := querier.Query(withCHQuerySettings(ctx), `
 SELECT countDistinct((agent_id,event_id)),
  countDistinctIf((agent_id,event_id),trace_id != ''),
- countDistinctIf((agent_id,event_id),quality_json LIKE '%"truncated":true%')
+ countDistinctIf((agent_id,event_id),position(quality_json,'"truncated":true') > 0)
 FROM wdsp.api_observations
 WHERE `+where, args...)
 	if err != nil {

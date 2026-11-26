@@ -127,18 +127,26 @@ func (c *APICollector) CollectOnce(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("%s: %w", source, err))
 	}
 
-	// 1. API 资产（api_endpoints）：总数与近 24h 新发现
-	var assetsTotal, assetsNew int64
+	// 1. API 资产（api_endpoints）：合并单次扫描总数、近 24h 新发现、ZOMBIE 资产与近 60s 识别速率
+	var assetsTotal, assetsNew, zombieTotal, discovered int64
+	now := c.now()
 	qCtx, cancel := context.WithTimeout(ctx, apiQueryTimeout)
 	err := c.db.QueryRow(qCtx, `
-SELECT count(*), count(*) FILTER (WHERE first_seen_at >= $1)
-FROM api_endpoints WHERE is_api = TRUE`, c.now().Add(-apiAssetsNewWindow)).Scan(&assetsTotal, &assetsNew)
+SELECT count(*),
+       count(*) FILTER (WHERE first_seen_at >= $1),
+       count(*) FILTER (WHERE asset_status = 'ZOMBIE'),
+       count(*) FILTER (WHERE first_seen_at >= $2)
+FROM api_endpoints WHERE is_api = TRUE`,
+		now.Add(-apiAssetsNewWindow), now.Add(-apiDiscoveryRateWindow)).Scan(
+		&assetsTotal, &assetsNew, &zombieTotal, &discovered)
 	cancel()
 	if err != nil {
 		fail("api_endpoints", err)
 	} else {
 		values[APIAssetsTotal] = assetsTotal
 		values[APIAssetsNew] = assetsNew
+		values[APIZombieTotal] = zombieTotal
+		floats[APIDiscoveryPerSecond] = DiscoveryPerSecond(discovered, apiDiscoveryRateWindow)
 	}
 
 	// 2. 学习任务（api_learning_jobs）：运行中任务数
@@ -232,20 +240,7 @@ WHERE finding_type = 'SHADOW' AND status IN ('NEW','CONFIRMED','IN_PROGRESS')`).
 		values[APIShadowTotal] = shadowTotal
 	}
 
-	// 9. Zombie 数与识别速率（api_endpoints）：ZOMBIE 资产计数 + 近 60s 新识别 / 窗口秒数
-	var zombieTotal, discovered int64
-	qCtx, cancel = context.WithTimeout(ctx, apiQueryTimeout)
-	err = c.db.QueryRow(qCtx, `
-SELECT count(*) FILTER (WHERE asset_status = 'ZOMBIE'),
-       count(*) FILTER (WHERE first_seen_at >= $1)
-FROM api_endpoints WHERE is_api = TRUE`, c.now().Add(-apiDiscoveryRateWindow)).Scan(&zombieTotal, &discovered)
-	cancel()
-	if err != nil {
-		fail("api_endpoints_zombie", err)
-	} else {
-		values[APIZombieTotal] = zombieTotal
-		floats[APIDiscoveryPerSecond] = DiscoveryPerSecond(discovered, apiDiscoveryRateWindow)
-	}
+	// （原 9. api_endpoints ZOMBIE 与识别速率已并入步骤 1 单次扫描，减少大表重复扫描）
 
 	// 10. 学习延迟（api_learning_jobs）：近 24h COMPLETED 任务平均时长（秒）；
 	// 窗口内无完成任务时为 0（无样本即无延迟读数，不外推旧值口径——旧值随快照保留纪律

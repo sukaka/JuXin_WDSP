@@ -37,6 +37,8 @@ import TLSProtocolPolicyCard from './detail/TLSProtocolPolicyCard'
 import HeaderProxyTab from './detail/HeaderProxyTab'
 import JwtTrustTab from './detail/JwtTrustTab'
 import BotPolicyTab from './detail/BotPolicyTab'
+import AiCrawlTab from './detail/AiCrawlTab'
+import ClientSideTab from './detail/ClientSideTab'
 
 export default function ApplicationDetailPage() {
   const { id = '' } = useParams()
@@ -267,6 +269,30 @@ export default function ApplicationDetailPage() {
                     label: 'Bot 挑战策略',
                     children: (
                       <BotPolicyTab appId={app.id} appCode={app.code} />
+                    ),
+                  },
+                ]
+              : []),
+            // AI 爬虫治理与迷宫策略（WDSP Phase 9A-2）：无 ai_crawl.read 权限不露入口
+            ...(hasPermission(permissions, 'ai_crawl.read')
+              ? [
+                  {
+                    key: 'ai-crawl',
+                    label: 'AI 爬虫治理',
+                    children: (
+                      <AiCrawlTab appId={app.id} appCode={app.code} />
+                    ),
+                  },
+                ]
+              : []),
+            // 客户端供应链安全（WDSP Phase 9B / PCI DSS 4.0 6.4.3 & 11.6.1）：无 client_side.read 权限不露入口
+            ...(hasPermission(permissions, 'client_side.read')
+              ? [
+                  {
+                    key: 'client-side',
+                    label: '客户端供应链安全',
+                    children: (
+                      <ClientSideTab appId={app.id} appCode={app.code} />
                     ),
                   },
                 ]

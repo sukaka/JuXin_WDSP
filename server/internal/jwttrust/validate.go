@@ -45,7 +45,44 @@ func Normalize(p *Policy) {
 		p.Issuers[i].Audiences = normalizeStrings(p.Issuers[i].Audiences, false)
 		p.Issuers[i].Algorithms = normalizeStrings(p.Issuers[i].Algorithms, true)
 		p.Issuers[i].RoleClaims = normalizeStrings(p.Issuers[i].RoleClaims, false)
+		if tb := p.Issuers[i].TokenBinding; tb != nil {
+			tb.Mode = strings.ToUpper(strings.TrimSpace(tb.Mode))
+			if tb.Mode == "" || tb.Mode == TokenBindingNone {
+				p.Issuers[i].TokenBinding = nil
+			} else {
+				tb.AllowedDPoPAlgs = normalizeDPoPAlgs(tb.AllowedDPoPAlgs)
+			}
+		}
 	}
+}
+
+// normalizeDPoPAlgs 归一化 DPoP 算法列表（保留 EdDSA 混合大小写，未知项原样保留供校验拒绝）。
+func normalizeDPoPAlgs(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		switch strings.ToLower(s) {
+		case "es256":
+			s = DPoPAlgES256
+		case "rs256":
+			s = DPoPAlgRS256
+		case "eddsa":
+			s = DPoPAlgEdDSA
+		}
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // normalizeStrings 去空白、去重（keepOrder 稳定序）；upper 时转大写。
@@ -215,6 +252,29 @@ func ValidateStructure(p *Policy) []FieldError {
 			}
 		default:
 			add(prefix+".key_source.type", "仅支持 STATIC_JWKS / REMOTE_JWKS")
+		}
+		if tb := is.TokenBinding; tb != nil {
+			tbPrefix := prefix + ".token_binding"
+			switch tb.Mode {
+			case "", TokenBindingNone:
+				// 非激活绑定：不要求其他字段
+			case TokenBindingDPoPOptional, TokenBindingDPoPRequired, TokenBindingMTLSRequired, TokenBindingDPoPOrMTLS:
+				if tb.MaxProofAgeSeconds < MinDPoPMaxProofAgeSeconds || tb.MaxProofAgeSeconds > MaxDPoPMaxProofAgeSeconds {
+					add(tbPrefix+".max_proof_age_seconds",
+						fmt.Sprintf("必须在 %d~%d 秒之间", MinDPoPMaxProofAgeSeconds, MaxDPoPMaxProofAgeSeconds))
+				}
+				if tb.NonceTTLSeconds < MinDPoPNonceTTLSeconds || tb.NonceTTLSeconds > MaxDPoPNonceTTLSeconds {
+					add(tbPrefix+".nonce_ttl_seconds",
+						fmt.Sprintf("必须在 %d~%d 秒之间", MinDPoPNonceTTLSeconds, MaxDPoPNonceTTLSeconds))
+				}
+				for _, alg := range tb.AllowedDPoPAlgs {
+					if alg != DPoPAlgES256 && alg != DPoPAlgRS256 && alg != DPoPAlgEdDSA {
+						add(tbPrefix+".allowed_dpop_algs", "仅支持 ES256 / RS256 / EdDSA，实际: "+alg)
+					}
+				}
+			default:
+				add(tbPrefix+".mode", "仅支持 NONE / DPOP_OPTIONAL / DPOP_REQUIRED / MTLS_REQUIRED / DPOP_OR_MTLS")
+			}
 		}
 	}
 	return errs

@@ -96,15 +96,19 @@ func (s *Store) Flow(ctx context.Context, filter ListFilter, nodeLimit int) (Flo
 	args = append(args, flowMaxRows+1)
 	limitArg := len(args)
 	rows, err := s.db.Query(ctx, `
-WITH filtered_logs AS (SELECT * FROM access_logs WHERE `+where+`)
-SELECT filtered_logs.request_id, host(filtered_logs.client_ip),
+WITH filtered_logs AS (
+ SELECT occurred_at, request_id, client_ip, application_id, domain,
+        endpoint_key, request_method, path_template, request_path, request_uri
+ FROM access_logs WHERE `+where+`
+)
+SELECT COALESCE(filtered_logs.request_id,''), COALESCE(host(filtered_logs.client_ip),''),
  COALESCE(filtered_logs.application_id::text,''), COALESCE(applications.name,NULLIF(filtered_logs.domain,''),'未归属应用'),
- COALESCE(NULLIF(filtered_logs.endpoint_key,''),filtered_logs.request_method || ' ' || COALESCE(NULLIF(filtered_logs.path_template,''),NULLIF(filtered_logs.request_path,''),NULLIF(split_part(filtered_logs.request_uri,'?',1),''),'/')),
+ COALESCE(NULLIF(filtered_logs.endpoint_key,''),COALESCE(filtered_logs.request_method,'') || ' ' || COALESCE(NULLIF(filtered_logs.path_template,''),NULLIF(filtered_logs.request_path,''),NULLIF(split_part(filtered_logs.request_uri,'?',1),''),'/')),
  COALESCE(runtime.identity_fingerprint,''), COALESCE(runtime.jwt_verification->>'status',''),
  COALESCE(runtime.id::text,''),
  CASE WHEN detail.payload IS NULL THEN '' WHEN COALESCE(detail.payload->'evidence'->>'location','')=''
-      THEN detail.payload->'evidence'->>'field'
-      ELSE detail.payload->'evidence'->>'location' || '.' || (detail.payload->'evidence'->>'field') END,
+      THEN COALESCE(detail.payload->'evidence'->>'field','')
+      ELSE detail.payload->'evidence'->>'location' || '.' || COALESCE(detail.payload->'evidence'->>'field','') END,
  COALESCE(detail.payload->'evidence'->>'data_type',''),
  CASE WHEN detail.payload IS NULL THEN '' WHEN UPPER(COALESCE(detail.payload->'evidence'->>'direction','REQUEST')) IN ('REQUEST','RESPONSE')
       THEN UPPER(COALESCE(detail.payload->'evidence'->>'direction','REQUEST')) ELSE '' END,

@@ -10,6 +10,15 @@ export type JwtTrustMode = 'OFF' | 'OBSERVE' | 'PROTECT'
 export type JwtTrustKeySourceType = 'STATIC_JWKS' | 'REMOTE_JWKS'
 export type JwtTrustState = 'NOT_CONFIGURED' | 'DRAFT_PENDING' | 'PUBLISHED'
 export type JwtTrustCheckStatus = 'PASS' | 'FAIL' | 'WARN' | 'SKIP'
+export type JwtTokenBindingMode =
+  | 'NONE'
+  | 'DPOP_OPTIONAL'
+  | 'DPOP_REQUIRED'
+  | 'MTLS_REQUIRED'
+  | 'DPOP_OR_MTLS'
+export type JwtDPoPAlg = 'ES256' | 'RS256' | 'EdDSA'
+
+export const JWT_DPOP_ALGS: readonly JwtDPoPAlg[] = ['ES256', 'RS256', 'EdDSA']
 
 /** 与后端一致的产品限制（server/internal/jwttrust/policy.go） */
 export const JWT_TRUST_LIMITS = {
@@ -24,6 +33,12 @@ export const JWT_TRUST_LIMITS = {
   maxJWKSKeys: 32,
   maxJWKSBytes: 256 * 1024,
   minRSAKeyBits: 2048,
+  defaultDPoPMaxProofAge: 60,
+  minDPoPMaxProofAge: 5,
+  maxDPoPMaxProofAge: 120,
+  defaultDPoPNonceTTL: 60,
+  minDPoPNonceTTL: 10,
+  maxDPoPNonceTTL: 300,
 } as const
 
 /** 请求范围选择器（path_exact / path_prefix 二选一；不同 selector 之间 OR） */
@@ -41,6 +56,15 @@ export interface JwtTrustKeySource {
   url?: string
 }
 
+/** 令牌持有证明绑定配置（RFC 9449 DPoP / RFC 8705 mTLS；缺省或 NONE 不启用） */
+export interface JwtTokenBindingConfig {
+  mode: JwtTokenBindingMode
+  require_nonce?: boolean
+  max_proof_age_seconds?: number
+  nonce_ttl_seconds?: number
+  allowed_dpop_algs?: string[]
+}
+
 /** 受信发行方配置（issuer 为大小写敏感精确值，策略内唯一） */
 export interface JwtTrustIssuer {
   issuer: string
@@ -50,6 +74,7 @@ export interface JwtTrustIssuer {
   clock_skew_seconds: number
   tenant_claim?: string
   role_claims?: string[]
+  token_binding?: JwtTokenBindingConfig
 }
 
 /** 应用 JWT 信任策略（当前草稿；version 乐观锁不可变递增；无记录应用 version=0） */
@@ -106,6 +131,17 @@ export interface JwtTrustPreflightResult {
   publishable: boolean
 }
 
+function normalizeTokenBinding(
+  tb?: JwtTokenBindingConfig | null,
+): JwtTokenBindingConfig | undefined {
+  if (!tb) return undefined
+  return {
+    ...tb,
+    mode: tb.mode || 'NONE',
+    allowed_dpop_algs: tb.allowed_dpop_algs ?? [],
+  }
+}
+
 /** Go nil slice 序列化为 null，统一归一化为空数组 */
 function normalizePolicy(p: JwtTrustPolicy): JwtTrustPolicy {
   return {
@@ -116,6 +152,9 @@ function normalizePolicy(p: JwtTrustPolicy): JwtTrustPolicy {
       audiences: is.audiences ?? [],
       algorithms: is.algorithms ?? [],
       role_claims: is.role_claims ?? [],
+      ...(is.token_binding
+        ? { token_binding: normalizeTokenBinding(is.token_binding) }
+        : {}),
     })),
   }
 }

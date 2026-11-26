@@ -5,7 +5,13 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/jiuzhang-waf/server/internal/apm"
+)
+
+const (
+	defaultTraceLookupWindow     = time.Hour
+	chQueryMaxExecutionTimeSec   = 30
 )
 
 type ContributionStore interface {
@@ -13,12 +19,38 @@ type ContributionStore interface {
 }
 
 type CHContributionStore struct {
-	resolve func(context.Context) apm.CHQuerier
-	now     func() time.Time
+	resolve     func(context.Context) apm.CHQuerier
+	now         func() time.Time
+	traceWindow time.Duration
 }
 
 func NewCHContributionStore(resolve func(context.Context) apm.CHQuerier) *CHContributionStore {
-	return &CHContributionStore{resolve: resolve, now: time.Now}
+	return &CHContributionStore{
+		resolve:     resolve,
+		now:         time.Now,
+		traceWindow: defaultTraceLookupWindow,
+	}
+}
+
+func (s *CHContributionStore) WithTraceWindow(window time.Duration) *CHContributionStore {
+	copy := *s
+	if window > 0 {
+		copy.traceWindow = window
+	}
+	return &copy
+}
+
+func (s *CHContributionStore) effectiveTraceWindow() time.Duration {
+	if s != nil && s.traceWindow > 0 {
+		return s.traceWindow
+	}
+	return defaultTraceLookupWindow
+}
+
+func withCHQuerySettings(ctx context.Context) context.Context {
+	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+		"max_execution_time": chQueryMaxExecutionTimeSec,
+	}))
 }
 
 func (s *CHContributionStore) executor(ctx context.Context) (chExecutor, error) {

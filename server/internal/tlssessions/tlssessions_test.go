@@ -444,6 +444,74 @@ func TestRetentionCleanerCleanOnce(t *testing.T) {
 	}
 }
 
+type stubRelkindRow struct {
+	relkind string
+	err     error
+}
+
+func (r stubRelkindRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	*(dest[0].(*string)) = r.relkind
+	return nil
+}
+
+type relkindCaptureDB struct {
+	captureDB
+	relkind string
+}
+
+func (c *relkindCaptureDB) QueryRow(context.Context, string, ...any) pgx.Row {
+	return stubRelkindRow{relkind: c.relkind}
+}
+
+func TestRetentionCleanerSkipsPartitionedTable(t *testing.T) {
+	db := &relkindCaptureDB{
+		captureDB: captureDB{rowsPerCall: []int64{10}},
+		relkind:   "p",
+	}
+	rc := &RetentionCleaner{db: db, settings: stubRetentionSettings{days: 7}}
+	n, err := rc.CleanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("CleanOnce: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("deleted = %d, want 0 when relkind='p'", n)
+	}
+	if len(db.sqls) != 0 {
+		t.Fatalf("expected 0 DELETE executions when relkind='p', got %v", db.sqls)
+	}
+
+	dbReg := &relkindCaptureDB{
+		captureDB: captureDB{rowsPerCall: []int64{9}},
+		relkind:   "r",
+	}
+	rcReg := &RetentionCleaner{db: dbReg, settings: stubRetentionSettings{days: 7}}
+	nReg, err := rcReg.CleanOnce(context.Background())
+	if err != nil || nReg != 9 || len(dbReg.sqls) != 1 {
+		t.Fatalf("expected fallback DELETE on relkind='r', got n=%d err=%v sqls=%v", nReg, err, dbReg.sqls)
+	}
+}
+
+func TestMemStoreInsertGeneratesUUIDv7(t *testing.T) {
+	ms := NewMemStore()
+	if err := ms.Insert(context.Background(), &HandshakeEntry{
+		OccurredAt:       time.Now().UTC(),
+		DetectedProtocol: ProtoTLS13,
+		Action:           ActionAllowed,
+	}); err != nil {
+		t.Fatalf("MemStore.Insert: %v", err)
+	}
+	items, total, err := ms.List(context.Background(), ListFilter{})
+	if err != nil || total != 1 || len(items) != 1 {
+		t.Fatalf("List = (%d, %d, %v)", len(items), total, err)
+	}
+	if items[0].ID.Version() != 7 || items[0].ID.Variant() != uuid.RFC4122 {
+		t.Fatalf("expected UUIDv7 RFC4122, got version=%d variant=%v (%s)", items[0].ID.Version(), items[0].ID.Variant(), items[0].ID)
+	}
+}
+
 // --- HTTP Handler, Filter, Summary & RBAC tests ---
 
 func newTestMux(repo Repository) http.Handler {

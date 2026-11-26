@@ -28,6 +28,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/aiagents"
 	"github.com/jiuzhang-waf/server/internal/aiaudit"
 	"github.com/jiuzhang-waf/server/internal/aicost"
+	"github.com/jiuzhang-waf/server/internal/aicrawl"
 	"github.com/jiuzhang-waf/server/internal/aihandlers"
 	"github.com/jiuzhang-waf/server/internal/aimemory"
 	"github.com/jiuzhang-waf/server/internal/aimodel"
@@ -72,6 +73,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/botpolicy"
 	"github.com/jiuzhang-waf/server/internal/cache"
 	"github.com/jiuzhang-waf/server/internal/certificates"
+	"github.com/jiuzhang-waf/server/internal/clientside"
 	"github.com/jiuzhang-waf/server/internal/config"
 	"github.com/jiuzhang-waf/server/internal/containerops"
 	"github.com/jiuzhang-waf/server/internal/coverage"
@@ -391,6 +393,10 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	jwtTrustStore := jwttrust.NewStore(db)
 	// Bot 挑战策略管理面（WDSP P1-02 B1；表见迁移 000128，权限种子见 000129）
 	botPolicyStore := botpolicy.NewStore(db)
+	// AI 爬虫治理、Web Bot Auth 目录与离线迷宫策略（Phase 9A-2；迁移 000245）
+	aiCrawlStore := aicrawl.NewStore(db)
+	// 客户端供应链安全防护（Phase 9B；PCI DSS 4.0 6.4.3 & 11.6.1；迁移 000246）
+	clientSideStore := clientside.NewStore(db)
 	// 安全回归证据登记与发布门禁（WDSP P1-04 R3；表见迁移 000134，权限种子见 000135）。
 	// 受控证据存储为双方共用的受控本地存储适配器（S0 协调表：P0-01 服务端存储不存在，
 	// 由本任务提供）；装配失败 fail-closed（证据根目录不可写时不带病启动）。
@@ -486,6 +492,17 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	// 签名密钥就绪检查（预检 signing_key；与发布门禁 checkBotPolicyDeps 同一加载器同口径，
 	// 见 guardProvider.SetBotSigningKeysLoader）
 	botPolicyHandler.SetSigningKeysLoader(guardconfig.NewBotSigningKeysLoader(settingsSvc.GetString, encSvc.Decrypt))
+	// AI 爬虫治理处理器（Phase 9A-2）：目录同步允许清单 + 迷宫加密签名密钥按需初始化
+	aiCrawlHandler := aicrawl.NewHandler(aiCrawlStore, appStore, auditSvc)
+	aiCrawlHandler.SetAllowlist(func(ctx context.Context) string {
+		return settingsSvc.GetString(ctx, "ai_crawl", "directory_sync_allowlist", "")
+	})
+	if encSvc != nil {
+		aiCrawlHandler.SetEnsureLabyrinthKey(guardconfig.NewEnsureAICrawlLabyrinthKey(
+			settingsSvc.GetString, settingsSvc.CreateStringIfAbsent, encSvc.Encrypt, encSvc.Decrypt))
+	}
+	// 客户端供应链安全处理器（Phase 9B；策略草稿、脚本台账、违规处置与 PCI DSS 合规证据导出）
+	clientSideHandler := clientside.NewHandler(clientSideStore, appStore, auditSvc)
 	// 攻击活动会话处理器
 	attackSessionHandler := attacksessions.NewHandler(attackSessionStore)
 
@@ -522,6 +539,14 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		// 密钥材料不落快照/版本戳/审计——与扫描/文件签名密钥同一通道纪律））
 		guardProvider.SetBotPolicyLister(botPolicyStore)
 		guardProvider.SetBotSigningKeysLoader(guardconfig.NewBotSigningKeysLoader(settingsSvc.GetString, encSvc.Decrypt))
+		// AI 爬虫治理策略与离线迷宫加密签名密钥（Phase 9A-2；迁移 000245；读取失败 fail-hard）
+		guardProvider.SetAICrawlLister(aiCrawlStore)
+		if encSvc != nil {
+			guardProvider.SetAICrawlLabyrinthKeyLoader(guardconfig.NewAICrawlLabyrinthKeyLoader(
+				settingsSvc.GetString, settingsSvc.CreateStringIfAbsent, encSvc.Encrypt, encSvc.Decrypt))
+		}
+		// 客户端供应链安全策略与已授权/已封禁脚本清单（Phase 9B；迁移 000246；读取失败 fail-hard）
+		guardProvider.SetClientSideLister(clientSideStore)
 		// API 引擎受限例外（exception_policies target_engine=API 启用行）随发布下发
 		// api_exceptions 段（仅 WDSP 开启；读取失败中止发布 fail-hard；无启用行不下发该段）
 		guardProvider.SetAPIExceptionsLister(exceptionStore)
@@ -729,6 +754,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	// 阶段6：指标聚合/态势/统计/报告/监控/告警/备份恢复/升级/交付检查
 	aggStore := aggregations.NewStore(db)
 	dashboardHandler := dashboards.NewHandler(aggStore, db)
+	dashboardHandler.SetCache(c)
 	analyticsHandler := analytics.NewHandler(aggStore, db)
 	reportStore := reports.NewStore(db)
 	if err := reportStore.EnsureBuiltinTemplate(context.Background()); err != nil {
@@ -1266,6 +1292,25 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		mux.Handle("GET /api/v1/applications/{id}/bot-policy", authz(middleware.RequirePermission("bot_policy.read")(http.HandlerFunc(botPolicyHandler.Get))))
 		mux.Handle("PUT /api/v1/applications/{id}/bot-policy", authz(middleware.RequirePermission("bot_policy.edit")(http.HandlerFunc(botPolicyHandler.Put))))
 		mux.Handle("POST /api/v1/applications/{id}/bot-policy/preflight", authz(middleware.RequirePermission("bot_policy.edit")(http.HandlerFunc(botPolicyHandler.Preflight))))
+		// AI 爬虫治理、Web Bot Auth 爬虫公钥目录与离线 AI 迷宫（Phase 9A-2；迁移 000245）
+		mux.Handle("GET /api/v1/ai-crawl/directories", authz(middleware.RequirePermission("ai_crawl.read")(http.HandlerFunc(aiCrawlHandler.ListDirectories))))
+		mux.Handle("POST /api/v1/ai-crawl/directories", authz(middleware.RequirePermission("ai_crawl.manage")(http.HandlerFunc(aiCrawlHandler.CreateDirectory))))
+		mux.Handle("PUT /api/v1/ai-crawl/directories/{id}", authz(middleware.RequirePermission("ai_crawl.manage")(http.HandlerFunc(aiCrawlHandler.UpdateDirectory))))
+		mux.Handle("DELETE /api/v1/ai-crawl/directories/{id}", authz(middleware.RequirePermission("ai_crawl.manage")(http.HandlerFunc(aiCrawlHandler.DeleteDirectory))))
+		mux.Handle("POST /api/v1/ai-crawl/directories/import", authz(middleware.RequirePermission("ai_crawl.manage")(http.HandlerFunc(aiCrawlHandler.ImportDirectories))))
+		mux.Handle("POST /api/v1/ai-crawl/directories/{id}/sync", authz(middleware.RequirePermission("ai_crawl.manage")(http.HandlerFunc(aiCrawlHandler.SyncDirectory))))
+		mux.Handle("GET /api/v1/applications/{id}/ai-crawl-policy", authz(middleware.RequirePermission("ai_crawl.read")(http.HandlerFunc(aiCrawlHandler.GetPolicy))))
+		mux.Handle("PUT /api/v1/applications/{id}/ai-crawl-policy", authz(middleware.RequirePermission("ai_crawl.manage")(http.HandlerFunc(aiCrawlHandler.PutPolicy))))
+		// 客户端供应链安全防护（Phase 9B；PCI DSS 4.0 6.4.3 & 11.6.1；迁移 000246）
+		mux.Handle("GET /api/v1/applications/{id}/client-side-policy", authz(middleware.RequirePermission("client_side.read")(http.HandlerFunc(clientSideHandler.GetPolicy))))
+		mux.Handle("PUT /api/v1/applications/{id}/client-side-policy", authz(middleware.RequirePermission("client_side.manage")(http.HandlerFunc(clientSideHandler.PutPolicy))))
+		mux.Handle("GET /api/v1/client-side/scripts", authz(middleware.RequirePermission("client_side.read")(http.HandlerFunc(clientSideHandler.ListScripts))))
+		mux.Handle("POST /api/v1/client-side/scripts", authz(middleware.RequirePermission("client_side.manage")(http.HandlerFunc(clientSideHandler.CreateScript))))
+		mux.Handle("PUT /api/v1/client-side/scripts/{id}", authz(middleware.RequirePermission("client_side.manage")(http.HandlerFunc(clientSideHandler.UpdateScript))))
+		mux.Handle("DELETE /api/v1/client-side/scripts/{id}", authz(middleware.RequirePermission("client_side.manage")(http.HandlerFunc(clientSideHandler.DeleteScript))))
+		mux.Handle("GET /api/v1/client-side/violations", authz(middleware.RequirePermission("client_side.read")(http.HandlerFunc(clientSideHandler.ListViolations))))
+		mux.Handle("PUT /api/v1/client-side/violations/{id}/status", authz(middleware.RequirePermission("client_side.manage")(http.HandlerFunc(clientSideHandler.UpdateViolationStatus))))
+		mux.Handle("GET /api/v1/client-side/compliance-export", authz(middleware.RequirePermission("client_side.read")(http.HandlerFunc(clientSideHandler.ExportCompliance))))
 		// 安全回归证据登记与发布门禁（WDSP P1-04 R3 §7.1；权限种子见迁移 000135；
 		// 导入只接受已登记受控对象 ID，不接收 URL/路径/压缩包/shell，不执行测试命令）
 		mux.Handle("GET /api/v1/security/regressions", authz(middleware.RequirePermission("security_regression.read")(http.HandlerFunc(regressionHandler.List))))

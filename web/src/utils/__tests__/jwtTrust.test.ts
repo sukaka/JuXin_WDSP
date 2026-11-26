@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { mapJwtTrustFieldErrorPath } from '../jwtTrust'
+import {
+  JWT_TOKEN_BINDING_MODE_META,
+  isDPoPBindingMode,
+  isMTLSBindingMode,
+  mapJwtTrustFieldErrorPath,
+} from '../jwtTrust'
 
 describe('mapJwtTrustFieldErrorPath', () => {
   it('映射顶级字段 mode 与 reason', () => {
@@ -78,6 +83,48 @@ describe('mapJwtTrustFieldErrorPath', () => {
       0,
       'key_source_type',
     ])
+    expect(mapJwtTrustFieldErrorPath('issuers[0].token_binding')).toEqual([
+      'issuers',
+      0,
+      'token_binding_mode',
+    ])
+    expect(mapJwtTrustFieldErrorPath('issuers[0].token_binding.mode')).toEqual([
+      'issuers',
+      0,
+      'token_binding_mode',
+    ])
+    expect(
+      mapJwtTrustFieldErrorPath('issuers[0].token_binding.require_nonce'),
+    ).toEqual(['issuers', 0, 'dpop_require_nonce'])
+    expect(
+      mapJwtTrustFieldErrorPath(
+        'issuers[0].token_binding.max_proof_age_seconds',
+      ),
+    ).toEqual(['issuers', 0, 'dpop_max_proof_age_seconds'])
+    expect(
+      mapJwtTrustFieldErrorPath('issuers[0].token_binding.nonce_ttl_seconds'),
+    ).toEqual(['issuers', 0, 'dpop_nonce_ttl_seconds'])
+    expect(
+      mapJwtTrustFieldErrorPath('issuers[0].token_binding.allowed_dpop_algs'),
+    ).toEqual(['issuers', 0, 'dpop_allowed_algs'])
+  })
+
+  it('令牌持有证明绑定模式枚举与辅助判断完整', () => {
+    expect(Object.keys(JWT_TOKEN_BINDING_MODE_META)).toEqual([
+      'NONE',
+      'DPOP_OPTIONAL',
+      'DPOP_REQUIRED',
+      'MTLS_REQUIRED',
+      'DPOP_OR_MTLS',
+    ])
+    expect(isDPoPBindingMode('NONE')).toBe(false)
+    expect(isDPoPBindingMode('MTLS_REQUIRED')).toBe(false)
+    expect(isDPoPBindingMode('DPOP_OPTIONAL')).toBe(true)
+    expect(isDPoPBindingMode('DPOP_REQUIRED')).toBe(true)
+    expect(isDPoPBindingMode('DPOP_OR_MTLS')).toBe(true)
+    expect(isMTLSBindingMode('MTLS_REQUIRED')).toBe(true)
+    expect(isMTLSBindingMode('DPOP_OR_MTLS')).toBe(true)
+    expect(isMTLSBindingMode('DPOP_REQUIRED')).toBe(false)
   })
 
   it('未知字段路径返回 null', () => {

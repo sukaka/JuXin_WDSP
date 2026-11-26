@@ -19,6 +19,7 @@ file=install/tune-gateway-baremetal.sh
 file=install/verify-gateway-baremetal.sh
 file=lib/common.sh
 file=lib/fingerprint.sh
+file=lib/pg-tune.sh
 file=lib/signing.sh
 file=restore/restore.sh
 file=system/factory-reset.sh

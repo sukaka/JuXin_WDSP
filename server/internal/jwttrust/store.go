@@ -213,50 +213,87 @@ ORDER BY a.code`)
 		if err := json.Unmarshal(issuers, &iss); err != nil {
 			return nil, fmt.Errorf("decode issuers for %s: %w", code, err)
 		}
-		gp := &gatewayconfig.GuardJWTTrustPolicy{
-			SchemaVersion: SchemaVersion,
-			ApplicationID: appID.String(),
-			Mode:          mode,
-			Version:       version,
-			Selectors:     make([]gatewayconfig.GuardJWTSelector, 0, len(sel)),
-			Issuers:       make([]gatewayconfig.GuardJWTIssuer, 0, len(iss)),
-		}
-		for _, s2 := range sel {
-			gp.Selectors = append(gp.Selectors, gatewayconfig.GuardJWTSelector{
-				Methods:       s2.Methods,
-				PathExact:     s2.PathExact,
-				PathPrefix:    s2.PathPrefix,
-				TokenRequired: s2.TokenRequired,
-			})
-		}
-		for _, is2 := range iss {
-			gi := gatewayconfig.GuardJWTIssuer{
-				IssuerConfigID:   IssuerConfigID(appID, is2.Issuer),
-				Issuer:           is2.Issuer,
-				Audiences:        is2.Audiences,
-				Algorithms:       is2.Algorithms,
-				ClockSkewSeconds: is2.ClockSkewSeconds,
-				TenantClaim:      is2.TenantClaim,
-				RoleClaims:       append([]string(nil), is2.RoleClaims...),
-				KeySourceType:    is2.KeySource.Type,
-			}
-			switch is2.KeySource.Type {
-			case KeySourceStaticJWKS:
-				// 静态公钥是公钥可以下发（无任何秘密材料）
-				gi.JWKS = json.RawMessage(is2.KeySource.JWKS)
-				v, err := KeysetVersion(is2.KeySource.JWKS)
-				if err != nil {
-					return nil, fmt.Errorf("compute keyset version for %s: %w", code, err)
-				}
-				gi.KeysetVersion = v
-			case KeySourceRemoteJWKS:
-				gi.RemoteURL = is2.KeySource.URL
-			}
-			gp.Issuers = append(gp.Issuers, gi)
+		gp, err := toGuardPolicy(appID, code, mode, version, sel, iss)
+		if err != nil {
+			return nil, err
 		}
 		out[code] = gp
 	}
 	return out, rows.Err()
+}
+
+// toGuardPolicy 将存储层策略映射为网关下发契约（纯函数，便于单测）。
+// 仅当策略内至少一个 issuer 启用了非 NONE 的 token_binding 时下发 schema_version=2，
+// 否则保持 schema_version=1 且所有 issuer 的 token_binding 为 nil（100% 向后兼容旧节点）。
+func toGuardPolicy(appID uuid.UUID, code, mode string, version int, sel []Selector, iss []Issuer) (*gatewayconfig.GuardJWTTrustPolicy, error) {
+	gp := &gatewayconfig.GuardJWTTrustPolicy{
+		SchemaVersion: SchemaVersion,
+		ApplicationID: appID.String(),
+		Mode:          mode,
+		Version:       version,
+		Selectors:     make([]gatewayconfig.GuardJWTSelector, 0, len(sel)),
+		Issuers:       make([]gatewayconfig.GuardJWTIssuer, 0, len(iss)),
+	}
+	for _, s2 := range sel {
+		gp.Selectors = append(gp.Selectors, gatewayconfig.GuardJWTSelector{
+			Methods:       s2.Methods,
+			PathExact:     s2.PathExact,
+			PathPrefix:    s2.PathPrefix,
+			TokenRequired: s2.TokenRequired,
+		})
+	}
+	hasActiveBinding := false
+	for _, is2 := range iss {
+		gi := gatewayconfig.GuardJWTIssuer{
+			IssuerConfigID:   IssuerConfigID(appID, is2.Issuer),
+			Issuer:           is2.Issuer,
+			Audiences:        is2.Audiences,
+			Algorithms:       is2.Algorithms,
+			ClockSkewSeconds: is2.ClockSkewSeconds,
+			TenantClaim:      is2.TenantClaim,
+			RoleClaims:       append([]string(nil), is2.RoleClaims...),
+			KeySourceType:    is2.KeySource.Type,
+		}
+		switch is2.KeySource.Type {
+		case KeySourceStaticJWKS:
+			// 静态公钥是公钥可以下发（无任何秘密材料）
+			gi.JWKS = json.RawMessage(is2.KeySource.JWKS)
+			v, err := KeysetVersion(is2.KeySource.JWKS)
+			if err != nil {
+				return nil, fmt.Errorf("compute keyset version for %s: %w", code, err)
+			}
+			gi.KeysetVersion = v
+		case KeySourceRemoteJWKS:
+			gi.RemoteURL = is2.KeySource.URL
+		}
+		if is2.TokenBinding.Active() {
+			hasActiveBinding = true
+			maxAge := is2.TokenBinding.MaxProofAgeSeconds
+			if maxAge == 0 {
+				maxAge = DefaultDPoPMaxProofAgeSeconds
+			}
+			nonceTTL := is2.TokenBinding.NonceTTLSeconds
+			if nonceTTL == 0 {
+				nonceTTL = DefaultDPoPNonceTTLSeconds
+			}
+			var algs []string
+			if len(is2.TokenBinding.AllowedDPoPAlgs) > 0 {
+				algs = append([]string(nil), is2.TokenBinding.AllowedDPoPAlgs...)
+			}
+			gi.TokenBinding = &gatewayconfig.GuardJWTTokenBinding{
+				Mode:               is2.TokenBinding.Mode,
+				RequireNonce:       is2.TokenBinding.RequireNonce,
+				MaxProofAgeSeconds: maxAge,
+				NonceTTLSeconds:    nonceTTL,
+				AllowedDPoPAlgs:    algs,
+			}
+		}
+		gp.Issuers = append(gp.Issuers, gi)
+	}
+	if hasActiveBinding {
+		gp.SchemaVersion = SchemaVersionV2
+	}
+	return gp, nil
 }
 
 // IssuerConfigID 生成稳定的 issuer 配置标识（应用 + issuer 精确值派生；

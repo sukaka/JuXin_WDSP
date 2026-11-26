@@ -457,8 +457,11 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, erro
 		add("e.id = ANY($%d::uuid[])", f.IDs)
 	}
 	var total int64
-	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM api_endpoints e
-LEFT JOIN api_assets ast ON ast.endpoint_id = e.id WHERE `+where, args...).Scan(&total); err != nil {
+	countSQL := `SELECT count(*) FROM api_endpoints e WHERE ` + where
+	if f.BusinessType != "" {
+		countSQL = `SELECT count(*) FROM api_endpoints e LEFT JOIN api_assets ast ON ast.endpoint_id = e.id WHERE ` + where
+	}
+	if err := s.db.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	args = append(args, f.PageSize, (f.Page-1)*f.PageSize)

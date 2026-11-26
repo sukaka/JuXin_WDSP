@@ -25,14 +25,21 @@ func TestFlowRealRequestFieldAggregationAndDrill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 	if err := database.Migrate(ctx, pool, "../../migrations", "up"); err != nil {
 		t.Fatal(err)
 	}
 	appID := uuid.New()
-	if _, err := pool.Exec(ctx, `INSERT INTO applications(id,code,name) VALUES($1,'flow-shop','订单系统')`, appID); err != nil {
+	appCode := "flow-shop-" + appID.String()[:8]
+	if _, err := pool.Exec(ctx, `INSERT INTO applications(id,code,name) VALUES($1,$2,'订单系统')`, appID, appCode); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = pool.Exec(bg, `DELETE FROM api_runtime_events WHERE request_id IN ('flow-req-1','flow-req-2')`)
+		_, _ = pool.Exec(bg, `DELETE FROM access_logs WHERE request_id IN ('flow-req-1','flow-req-2','flow-req-3')`)
+		_, _ = pool.Exec(bg, `DELETE FROM applications WHERE id = $1`, appID)
+	})
 	now := time.Now().UTC()
 	store := NewStore(pool)
 	entries := []LogEntry{
@@ -40,6 +47,8 @@ func TestFlowRealRequestFieldAggregationAndDrill(t *testing.T) {
 		{OccurredAt: now.Add(-2 * time.Minute), RequestID: "flow-req-2", ApplicationID: appID.String(), Domain: "shop.internal", ClientIP: "192.0.2.10", RequestMethod: "POST", RequestURI: "/v1/login", RequestPath: "/v1/login", EndpointKey: "POST /v1/login", PathTemplate: "/v1/login", RequestHeaders: map[string][]string{}, ResponseHeaders: map[string][]string{}},
 		{OccurredAt: now.Add(-time.Minute), RequestID: "flow-req-3", Domain: "health.internal", ClientIP: "192.0.2.11", RequestMethod: "GET", RequestURI: "/health", RequestPath: "/health", EndpointKey: "GET /health", PathTemplate: "/health", RequestHeaders: map[string][]string{}, ResponseHeaders: map[string][]string{}},
 	}
+	_, _ = pool.Exec(ctx, `DELETE FROM api_runtime_events WHERE request_id IN ('flow-req-1','flow-req-2')`)
+	_, _ = pool.Exec(ctx, `DELETE FROM access_logs WHERE request_id IN ('flow-req-1','flow-req-2','flow-req-3')`)
 	for i := range entries {
 		if _, err := store.Insert(ctx, &entries[i]); err != nil {
 			t.Fatal(err)
@@ -120,6 +129,77 @@ func TestFlowRealRequestFieldAggregationAndDrill(t *testing.T) {
 		if node.Kind == "SOURCE" && node.Other && (node.RequestCount != 1 || node.AggregatedNodes != 1) {
 			t.Fatalf("other bucket did not retain distinct requests: %+v", node)
 		}
+	}
+}
+
+func TestFlowNullAndScopedClientIPIntegration(t *testing.T) {
+	dsn := os.Getenv("ACCESSLOGS_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("ACCESSLOGS_TEST_PG_DSN not set, skipping null client_ip flow test")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if err := database.Migrate(ctx, pool, "../../migrations", "up"); err != nil {
+		t.Fatal(err)
+	}
+
+	suffix := uuid.NewString()[:8]
+	domain := "null-ip-" + suffix + ".internal"
+	reqIDs := []string{
+		"flow-null-ip-" + suffix,
+		"flow-scoped-ip-" + suffix,
+		"flow-valid-ip-" + suffix,
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM access_logs WHERE request_id = ANY($1::text[])`, reqIDs)
+	})
+
+	now := time.Now().UTC()
+	store := NewStore(pool)
+	entries := []LogEntry{
+		{OccurredAt: now.Add(-2 * time.Minute), RequestID: reqIDs[0], Domain: domain, ClientIP: "", RequestMethod: "GET", RequestURI: "/null-ip", RequestPath: "/null-ip", EndpointKey: "GET /null-ip", PathTemplate: "/null-ip", RequestHeaders: map[string][]string{}, ResponseHeaders: map[string][]string{}},
+		{OccurredAt: now.Add(-time.Minute), RequestID: reqIDs[1], Domain: domain, ClientIP: "fe80::1%eth0", RequestMethod: "GET", RequestURI: "/scoped-ip", RequestPath: "/scoped-ip", EndpointKey: "GET /scoped-ip", PathTemplate: "/scoped-ip", RequestHeaders: map[string][]string{}, ResponseHeaders: map[string][]string{}},
+		{OccurredAt: now.Add(-30 * time.Second), RequestID: reqIDs[2], Domain: domain, ClientIP: "203.0.113.55", RequestMethod: "GET", RequestURI: "/valid-ip", RequestPath: "/valid-ip", EndpointKey: "GET /valid-ip", PathTemplate: "/valid-ip", RequestHeaders: map[string][]string{}, ResponseHeaders: map[string][]string{}},
+	}
+	for i := range entries {
+		if _, err := store.Insert(ctx, &entries[i]); err != nil {
+			t.Fatalf("insert %s: %v", entries[i].RequestID, err)
+		}
+	}
+
+	flow, err := store.Flow(ctx, ListFilter{
+		StartTime: timePointer(now.Add(-time.Hour)),
+		EndTime:   timePointer(now.Add(time.Hour)),
+		Domain:    domain,
+	}, 8)
+	if err != nil {
+		t.Fatalf("Flow failed with NULL client_ip rows: %v", err)
+	}
+	if flow.RequestCount != 3 {
+		t.Fatalf("RequestCount = %d, want 3", flow.RequestCount)
+	}
+	var unknownSource, validSource *FlowNode
+	for i := range flow.Nodes {
+		n := &flow.Nodes[i]
+		if n.Kind == "SOURCE" && n.Name == "未识别来源" {
+			unknownSource = n
+		}
+		if n.Kind == "SOURCE" && n.Name == "203.0.113.55" {
+			validSource = n
+		}
+	}
+	if unknownSource == nil || unknownSource.RequestCount != 2 {
+		t.Fatalf("expected SOURCE node '未识别来源' with RequestCount=2, got %+v", unknownSource)
+	}
+	if unknownSource.Filters["client_ip"] != "" {
+		t.Fatalf("unknown source node must not set client_ip filter, got %q", unknownSource.Filters["client_ip"])
+	}
+	if validSource == nil || validSource.RequestCount != 1 || validSource.Filters["client_ip"] != "203.0.113.55" {
+		t.Fatalf("expected valid SOURCE node '203.0.113.55' with RequestCount=1, got %+v", validSource)
 	}
 }
 

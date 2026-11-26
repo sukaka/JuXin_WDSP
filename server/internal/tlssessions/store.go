@@ -343,6 +343,13 @@ func NewMemStore() *MemStore {
 	return &MemStore{events: make([]SessionEvent, 0)}
 }
 
+func newSessionUUID() uuid.UUID {
+	if id, err := uuid.NewV7(); err == nil {
+		return id
+	}
+	return uuid.New()
+}
+
 // Insert 将握手事件写入内存仓储。
 func (m *MemStore) Insert(_ context.Context, e *HandshakeEntry) error {
 	if e == nil {
@@ -355,7 +362,7 @@ func (m *MemStore) Insert(_ context.Context, e *HandshakeEntry) error {
 		}
 	}
 	ev := SessionEvent{
-		ID:                 uuid.New(),
+		ID:                 newSessionUUID(),
 		OccurredAt:         e.OccurredAt.UTC(),
 		GatewayNodeID:      e.GatewayNodeID,
 		ApplicationID:      appID,
