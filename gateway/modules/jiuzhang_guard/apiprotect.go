@@ -182,7 +182,17 @@ func (g *Guard) serveNext(w http.ResponseWriter, r *http.Request, next caddyhttp
 		// 是所有放行出口（保护地址旁路/白名单/L7 allow/常规链路）的唯一汇合点，
 		// 白名单/L7 allow 不绕过 JWT PROTECT（安全底线）；VERIFIED 不产生全局放行，
 		// 继续 API 管线与 WAF 等后续检测。处置表见 jwt_trust.go enforceJWTTrust。
-		if handled, err := g.enforceJWTTrust(w, r); handled {
+		// Phase 9C-1：若当前请求命中配置了 oauth_resource_metadata_url 的 MCP 端点，
+		// 在 401/403 时注入 RFC 9728 / MCP OAuth 2.1 WWW-Authenticate 挑战头。
+		jwtW := w
+		if g.apiMCPGuard != nil {
+			if metaURL := g.apiMCPGuard.OAuthResourceMetadataURLForEndpoint(g.AppID, r.URL.Path); metaURL != "" {
+				if challenge := mcpguard.FormatOAuth21Challenge(metaURL); challenge != "" {
+					jwtW = &mcpOAuthChallengeWriter{ResponseWriter: w, challenge: challenge}
+				}
+			}
+		}
+		if handled, err := g.enforceJWTTrust(jwtW, r); handled {
 			return err
 		}
 		// 机器身份强制处置（NG-ID G1：与 enforceJWTTrust 同段——白名单/L7 allow
@@ -193,7 +203,32 @@ func (g *Guard) serveNext(w http.ResponseWriter, r *http.Request, next caddyhttp
 		if handled, err := g.enforceMachineIdentity(w, r); handled {
 			return err
 		}
+		// Wasm 热插拔自定义检测插件沙箱（Phase 9D-1）：位于 JWT 与机器身份强制处置之后、
+		// A2A/API 动态防护与 Coraza WAF 之前；白名单/L7 allow 不绕过；
+		// ALLOW 绝不绕过后续 A2A、API 动态防护或 Coraza WAF（安全底线）；
+		// 未配置或无启用插件时 g.wasmPlugins==nil 零开销直通。
+		if g.wasmPlugins != nil {
+			if handled, err := g.enforceWasmPlugins(w, r); handled {
+				return err
+			}
+		}
+		// A2A 协议安全网关与 Agent Card/AgBOM 发现（Phase 9C-1）：位于 JWT/机器身份强制处置之后，
+		// 白名单/L7 allow 不绕过；未配置或 mode==OFF 时 g.apiA2A==nil 零开销直通。
+		if g.apiA2A != nil {
+			if handled, err := g.enforceA2ARequest(w, r); handled {
+				return err
+			}
+			if sw, sniffer := g.wrapA2AAgentCardResponse(w, r); sniffer != nil {
+				w = sw
+				defer sniffer.Finish()
+			}
+		}
 		if !g.APIDynamicProtection {
+			if g.semanticGuard != nil {
+				if handled, err := g.enforceSemanticStandaloneRequest(w, r); handled {
+					return err
+				}
+			}
 			return proxyAndCount(w, r, next)
 		}
 		// 同凭据并发记账：入口 +1、出口（检测+下游转发全程结束）-1；匿名不跟踪。
@@ -219,7 +254,7 @@ func (g *Guard) serveAPIProtected(w http.ResponseWriter, r *http.Request, next c
 	if res == nil || res.Skipped {
 		return proxyAndCount(w, r, next)
 	}
-	if !res.API.IsAPI && !g.hasAPIResponseControls(res.EndpointKey) {
+	if !res.API.IsAPI && !g.hasAPIResponseControls(res.EndpointKey) && !g.semanticShouldCaptureResponse(res.Context) {
 		// 非 API 流量且无响应相位控制：不缓冲响应体；对非静态后缀路径仅挂轻量响应头窥视器
 		// （零内存拷贝、零流式破坏），根据源站返回 Content-Type/Content-Disposition 二次定级
 		// （识别无 Accept 头的 GET JSON/XML/SSE/动态下载接口，同时保持 HTML/静态 MIME 为 NON_API）。
@@ -504,6 +539,7 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 				dispo.RecordTerminal(ExecutorAPI, DisActionBlock, mcpHTTP, true,
 					[]string{"MCP_ERROR_" + strconv.Itoa(mcpCode)}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
 				tail.status = mcpHTTP
+				g.setMCPOAuthChallenge(w, r, res.Context, mcpHTTP)
 				g.writeMCPErrorResponse(w, res.Context.RequestID, mcpCode, mcpHTTP, mcpRequestIDRaw(res.Context))
 				g.emitAPIEvent(r, res, tail)
 				return
@@ -572,9 +608,24 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 			Evidence: map[string]string{"endpoint_key": res.EndpointKey},
 		})
 	}
+	// Phase 9C-1：若 MCP 响应侧在 SANITIZE 模式下产出清洗后的完整 JSON-RPC 响应体
+	// （RequestContext 扩展 "mcp.sanitized_result"），在非分段完整缓冲场景下替换响应体。
+	effectiveBody := decodedBody
+	mcpSanitized := false
+	if kind == outcomeBuffered && !partialContent {
+		if sanitizedBody, ok := mcpguard.SanitizedResultFromContext(res.Context); ok {
+			effectiveBody = sanitizedBody
+			mcpSanitized = true
+		}
+		// Phase 9C-2：对完整缓冲的非分段 MCP 响应正文执行本地离线语义间接注入复检；
+		// 命中 PROTECT 阻断或 FAIL_CLOSED 503 时在未外发任何字节前直接抑制原响应。
+		if g.evaluateSemanticMCPResponse(w, r, res, effectiveBody, tail) {
+			return
+		}
+	}
 	if act == dsctx.ActionMaskResp && kind == outcomeBuffered && !partialContent {
 		if rc := res.Context.GetResponse(); rc != nil && len(rc.TransformPlan) > 0 {
-			out, terr := response.ApplyJSONWithKey(decodedBody, rc.TransformPlan, g.apiMaskCrypto)
+			out, terr := response.ApplyJSONWithKey(effectiveBody, rc.TransformPlan, g.apiMaskCrypto)
 			switch {
 			case terr != nil && g.responseFailClosed():
 				res.Context.AddMatch(dsctx.DetectorMatch{
@@ -623,8 +674,8 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 		}
 	}
 	if kind == outcomeBuffered {
-		body := decodedBody
-		modified := false
+		body := effectiveBody
+		modified := mcpSanitized
 		if masked {
 			body = transformed
 			modified = true
@@ -1117,7 +1168,7 @@ func (g *Guard) writeMCPErrorResponse(w http.ResponseWriter, requestID string, c
 		code = -32011 // 未登记码防御归一 MCP_TOOL_DENIED（不编造短语）
 		msg = mcpErrorMessages[code]
 	}
-	if httpStatus != 403 && httpStatus != 413 && httpStatus != 429 {
+	if httpStatus != 401 && httpStatus != 403 && httpStatus != 413 && httpStatus != 429 {
 		httpStatus = 403
 	}
 	if idRaw == "" {
@@ -1137,6 +1188,40 @@ func (g *Guard) writeMCPErrorResponse(w http.ResponseWriter, requestID string, c
 		g.logger.Warn("mcp error response write failed", zap.Error(err), zap.String("request_id", requestID))
 	}
 }
+
+// setMCPOAuthChallenge Phase 9C-1：在 MCP 401/403 拒绝响应上附带 RFC 9728 / OAuth 2.1
+// WWW-Authenticate: Bearer resource_metadata="<url>" 挑战头（仅配置了合法 https:// URL 时生效）。
+func (g *Guard) setMCPOAuthChallenge(w http.ResponseWriter, r *http.Request, ctx *dsctx.RequestContext, httpStatus int) {
+	if httpStatus != http.StatusUnauthorized && httpStatus != http.StatusForbidden {
+		return
+	}
+	metaURL := mcpguard.OAuthResourceMetadataURLFromContext(ctx)
+	if metaURL == "" && g.apiMCPGuard != nil && r != nil {
+		metaURL = g.apiMCPGuard.OAuthResourceMetadataURLForEndpoint(g.AppID, r.URL.Path)
+	}
+	if challenge := mcpguard.FormatOAuth21Challenge(metaURL); challenge != "" {
+		w.Header().Set("WWW-Authenticate", challenge)
+	}
+}
+
+// mcpOAuthChallengeWriter 在 MCP 绑定端点配置了 oauth_resource_metadata_url 时，
+// 对 JWT 401/403 响应附带 RFC 9728 Bearer resource_metadata 挑战头（不覆盖 DPoP 挑战）。
+type mcpOAuthChallengeWriter struct {
+	http.ResponseWriter
+	challenge string
+}
+
+func (w *mcpOAuthChallengeWriter) WriteHeader(code int) {
+	if code == http.StatusUnauthorized || code == http.StatusForbidden {
+		existing := w.Header().Get("WWW-Authenticate")
+		if existing == "" || strings.HasPrefix(existing, "Bearer") {
+			w.Header().Set("WWW-Authenticate", w.challenge)
+		}
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *mcpOAuthChallengeWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // writeFileComplianceBlockedResponse 文件合规下载阻断抑制响应：403 + 空明细 JSON 体// （不含上游任何内容）。仅在不曾外发字节（缓冲模式扣留状态行）时调用。
 func (g *Guard) writeFileComplianceBlockedResponse(w http.ResponseWriter, requestID string) {
@@ -1405,6 +1490,15 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 		return res, false, nil
 	}
 
+	// Phase 9C-2：本地离线 ONNX/SLM 语义防火墙请求相位评估（在最终决策/分流前执行；
+	// 已硬阻断请求不重复调用；Web 灰区仅 RiskScore>=10 或非 INFO OBSERVE 命中触发，干净流量零开销；
+	// PROTECT + FAIL_CLOSED 不可用时直接返回 HTTP 503 semantic_guard_unavailable，绝不伪装 403）。
+	if g.semanticGuard != nil && res.FinalAction != dsctx.ActionBlock && res.FinalAction != dsctx.ActionTempBlock {
+		if handled, semErr := g.evaluateSemanticAPIRequest(w, r, res, bodySample, apiExcRefs, start); handled {
+			return res, true, semErr
+		}
+	}
+
 	// P0-04：例外命中的 Finding（决策侧已打标 Excepted）写 disposition.matched_exceptions
 	// 与 EXCEPTED 步骤——例外命中可审计是契约要求（证据保留于事件 matches 不变）
 	if len(apiExcRefs) > 0 {
@@ -1518,6 +1612,7 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 			dispo.RecordTerminal(ExecutorAPI, DisActionBlock, mcpHTTP, true,
 				[]string{"MCP_ERROR_" + strconv.Itoa(mcpCode)}, apiEnforcementRuleRefs(matches))
 			emitBlocked(mcpHTTP)
+			g.setMCPOAuthChallenge(w, r, res.Context, mcpHTTP)
 			g.writeMCPErrorResponse(w, res.Context.RequestID, mcpCode, mcpHTTP, mcpRequestIDRaw(res.Context))
 			return res, true, nil
 		}
@@ -1527,6 +1622,15 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 			accessLogAnnotate(r.Context(), wafActionBlock)
 			emitBlocked(http.StatusRequestEntityTooLarge)
 			g.writeAPIBodyTooLargeResponse(w, res.Context.RequestID)
+			return res, true, nil
+		}
+		if semRuleID := semanticBlockMatched(matches); semRuleID != "" {
+			dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, true,
+				[]string{"SEMANTIC_GUARD_BLOCKED"}, apiEnforcementRuleRefs(matches))
+			accessLogAnnotate(r.Context(), wafActionBlock)
+			g.emitSemanticBlockedFromMatch(r, matches, semRuleID, dispo.JSON())
+			emitBlocked(http.StatusForbidden)
+			g.writeSemanticBlockedResponse(w, res.Context.RequestID, semRuleID)
 			return res, true, nil
 		}
 		dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, false,
@@ -1541,6 +1645,7 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 			dispo.RecordTerminal(ExecutorAPI, DisActionRateLimit, mcpHTTP, true,
 				[]string{"MCP_ERROR_" + strconv.Itoa(mcpCode)}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
 			emitBlocked(mcpHTTP)
+			g.setMCPOAuthChallenge(w, r, res.Context, mcpHTTP)
 			g.writeMCPErrorResponse(w, res.Context.RequestID, mcpCode, mcpHTTP, mcpRequestIDRaw(res.Context))
 			return res, true, nil
 		}
@@ -1555,6 +1660,33 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 		emitBlocked(http.StatusForbidden)
 		return res, true, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("api client temporarily blocked"))
 	default:
+		// Phase 9C-1：Streamable HTTP GET 请求的 Mcp-Session-Id 会话绑定检查（幂等；POST 已在 mcpguard.Evaluate 内执行）。
+		if g.apiMCPGuard != nil && r.Method == http.MethodGet &&
+			mcpguard.CheckSessionBinding(res.Context, r, g.apiMCPGuard, jwtVerification, g.AppID, r.URL.Path, apiDecisionMode(g.APIProtectionMode) == decision.ModeProtect) {
+			res.Context.SetFinalAction(dsctx.ActionBlock)
+			res.FinalAction = dsctx.ActionBlock
+			matches := res.Context.CopyMatches()
+			mcpCode, mcpHTTP, _ := mcpguardBlockInfo(matches)
+			if mcpCode == 0 {
+				mcpCode = mcpguard.CodeSubjectUntrusted
+			}
+			if mcpHTTP == 0 {
+				mcpHTTP = http.StatusForbidden
+			}
+			dispo.RecordTerminal(ExecutorAPI, DisActionBlock, mcpHTTP, true,
+				[]string{"MCP_ERROR_" + strconv.Itoa(mcpCode)}, apiEnforcementRuleRefs(matches))
+			emitBlocked(mcpHTTP)
+			g.setMCPOAuthChallenge(w, r, res.Context, mcpHTTP)
+			g.writeMCPErrorResponse(w, res.Context.RequestID, mcpCode, mcpHTTP, mcpRequestIDRaw(res.Context))
+			return res, true, nil
+		}
+		// Phase 9C-1：将放行的 MCP CONFIDENTIAL 工具调用馈入 A2A Lethal Trifecta 污点追踪器，
+		// 并在已受污染主体调用外部外发工具时执行跨协议 Lethal Trifecta 阻断。
+		if g.apiA2A != nil {
+			if handled, err := g.observeAndCheckMCPForA2A(w, r, res.Context); handled {
+				return res, true, err
+			}
+		}
 		// OBSERVE 定案：观察命中进 steps（不进 security_action）
 		if res.FinalAction == dsctx.ActionObserve && len(res.Context.CopyMatches()) > 0 {
 			dispo.RecordStep(ExecutorAPI, StepObserved, "final_action=OBSERVE")

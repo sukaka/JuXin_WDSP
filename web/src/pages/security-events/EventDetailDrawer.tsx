@@ -30,6 +30,7 @@ import { formatDateTime } from '../../utils/format'
 import { DECISION_REASON_CODE_LABELS } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import BlacklistFromEventModal from './BlacklistFromEventModal'
+import ExceptionFromEventModal from './ExceptionFromEventModal'
 import WhitelistFromEventModal from './WhitelistFromEventModal'
 import {
   ATTACK_TYPE_META,
@@ -451,6 +452,7 @@ export default function EventDetailDrawer({
   >('confirm-attack')
   const [blacklistOpen, setBlacklistOpen] = useState(false)
   const [whitelistOpen, setWhitelistOpen] = useState(false)
+  const [exceptionOpen, setExceptionOpen] = useState(false)
 
   const detailQuery = useQuery({
     queryKey: ['security-event', eventId],
@@ -499,25 +501,6 @@ export default function EventDetailDrawer({
     onSuccess: () => {
       setNoteText('')
       message.success('备注已添加')
-      invalidateDetail()
-    },
-    onError,
-  })
-
-  const createExceptionMutation = useMutation({
-    mutationFn: () => securityEventsApi.createException(eventId as string),
-    onSuccess: (data) => {
-      modal.success({
-        title: '例外草稿已创建',
-        content: (
-          <div>
-            <p>{data.message}</p>
-            <Link to="/exceptions" onClick={onClose}>
-              前往例外策略页面查看
-            </Link>
-          </div>
-        ),
-      })
       invalidateDetail()
     },
     onError,
@@ -937,18 +920,7 @@ export default function EventDetailDrawer({
                       </Button>
                     )}
                     {canManageExceptions && (
-                      <Button
-                        loading={createExceptionMutation.isPending}
-                        onClick={() =>
-                          modal.confirm({
-                            title: '创建例外草稿',
-                            content: '将基于该事件的域名、URI 与匹配规则生成例外草稿（草稿需到「例外策略」页面审核启用）。确定继续吗？',
-                            onOk: () => createExceptionMutation.mutate(),
-                          })
-                        }
-                      >
-                        创建例外草稿
-                      </Button>
+                      <Button onClick={() => setExceptionOpen(true)}>创建例外</Button>
                     )}
                   </Space>
                 )}
@@ -964,6 +936,12 @@ export default function EventDetailDrawer({
       <WhitelistFromEventModal
         eventId={whitelistOpen ? eventId : null}
         onClose={() => setWhitelistOpen(false)}
+      />
+      <ExceptionFromEventModal
+        detail={detail ?? null}
+        open={exceptionOpen}
+        onClose={() => setExceptionOpen(false)}
+        onCreated={invalidateDetail}
       />
     </Drawer>
   )

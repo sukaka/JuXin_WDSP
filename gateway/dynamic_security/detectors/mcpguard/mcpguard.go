@@ -31,12 +31,15 @@
 package mcpguard
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/coverage"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser/mcprpc"
@@ -47,6 +50,55 @@ const (
 	ModeObserve = "OBSERVE"
 	ModeProtect = "PROTECT"
 )
+
+// PinEnforcement 工具定义固定执行模式（Phase 9C-1；空/未知归一 OBSERVE fail-safe）。
+const (
+	PinEnforcementOff     = "OFF"
+	PinEnforcementObserve = "OBSERVE"
+	PinEnforcementProtect = "PROTECT"
+)
+
+// ResponseGuardMode 端点级响应防护模式（Phase 9C-1；空/未知归一 OBSERVE fail-safe）。
+const (
+	ResponseGuardOff      = "OFF"
+	ResponseGuardObserve  = "OBSERVE"
+	ResponseGuardSanitize = "SANITIZE"
+	ResponseGuardProtect  = "PROTECT"
+)
+
+// SanitizedResultExtKey 请求上下文扩展键：承载清洗后的响应体（pipeline.ProcessResponse
+// 写回完整 JSON-RPC 响应体 []byte，供挂点侧 apiprotect 直接替换外发响应体）。
+const SanitizedResultExtKey = "mcp.sanitized_result"
+
+// NormalizePinEnforcement 归一工具定义固定执行模式（空或未知 fail-safe 归一 OBSERVE）。
+func NormalizePinEnforcement(mode string) string {
+	switch strings.ToUpper(strings.TrimSpace(mode)) {
+	case PinEnforcementOff:
+		return PinEnforcementOff
+	case PinEnforcementProtect:
+		return PinEnforcementProtect
+	case PinEnforcementObserve, "":
+		return PinEnforcementObserve
+	default:
+		return PinEnforcementObserve
+	}
+}
+
+// NormalizeResponseGuardMode 归一响应侧防护模式（空或未知 fail-safe 归一 OBSERVE）。
+func NormalizeResponseGuardMode(mode string) string {
+	switch strings.ToUpper(strings.TrimSpace(mode)) {
+	case ResponseGuardOff:
+		return ResponseGuardOff
+	case ResponseGuardSanitize:
+		return ResponseGuardSanitize
+	case ResponseGuardProtect:
+		return ResponseGuardProtect
+	case ResponseGuardObserve, "":
+		return ResponseGuardObserve
+	default:
+		return ResponseGuardObserve
+	}
+}
 
 // 错误码表（§1.11 冻结：产品扩展 JSON-RPC 保留段 -32000~-32099 注册；
 // 标准码 -32700/-32600/-32601/-32602/-32603 网关一律不使用（源站语义不冒用））。
@@ -95,6 +147,10 @@ type Tool struct {
 	InputUnsupportedKeys []string
 	// ArgConstraints 路径/域名约束（G1 两种；逐条 AND）。
 	ArgConstraints []ArgConstraint
+	// PinnedDefinitionHash Phase 9C-1 工具定义固定摘要（"mcp-def-sha256:v1:..."；空=未固定）。
+	PinnedDefinitionHash string `json:"pinned_definition_hash,omitempty"`
+	// PinEnforcement Phase 9C-1 定义漂移执行模式（OFF|OBSERVE|PROTECT；空归一 OBSERVE）。
+	PinEnforcement string `json:"pin_enforcement,omitempty"`
 }
 
 // ArgConstraint 一条参数范围约束（证据不落原值）。
@@ -117,6 +173,12 @@ type Catalog struct {
 type Endpoint struct {
 	Catalog *Catalog // nil = 目录缺失/摘要不符（运行期 SKIPPED(COV_NO_CATALOG) 放行不误断）
 	Mode    string   // OBSERVE|PROTECT（装配归一）
+	// ResponseGuardMode Phase 9C-1 响应侧间接提示词/投毒防护模式（OFF|OBSERVE|SANITIZE|PROTECT；空归一 OBSERVE）。
+	ResponseGuardMode string `json:"response_guard_mode,omitempty"`
+	// RequireSessionBinding Phase 9C-1 要求校验 Mcp-Session-Id 绑定归属主体。
+	RequireSessionBinding bool `json:"require_session_binding,omitempty"`
+	// OAuthResourceMetadataURL Phase 9C-1 OAuth 2.1 Protected Resource Metadata URL（合法 https://）。
+	OAuthResourceMetadataURL string `json:"oauth_resource_metadata_url,omitempty"`
 }
 
 // Config mcpguard 装配产物（Provision 后只读，热加载经实例整体替换）。
@@ -125,9 +187,29 @@ type Config struct {
 	Apps map[string]map[string]Endpoint
 	// IdentitySalt 受控摘要 HMAC 盐（identity_salt 同源；空 = 固定域分隔前缀代替）。
 	IdentitySalt string
+	// SessionBinder 进程内有界 Streamable HTTP 会话绑定器（Provision 注入，ForEndpoint 共享）。
+	SessionBinder *SessionBinder
+	// binderOnce/fallbackBinder 未显式注入 SessionBinder 时的并发安全兜底。
+	binderOnce     sync.Once
+	fallbackBinder *SessionBinder
 	// resolved ForEndpoint 作用域解析产物（Evaluate/EvaluateResult 消费——
 	// 线契约签名不含 endpoint_path，绑定解析由 ForEndpoint 在调用侧完成）。
-	resolved *Endpoint
+	resolved      *Endpoint
+	resolvedAppID string
+	resolvedPath  string
+}
+
+func (c *Config) sessionBinder() *SessionBinder {
+	if c == nil {
+		return nil
+	}
+	if c.SessionBinder != nil {
+		return c.SessionBinder
+	}
+	c.binderOnce.Do(func() {
+		c.fallbackBinder = NewSessionBinder()
+	})
+	return c.fallbackBinder
 }
 
 // ForEndpoint 端点解析（规范化路径后精确匹配、大小写敏感——消除 '//' 与 '.'/'..' 差异）；
@@ -155,7 +237,35 @@ func (c *Config) ForEndpoint(appID, endpointPath string) *Config {
 		}
 	}
 	e := ep
-	return &Config{IdentitySalt: c.IdentitySalt, resolved: &e}
+	return &Config{
+		IdentitySalt:  c.IdentitySalt,
+		SessionBinder: c.sessionBinder(),
+		resolved:      &e,
+		resolvedAppID: appID,
+		resolvedPath:  canon,
+	}
+}
+
+// ResolvedEndpoint 返回作用域解析后的 Endpoint（供 pipeline/response 与挂点消费）。
+func (c *Config) ResolvedEndpoint(appID string) *Endpoint {
+	return c.resolvedEndpoint(appID)
+}
+
+// OAuthResourceMetadataURL 返回作用域端点的 OAuth 2.1 受保护资源元数据 URL（未配置为空）。
+func (c *Config) OAuthResourceMetadataURL() string {
+	if c == nil || c.resolved == nil {
+		return ""
+	}
+	return c.resolved.OAuthResourceMetadataURL
+}
+
+// OAuthResourceMetadataURLForEndpoint 按应用与路径查询绑定的 OAuth 2.1 受保护资源元数据 URL。
+func (c *Config) OAuthResourceMetadataURLForEndpoint(appID, endpointPath string) string {
+	scoped := c.ForEndpoint(appID, endpointPath)
+	if scoped == nil {
+		return ""
+	}
+	return scoped.OAuthResourceMetadataURL()
 }
 
 // resolvedEndpoint Evaluate/EvaluateResult 内部解析（ForEndpoint 作用域防御：
@@ -179,14 +289,15 @@ func (c *Config) resolvedEndpoint(appID string) *Endpoint {
 	return nil
 }
 
-// CallContext tools/call 调用上下文（请求相位检查链产物——响应相位结果检查
-// （EvaluateResult）与错误对象 id 回显的消费点；经请求上下文扩展传递，
-// 装配侧（pipeline/response/SSE 捕获）按 CallFromContext 读取）。
+// CallContext MCP 调用上下文（请求相位检查链产物——响应相位结果检查
+// （EvaluateResult / EvaluateToolsListResult / ScanAndSanitizeResult）与错误对象
+// id 回显的消费点；经请求上下文扩展传递，装配侧按 CallFromContext 读取）。
 type CallContext struct {
 	Config  *Config         // 单端点作用域配置（ForEndpoint 产物引用）
 	Message *mcprpc.Message // 请求消息（工具名提取与 id 回显源）
+	Method  string          // JSON-RPC 方法名（tools/call|tools/list|resources/read|prompts/get）
 	Mode    string          // 绑定 mode
-	Tool    *Tool           // 命中工具行（结果检查 output_schema 与 data_classification 源）
+	Tool    *Tool           // 命中工具行（仅 tools/call 非空；结果检查 output_schema 与 data_classification 源）
 	Catalog *Catalog        // 命中目录（覆盖读数 catalog/catalog_hash 前 8）
 }
 
@@ -207,6 +318,79 @@ func setCallContext(ctx *dsctx.RequestContext, call *CallContext) {
 	ctx.SetExtension("mcp.call", call)
 }
 
+// OAuthResourceMetadataURLFromContext 从请求上下文中的 MCP 绑定取 OAuth 2.1 元数据 URL。
+func OAuthResourceMetadataURLFromContext(ctx *dsctx.RequestContext) string {
+	call := CallFromContext(ctx)
+	if call == nil || call.Config == nil {
+		return ""
+	}
+	return call.Config.OAuthResourceMetadataURL()
+}
+
+// SetSanitizedResult 写入响应侧清洗后的体字节到 RequestContext 扩展。
+func SetSanitizedResult(ctx *dsctx.RequestContext, body []byte) {
+	if ctx == nil || len(body) == 0 {
+		return
+	}
+	cp := make([]byte, len(body))
+	copy(cp, body)
+	ctx.SetExtension(SanitizedResultExtKey, cp)
+}
+
+// ClearSanitizedResult 清除 RequestContext 上暂存的清洗响应体。
+func ClearSanitizedResult(ctx *dsctx.RequestContext) {
+	if ctx == nil {
+		return
+	}
+	ctx.SetExtension(SanitizedResultExtKey, ([]byte)(nil))
+}
+
+// SanitizedResultFromContext 读取 RequestContext 扩展中清洗后的响应体（支持 []byte 与 json.RawMessage）。
+func SanitizedResultFromContext(ctx *dsctx.RequestContext) ([]byte, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	v, ok := ctx.GetExtension(SanitizedResultExtKey)
+	if !ok || v == nil {
+		return nil, false
+	}
+	switch b := v.(type) {
+	case []byte:
+		if len(b) == 0 {
+			return nil, false
+		}
+		return b, true
+	case json.RawMessage:
+		if len(b) == 0 {
+			return nil, false
+		}
+		return []byte(b), true
+	default:
+		return nil, false
+	}
+}
+
+const trackingKeyExtKey = "mcp.tracking_key"
+
+func setTrackingKey(ctx *dsctx.RequestContext, key string) {
+	if ctx == nil || key == "" {
+		return
+	}
+	ctx.SetExtension(trackingKeyExtKey, key)
+}
+
+func trackingKeyFromContext(ctx *dsctx.RequestContext) string {
+	if ctx == nil {
+		return ""
+	}
+	v, ok := ctx.GetExtension(trackingKeyExtKey)
+	if !ok {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
+}
+
 // ---------- 候选判定（方法/Content-Type 门） ----------
 
 // EvaluateCandidate 候选判定（pipeline 挂点调用；绑定已命中（ForEndpoint 非 nil）
@@ -220,6 +404,9 @@ func EvaluateCandidate(ctx *dsctx.RequestContext, p *parser.Parsed, r *http.Requ
 	ep := cfg.resolvedEndpoint(appID)
 	if ep == nil {
 		return false, nil // 未绑定（防御——调用侧已过滤）
+	}
+	if r != nil {
+		setTrackingKey(ctx, detectors.TrackingKey(r, cfg.IdentitySalt))
 	}
 	cov := baseCoverage(ctx)
 	method := strings.ToUpper(p.Method)

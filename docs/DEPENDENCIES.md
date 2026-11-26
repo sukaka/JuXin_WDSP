@@ -258,7 +258,18 @@ Java 构建镜像固定为 `maven:3.9.11-eclipse-temurin-21@sha256:6fdc855a6ed81
 | gopacket | v1.1.19 | BSD-3-Clause | https://github.com/google/gopacket | wdsp-agent：pcapgo AF_PACKET 纯 syscall 抓包（与 gateway/mirrorcap 同一锁定版本；wdsp-agent/go.mod 直接依赖） | 否 |
 | cilium/ebpf | v0.22.0 | MIT | https://github.com/cilium/ebpf | wdsp-agent Phase 2：eBPF/TC（TCX）抓包后端，TC ingress/egress 双 hook + 端口 map + ringbuf 上送（wdsp-agent/go.mod 直接依赖；licenses/cilium-ebpf/ 已归档） | 否 |
 
+## 阶段9D（Wasm 自定义检测插件沙箱与 eBPF/XDP 内核加速）新增组件
+
+| 组件名称 | 版本号 | 许可证 | 项目地址 | 用途 | 是否修改 |
+|---------|--------|--------|---------|------|---------|
+| wazero | v1.12.0 | Apache-2.0 | https://github.com/tetratelabs/wazero | 网关 Wasm 自定义检测插件纯 Go 零 CGO 沙箱运行时（解释器模式、内存页硬上限、上下文超时中止、无 WASI；gateway/modules/jiuzhang_guard/go.mod 直接依赖，licenses/wazero/ 已归档） | 否 |
+| cilium/ebpf（复用） | v0.22.0 | MIT | https://github.com/cilium/ebpf | 阶段9D-2 `gateway/xdpguard`：eBPF/XDP 内核态全局 IP/CIDR 快速丢包守护进程（纯 Go `asm` 构造 CO-RE 字节码与 LPM Trie / PerCPUArray Map 管理，零 CGO；gateway/go.mod 复用 wdsp-agent 同一锁定版本，licenses/cilium-ebpf/ 已归档） | 否 |
+
 ## 更新记录
+
+- 2026-11-26：阶段9D-2 在 `gateway/go.mod` 复用已锁定的 `github.com/cilium/ebpf v0.22.0`（MIT，纯 Go 零 CGO，与 `wdsp-agent/go.mod` 同版本，许可证已归档于 `licenses/cilium-ebpf/`），用于 `gateway/xdpguard` eBPF/XDP 网卡入口快速丢包守护进程；同步更新 `docs/DEPENDENCY_LICENSES.md`。
+
+- 2026-11-26：阶段9D-1 引入 wazero v1.12.0（Apache-2.0，纯 Go 零 CGO），用于网关 Wasm 热插拔自定义检测插件沙箱（解释器模式、WithCloseOnContextDone、WithMemoryLimitPages、零 WASI 导入）；许可证与 NOTICE 原文已归档至 licenses/wazero/，并同步登记至 DEPENDENCY_LICENSES.md 与 THIRD_PARTY_NOTICES.md。
 
 - 2026-11-16：响应安全引入 Brotli v1.3.0（MIT），用于 br 有界解压与重编码；gzip 继续使用 Go 标准库。同步完成 ENCRYPT/MAP、密钥发布与恢复审计，以及 XML/text/SSE 值级检测；依赖归档已登记至 licenses/brotli/ 与 DEPENDENCY_LICENSES.md。
 

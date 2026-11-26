@@ -34,6 +34,55 @@ export const MCP_BINDING_MODE_META: Record<string, { color: string; label: strin
   PROTECT: { color: 'red', label: '实断' },
 }
 
+/** 工具定义钉扎执行策略（Phase 9C-1 Rug Pull 漂移检测） */
+export const MCP_PIN_ENFORCEMENT_META: Record<string, { color: string; label: string }> = {
+  OFF: { color: 'default', label: '关闭' },
+  OBSERVE: { color: 'blue', label: '观察' },
+  PROTECT: { color: 'red', label: '强制阻断' },
+}
+
+/** 响应侧间接提示词/隐写防护模式（Phase 9C-1） */
+export const MCP_RESPONSE_GUARD_MODE_META: Record<string, { color: string; label: string }> = {
+  OFF: { color: 'default', label: '关闭' },
+  OBSERVE: { color: 'blue', label: '观察' },
+  SANITIZE: { color: 'gold', label: '净化隐写' },
+  PROTECT: { color: 'red', label: '强制阻断' },
+}
+
+/** OAuth 2.1 受保护资源元数据 URL 校验（可选；非空须为 https:// 且不含空白/引号/反斜杠/控制字符/内嵌凭据，上限 512） */
+export function validateOAuthResourceMetadataUrl(raw?: string): string | null {
+  const v = (raw ?? '').trim()
+  if (!v) return null
+  if (v.length > 512) {
+    return 'OAuth 资源元数据地址不能超过 512 字符'
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\r\n\u0000-\u001f\u007f\s"\\]/.test(v)) {
+    return 'OAuth 资源元数据地址不能包含空白、引号、反斜杠或控制字符'
+  }
+  if (v.includes('#')) {
+    return 'OAuth 资源元数据地址不能包含片段标识（#）'
+  }
+  if (!v.toLowerCase().startsWith('https://')) {
+    return 'OAuth 资源元数据地址必须以 https:// 开头'
+  }
+  try {
+    const parsed = new URL(v)
+    if (
+      parsed.protocol !== 'https:' ||
+      !parsed.hostname ||
+      parsed.username ||
+      parsed.password ||
+      parsed.hash
+    ) {
+      return 'OAuth 资源元数据地址须为合法的 https:// URL（不含内嵌凭据或片段标识）'
+    }
+  } catch {
+    return 'OAuth 资源元数据地址须为合法的 https:// URL（不含内嵌凭据或片段标识）'
+  }
+  return null
+}
+
 /** 审核语义固定说明（导入/再导入状态机 + 发布通道口径；M02 红线不美化） */
 export const MCP_REVIEW_NOTE =
   '导入与再导入后，新工具与语义变更行恒落「待审核」——同名变更重算 tool_hash，旧审批不继承；发布通道只下发「已通过」工具行（待审核/已拒绝不出现在快照，网关侧同一不可调用语义）。'

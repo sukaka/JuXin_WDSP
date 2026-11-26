@@ -102,11 +102,15 @@ func buildCapabilityManifest(in capabilityInputs, now time.Time) capability.Mani
 		{Name: "graphql.parser", Version: "gql/1"}, // parser/parse_graphql.go 基础识别
 		{Name: "grpc.frame", Version: "grpc/1"},    // parser/parse_grpc.go + detectors/grpc.go 帧校验
 		{Name: "mcp.observe", Version: "mcp/1"},    // detectors/mcp.go 观察线索
-		{Name: "mcp.toolcall", Version: "mcp/2"},   // detectors/mcpguard G1 完成态（NG-MCP D13：目录消费+转发前检查链+结果检查+协议化执行；mcp/1=观察线索——恒报进程能力不绑配置态，S5 偏差 2 教训承接）
-		{Name: "machineid", Version: "mid/1"},      // detectors/machineid G1 完成态（NG-ID D11：登记册消费+十步验证链+重放原子存储+轮换撤销水位+协议化执行——恒报进程能力不绑配置态）
+		{Name: "mcp.toolcall", Version: "mcp/2"},      // detectors/mcpguard G1 完成态（NG-MCP D13：目录消费+转发前检查链+结果检查+协议化执行；mcp/1=观察线索——恒报进程能力不绑配置态，S5 偏差 2 教训承接）
+		{Name: "mcp.pinning", Version: "mcppin/1"},    // Phase 9C-1：MCP 工具钉扎防 Rug Pull + 响应间接提示词净化 + Streamable HTTP 会话绑定 + OAuth 2.1 元数据
+		{Name: "a2aguard", Version: "a2a/1"},          // Phase 9C-1：A2A 协议安全网关（Agent Card/AgBOM 发现 + RFC 8693 委派链作用域衰减 + 循环熔断 + Lethal Trifecta）
+		{Name: "machineid", Version: "mid/1"},         // detectors/machineid G1 完成态（NG-ID D11：登记册消费+十步验证链+重放原子存储+轮换撤销水位+协议化执行——恒报进程能力不绑配置态）
 		{Name: "jwt.binding", Version: "jwtbind/1"}, // Phase 9A-1：OAuth 2.0 DPoP (RFC 9449) + mTLS (RFC 8705) 令牌持有证明绑定
 		{Name: "aicrawl", Version: "aicrawl/1"},     // Phase 9A-2：Web Bot Auth (RFC 9421) + AI 爬虫治理 + 离线 AI Labyrinth
 		{Name: "clientside", Version: "clientside/1"}, // Phase 9B：客户端供应链安全（Magecart 防护 / PCI DSS 4.0 6.4.3 & 11.6.1）
+		{Name: "semantic", Version: "semantic/1"},     // Phase 9C-2：本地离线 ONNX/SLM 语义防火墙（Unix Socket 客户端 + 熔断/并发护栏）
+		{Name: "wasmplugin", Version: "wasm/1"},       // Phase 9D-1：Wasm（wazero 纯 Go 解释器）热插拔自定义检测插件沙箱
 	}
 	if in.GRPCUnary {
 		grpcLevel = "unary_g1"
@@ -125,7 +129,7 @@ func buildCapabilityManifest(in capabilityInputs, now time.Time) capability.Mani
 			"http":    "1.1",
 			"graphql": "parse",
 			"grpc":    grpcLevel,
-			"mcp":     "acl_v1", // mcpguard 在 binary 即成立（NG-MCP D13 恒报进程能力；层级表预登记 capability/types.go）
+			"mcp":     "pin_v2", // Phase 9C-1：mcpguard 工具钉扎/间接提示词防护/会话绑定在 binary 即成立（涵盖 observe/acl_v1/pin_v2）
 			"tls_mux": "v1",     // caddy.listeners.jiuzhang_tls_mux 与 http.reverse_proxy.transport.jiuzhang_tls 在 binary 即成立
 			"tlcp":    "1.1",    // gotlcp TLCP 1.1（SM2/SM3/SM4）双证自识别与加密回源能力
 		},

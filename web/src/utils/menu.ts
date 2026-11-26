@@ -197,6 +197,13 @@ export const MENU_ITEMS: MenuDef[] = [
     permissions: ['client_side.read'],
     group: '访问控制',
   },
+  // WDSP Phase 9D-1：Wasm 热插拔自定义检测插件沙箱（按 wasm_plugins.read 权限门控）
+  {
+    key: '/wasm-plugins',
+    label: 'Wasm 检测插件',
+    permissions: ['wasm_plugins.read'],
+    group: '访问控制',
+  },
   // 阶段8 / WDSP：API 动态防护
   {
     key: '/api-posture',
@@ -296,6 +303,14 @@ export const MENU_ITEMS: MenuDef[] = [
     label: 'MCP 工具目录',
     roles: ['SECURITY_ADMIN'],
     permissions: ['api_spec.read'],
+    capability: 'api_dynamic_protection',
+    group: 'API 防护',
+  },
+  // WDSP Phase 9C-1：A2A 协议安全与 AgBOM 治理（按 api_a2a.read 权限门控）
+  {
+    key: '/api-a2a',
+    label: 'A2A 与 AgBOM 治理',
+    permissions: ['api_a2a.read'],
     capability: 'api_dynamic_protection',
     group: 'API 防护',
   },
@@ -687,6 +702,14 @@ export const MENU_ITEMS: MenuDef[] = [
     roles: ['SYSTEM_ADMIN'],
     group: '系统运维',
   },
+  // WDSP Phase 9D-2：eBPF/XDP 内核级高速丢包加速
+  {
+    key: '/xdp-acceleration',
+    label: '内核 XDP 加速',
+    roles: ['SYSTEM_ADMIN', 'SECURITY_ADMIN'],
+    permissions: ['xdp_accel.read'],
+    group: '系统运维',
+  },
   {
     key: '/system-containers',
     label: '容器运维',
@@ -900,6 +923,7 @@ export const API_MENU_SECTIONS: Record<string, string> = {
   '/api-endpoint-groups': '资产与接入',
   '/api-specs': '资产与接入',
   '/api-mcp': '资产与接入',
+  '/api-a2a': '资产与接入',
   '/api-service-assets': '资产与接入',
   '/api-nodes': '资产与接入',
   '/api-models': '模型中心',

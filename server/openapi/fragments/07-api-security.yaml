@@ -7019,6 +7019,34 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /api-security/mcp/tools/{id}/pin:
+    post:
+      operationId: apiMcpToolPin
+      tags: [api-security]
+      summary: 更新 MCP 工具定义钉扎策略与重钉扎摘要
+      description: >-
+        配置工具定义钉扎执行模式（OFF/OBSERVE/PROTECT），并在 repin=true 或尚无钉扎摘要时按
+        (tool_name, description, input_schema) 重算 pinned_definition_hash（mcp-def-sha256:v1:...），
+        用于防 Rug Pull 工具投毒漂移检测。HIGH 审计。权限：`api_spec.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 工具行 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiMcpToolPinInput' }
+      responses:
+        '200':
+          description: 更新钉扎策略后的工具行
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMcpTool' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /api-security/mcp/bindings:
     get:
       operationId: apiMcpBindingList
@@ -13048,6 +13076,7 @@ components:
         catalog_id: { type: string, format: uuid }
         tool_name: { type: string, maxLength: 128 }
         tool_version: { type: string, maxLength: 128 }
+        description: { type: string, maxLength: 65536, description: 工具完整描述（用于定义钉扎哈希计算） }
         description_digest: { type: string, description: 规范化描述全文 sha256（hex） }
         description_preview: { type: string, maxLength: 512, description: 描述截断预览（仅管理面展示，永不为证据） }
         input_schema: { type: object, nullable: true, description: 输入 JSON Schema（可空） }
@@ -13055,6 +13084,8 @@ components:
         input_schema_digest: { type: string }
         output_schema_digest: { type: string }
         tool_hash: { type: string, pattern: '^mcp-tool-sha256:v1:[0-9a-f]{64}$', description: 五元组（名称/版本/规范化描述全文/双 schema）域分隔 sha256 }
+        pinned_definition_hash: { type: string, maxLength: 128, description: '工具定义钉扎摘要（mcp-def-sha256:v1:+64 hex，Rug Pull 漂移比对基准）' }
+        pin_enforcement: { type: string, enum: [OFF, OBSERVE, PROTECT], description: 工具定义钉扎执行模式（缺省 OBSERVE） }
         capability_tags: { type: array, items: { type: string } }
         risk_level: { type: string, enum: [LOW, MEDIUM, HIGH], description: 导入缺省 HIGH（未定级按高风险对待） }
         data_classification: { type: string, enum: [PUBLIC, INTERNAL, CONFIDENTIAL, UNKNOWN], description: 导入缺省 UNKNOWN }
@@ -13092,6 +13123,14 @@ components:
         arg_constraints:
           type: array
           items: { $ref: '#/components/schemas/ApiMcpArgConstraint' }
+        pin_enforcement: { type: string, enum: [OFF, OBSERVE, PROTECT], default: OBSERVE, description: 工具定义钉扎执行模式 }
+
+    ApiMcpToolPinInput:
+      type: object
+      required: [pin_enforcement]
+      properties:
+        pin_enforcement: { type: string, enum: [OFF, OBSERVE, PROTECT], description: 工具定义钉扎执行模式 }
+        repin: { type: boolean, default: false, description: 为 true 时按当前工具定义重算 pinned_definition_hash }
 
     ApiMcpToolCatalogInput:
       type: object
@@ -13146,6 +13185,9 @@ components:
         catalog_id: { type: string, format: uuid }
         catalog_name: { type: string, description: 目录名（JOIN 带出） }
         mode: { type: string, enum: [OBSERVE, PROTECT], description: OBSERVE 只记录 / PROTECT 协议化执行（JSON-RPC 错误对象） }
+        response_guard_mode: { type: string, enum: [OFF, OBSERVE, SANITIZE, PROTECT], description: 响应间接提示词注入防护模式（OFF/OBSERVE/SANITIZE/PROTECT，缺省 OBSERVE） }
+        require_session_binding: { type: boolean, description: 是否启用 Streamable HTTP Mcp-Session-Id 主体会话绑定 }
+        oauth_resource_metadata_url: { type: string, maxLength: 512, description: 可选 OAuth 2.1 Protected Resource Metadata URL（仅限 https://） }
         version: { type: integer, description: 乐观锁版本（写操作携带比对） }
         created_by: { type: string }
         created_at: { type: string, format: date-time }
@@ -13159,6 +13201,9 @@ components:
         endpoint_path: { type: string, pattern: '^/', maxLength: 1024 }
         catalog_id: { type: string, format: uuid }
         mode: { type: string, enum: [OBSERVE, PROTECT], default: OBSERVE }
+        response_guard_mode: { type: string, enum: [OFF, OBSERVE, SANITIZE, PROTECT], default: OBSERVE }
+        require_session_binding: { type: boolean, default: false }
+        oauth_resource_metadata_url: { type: string, maxLength: 512, description: 可选 https:// URL，不含空白与控制字符 }
 
     ApiMcpBindingUpdateInput:
       type: object
@@ -13166,6 +13211,9 @@ components:
       properties:
         catalog_id: { type: string, format: uuid }
         mode: { type: string, enum: [OBSERVE, PROTECT] }
+        response_guard_mode: { type: string, enum: [OFF, OBSERVE, SANITIZE, PROTECT] }
+        require_session_binding: { type: boolean }
+        oauth_resource_metadata_url: { type: string, maxLength: 512 }
         version: { type: integer, minimum: 1, description: 乐观锁版本（与绑定行 version 精确比对，不匹配 409） }
 
     ApiMcpBindingListResponse:

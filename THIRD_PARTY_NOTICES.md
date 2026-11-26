@@ -129,6 +129,13 @@
 | Spring Framework | https://github.com/spring-projects/spring-framework | 6.2.11 | Apache-2.0 | 否 | Java 探针 Spring MVC/RestTemplate 编译 API；provided，不打入 Agent Jar | [licenses/spring-framework/LICENSE.txt](licenses/spring-framework/LICENSE.txt) |
 | OpenTelemetry Java API | https://github.com/open-telemetry/opentelemetry-java | 1.44.0 | Apache-2.0 | 否 | Java 探针读取现有 Trace Context；provided，不打入 Agent Jar | [licenses/opentelemetry-java/LICENSE](licenses/opentelemetry-java/LICENSE) |
 
+## 阶段9D（Wasm 插件沙箱与 eBPF/XDP 内核加速）新增与复用组件
+
+| 软件名称 | 项目来源 | 锁定版本 | 许可证 | 是否修改 | 使用方式 | 许可证文件位置 |
+|---------|---------|---------|--------|---------|---------|---------------|
+| wazero | https://github.com/tetratelabs/wazero | v1.12.0 | Apache-2.0 | 否 | 网关 Wasm 热插拔自定义检测插件沙箱运行时（纯 Go 零 CGO 解释器模式、无 WASI） | [licenses/wazero/LICENSE](licenses/wazero/LICENSE)、[NOTICE](licenses/wazero/NOTICE) |
+| cilium/ebpf | https://github.com/cilium/ebpf | v0.22.0 | MIT | 否 | 纯 Go 零 CGO eBPF 运行时库：wdsp-agent Phase 2（eBPF/TC 抓包后端）与网关 Phase 9D-2（`gateway/xdpguard` eBPF/XDP 内核级快速丢包守护进程） | [licenses/cilium-ebpf/LICENSE](licenses/cilium-ebpf/LICENSE) |
+
 ## 许可证原文
 
 各组件许可证原文存放于 `licenses/` 目录下，按组件名称分目录保存。阶段0先建立目录结构，正式引入组件时同步归档对应许可证文件。

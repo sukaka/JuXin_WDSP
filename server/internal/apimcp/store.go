@@ -29,6 +29,7 @@ type Repository interface {
 	UpdateCatalog(ctx context.Context, id uuid.UUID, in CatalogInput) (*Catalog, []Tool, error)
 	DeleteCatalog(ctx context.Context, id uuid.UUID) error
 	ReviewTool(ctx context.Context, catalogID, toolID uuid.UUID, in ReviewInput, reviewedBy string) (*Tool, error)
+	PinTool(ctx context.Context, toolID uuid.UUID, in PinToolInput) (*Tool, error)
 
 	CreateBinding(ctx context.Context, in BindingInput, createdBy string) (*Binding, error)
 	ListBindings(ctx context.Context, applicationID uuid.UUID) ([]Binding, error)
@@ -55,8 +56,9 @@ func scanCatalog(row pgx.Row) (Catalog, error) {
 	return c, err
 }
 
-const toolCols = `id, catalog_id, tool_name, tool_version, description_digest, description_preview,
-	input_schema, output_schema, input_schema_digest, output_schema_digest, tool_hash, capability_tags,
+const toolCols = `id, catalog_id, tool_name, tool_version, description, description_digest, description_preview,
+	input_schema, output_schema, input_schema_digest, output_schema_digest, tool_hash,
+	pinned_definition_hash, pin_enforcement, capability_tags,
 	risk_level, data_classification, allowed_principals, allowed_roles, allowed_tenants,
 	approval_required, max_calls_per_minute, arg_constraints, review_status,
 	COALESCE(reviewed_by,''), reviewed_at, created_at, updated_at`
@@ -65,8 +67,9 @@ func scanTool(rows pgx.Rows) (Tool, error) {
 	var t Tool
 	var inSchema, outSchema, tags, principals, roles, tenants, constraints []byte
 	var reviewedAt *time.Time
-	err := rows.Scan(&t.ID, &t.CatalogID, &t.ToolName, &t.ToolVersion, &t.DescriptionDigest, &t.DescriptionPreview,
-		&inSchema, &outSchema, &t.InputSchemaDigest, &t.OutputSchemaDigest, &t.ToolHash, &tags,
+	err := rows.Scan(&t.ID, &t.CatalogID, &t.ToolName, &t.ToolVersion, &t.Description, &t.DescriptionDigest, &t.DescriptionPreview,
+		&inSchema, &outSchema, &t.InputSchemaDigest, &t.OutputSchemaDigest, &t.ToolHash,
+		&t.PinnedDefinitionHash, &t.PinEnforcement, &tags,
 		&t.RiskLevel, &t.DataClassification, &principals, &roles, &tenants,
 		&t.ApprovalRequired, &t.MaxCallsPerMinute, &constraints, &t.ReviewStatus,
 		&t.ReviewedBy, &reviewedAt, &t.CreatedAt, &t.UpdatedAt)
@@ -111,9 +114,10 @@ func decodeConstraints(raw []byte) []ArgConstraint {
 	return out
 }
 
-// toolWriteRow 工具行入库参数（tool_hash/digests 已算好）。
+// toolWriteRow 工具行入库参数（tool_hash/digests/pinned_definition_hash 已算好）。
 type toolWriteRow struct {
 	in             ToolInput
+	description    string
 	digestDesc     string
 	preview        string
 	inSchema       []byte
@@ -121,6 +125,8 @@ type toolWriteRow struct {
 	inDigest       string
 	outDigest      string
 	toolHash       string
+	pinnedDefHash  string
+	pinEnforcement string
 	tags           []byte
 	risk           string
 	classification string
@@ -137,18 +143,21 @@ func sha256Hex(s string) string {
 
 var emptyDescDigest = sha256Hex("")
 
-// prepareToolRow 工具载荷→入库参数（规范化+digest+tool_hash；risk/classification 归一）。
+// prepareToolRow 工具载荷→入库参数（规范化+digest+tool_hash+pinned_definition_hash；risk/classification 归一）。
 // 当 preserve_description 为 true、in.Description 为空且存在旧行 existing 时，复用旧行的
-// description_digest 与 description_preview，使未改版本/Schema 的再导入保持语义相等与审核态；
+// description、description_digest 与 description_preview，使未改版本/Schema 的再导入保持语义相等与审核态；
 // 若版本或 Schema 发生变更且旧行存在非空描述（库内未存全文），拒绝写入不一致的 tool_hash。
 func prepareToolRow(in ToolInput, existing *Tool) (toolWriteRow, error) {
+	name := strings.TrimSpace(in.ToolName)
 	desc := strings.TrimSpace(in.Description)
 	r := toolWriteRow{in: in}
 	preserving := existing != nil && in.PreserveDescription && desc == ""
 	if preserving {
+		r.description = existing.Description
 		r.digestDesc = existing.DescriptionDigest
 		r.preview = existing.DescriptionPreview
 	} else {
+		r.description = desc
 		r.digestDesc = sha256Hex(desc)
 		if len(desc) > maxPreviewLen {
 			r.preview = desc[:maxPreviewLen]
@@ -180,12 +189,24 @@ func prepareToolRow(in ToolInput, existing *Tool) (toolWriteRow, error) {
 	if preserving && existing.DescriptionDigest != emptyDescDigest {
 		if !toolSemanticallyEqual(*existing, strings.TrimSpace(in.ToolVersion), existing.DescriptionDigest,
 			nilSchemaP(in.InputSchema), nilSchemaP(in.OutputSchema)) {
-			return r, invalidf("tool %q 版本或 Schema 变更时须重新填写完整描述以重算 tool_hash", strings.TrimSpace(in.ToolName))
+			return r, invalidf("tool %q 版本或 Schema 变更时须重新填写完整描述以重算 tool_hash", name)
 		}
 		r.toolHash = existing.ToolHash
-	} else if r.toolHash, err = ComputeToolHash(strings.TrimSpace(in.ToolName), strings.TrimSpace(in.ToolVersion), desc,
+	} else if r.toolHash, err = ComputeToolHash(name, strings.TrimSpace(in.ToolVersion), desc,
 		nilSchemaP(in.InputSchema), nilSchemaP(in.OutputSchema)); err != nil {
 		return r, err
+	}
+	if preserving && existing.PinnedDefinitionHash != "" {
+		r.pinnedDefHash = existing.PinnedDefinitionHash
+	} else {
+		r.pinnedDefHash = ComputeToolDefinitionHash(name, r.description, bytesOrNil(r.inSchema))
+	}
+	if pe := strings.ToUpper(strings.TrimSpace(in.PinEnforcement)); pe != "" {
+		r.pinEnforcement = pe
+	} else if existing != nil && existing.PinEnforcement != "" {
+		r.pinEnforcement = existing.PinEnforcement
+	} else {
+		r.pinEnforcement = PinEnforcementObserve
 	}
 	if r.tags, err = json.Marshal(orEmpty(in.CapabilityTags)); err != nil {
 		return r, err
@@ -286,34 +307,41 @@ func updateToolPreserved(ctx context.Context, tx pgx.Tx, old Tool, row toolWrite
 	_, err := tx.Exec(ctx, `UPDATE mcp_catalog_tools SET
 		capability_tags=$3, allowed_principals=$4, allowed_roles=$5, allowed_tenants=$6,
 		approval_required=$7, max_calls_per_minute=$8, arg_constraints=$9,
-		description_digest=$10, description_preview=$11, updated_at=now()
+		description_digest=$10, description_preview=$11,
+		description=$12, pinned_definition_hash=$13, pin_enforcement=$14, updated_at=now()
 		WHERE id=$1 AND catalog_id=$2`,
 		old.ID, old.CatalogID, row.tags, row.principals, row.roles, row.tenants,
 		row.in.ApprovalRequired, row.in.MaxCallsPerMinute, row.constraints,
-		row.digestDesc, row.preview)
+		row.digestDesc, row.preview,
+		row.description, row.pinnedDefHash, row.pinEnforcement)
 	return err
 }
 
 func upsertToolPending(ctx context.Context, tx pgx.Tx, catalogID uuid.UUID, name string, row toolWriteRow) error {
 	_, err := tx.Exec(ctx, `INSERT INTO mcp_catalog_tools
-		(catalog_id, tool_name, tool_version, description_digest, description_preview,
+		(catalog_id, tool_name, tool_version, description, description_digest, description_preview,
 		 input_schema, output_schema, input_schema_digest, output_schema_digest, tool_hash,
+		 pinned_definition_hash, pin_enforcement,
 		 capability_tags, risk_level, data_classification, allowed_principals, allowed_roles,
 		 allowed_tenants, approval_required, max_calls_per_minute, arg_constraints, review_status)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'PENDING_REVIEW')
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'PENDING_REVIEW')
 		ON CONFLICT (catalog_id, tool_name) DO UPDATE SET
-			tool_version=EXCLUDED.tool_version, description_digest=EXCLUDED.description_digest,
+			tool_version=EXCLUDED.tool_version, description=EXCLUDED.description,
+			description_digest=EXCLUDED.description_digest,
 			description_preview=EXCLUDED.description_preview,
 			input_schema=EXCLUDED.input_schema, output_schema=EXCLUDED.output_schema,
 			input_schema_digest=EXCLUDED.input_schema_digest, output_schema_digest=EXCLUDED.output_schema_digest,
-			tool_hash=EXCLUDED.tool_hash, capability_tags=EXCLUDED.capability_tags,
+			tool_hash=EXCLUDED.tool_hash,
+			pinned_definition_hash=EXCLUDED.pinned_definition_hash, pin_enforcement=EXCLUDED.pin_enforcement,
+			capability_tags=EXCLUDED.capability_tags,
 			risk_level=EXCLUDED.risk_level, data_classification=EXCLUDED.data_classification,
 			allowed_principals=EXCLUDED.allowed_principals, allowed_roles=EXCLUDED.allowed_roles,
 			allowed_tenants=EXCLUDED.allowed_tenants, approval_required=EXCLUDED.approval_required,
 			max_calls_per_minute=EXCLUDED.max_calls_per_minute, arg_constraints=EXCLUDED.arg_constraints,
 			review_status='PENDING_REVIEW', reviewed_by=NULL, reviewed_at=NULL, updated_at=now()`,
-		catalogID, name, strings.TrimSpace(row.in.ToolVersion), row.digestDesc, row.preview,
+		catalogID, name, strings.TrimSpace(row.in.ToolVersion), row.description, row.digestDesc, row.preview,
 		bytesOrNil(row.inSchema), bytesOrNil(row.outSchema), row.inDigest, row.outDigest, row.toolHash,
+		row.pinnedDefHash, row.pinEnforcement,
 		row.tags, row.risk, row.classification, row.principals, row.roles,
 		row.tenants, row.in.ApprovalRequired, row.in.MaxCallsPerMinute, row.constraints)
 	return err
@@ -589,14 +617,60 @@ func (s *Store) ReviewTool(ctx context.Context, catalogID, toolID uuid.UUID, in 
 	return &t, tx.Commit(ctx)
 }
 
+// PinTool 更新工具定义钉扎执行模式并在 repin=true 或当前钉扎摘要为空时重算 pinned_definition_hash。
+func (s *Store) PinTool(ctx context.Context, toolID uuid.UUID, in PinToolInput) (*Tool, error) {
+	pe := strings.ToUpper(strings.TrimSpace(in.PinEnforcement))
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var toolName, desc, pinnedHash string
+	var inSchemaRaw []byte
+	err = tx.QueryRow(ctx, `SELECT tool_name, description, input_schema, pinned_definition_hash
+		FROM mcp_catalog_tools WHERE id=$1 FOR UPDATE`, toolID).Scan(&toolName, &desc, &inSchemaRaw, &pinnedHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if in.Repin || pinnedHash == "" {
+		pinnedHash = ComputeToolDefinitionHash(toolName, desc, inSchemaRaw)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE mcp_catalog_tools
+		SET pinned_definition_hash=$2, pin_enforcement=$3, updated_at=now() WHERE id=$1`,
+		toolID, pinnedHash, pe); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT `+toolCols+` FROM mcp_catalog_tools WHERE id=$1`, toolID)
+	if err != nil {
+		return nil, err
+	}
+	if !rows.Next() {
+		rows.Close()
+		return nil, ErrNotFound
+	}
+	t, err := scanTool(rows)
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	return &t, tx.Commit(ctx)
+}
+
 // ---------- 绑定 ----------
 
-const bindingCols = `b.id, b.application_id, b.endpoint_path, b.catalog_id, COALESCE(c.name,''), b.mode, b.version, COALESCE(b.created_by,''), b.created_at, b.updated_at`
+const bindingCols = `b.id, b.application_id, b.endpoint_path, b.catalog_id, COALESCE(c.name,''), b.mode,
+	b.response_guard_mode, b.require_session_binding, b.oauth_resource_metadata_url,
+	b.version, COALESCE(b.created_by,''), b.created_at, b.updated_at`
 
 func scanBinding(row pgx.Row) (Binding, error) {
 	var b Binding
 	err := row.Scan(&b.ID, &b.ApplicationID, &b.EndpointPath, &b.CatalogID, &b.CatalogName,
-		&b.Mode, &b.Version, &b.CreatedBy, &b.CreatedAt, &b.UpdatedAt)
+		&b.Mode, &b.ResponseGuardMode, &b.RequireSessionBinding, &b.OAuthResourceMetadataURL,
+		&b.Version, &b.CreatedBy, &b.CreatedAt, &b.UpdatedAt)
 	return b, err
 }
 
@@ -614,15 +688,19 @@ func fkToErr(err error) error {
 // CreateBinding 新建绑定（同（应用,endpoint_path）409；catalog FK 引用校验）。
 func (s *Store) CreateBinding(ctx context.Context, in BindingInput, createdBy string) (*Binding, error) {
 	mode := orDefault(strings.ToUpper(strings.TrimSpace(in.Mode)), ModeObserve)
+	rgMode := orDefault(strings.ToUpper(strings.TrimSpace(in.ResponseGuardMode)), ResponseGuardObserve)
+	oauthURL := strings.TrimSpace(in.OAuthResourceMetadataURL)
 	appID, _ := uuid.Parse(strings.TrimSpace(in.ApplicationID))
 	catID, _ := uuid.Parse(strings.TrimSpace(in.CatalogID))
 	var b Binding
 	err := s.db.QueryRow(ctx, `INSERT INTO mcp_catalog_bindings
-		(application_id, endpoint_path, catalog_id, mode, created_by) VALUES ($1,$2,$3,$4,$5)
-		RETURNING id, application_id, endpoint_path, catalog_id, mode, version, created_by, created_at, updated_at`,
-		appID, strings.TrimSpace(in.EndpointPath), catID, mode, createdBy).Scan(
+		(application_id, endpoint_path, catalog_id, mode, response_guard_mode, require_session_binding, oauth_resource_metadata_url, created_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		RETURNING id, application_id, endpoint_path, catalog_id, mode, response_guard_mode, require_session_binding, oauth_resource_metadata_url, version, created_by, created_at, updated_at`,
+		appID, strings.TrimSpace(in.EndpointPath), catID, mode, rgMode, in.RequireSessionBinding, oauthURL, createdBy).Scan(
 		&b.ID, &b.ApplicationID, &b.EndpointPath, &b.CatalogID,
-		&b.Mode, &b.Version, &b.CreatedBy, &b.CreatedAt, &b.UpdatedAt)
+		&b.Mode, &b.ResponseGuardMode, &b.RequireSessionBinding, &b.OAuthResourceMetadataURL,
+		&b.Version, &b.CreatedBy, &b.CreatedAt, &b.UpdatedAt)
 	if err != nil {
 		var pe *pgconn.PgError
 		if errors.As(err, &pe) && pe.Code == "23505" {
@@ -666,17 +744,21 @@ func (s *Store) ListBindings(ctx context.Context, applicationID uuid.UUID) ([]Bi
 	return out, rows.Err()
 }
 
-// UpdateBinding 改 mode/目录（乐观锁；endpoint_path/application 为身份维度不可改）。
+// UpdateBinding 改 mode/目录/响应防护/会话绑定/OAuth 元数据（乐观锁；endpoint_path/application 为身份维度不可改）。
 func (s *Store) UpdateBinding(ctx context.Context, id uuid.UUID, in BindingInput) (*Binding, error) {
 	mode := orDefault(strings.ToUpper(strings.TrimSpace(in.Mode)), ModeObserve)
+	rgMode := orDefault(strings.ToUpper(strings.TrimSpace(in.ResponseGuardMode)), ResponseGuardObserve)
+	oauthURL := strings.TrimSpace(in.OAuthResourceMetadataURL)
 	catID, _ := uuid.Parse(strings.TrimSpace(in.CatalogID))
 	var b Binding
 	err := s.db.QueryRow(ctx, `UPDATE mcp_catalog_bindings SET catalog_id=$2, mode=$3,
-		version=version+1, updated_at=now() WHERE id=$1 AND version=$4
-		RETURNING id, application_id, endpoint_path, catalog_id, mode, version, created_by, created_at, updated_at`,
-		id, catID, mode, in.Version).Scan(
+		response_guard_mode=$4, require_session_binding=$5, oauth_resource_metadata_url=$6,
+		version=version+1, updated_at=now() WHERE id=$1 AND version=$7
+		RETURNING id, application_id, endpoint_path, catalog_id, mode, response_guard_mode, require_session_binding, oauth_resource_metadata_url, version, created_by, created_at, updated_at`,
+		id, catID, mode, rgMode, in.RequireSessionBinding, oauthURL, in.Version).Scan(
 		&b.ID, &b.ApplicationID, &b.EndpointPath, &b.CatalogID,
-		&b.Mode, &b.Version, &b.CreatedBy, &b.CreatedAt, &b.UpdatedAt)
+		&b.Mode, &b.ResponseGuardMode, &b.RequireSessionBinding, &b.OAuthResourceMetadataURL,
+		&b.Version, &b.CreatedBy, &b.CreatedAt, &b.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
 		if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM mcp_catalog_bindings WHERE id=$1)`, id).Scan(&exists); err != nil {

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -418,11 +420,16 @@ var settingValueRanges = map[string][2]int{
 	"software_bypass:cpu_threshold_percent":    {1, 100},
 	"software_bypass:memory_threshold_percent": {1, 100},
 	"software_bypass:min_hold_seconds":         {1, 300},
+	// Phase 9D-2：内核级 eBPF/XDP 快速丢包加速同步周期（1..300 秒）
+	"xdp_acceleration:sync_interval_seconds": {1, 300},
 }
 
 // validateValueRange 校验数值类安全策略的取值范围（命中 settingValueRanges 的整数键，
-// 以及 gateway_runtime 的字符串数值设置；错误信息含 "value must be"，handler 据此映射 400）。
+// 以及 gateway_runtime / xdp_acceleration 的受控设置；错误信息含 "value must be"，handler 据此映射 400）。
 func validateValueRange(group, key, valueType string, value json.RawMessage) error {
+	if group == "xdp_acceleration" && key != "sync_interval_seconds" {
+		return validateXDPAccelerationSetting(key, valueType, value)
+	}
 	if group == "gateway_runtime" && key == "credential_rate_per_minute" {
 		return validateCredentialRatePerMinute(valueType, value)
 	}
@@ -607,6 +614,7 @@ var settingStringMaxLen = map[string]int{
 	"exposure_engine:public_dns_servers":   255,
 	"exposure_engine:partner_egress_cidrs": 2048,
 	"software_bypass:session_cookie_names": 512,
+	"xdp_acceleration:socket_path":         256,
 }
 
 // validateStringLen 校验字符串设置的取值长度上限（仅命中 settingStringMaxLen 的字符串键；
@@ -767,6 +775,115 @@ func validTproxyHostName(h string) bool {
 		}
 	}
 	return true
+}
+
+var xdpInterfaceNameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,14}$`)
+
+var xdpForbiddenVirtualPrefixes = []string{
+	"docker", "br-", "veth", "virbr", "cni", "flannel", "cali", "tun", "tap", "wg",
+}
+
+// validateXDPAccelerationSetting 校验 xdp_acceleration 组除 sync_interval_seconds 外的受控键，
+// 防止绕过 /api/v1/xdp-acceleration/config 直接写入非法 Socket 路径、挂载模式或虚拟网卡。
+// 错误信息统一包含 "value must be"，与 settings handler 400 映射保持一致。
+func validateXDPAccelerationSetting(key, valueType string, value json.RawMessage) error {
+	switch key {
+	case "socket_path":
+		if valueType != "string" {
+			return nil
+		}
+		var s string
+		if err := json.Unmarshal(value, &s); err != nil {
+			return fmt.Errorf("value must be string（xdp_acceleration:socket_path）")
+		}
+		if err := validateXDPSocketPath(s); err != nil {
+			return err
+		}
+	case "attach_mode":
+		if valueType != "string" {
+			return nil
+		}
+		var mode string
+		if err := json.Unmarshal(value, &mode); err != nil {
+			return fmt.Errorf("value must be string（xdp_acceleration:attach_mode）")
+		}
+		switch mode {
+		case "auto", "native", "generic":
+			return nil
+		default:
+			return fmt.Errorf("value must be one of auto, native, generic（xdp_acceleration:attach_mode）")
+		}
+	case "interfaces":
+		trimmed := strings.TrimSpace(string(value))
+		if trimmed == "" || trimmed == "null" || !strings.HasPrefix(trimmed, "[") {
+			return fmt.Errorf("value must be JSON array of physical NIC names（xdp_acceleration:interfaces）")
+		}
+		var ifaces []string
+		if err := json.Unmarshal(value, &ifaces); err != nil {
+			return fmt.Errorf("value must be JSON array of physical NIC names（xdp_acceleration:interfaces）")
+		}
+		if len(ifaces) > 16 {
+			return fmt.Errorf("value must be at most 16 physical NIC names（xdp_acceleration:interfaces）")
+		}
+		seen := make(map[string]bool, len(ifaces))
+		for _, raw := range ifaces {
+			if raw == "" || !xdpInterfaceNameRE.MatchString(raw) {
+				return fmt.Errorf("value must be valid physical NIC name（xdp_acceleration:interfaces）: 非法网卡 %q", raw)
+			}
+			lower := strings.ToLower(raw)
+			if lower == "lo" {
+				return fmt.Errorf("value must be physical NIC name, rejecting loopback lo（xdp_acceleration:interfaces）")
+			}
+			for _, pfx := range xdpForbiddenVirtualPrefixes {
+				if strings.HasPrefix(lower, pfx) {
+					return fmt.Errorf("value must be physical NIC name, rejecting virtual interface %q（xdp_acceleration:interfaces）", raw)
+				}
+			}
+			if seen[raw] {
+				return fmt.Errorf("value must be unique physical NIC names（xdp_acceleration:interfaces）: 重复网卡 %q", raw)
+			}
+			seen[raw] = true
+		}
+	}
+	return nil
+}
+
+func validateXDPSocketPath(s string) error {
+	const (
+		pfxCaddy = "/var/run/caddy/sidecars/"
+		pfxRun   = "/run/jiuzhang/"
+	)
+	if s == "" || len(s) > 256 {
+		return fmt.Errorf("value must be valid unix socket path within 1..256 chars（xdp_acceleration:socket_path）")
+	}
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || r == ' ' || r == '\t' || r == '\\' {
+			return fmt.Errorf("value must be valid unix socket path without whitespace or control chars（xdp_acceleration:socket_path）")
+		}
+	}
+	lower := strings.ToLower(s)
+	if strings.Contains(lower, "://") ||
+		strings.HasPrefix(lower, "http:") ||
+		strings.HasPrefix(lower, "https:") ||
+		strings.HasPrefix(lower, "tcp:") ||
+		strings.HasPrefix(lower, "unix:") {
+		return fmt.Errorf("value must be local unix socket path without URL scheme（xdp_acceleration:socket_path）")
+	}
+	if strings.Contains(s, "..") || strings.Contains(s, "//") || strings.HasSuffix(s, "/") {
+		return fmt.Errorf("value must be normalized unix socket file path without '..'（xdp_acceleration:socket_path）")
+	}
+	allowed := (strings.HasPrefix(s, pfxCaddy) && len(s) > len(pfxCaddy)) ||
+		(strings.HasPrefix(s, pfxRun) && len(s) > len(pfxRun))
+	if !allowed {
+		return fmt.Errorf("value must be under %s or %s（xdp_acceleration:socket_path）", pfxCaddy, pfxRun)
+	}
+	cleaned := path.Clean(s)
+	allowedClean := (strings.HasPrefix(cleaned, pfxCaddy) && len(cleaned) > len(pfxCaddy)) ||
+		(strings.HasPrefix(cleaned, pfxRun) && len(cleaned) > len(pfxRun))
+	if cleaned != s || !allowedClean {
+		return fmt.Errorf("value must be clean unix socket path inside allowed directory（xdp_acceleration:socket_path）")
+	}
+	return nil
 }
 
 // validateValueType 校验 JSON 值与声明类型一致。

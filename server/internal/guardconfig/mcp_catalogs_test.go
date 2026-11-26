@@ -51,13 +51,16 @@ func TestLoadAPIMCPToolCatalogsTolerance(t *testing.T) {
 		CatalogHash: "mcp-catalog-sha256:v1:abc",
 		Tools: []gatewayconfig.GuardMCPTool{{
 			ToolName: "refund", ToolVersion: "1.0.0", ToolHash: "mcp-tool-sha256:v1:def",
+			PinnedDefinitionHash: "mcp-def-sha256:v1:0123", PinEnforcement: "PROTECT",
 			RiskLevel: "HIGH", DataClassification: "UNKNOWN",
 		}},
 	}}
 	p = &Provider{mcpCatalogs: &fakeMCPCatalogLister{catalogs: rows}}
 	got := p.loadAPIMCPToolCatalogs(context.Background())
 	if len(got) != 1 || got[0].Name != "pay-mcp" || len(got[0].Tools) != 1 ||
-		got[0].Tools[0].ToolHash != "mcp-tool-sha256:v1:def" {
+		got[0].Tools[0].ToolHash != "mcp-tool-sha256:v1:def" ||
+		got[0].Tools[0].PinnedDefinitionHash != "mcp-def-sha256:v1:0123" ||
+		got[0].Tools[0].PinEnforcement != "PROTECT" {
 		t.Fatalf("目录段透传: %+v", got)
 	}
 }
@@ -74,12 +77,14 @@ func TestLoadAPIMCPBindingsTolerance(t *testing.T) {
 		t.Fatalf("missing table must be tolerated: %v", got)
 	}
 	rows := []gatewayconfig.GuardMCPBinding{
-		{ApplicationID: "a1", EndpointPath: "/mcp/pay", CatalogName: "pay-mcp", Mode: "OBSERVE"},
-		{ApplicationID: "a2", EndpointPath: "/mcp/refund", CatalogName: "pay-mcp", Mode: "PROTECT"},
+		{ApplicationID: "a1", EndpointPath: "/mcp/pay", CatalogName: "pay-mcp", Mode: "OBSERVE", ResponseGuardMode: "OBSERVE"},
+		{ApplicationID: "a2", EndpointPath: "/mcp/refund", CatalogName: "pay-mcp", Mode: "PROTECT", ResponseGuardMode: "SANITIZE", RequireSessionBinding: true, OAuthResourceMetadataURL: "https://mcp.example.com/.well-known/oauth-protected-resource"},
 	}
 	p = &Provider{mcpBindings: &fakeMCPBindingLister{bindings: rows}}
 	got := p.loadAPIMCPBindings(context.Background())
-	if len(got) != 2 || got[0].Mode != "OBSERVE" || got[1].EndpointPath != "/mcp/refund" || got[1].Mode != "PROTECT" {
+	if len(got) != 2 || got[0].Mode != "OBSERVE" || got[1].EndpointPath != "/mcp/refund" || got[1].Mode != "PROTECT" ||
+		got[1].ResponseGuardMode != "SANITIZE" || !got[1].RequireSessionBinding ||
+		got[1].OAuthResourceMetadataURL != "https://mcp.example.com/.well-known/oauth-protected-resource" {
 		t.Fatalf("绑定段透传: %+v", got)
 	}
 }

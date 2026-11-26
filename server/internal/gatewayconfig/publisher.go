@@ -2131,6 +2131,9 @@ func stripAPIGuardSections(g *GuardConfig) *GuardConfig {
 	cp.AICrawlPolicy = nil
 	cp.AICrawlLabyrinthKeyHex = ""
 	cp.ClientSidePolicy = nil
+	cp.APIA2APolicy = nil
+	cp.SemanticGuardPolicy = nil
+	cp.WasmPlugins = nil
 	return &cp
 }
 

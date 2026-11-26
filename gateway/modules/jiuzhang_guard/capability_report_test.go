@@ -37,7 +37,7 @@ func TestCapabilityManifestValid(t *testing.T) {
 		t.Fatalf("契约版本/节点不符: %+v", m)
 	}
 	if m.Protocols["http"] != "1.1" || m.Protocols["graphql"] != "parse" ||
-		m.Protocols["grpc"] != "frame" || m.Protocols["mcp"] != "acl_v1" {
+		m.Protocols["grpc"] != "frame" || m.Protocols["mcp"] != "pin_v2" {
 		t.Fatalf("协议层级不符: %+v", m.Protocols)
 	}
 	if m.Limits["max_grpc_frame_bytes"] != dsctx.DefaultGRPCMaxFrameBytes {
@@ -169,5 +169,33 @@ func TestCapabilityManifestRiskChallenge(t *testing.T) {
 	required := capability.Manifest{ContractVersion: capability.ContractVersion, Actions: []string{"risk_challenge"}}
 	if missing := capability.CheckRequirements(required, m); len(missing) != 0 {
 		t.Fatalf("actions.risk_challenge must be self-reported: %+v", missing)
+	}
+}
+
+func TestCapabilityManifestPhase9C1(t *testing.T) {
+	m := buildCapabilityManifest(capabilityInputs{NodeID: "gw-9c1"}, time.Now())
+	required := capability.Manifest{
+		ContractVersion: capability.ContractVersion,
+		Protocols:       map[string]string{"mcp": "pin_v2"},
+		Detectors: []capability.DetectorCap{
+			{Name: "mcp.pinning", Version: "mcppin/1"},
+			{Name: "a2aguard", Version: "a2a/1"},
+		},
+	}
+	if missing := capability.CheckRequirements(required, m); len(missing) != 0 {
+		t.Fatalf("Phase 9C-1 capabilities missing: %+v", missing)
+	}
+}
+
+func TestCapabilityManifestPhase9D1(t *testing.T) {
+	m := buildCapabilityManifest(capabilityInputs{NodeID: "gw-9d1"}, time.Now())
+	required := capability.Manifest{
+		ContractVersion: capability.ContractVersion,
+		Detectors: []capability.DetectorCap{
+			{Name: "wasmplugin", Version: "wasm/1"},
+		},
+	}
+	if missing := capability.CheckRequirements(required, m); len(missing) != 0 {
+		t.Fatalf("Phase 9D-1 wasmplugin capability missing: %+v", missing)
 	}
 }

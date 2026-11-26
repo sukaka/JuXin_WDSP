@@ -211,8 +211,10 @@ func newFakeRepo() *fakeRepo {
 
 func toolFromRow(catalogID uuid.UUID, in ToolInput, row toolWriteRow) *Tool {
 	t := &Tool{ID: uuid.New(), CatalogID: catalogID, ToolName: strings.TrimSpace(in.ToolName),
-		ToolVersion: strings.TrimSpace(in.ToolVersion), DescriptionDigest: row.digestDesc, DescriptionPreview: row.preview,
-		ToolHash: row.toolHash, RiskLevel: row.risk, DataClassification: row.classification,
+		ToolVersion: strings.TrimSpace(in.ToolVersion), Description: row.description,
+		DescriptionDigest: row.digestDesc, DescriptionPreview: row.preview,
+		ToolHash: row.toolHash, PinnedDefinitionHash: row.pinnedDefHash, PinEnforcement: row.pinEnforcement,
+		RiskLevel: row.risk, DataClassification: row.classification,
 		CapabilityTags: in.CapabilityTags, AllowedPrincipals: in.AllowedPrincipals,
 		AllowedRoles: in.AllowedRoles, AllowedTenants: in.AllowedTenants,
 		ApprovalRequired: in.ApprovalRequired, MaxCallsPerMinute: in.MaxCallsPerMinute,
@@ -311,8 +313,11 @@ func (f *fakeRepo) UpdateCatalog(_ context.Context, id uuid.UUID, in CatalogInpu
 		if old != nil && toolSemanticallyEqual(*old, strings.TrimSpace(ti.ToolVersion), row.digestDesc,
 			nilSchemaP(ti.InputSchema), nilSchemaP(ti.OutputSchema)) {
 			kept := *old
+			kept.Description = row.description
 			kept.DescriptionDigest = row.digestDesc
 			kept.DescriptionPreview = row.preview
+			kept.PinnedDefinitionHash = row.pinnedDefHash
+			kept.PinEnforcement = row.pinEnforcement
 			kept.ApprovalRequired = ti.ApprovalRequired
 			kept.MaxCallsPerMinute = ti.MaxCallsPerMinute
 			nextTools = append(nextTools, &kept)
@@ -377,6 +382,27 @@ func (f *fakeRepo) ReviewTool(_ context.Context, catalogID, toolID uuid.UUID, in
 	return nil, ErrNotFound
 }
 
+func (f *fakeRepo) PinTool(_ context.Context, toolID uuid.UUID, in PinToolInput) (*Tool, error) {
+	for _, list := range f.tools {
+		for _, t := range list {
+			if t.ID == toolID {
+				t.PinEnforcement = strings.ToUpper(strings.TrimSpace(in.PinEnforcement))
+				if in.Repin || t.PinnedDefinitionHash == "" {
+					var raw json.RawMessage
+					if t.InputSchema != nil {
+						raw, _ = json.Marshal(t.InputSchema)
+					}
+					t.PinnedDefinitionHash = ComputeToolDefinitionHash(t.ToolName, t.Description, raw)
+				}
+				t.UpdatedAt = time.Now().UTC()
+				cp := *t
+				return &cp, nil
+			}
+		}
+	}
+	return nil, ErrNotFound
+}
+
 func (f *fakeRepo) CreateBinding(_ context.Context, in BindingInput, by string) (*Binding, error) {
 	if !f.appExists {
 		return nil, ErrAppNotFound
@@ -395,9 +421,16 @@ func (f *fakeRepo) CreateBinding(_ context.Context, in BindingInput, by string) 
 	if mode == "" {
 		mode = ModeObserve
 	}
+	rgMode := strings.ToUpper(strings.TrimSpace(in.ResponseGuardMode))
+	if rgMode == "" {
+		rgMode = ResponseGuardObserve
+	}
 	b := &Binding{ID: uuid.New(), ApplicationID: appID, EndpointPath: strings.TrimSpace(in.EndpointPath),
-		CatalogID: catID, CatalogName: "pay-mcp", Mode: mode, Version: 1,
-		CreatedBy: by, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+		CatalogID: catID, CatalogName: "pay-mcp", Mode: mode,
+		ResponseGuardMode: rgMode, RequireSessionBinding: in.RequireSessionBinding,
+		OAuthResourceMetadataURL: strings.TrimSpace(in.OAuthResourceMetadataURL),
+		Version:                  1,
+		CreatedBy:                by, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	f.bindings[b.ID] = b
 	return b, nil
 }
@@ -428,6 +461,13 @@ func (f *fakeRepo) UpdateBinding(_ context.Context, id uuid.UUID, in BindingInpu
 	if m := strings.ToUpper(strings.TrimSpace(in.Mode)); m != "" {
 		b.Mode = m
 	}
+	if rg := strings.ToUpper(strings.TrimSpace(in.ResponseGuardMode)); rg != "" {
+		b.ResponseGuardMode = rg
+	} else {
+		b.ResponseGuardMode = ResponseGuardObserve
+	}
+	b.RequireSessionBinding = in.RequireSessionBinding
+	b.OAuthResourceMetadataURL = strings.TrimSpace(in.OAuthResourceMetadataURL)
 	b.Version++
 	return b, nil
 }
@@ -711,6 +751,7 @@ func TestEndpointsForbiddenForSysAdmin(t *testing.T) {
 		{http.MethodPut, catalogPath + "/" + catID, `{"name":"a","service_identity":"b","tools":[],"version":1}`},
 		{http.MethodDelete, catalogPath + "/" + catID, ""},
 		{http.MethodPost, catalogPath + "/" + catID + "/tools/" + toolID + "/review", `{"action":"APPROVED"}`},
+		{http.MethodPost, "/api/v1/api-security/mcp/tools/" + toolID + "/pin", `{"pin_enforcement":"PROTECT","repin":true}`},
 		{http.MethodGet, bindingPath, ""},
 		{http.MethodPost, bindingPath, `{"application_id":"` + uuid.NewString() + `","endpoint_path":"/mcp","catalog_id":"` + catID + `"}`},
 		{http.MethodPut, bindingPath + "/" + toolID, `{"catalog_id":"` + catID + `","mode":"OBSERVE","version":1}`},
@@ -1034,5 +1075,204 @@ func TestPrepareToolRowPreserveDescription(t *testing.T) {
 	}
 	if rowNew.digestDesc == old.DescriptionDigest || rowNew.preview != "新版描述" {
 		t.Fatalf("explicit new description must override preserve_description, got %+v", rowNew)
+	}
+}
+
+// ---------- Phase 9C-1：Tool Pinning & OAuth 2.1 / Response Guard ----------
+
+func TestComputeToolDefinitionHashParityAndSensitivity(t *testing.T) {
+	schemaA := json.RawMessage(`{"type":"object","properties":{"b":{"type":"number"},"a":{"type":"string"}}}`)
+	schemaB := json.RawMessage(`{ "properties": { "a": { "type": "string" }, "b": { "type": "number" } }, "type": "object" }`)
+	hA := ComputeToolDefinitionHash("refund", "Process a refund", schemaA)
+	hB := ComputeToolDefinitionHash("refund", "Process a refund", schemaB)
+	if hA != hB {
+		t.Fatalf("canonical key order / whitespace mismatch: %s vs %s", hA, hB)
+	}
+	if !strings.HasPrefix(hA, ToolDefinitionHashPrefix) || len(hA) != len(ToolDefinitionHashPrefix)+64 {
+		t.Fatalf("unexpected hash format: %s", hA)
+	}
+	// Empty, whitespace-only, and explicit null schema all normalize to "null"
+	hNil := ComputeToolDefinitionHash("ping", "", nil)
+	hEmpty := ComputeToolDefinitionHash("ping", "", json.RawMessage("   "))
+	hNull := ComputeToolDefinitionHash("ping", "", json.RawMessage("null"))
+	if hNil != hEmpty || hNil != hNull {
+		t.Fatalf("null schema normalization mismatch: nil=%s empty=%s null=%s", hNil, hEmpty, hNull)
+	}
+	// Empty object "{}" must differ from "null"
+	if hObj := ComputeToolDefinitionHash("ping", "", json.RawMessage("{}")); hObj == hNil {
+		t.Fatalf("empty object schema must differ from null: %s", hObj)
+	}
+	// Trailing space or invisible Unicode character in description MUST change hash (Rug Pull detection)
+	if hSpace := ComputeToolDefinitionHash("refund", "Process a refund ", schemaA); hSpace == hA {
+		t.Fatal("trailing whitespace change must alter pinned_definition_hash")
+	}
+	if hZW := ComputeToolDefinitionHash("refund", "Process a refund\u200b", schemaA); hZW == hA {
+		t.Fatal("zero-width character injection must alter pinned_definition_hash")
+	}
+}
+
+func TestValidateBindingOAuthAndResponseGuard(t *testing.T) {
+	app, cat := uuid.NewString(), uuid.NewString()
+	cases := []struct {
+		name string
+		in   BindingInput
+		want string
+	}{
+		{"valid full Phase 9C-1 fields", BindingInput{
+			ApplicationID: app, EndpointPath: "/mcp/pay", CatalogID: cat, Mode: "PROTECT",
+			ResponseGuardMode: "SANITIZE", RequireSessionBinding: true,
+			OAuthResourceMetadataURL: "https://mcp.example.com/.well-known/oauth-protected-resource",
+		}, ""},
+		{"valid response_guard_mode lowercase", BindingInput{
+			ApplicationID: app, EndpointPath: "/mcp/pay", CatalogID: cat, ResponseGuardMode: "protect",
+		}, ""},
+		{"invalid response_guard_mode", BindingInput{
+			ApplicationID: app, EndpointPath: "/mcp/pay", CatalogID: cat, ResponseGuardMode: "BLOCK",
+		}, "response_guard_mode"},
+		{"oauth url http rejected", BindingInput{
+			ApplicationID: app, EndpointPath: "/mcp/pay", CatalogID: cat,
+			OAuthResourceMetadataURL: "http://mcp.example.com/.well-known/oauth-protected-resource",
+		}, "oauth_resource_metadata_url"},
+		{"oauth url crlf rejected", BindingInput{
+			ApplicationID: app, EndpointPath: "/mcp/pay", CatalogID: cat,
+			OAuthResourceMetadataURL: "https://mcp.example.com/meta\r\nX-Inject: 1",
+		}, "oauth_resource_metadata_url"},
+		{"oauth url quote rejected", BindingInput{
+			ApplicationID: app, EndpointPath: "/mcp/pay", CatalogID: cat,
+			OAuthResourceMetadataURL: `https://mcp.example.com/meta"evil`,
+		}, "oauth_resource_metadata_url"},
+		{"oauth url >512 rejected", BindingInput{
+			ApplicationID: app, EndpointPath: "/mcp/pay", CatalogID: cat,
+			OAuthResourceMetadataURL: "https://mcp.example.com/" + strings.Repeat("a", 500),
+		}, "oauth_resource_metadata_url"},
+		{"oauth url with userinfo rejected", BindingInput{
+			ApplicationID: app, EndpointPath: "/mcp/pay", CatalogID: cat,
+			OAuthResourceMetadataURL: "https://user:pass@mcp.example.com/meta",
+		}, "oauth_resource_metadata_url"},
+		{"oauth url with fragment rejected", BindingInput{
+			ApplicationID: app, EndpointPath: "/mcp/pay", CatalogID: cat,
+			OAuthResourceMetadataURL: "https://mcp.example.com/meta#frag",
+		}, "oauth_resource_metadata_url"},
+		{"oauth url with trailing hash rejected", BindingInput{
+			ApplicationID: app, EndpointPath: "/mcp/pay", CatalogID: cat,
+			OAuthResourceMetadataURL: "https://mcp.example.com/meta#",
+		}, "oauth_resource_metadata_url"},
+	}
+	for _, tc := range cases {
+		got := ValidateBindingInput(tc.in)
+		if tc.want == "" && got != "" {
+			t.Fatalf("%s: expected valid, got %q", tc.name, got)
+		}
+		if tc.want != "" && !strings.Contains(got, tc.want) {
+			t.Fatalf("%s: expected error containing %q, got %q", tc.name, tc.want, got)
+		}
+	}
+}
+
+func TestPinToolAndBindingExtensionsHTTP(t *testing.T) {
+	repo := newFakeRepo()
+	spy := &spyAudits{}
+	h := NewHandler(repo, nil)
+	h.audits = spy
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, injectPerms("api_spec.read", "api_spec.manage"), h)
+
+	rr := doReq(t, mux, http.MethodPost, catalogPath, validCatalogBody())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create catalog: %d %s", rr.Code, rr.Body.String())
+	}
+	var created struct {
+		Catalog Catalog `json:"catalog"`
+		Tools   []Tool  `json:"tools"`
+	}
+	decodeData(t, rr, &created)
+	tool := created.Tools[0]
+	if tool.Description != "发起退款" || tool.PinEnforcement != PinEnforcementObserve ||
+		!strings.HasPrefix(tool.PinnedDefinitionHash, ToolDefinitionHashPrefix) {
+		t.Fatalf("created tool missing pinning fields: %+v", tool)
+	}
+	pinURL := "/api/v1/api-security/mcp/tools/" + tool.ID.String() + "/pin"
+
+	// Invalid enforcement -> 400
+	if rr := doReq(t, mux, http.MethodPost, pinURL, `{"pin_enforcement":"BLOCK"}`); rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid pin_enforcement should return 400, got %d", rr.Code)
+	}
+	// Invalid UUID -> 400
+	if rr := doReq(t, mux, http.MethodPost, "/api/v1/api-security/mcp/tools/bad-id/pin", `{"pin_enforcement":"PROTECT"}`); rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid id should return 400, got %d", rr.Code)
+	}
+	// Not found -> 404
+	if rr := doReq(t, mux, http.MethodPost, "/api/v1/api-security/mcp/tools/"+uuid.NewString()+"/pin", `{"pin_enforcement":"PROTECT"}`); rr.Code != http.StatusNotFound {
+		t.Fatalf("unknown tool should return 404, got %d", rr.Code)
+	}
+
+	// Simulate description mutation and repin=true -> recomputes pinned_definition_hash & switches to PROTECT
+	repo.tools[created.Catalog.ID][0].Description = "发起退款（更新说明）"
+	rr = doReq(t, mux, http.MethodPost, pinURL, `{"pin_enforcement":"PROTECT","repin":true}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("pin tool: %d %s", rr.Code, rr.Body.String())
+	}
+	var pinned Tool
+	decodeData(t, rr, &pinned)
+	wantHash := ComputeToolDefinitionHash("refund", "发起退款（更新说明）", json.RawMessage(`{"type":"object"}`))
+	if pinned.PinEnforcement != PinEnforcementProtect || pinned.PinnedDefinitionHash != wantHash {
+		t.Fatalf("pinned tool mismatch: got enforcement=%s hash=%s want hash=%s",
+			pinned.PinEnforcement, pinned.PinnedDefinitionHash, wantHash)
+	}
+	// Audit recorded with HIGH risk
+	lastAudit := spy.entries[len(spy.entries)-1]
+	if lastAudit.Action != "pin" || lastAudit.ObjectType != "mcp_catalog_tool" || lastAudit.RiskLevel != audits.RiskHigh {
+		t.Fatalf("unexpected pin audit: %+v", lastAudit)
+	}
+
+	// Binding create & update with response_guard_mode / require_session_binding / oauth_resource_metadata_url
+	appID := uuid.NewString()
+	catID := created.Catalog.ID.String()
+	rr = doReq(t, mux, http.MethodPost, bindingPath, `{
+		"application_id":"`+appID+`",
+		"endpoint_path":"/mcp/pay",
+		"catalog_id":"`+catID+`",
+		"mode":"PROTECT",
+		"response_guard_mode":"SANITIZE",
+		"require_session_binding":true,
+		"oauth_resource_metadata_url":"https://mcp.example.com/.well-known/oauth-protected-resource"
+	}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create binding: %d %s", rr.Code, rr.Body.String())
+	}
+	var b Binding
+	decodeData(t, rr, &b)
+	if b.ResponseGuardMode != ResponseGuardSanitize || !b.RequireSessionBinding ||
+		b.OAuthResourceMetadataURL != "https://mcp.example.com/.well-known/oauth-protected-resource" {
+		t.Fatalf("binding create extensions mismatch: %+v", b)
+	}
+	// Invalid OAuth URL on update -> 400
+	rr = doReq(t, mux, http.MethodPut, bindingPath+"/"+b.ID.String(), `{
+		"catalog_id":"`+catID+`",
+		"mode":"PROTECT",
+		"response_guard_mode":"PROTECT",
+		"oauth_resource_metadata_url":"http://insecure.example.com/meta",
+		"version":1
+	}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid oauth url on update should return 400, got %d", rr.Code)
+	}
+	// Valid update
+	rr = doReq(t, mux, http.MethodPut, bindingPath+"/"+b.ID.String(), `{
+		"catalog_id":"`+catID+`",
+		"mode":"PROTECT",
+		"response_guard_mode":"PROTECT",
+		"require_session_binding":false,
+		"oauth_resource_metadata_url":"https://auth.example.com/.well-known/oauth-protected-resource",
+		"version":1
+	}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update binding: %d %s", rr.Code, rr.Body.String())
+	}
+	var b2 Binding
+	decodeData(t, rr, &b2)
+	if b2.ResponseGuardMode != ResponseGuardProtect || b2.RequireSessionBinding ||
+		b2.OAuthResourceMetadataURL != "https://auth.example.com/.well-known/oauth-protected-resource" {
+		t.Fatalf("binding update extensions mismatch: %+v", b2)
 	}
 }

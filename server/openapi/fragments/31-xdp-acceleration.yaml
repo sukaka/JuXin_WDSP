@@ -1,0 +1,213 @@
+# 片段：内核级 eBPF/XDP 快速丢包加速（Phase 9D-2）
+# 路由源：server/internal/app/app.go（/xdp-acceleration/config、/xdp-acceleration/status、/xdp-acceleration/sync）
+# 数据源：system_settings（xdp_acceleration 分组，迁移 000250）、ip_access_rules（全局 DENY）、
+# temporary_blocks（全局 application_id IS NULL）、protected_addresses（ENABLED）。
+# 权限种子：xdp_accel.read 授予 SYSTEM_ADMIN/SECURITY_ADMIN/AUDIT_ADMIN，xdp_accel.manage 授予 SYSTEM_ADMIN/SECURITY_ADMIN。
+paths:
+  # ==================== XDP 加速配置 ====================
+  /xdp-acceleration/config:
+    get:
+      operationId: xdpAccelConfigGet
+      tags: [xdp-acceleration]
+      summary: 读取内核 XDP 加速配置
+      description: 读取当前内核级 eBPF/XDP 快速丢包加速配置（缺省为关闭状态）。权限：`xdp_accel.read`
+      responses:
+        '200':
+          description: 当前 XDP 加速配置
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/XdpAccelConfig' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: xdpAccelConfigUpdate
+      tags: [xdp-acceleration]
+      summary: 更新内核 XDP 加速配置
+      description: >-
+        校验并保存内核级 eBPF/XDP 加速配置（强制校验 Unix Socket 路径白名单前缀、物理业务网卡白名单拒绝 lo/虚拟网桥、
+        enabled=true 至少指定 1 块物理网卡、sync_interval_seconds 1..300），记录操作审计并尽力 fail-open 同步至 xdpguard
+        守护进程（守护进程未部署或不可达时仍保存配置并在 sync_warning 中如实提示）。权限：`xdp_accel.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/XdpAccelConfigUpdateRequest' }
+      responses:
+        '200':
+          description: 配置已保存（含尽力同步结果或降级提示）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/XdpAccelConfigUpdateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== XDP 守护进程状态与遥测 ====================
+  /xdp-acceleration/status:
+    get:
+      operationId: xdpAccelStatusGet
+      tags: [xdp-acceleration]
+      summary: 查询内核 XDP 守护进程实时状态与丢包遥测
+      description: >-
+        通过已配置的受控本地 Unix Domain Socket 探测 xdpguard 守护进程（优先 GET /v1/stats，404 回退 /healthz）。
+        守护进程未部署、无特权回退或 Socket 不可达时如实返回 available=false 或 mode=fallback_userspace，绝不伪造内核已挂载。
+        权限：`xdp_accel.read`
+      responses:
+        '200':
+          description: XDP 守护进程实时状态与丢包计数
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/XdpAccelStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 立即同步全局黑名单至 XDP ====================
+  /xdp-acceleration/sync:
+    post:
+      operationId: xdpAccelSync
+      tags: [xdp-acceleration]
+      summary: 立即同步全局 IP 黑名单至 XDP 守护进程
+      description: >-
+        即时收集全局生效 IP 黑名单（ip_access_rules DENY+GLOBAL）与全局生效临时封禁（temporary_blocks application_id IS NULL），
+        执行控制面保护地址与系统保留段重叠排除后，经本地 Unix Domain Socket 推送至 xdpguard POST /v1/sync 并记录操作审计。
+        若 enabled=false 则下发空名单通知守护进程卸载 XDP 挂载。守护进程不可达返回 503。权限：`xdp_accel.manage`
+      responses:
+        '200':
+          description: 同步结果（含内核挂载模式、同步前缀数与控制面/守护进程双重排除统计）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/XdpAccelSyncResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    XdpAccelConfig:
+      type: object
+      required: [enabled, socket_path, interfaces, attach_mode, sync_interval_seconds, version, updated_at]
+      properties:
+        enabled: { type: boolean, default: false, description: 是否启用内核级 eBPF/XDP 快速丢包加速 }
+        socket_path:
+          type: string
+          maxLength: 256
+          default: /var/run/caddy/sidecars/xdpguard.sock
+          description: xdpguard 守护进程 Unix Domain Socket 绝对路径（仅限 /var/run/caddy/sidecars/ 或 /run/jiuzhang/）
+        interfaces:
+          type: array
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 15 }
+          description: 物理业务网卡名称列表（严禁 lo 及 docker/br-/veth/virbr/cni/flannel/cali/tun/tap/wg 等虚拟接口）
+        attach_mode: { type: string, enum: [auto, native, generic], default: auto, description: XDP 挂载模式 }
+        sync_interval_seconds: { type: integer, minimum: 1, maximum: 300, default: 5, description: 后台自动同步周期（秒） }
+        version: { type: integer, description: 配置版本号 }
+        updated_at: { type: string, format: date-time, description: 最近更新时间 }
+
+    XdpAccelConfigUpdateRequest:
+      type: object
+      required: [enabled, interfaces, attach_mode, sync_interval_seconds]
+      properties:
+        enabled: { type: boolean, description: 是否启用内核级 eBPF/XDP 加速（为 true 时 interfaces 至少包含 1 项） }
+        socket_path:
+          type: string
+          maxLength: 256
+          default: /var/run/caddy/sidecars/xdpguard.sock
+          description: 受控本地 Unix Domain Socket 路径
+        interfaces:
+          type: array
+          maxItems: 16
+          items: { type: string, minLength: 1, maxLength: 15 }
+          description: 物理业务网卡名称列表
+        attach_mode: { type: string, enum: [auto, native, generic], description: XDP 挂载模式 }
+        sync_interval_seconds: { type: integer, minimum: 1, maximum: 300, description: 周期同步间隔（秒） }
+        reason: { type: string, maxLength: 500, description: 变更原因说明（可选，记入操作审计） }
+
+    XdpAccelConfigUpdateResponse:
+      type: object
+      required: [config]
+      properties:
+        config: { $ref: '#/components/schemas/XdpAccelConfig' }
+        sync_result: { $ref: '#/components/schemas/XdpAccelSyncResult' }
+        sync_warning: { type: string, description: 守护进程未部署、不可达或处于用户态回退模式时的非阻断提示（可选） }
+
+    XdpAccelInterfaceStatus:
+      type: object
+      required: [name, attached, mode, error]
+      properties:
+        name: { type: string, description: 网卡名称 }
+        attached: { type: boolean, description: 该网卡是否已成功挂载 XDP 程序 }
+        mode: { type: string, enum: [xdp_native, xdp_generic, fallback_userspace], description: 实际挂载模式 }
+        error: { type: string, description: 挂载异常诊断信息（正常为空串） }
+
+    XdpAccelStatus:
+      type: object
+      required:
+        - available
+        - status
+        - mode
+        - kernel_attached
+        - socket_path
+        - attach_mode_requested
+        - interfaces
+        - dropped_v4_packets
+        - dropped_v6_packets
+        - passed_packets
+        - synced_v4_cidrs
+        - synced_v6_cidrs
+        - excluded_protected_count
+        - last_sync_at
+        - error
+      properties:
+        available: { type: boolean, description: xdpguard 守护进程是否真实可达并响应合法状态 }
+        status: { type: string, enum: [ok, degraded, unavailable, invalid_socket_path], description: 守护进程健康状态 }
+        mode: { type: string, enum: [xdp_native, xdp_generic, fallback_userspace], description: 当前运行模式 }
+        kernel_attached: { type: boolean, description: 是否已在至少一块物理网卡上挂载内核 XDP 程序 }
+        socket_path: { type: string, maxLength: 256, description: 本次探测的 Unix Domain Socket 路径 }
+        attach_mode_requested: { type: string, description: 请求的 XDP 挂载模式 }
+        interfaces:
+          type: array
+          items: { $ref: '#/components/schemas/XdpAccelInterfaceStatus' }
+          description: 各目标网卡的 XDP 挂载明细
+        dropped_v4_packets: { type: integer, format: int64, description: IPv4 内核 XDP 累计丢包数 }
+        dropped_v6_packets: { type: integer, format: int64, description: IPv6 内核 XDP 累计丢包数 }
+        passed_packets: { type: integer, format: int64, description: 内核 XDP 放行进入协议栈的累计包数 }
+        synced_v4_cidrs: { type: integer, description: 当前内核 LPM Trie 已同步 IPv4 黑名单前缀数 }
+        synced_v6_cidrs: { type: integer, description: 当前内核 LPM Trie 已同步 IPv6 黑名单前缀数 }
+        excluded_protected_count: { type: integer, description: 守护进程侧自动排除的受保护/本机地址重合前缀数 }
+        last_sync_at: { type: string, description: 最近同步时间（RFC3339，尚未同步为空串） }
+        error: { type: string, description: 不可用或降级诊断原因（正常为空串） }
+
+    XdpAccelSyncResult:
+      type: object
+      required:
+        - synced
+        - mode
+        - kernel_attached
+        - attached_interfaces
+        - synced_v4_cidrs
+        - synced_v6_cidrs
+        - excluded_protected_count
+        - control_plane_excluded_count
+        - invalid_cidrs_skipped
+        - last_sync_at
+        - error
+      properties:
+        synced: { type: boolean, description: 本次同步是否由守护进程成功应用 }
+        mode: { type: string, enum: [xdp_native, xdp_generic, fallback_userspace], description: 同步后的运行模式 }
+        kernel_attached: { type: boolean, description: 同步后内核 XDP 是否已挂载 }
+        attached_interfaces:
+          type: array
+          items: { type: string }
+          description: 当前已挂载 XDP 的物理网卡列表
+        synced_v4_cidrs: { type: integer, description: 已写入内核 IPv4 LPM Trie 的黑名单前缀数 }
+        synced_v6_cidrs: { type: integer, description: 已写入内核 IPv6 LPM Trie 的黑名单前缀数 }
+        excluded_protected_count: { type: integer, description: 守护进程侧排除的受保护/本机重叠前缀数 }
+        control_plane_excluded_count: { type: integer, description: 控制面侧排除的受保护/保留段重叠前缀数 }
+        invalid_cidrs_skipped: { type: integer, description: 守护进程侧跳过的非法前缀数 }
+        last_sync_at: { type: string, description: 最近同步时间（RFC3339） }
+        error: { type: string, description: 降级或失败诊断信息（正常为空串） }

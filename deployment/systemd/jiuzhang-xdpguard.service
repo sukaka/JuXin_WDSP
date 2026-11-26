@@ -1,0 +1,33 @@
+# jiuzhang-managed: xdp-acceleration
+[Unit]
+Description=JiuZhang WDSP eBPF/XDP kernel-level fast packet drop daemon
+After=network-online.target jiuzhang-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=1000
+Group=1000
+EnvironmentFile=-/etc/jiuzhang/xdpguard.env
+ExecStart=/usr/local/bin/jiuzhang-xdpguard --socket /var/run/caddy/sidecars/xdpguard.sock
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/var/run/caddy/sidecars
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+MemoryMax=256M
+TasksMax=32
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

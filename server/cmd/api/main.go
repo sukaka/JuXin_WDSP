@@ -17,6 +17,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/accessrules"
 	"github.com/jiuzhang-waf/server/internal/aggregations"
 	"github.com/jiuzhang-waf/server/internal/aiaudit"
+	"github.com/jiuzhang-waf/server/internal/apia2a"
 	"github.com/jiuzhang-waf/server/internal/apiassets"
 	"github.com/jiuzhang-waf/server/internal/apiauthz"
 	"github.com/jiuzhang-waf/server/internal/apidata"
@@ -183,6 +184,7 @@ func run() error {
 	acCollector.SetHitRecorder(acRules)
 	acCollector.SetURLWhitelistHitRecorder(urlWhitelistStore)
 	acCollector.SetClientSideIngester(clientside.NewStore(bgDB))
+	acCollector.SetA2AIngester(apia2a.NewStore(bgDB))
 	acCollector.SetSyslogForwarder(syslogFw)
 	go acCollector.Run(collectorCtx, 2*time.Second)
 

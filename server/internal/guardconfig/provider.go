@@ -147,6 +147,15 @@ type Provider struct {
 	// 客户端供应链安全策略读取（Phase 9B；迁移 000246；仅 WDSP 开启时下发
 	// client_side_policy 段，读取失败 fail-hard，无任何秘密材料）
 	clientSide ClientSideLister
+	// A2A 协议安全策略读取（Phase 9C-1；迁移 000247；仅 WDSP 开启时下发
+	// api_a2a_policy 段，读取失败 fail-hard，无任何秘密材料）
+	a2a A2ALister
+	// 本地离线 ONNX/SLM 语义防火墙策略读取（Phase 9C-2；迁移 000248；仅 WDSP 开启时下发
+	// semantic_guard_policy 段，读取失败 fail-hard，无任何秘密材料）
+	semanticGuard SemanticGuardLister
+	// Wasm 自定义检测插件读取（Phase 9D-1；迁移 000249；仅 WDSP 开启时下发
+	// wasm_plugins 段，读取失败 fail-hard，版本戳仅纳入元数据+sha256 不含原始 base64）
+	wasmPlugins WasmPluginLister
 	// API 引擎受限例外读取（exception_policies 表 target_engine='API' 的 ENABLED+VALID
 	// 行，列由迁移 000130 建立；仅 WDSP 开启时下发 api_exceptions 段；读取失败中止
 	// 发布——fail-hard，与 jwt_trust 同一口径；nil 时不下发该段，网关零行为变化）
@@ -745,6 +754,21 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		// Phase 9B：客户端供应链安全策略随发布下发 client_side_policy 段（迁移 000246；
 		// 读取失败中止发布 fail-hard；无任何秘密材料）
 		if err := p.loadClientSidePolicy(ctx, cfg); err != nil {
+			return nil, err
+		}
+		// Phase 9C-1：A2A 协议安全策略随发布下发 api_a2a_policy 段（迁移 000247；
+		// 读取失败中止发布 fail-hard；无任何秘密材料）
+		if err := p.loadA2APolicy(ctx, cfg); err != nil {
+			return nil, err
+		}
+		// Phase 9C-2：本地离线 ONNX/SLM 语义防火墙策略随发布下发 semantic_guard_policy 段（迁移 000248；
+		// 读取失败中止发布 fail-hard；无任何秘密材料）
+		if err := p.loadSemanticGuardPolicy(ctx, cfg); err != nil {
+			return nil, err
+		}
+		// Phase 9D-1：Wasm 自定义检测插件随发布下发 wasm_plugins 段（迁移 000249；
+		// 读取失败中止发布 fail-hard；元数据+sha256 纳入 api_policy_version）
+		if err := p.loadWasmPlugins(ctx, cfg); err != nil {
 			return nil, err
 		}
 		// P0-04 A：API 引擎受限例外随发布下发 api_exceptions 段（列由迁移 000130

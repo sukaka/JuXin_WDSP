@@ -21,10 +21,11 @@ import {
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { PlusOutlined, WarningOutlined } from '@ant-design/icons'
+import { CloudUploadOutlined, PlusOutlined, WarningOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { applicationsApi } from '../../api/applications'
+import { gatewayConfigApi } from '../../api/gatewayConfig'
 import { protectionPoliciesApi } from '../../api/protectionPolicies'
 import { exceptionsApi } from '../../api/exceptions'
 import type { CreateExceptionBody } from '../../api/exceptions'
@@ -33,6 +34,7 @@ import StatusTag from '../../components/StatusTag'
 import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
+import { generateIdempotencyKey } from '../../utils/idempotency'
 import { hasPermission } from '../../utils/permission'
 import {
   deriveExceptionStatus,
@@ -160,6 +162,7 @@ export default function ExceptionsPage() {
   const queryClient = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canManage = hasPermission(permissions, 'exceptions.manage')
+  const canPublish = hasPermission(permissions, 'gateway_configs.publish')
 
   const [filters, setFilters] = useState<Filters>({})
   const [page, setPage] = useState(1)
@@ -275,11 +278,43 @@ export default function ExceptionsPage() {
       }
     },
     onSuccess: () => {
-      message.success('操作成功')
+      message.success(
+        canPublish ? '操作成功，可点击右上角「发布到网关」立即生效' : '操作成功',
+      )
       void invalidate()
     },
     onError,
   })
+
+  const publishMutation = useMutation({
+    mutationFn: () => gatewayConfigApi.publish({ idempotency_key: generateIdempotencyKey() }),
+    onSuccess: (task) => {
+      void invalidate()
+      void queryClient.invalidateQueries({ queryKey: ['gateway-config-current'] })
+      void queryClient.invalidateQueries({ queryKey: ['publish-tasks'] })
+      void queryClient.invalidateQueries({ queryKey: ['config-versions'] })
+      if (task.status === 'FAILED') {
+        message.error(
+          `发布失败：${task.failure_message || task.result_summary || '请前往「配置发布」查看详情'}`,
+        )
+      } else if (task.status === 'SUCCESS') {
+        message.success('网关配置发布成功，例外策略已生效')
+      } else {
+        message.success('网关配置发布任务已提交')
+      }
+    },
+    onError: (e) => message.error(e instanceof ApiError ? e.message : '发布失败'),
+  })
+
+  const confirmPublish = () => {
+    modal.confirm({
+      title: '发布到网关确认',
+      content:
+        '发布将把当前全部已启用的应用与例外策略下发到防护网关并立即生效，失败时会自动回滚。确定执行发布吗？',
+      okText: '确认发布',
+      onOk: () => publishMutation.mutate(),
+    })
+  }
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => exceptionsApi.remove(id),
@@ -535,10 +570,23 @@ export default function ExceptionsPage() {
     <Card
       title="例外策略"
       extra={
-        canManage && (
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-            新建例外
-          </Button>
+        (canPublish || canManage) && (
+          <Space>
+            {canPublish && (
+              <Button
+                icon={<CloudUploadOutlined />}
+                loading={publishMutation.isPending}
+                onClick={confirmPublish}
+              >
+                发布到网关
+              </Button>
+            )}
+            {canManage && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+                新建例外
+              </Button>
+            )}
+          </Space>
         )
       }
     >

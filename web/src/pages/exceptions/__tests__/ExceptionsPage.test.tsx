@@ -99,6 +99,9 @@ function mockFetch({
     if (url.includes('/enable') && init?.method === 'POST') {
       return ok({ exception: { ...detail, status: 'ENABLED' } })
     }
+    if (url.includes('/gateway-config/publish') && init?.method === 'POST') {
+      return ok({ id: 'task-pub-1', status: 'SUCCESS', result_summary: 'published' })
+    }
     if (url.includes('/applications')) return ok({ items: [], total: 0, page: 1, page_size: 100 })
     if (url.includes('/protection-policies')) {
       return ok({ items: [], total: 0, page: 1, page_size: 100 })
@@ -412,6 +415,36 @@ describe('ExceptionsPage（P0-04）', () => {
     expect(
       (fetch as Mock).mock.calls.some(
         (c) => String(c[0]).includes('/exceptions/exc-1/enable') && (c[1] as RequestInit | undefined)?.method === 'POST',
+      ),
+    ).toBe(true)
+  })
+
+  it('无 gateway_configs.publish 权限时不展示「发布到网关」按钮', async () => {
+    renderPage()
+    await screen.findByText('订单导出误报豁免')
+    expect(screen.queryByRole('button', { name: /发布到网关/ })).not.toBeInTheDocument()
+  })
+
+  it('具备 gateway_configs.publish 权限时可原地点击「发布到网关」下发配置', async () => {
+    useAuthStore.setState({
+      user: makeUser(['exceptions.read', 'exceptions.manage', 'gateway_configs.publish']),
+      csrfToken: 'csrf-1',
+      initialized: true,
+    })
+    renderPage()
+    await screen.findByText('订单导出误报豁免')
+
+    fireEvent.click(screen.getByRole('button', { name: /发布到网关/ }))
+    const confirmBtn = await screen.findByRole('button', { name: '确认发布' })
+    expect(screen.getAllByText('发布到网关确认').length).toBeGreaterThan(0)
+    fireEvent.click(confirmBtn)
+
+    expect(await screen.findByText('网关配置发布成功，例外策略已生效')).toBeInTheDocument()
+    expect(
+      (fetch as Mock).mock.calls.some(
+        (c) =>
+          String(c[0]).includes('/gateway-config/publish') &&
+          (c[1] as RequestInit | undefined)?.method === 'POST',
       ),
     ).toBe(true)
   })

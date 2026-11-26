@@ -13,6 +13,7 @@
 package apimcp
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -20,11 +21,48 @@ import (
 	"strings"
 )
 
-// ToolHashPrefix / CatalogHashPrefix 摘要域分隔前缀（版本化词表——算法升级须换前缀）。
+// ToolHashPrefix / CatalogHashPrefix / ToolDefinitionHashPrefix 摘要域分隔前缀（版本化词表——算法升级须换前缀）。
 const (
-	ToolHashPrefix    = "mcp-tool-sha256:v1:"
-	CatalogHashPrefix = "mcp-catalog-sha256:v1:"
+	ToolHashPrefix           = "mcp-tool-sha256:v1:"
+	CatalogHashPrefix        = "mcp-catalog-sha256:v1:"
+	ToolDefinitionHashPrefix = "mcp-def-sha256:v1:"
 )
+
+// canonicalDefinitionSchema 将工具 inputSchema JSON 规范化为无空白且对象键递归排序的紧凑 JSON；
+// 空字节或 JSON null 统一归一为 "null"（与网关 mcpguard/tool_pinning.go 逐字节一致）。
+func canonicalDefinitionSchema(raw json.RawMessage) []byte {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return []byte("null")
+	}
+	var v any
+	if err := json.Unmarshal(trimmed, &v); err != nil {
+		return trimmed
+	}
+	if v == nil {
+		return []byte("null")
+	}
+	canon, err := json.Marshal(v)
+	if err != nil {
+		return trimmed
+	}
+	return canon
+}
+
+// ComputeToolDefinitionHash 计算工具定义钉扎摘要（Phase 9C-1 Rug Pull 防护）：
+// "mcp-def-sha256:v1:" + hex(sha256(name + "\x00" + description + "\x00" + canonicalJSON(inputSchema)))。
+// name 与 description 按原文入算（不做 TrimSpace），确保尾随空格或隐形字符篡改必然触发漂移告警；
+// 与网关 gateway/dynamic_security/detectors/mcpguard.ComputeToolDefinitionHash 逐字节一致。
+func ComputeToolDefinitionHash(name, description string, inputSchema json.RawMessage) string {
+	canon := canonicalDefinitionSchema(inputSchema)
+	h := sha256.New()
+	_, _ = h.Write([]byte(name))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(description))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(canon)
+	return ToolDefinitionHashPrefix + hex.EncodeToString(h.Sum(nil))
+}
 
 // schemaCanonical schema 规范化序列化（nil → JSON null；map 键排序由
 // encoding/json 保证（Go 对 map[string]any 的 marshaling 键序确定）；无空白）。

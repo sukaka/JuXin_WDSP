@@ -1,0 +1,43 @@
+# jiuzhang-managed: semantic-guard-sidecar
+[Unit]
+Description=JiuZhang WDSP Local Offline Semantic Firewall Sidecar (Unix Socket Only)
+After=local-fs.target
+PartOf=jiuzhang-gateway.service
+
+[Service]
+Type=simple
+User=1000
+Group=1000
+WorkingDirectory=/opt/jiuzhang/semantic-guard
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=SEMANTIC_GUARD_SOCKET=/var/run/caddy/sidecars/semantic.sock
+EnvironmentFile=-/etc/jiuzhang/semantic-guard/semantic-guard.env
+ExecStart=/usr/bin/python3 /opt/jiuzhang/semantic-guard/server.py
+Restart=on-failure
+RestartSec=3s
+
+# 最小权限与全离线隔离：无网络命名空间、仅 AF_UNIX、无特权能力、严格只读文件系统
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadOnlyPaths=/opt/jiuzhang/semantic-guard
+ReadWritePaths=/var/run/caddy/sidecars
+MemoryMax=1G
+CPUQuota=200%
+TasksMax=64
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

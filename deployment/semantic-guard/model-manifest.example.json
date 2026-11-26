@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "model_id": "jiuzhang-semantic-prompt-guard-int8-v1",
+  "model_file": "model-int8.onnx",
+  "quantization": "INT8",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "max_sequence_length": 512,
+  "labels": [
+    "safe",
+    "prompt_injection",
+    "jailbreak",
+    "indirect_injection",
+    "web_payload"
+  ],
+  "tokenizer_file": "vocab.json",
+  "tokenizer_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "notes": "Replace sha256 and tokenizer_sha256 with the actual lowercase hex SHA-256 digests produced via sha256sum before mounting. server.py refuses to load any model whose SHA-256 does not match (fail-closed)."
+}

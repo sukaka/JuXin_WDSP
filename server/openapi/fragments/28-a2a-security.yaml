@@ -1,0 +1,342 @@
+# 片段：A2A 协议安全治理与 Agent 物料清单（AgBOM，Phase 9C-1）
+# 路由源：server/internal/app/app.go（/applications/{id}/a2a-policy、/api-security/a2a/*）
+# 数据源：api_a2a_policies、api_a2a_policy_versions、api_a2a_agents、api_a2a_events（迁移 000247；
+# 权限种子：api_a2a.read 授予 SECURITY_ADMIN/AUDIT_ADMIN，api_a2a.manage 授予 SECURITY_ADMIN）。
+# 发布：策略草稿保存不自动发布，经既有 gateway-config 发布通道下发 api_a2a_policy 段。
+paths:
+  # ==================== 应用级 A2A 协议安全策略 ====================
+  /applications/{id}/a2a-policy:
+    get:
+      operationId: apiA2aPolicyGet
+      tags: [a2a-security]
+      summary: 读取应用 A2A 协议安全策略
+      description: 读取应用 A2A 协议安全策略草稿及发布状态摘要（无记录返回默认 OFF 策略 version=0）。权限：`api_a2a.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      responses:
+        '200':
+          description: 策略草稿与状态摘要
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiA2aPolicyGetResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: apiA2aPolicyUpdate
+      tags: [a2a-security]
+      summary: 保存应用 A2A 协议安全策略草稿
+      description: 校验并保存应用 A2A 协议安全策略草稿（expected_version 乐观锁冲突返回 409；reason 必填并记录不可变版本与操作审计；保存后经既有 gateway-config 发布通道下发 api_a2a_policy 段）。权限：`api_a2a.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiA2aPolicyUpdateRequest' }
+      responses:
+        '200':
+          description: 草稿保存成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiA2aPolicyDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== Agent 物料清单（AgBOM） ====================
+  /api-security/a2a/agents:
+    get:
+      operationId: apiA2aAgentsList
+      tags: [a2a-security]
+      summary: 分页查询 Agent 物料清单（AgBOM）
+      description: 查询网关 Agent Card 自动发现及管理员人工登记的 Agent 资产清单。权限：`api_a2a.read`
+      parameters:
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 按应用 ID 筛选 }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [DISCOVERED, APPROVED, BLOCKED] }, description: 按治理状态筛选 }
+        - { name: keyword, in: query, required: false, schema: { type: string }, description: 按 Agent 名称/地址/版本/描述模糊筛选 }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 20 }, description: 每页条数（默认 20） }
+      responses:
+        '200':
+          description: AgBOM 分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiA2aAgentListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: apiA2aAgentsCreate
+      tags: [a2a-security]
+      summary: 人工登记 Agent 资产
+      description: 向 AgBOM 人工登记 Agent 资产（同应用同名同地址重复返回 409）。权限：`api_a2a.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiA2aAgentCreateRequest' }
+      responses:
+        '201':
+          description: 登记成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiA2aAgentDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/a2a/agents/{id}:
+    put:
+      operationId: apiA2aAgentsUpdate
+      tags: [a2a-security]
+      summary: 审批或编辑 Agent 资产
+      description: 更新 Agent 治理状态（DISCOVERED/APPROVED/BLOCKED）、说明与允许技能清单，并记录操作审计。权限：`api_a2a.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: Agent 记录 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiA2aAgentUpdateRequest' }
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiA2aAgentDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: apiA2aAgentsDelete
+      tags: [a2a-security]
+      summary: 删除 Agent 资产
+      description: 从 AgBOM 中删除指定 Agent 记录并记录操作审计。权限：`api_a2a.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: Agent 记录 ID }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  id: { type: string, format: uuid }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== A2A 安全事件 ====================
+  /api-security/a2a/events:
+    get:
+      operationId: apiA2aEventsList
+      tags: [a2a-security]
+      summary: 分页查询 A2A 安全事件
+      description: 查询 A2A 委派链越权、深度超限、递归循环熔断与致命三要素阻断事件列表。权限：`api_a2a.read`
+      parameters:
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 按应用 ID 筛选 }
+        - { name: event_type, in: query, required: false, schema: { type: string, enum: [A2A_AGENT_CARD_DISCOVERED, A2A_OBSERVED, A2A_BLOCKED, A2A_LOOP_KILLED, A2A_LETHAL_TRIFECTA] }, description: 按事件类型筛选 }
+        - { name: rule_id, in: query, required: false, schema: { type: string }, description: 按命中规则 ID 筛选 }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 20 }, description: 每页条数（默认 20） }
+      responses:
+        '200':
+          description: A2A 安全事件分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiA2aEventListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    ApiA2aPolicy:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        schema_version: { type: integer, enum: [1] }
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT], description: 运行模式（默认 OFF） }
+        version: { type: integer, description: 策略乐观锁版本号 }
+        card_discovery_enabled: { type: boolean, description: 是否开启 Agent Card 自动发现回流 AgBOM }
+        a2a_path_prefixes:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 256 }
+          description: A2A 协议端点与 Agent Card 路径前缀（须以 / 开头，不含 ?#）
+        allowed_caller_agents:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 128 }
+          description: 允许调用的 Agent 标识白名单（空列表表示不限制调用方）
+        max_delegation_depth: { type: integer, minimum: 1, maximum: 10, default: 3, description: 最大 RFC 8693 委派链深度 }
+        enforce_scope_attenuation: { type: boolean, description: 是否强制检查委派链权限逐级衰减 }
+        loop_window_seconds: { type: integer, minimum: 5, maximum: 3600, default: 60, description: 递归循环检测滑动时间窗（秒） }
+        max_calls_per_task_window: { type: integer, minimum: 1, maximum: 10000, default: 20, description: 单任务窗口最大允许调用次数 }
+        lethal_trifecta_enabled: { type: boolean, description: 是否开启致命三要素（机密读取+外发）阻断 }
+        confidential_read_patterns:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 256 }
+          description: 机密数据读取污点标记模式
+        external_egress_patterns:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 256 }
+          description: 外部出口操作拦截模式
+        updated_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiA2aStatusSummary:
+      type: object
+      properties:
+        state: { type: string, enum: [NOT_CONFIGURED, DRAFT_PENDING, PUBLISHED] }
+        draft_version: { type: integer }
+        published_version: { type: integer }
+
+    ApiA2aPolicyGetResponse:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/ApiA2aPolicy' }
+        summary: { $ref: '#/components/schemas/ApiA2aStatusSummary' }
+
+    ApiA2aPolicyDetailResponse:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/ApiA2aPolicy' }
+
+    ApiA2aPolicyUpdateRequest:
+      type: object
+      required: [mode, expected_version, reason]
+      properties:
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+        expected_version: { type: integer, minimum: 0 }
+        card_discovery_enabled: { type: boolean }
+        a2a_path_prefixes:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 256 }
+        allowed_caller_agents:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 128 }
+        max_delegation_depth: { type: integer, minimum: 1, maximum: 10 }
+        enforce_scope_attenuation: { type: boolean }
+        loop_window_seconds: { type: integer, minimum: 5, maximum: 3600 }
+        max_calls_per_task_window: { type: integer, minimum: 1, maximum: 10000 }
+        lethal_trifecta_enabled: { type: boolean }
+        confidential_read_patterns:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 256 }
+        external_egress_patterns:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 256 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+
+    ApiA2aAgent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        application_code: { type: string }
+        application_name: { type: string }
+        agent_name: { type: string, maxLength: 256 }
+        agent_url: { type: string, maxLength: 2048 }
+        agent_version: { type: string, maxLength: 64 }
+        status: { type: string, enum: [DISCOVERED, APPROVED, BLOCKED] }
+        description: { type: string, maxLength: 2000 }
+        skills: { type: array, items: { type: string, maxLength: 128 } }
+        allowed_skills: { type: array, items: { type: string, maxLength: 128 } }
+        auth_schemes: { type: array, items: { type: string, maxLength: 64 } }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        observed_count: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiA2aAgentListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiA2aAgent' }
+        total: { type: integer, format: int64 }
+        page: { type: integer }
+        page_size: { type: integer }
+
+    ApiA2aAgentDetailResponse:
+      type: object
+      properties:
+        agent: { $ref: '#/components/schemas/ApiA2aAgent' }
+
+    ApiA2aAgentCreateRequest:
+      type: object
+      required: [application_id, agent_name]
+      properties:
+        application_id: { type: string, format: uuid }
+        agent_name: { type: string, maxLength: 256 }
+        agent_url: { type: string, maxLength: 2048 }
+        agent_version: { type: string, maxLength: 64 }
+        status: { type: string, enum: [DISCOVERED, APPROVED, BLOCKED] }
+        description: { type: string, maxLength: 2000 }
+        skills: { type: array, maxItems: 64, items: { type: string, maxLength: 128 } }
+        allowed_skills: { type: array, maxItems: 64, items: { type: string, maxLength: 128 } }
+        auth_schemes: { type: array, maxItems: 16, items: { type: string, maxLength: 64 } }
+
+    ApiA2aAgentUpdateRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [DISCOVERED, APPROVED, BLOCKED] }
+        description: { type: string, maxLength: 2000 }
+        allowed_skills: { type: array, maxItems: 64, items: { type: string, maxLength: 128 } }
+
+    ApiA2aEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        application_code: { type: string }
+        application_name: { type: string }
+        request_id: { type: string }
+        occurred_at: { type: string, format: date-time }
+        event_type: { type: string, enum: [A2A_AGENT_CARD_DISCOVERED, A2A_OBSERVED, A2A_BLOCKED, A2A_LOOP_KILLED, A2A_LETHAL_TRIFECTA] }
+        method: { type: string }
+        agent_name: { type: string }
+        delegation_depth: { type: integer }
+        rule_id: { type: string }
+        action_taken: { type: string }
+        reason: { type: string }
+        client_ip: { type: string }
+        created_at: { type: string, format: date-time }
+
+    ApiA2aEventListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiA2aEvent' }
+        total: { type: integer, format: int64 }
+        page: { type: integer }
+        page_size: { type: integer }

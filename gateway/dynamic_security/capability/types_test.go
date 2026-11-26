@@ -130,3 +130,24 @@ func TestCheckVersionMismatchListed(t *testing.T) {
 		t.Fatalf("ms=%v want contract_version 缺口", ms)
 	}
 }
+
+func TestCheckMCPPinV2ProtocolLevel(t *testing.T) {
+	node := nodeManifest()
+	node.Protocols["mcp"] = "pin_v2"
+	if msg := node.Validate(); msg != "" {
+		t.Fatalf("pin_v2 must be valid: %s", msg)
+	}
+	reqPin := Manifest{ContractVersion: ContractVersion, Protocols: map[string]string{"mcp": "pin_v2"}}
+	if ms := CheckRequirements(reqPin, node); len(ms) != 0 {
+		t.Fatalf("pin_v2 node must satisfy pin_v2: %+v", ms)
+	}
+	reqACL := Manifest{ContractVersion: ContractVersion, Protocols: map[string]string{"mcp": "acl_v1"}}
+	if ms := CheckRequirements(reqACL, node); len(ms) != 0 {
+		t.Fatalf("pin_v2 node must satisfy acl_v1: %+v", ms)
+	}
+	oldNode := nodeManifest()
+	oldNode.Protocols["mcp"] = "acl_v1"
+	if ms := CheckRequirements(reqPin, oldNode); missingKeys(ms) != "protocols.mcp" {
+		t.Fatalf("acl_v1 node must fail pin_v2 requirement: %+v", ms)
+	}
+}

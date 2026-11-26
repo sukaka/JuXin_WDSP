@@ -287,10 +287,17 @@ paths:
       tags: [security-events]
       summary: 从事件创建例外草稿
       description: >-
-        基于事件命中信息创建例外策略草稿（DRAFT 状态，需前往例外策略页面审核发布）。无请求体。
+        基于事件命中信息创建例外策略草稿（DRAFT 状态，自动排除 949110 等异常评分汇总规则）。
+        支持空请求体（默认 30 分钟临时、仅限事件客户端 IP）或可选偏好体（名称、原因、是否限定本次 IP、有效期及命中检测规则子集）；
+        应用、域名、路径、方法与来源事件均由服务端从事件记录提取，客户端不可覆盖。
         权限：exceptions.manage。记录操作审计（中风险）。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 事件 ID }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecEventCreateExceptionRequest' }
       responses:
         '200':
           description: 例外草稿已创建
@@ -1520,6 +1527,20 @@ components:
       properties:
         result: { type: string, description: 处置结论（缺省时取目标处置状态值） }
         note: { type: string, maxLength: 1000, description: 处置备注（非空时追加为事件备注） }
+
+    SecEventCreateExceptionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, maxLength: 128, description: 可选自定义例外名称 }
+        reason: { type: string, maxLength: 500, description: 可选自定义例外原因 }
+        restrict_source_ip: { type: boolean, default: true, description: 是否限定为本次事件客户端 IP（false 表示所有来源 IP 生效） }
+        is_temporary: { type: boolean, default: true, description: 是否为临时例外（false 表示永久例外） }
+        duration_minutes: { type: integer, minimum: 1, maximum: 525600, default: 30, description: 临时例外时长（分钟） }
+        rule_ids:
+          type: array
+          items: { type: integer }
+          description: 可选勾选事件命中检测规则的子集（必须属于事件实际命中的非评分汇总规则）
 
     SecEventCreateExceptionResult:
       type: object

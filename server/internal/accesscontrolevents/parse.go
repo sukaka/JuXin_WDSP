@@ -4,6 +4,7 @@ package accesscontrolevents
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/netip"
 	"strings"
 	"time"
@@ -113,6 +114,60 @@ var ClientSideEventTypes = []string{
 	EventTypeClientSideProbeAlert,
 }
 
+// A2A 协议安全治理事件类型（Phase 9C-1；网关 jiuzhang_guard apia2a/a2aguard 包产生——
+// 明细嵌套在 a2a 对象下，落 access_control_events.details.a2a JSONB 列，并经 Collector
+// 旁路回流 api_a2a_agents（AgBOM 发现）与 api_a2a_events 表）。
+const (
+	EventTypeA2AAgentCardDiscovered = "A2A_AGENT_CARD_DISCOVERED"
+	EventTypeA2AObserved            = "A2A_OBSERVED"
+	EventTypeA2ABlocked             = "A2A_BLOCKED"
+	EventTypeA2ALoopKilled          = "A2A_LOOP_KILLED"
+	EventTypeA2ALethalTrifecta      = "A2A_LETHAL_TRIFECTA"
+)
+
+// A2AEventTypes 全部 A2A 协议安全事件类型。
+var A2AEventTypes = []string{
+	EventTypeA2AAgentCardDiscovered,
+	EventTypeA2AObserved,
+	EventTypeA2ABlocked,
+	EventTypeA2ALoopKilled,
+	EventTypeA2ALethalTrifecta,
+}
+
+// 本地离线 ONNX/SLM 语义防火墙事件类型（Phase 9C-2；网关 jiuzhang_guard apisemantic/semantic 包产生——
+// 明细嵌套在 semantic 对象下，落 access_control_events.details.semantic JSONB 列；
+// 绝不落原始 Prompt/请求体/响应体原文，仅保留通道、标签、分数、模型 ID、耗时与截断字符数等结构化元数据）。
+const (
+	EventTypeSemanticObserved    = "SEMANTIC_OBSERVED"
+	EventTypeSemanticBlocked     = "SEMANTIC_BLOCKED"
+	EventTypeSemanticUnavailable = "SEMANTIC_UNAVAILABLE"
+)
+
+// SemanticEventTypes 全部本地语义防火墙事件类型。
+var SemanticEventTypes = []string{
+	EventTypeSemanticObserved,
+	EventTypeSemanticBlocked,
+	EventTypeSemanticUnavailable,
+}
+
+// Wasm 自定义检测插件沙箱事件类型（Phase 9D-1；网关 jiuzhang_guard apiwasm/wasmplugin 包产生——
+// 明细嵌套在 wasm_plugin 对象下，落 access_control_events.details.wasm_plugin JSONB 列；
+// 绝不落原始 wasm_binary/wasm_base64/请求体或凭据头原文）。
+const (
+	EventTypeWasmPluginObserved  = "WASM_PLUGIN_OBSERVED"
+	EventTypeWasmPluginBlock     = "WASM_PLUGIN_BLOCK"
+	EventTypeWasmPluginRateLimit = "WASM_PLUGIN_RATE_LIMIT"
+	EventTypeWasmPluginError     = "WASM_PLUGIN_ERROR"
+)
+
+// WasmPluginEventTypes 全部 Wasm 检测插件事件类型。
+var WasmPluginEventTypes = []string{
+	EventTypeWasmPluginObserved,
+	EventTypeWasmPluginBlock,
+	EventTypeWasmPluginRateLimit,
+	EventTypeWasmPluginError,
+}
+
 // 风险处置动作契约（action_taken → 事件 action 列映射；blocked/rate_limited
 // 为实际拒绝记 REJECT，challenged 记 CHALLENGE，OBSERVE 模式的 would_* 记 OBSERVE）。
 var riskPolicyActionTaken = map[string]string{
@@ -217,6 +272,67 @@ type rawEvent struct {
 	// ClientSide 客户端供应链安全事件明细（CLIENT_SIDE_* 契约：网关将明细嵌套在
 	// "client_side" 对象下，仅按声明字段落 details.client_side，未声明字段解码期丢弃）。
 	ClientSide *rawClientSideDetail `json:"client_side"`
+	// A2A 协议安全事件明细（A2A_* 契约：网关将明细嵌套在 "a2a" 对象下，
+	// 仅按声明字段落 details.a2a，未声明字段解码期丢弃）。
+	A2A *rawA2ADetail `json:"a2a"`
+	// Semantic 本地离线语义防火墙事件明细（SEMANTIC_* 契约：网关将明细嵌套在 "semantic" 对象下，
+	// 仅按声明字段落 details.semantic，未声明字段（如 raw prompt/body）解码期即丢弃）。
+	Semantic *rawSemanticDetail `json:"semantic"`
+	// WasmPlugin Wasm 检测插件事件明细（WASM_PLUGIN_* 契约：网关将明细嵌套在 "wasm_plugin" 对象下，
+	// 仅按声明字段落 details.wasm_plugin，未声明字段解码期即丢弃）。
+	WasmPlugin *rawWasmPluginDetail `json:"wasm_plugin"`
+}
+
+// rawWasmPluginDetail WASM_PLUGIN_* 事件的嵌套明细（与网关 events.WasmPluginDetail 同形；
+// 独立定义防循环依赖，且由类型系统保证未声明敏感字段在解码期丢弃）。
+type rawWasmPluginDetail struct {
+	PluginID      string `json:"plugin_id"`
+	PluginName    string `json:"plugin_name"`
+	PluginVersion *int   `json:"plugin_version"`
+	ABIVersion    string `json:"abi_version"`
+	Mode          string `json:"mode"`
+	SHA256        string `json:"sha256"`
+	RuleID        string `json:"rule_id"`
+	Reason        string `json:"reason"`
+	ScoreDelta    *int   `json:"score_delta"`
+	LatencyMs     *int64 `json:"latency_ms"`
+	FailPolicy    string `json:"fail_policy"`
+	ActionTaken   string `json:"action_taken"`
+	Error         string `json:"error"`
+}
+
+// rawSemanticDetail SEMANTIC_* 事件的嵌套明细（与网关 events.SemanticDetail 同形；
+// 独立定义防循环依赖，且由类型系统保证原始提示词/请求体/凭据等未声明字段在解码期丢弃）。
+type rawSemanticDetail struct {
+	PolicyVersion *int     `json:"policy_version"`
+	Mode          string   `json:"mode"`
+	Channel       string   `json:"channel"`
+	RuleID        string   `json:"rule_id"`
+	Label         string   `json:"label"`
+	Score         *float64 `json:"score"`
+	ModelID       string   `json:"model_id"`
+	LatencyMs     *int64   `json:"latency_ms"`
+	InputRunes    *int     `json:"input_runes"`
+	FailPolicy    string   `json:"fail_policy"`
+	ActionTaken   string   `json:"action_taken"`
+	Reason        string   `json:"reason"`
+}
+
+// rawA2ADetail A2A_* 事件的嵌套明细（与网关 events.A2ADetail 同形；
+// 独立定义防循环依赖，且由类型系统保证未声明字段在解码期丢弃）。
+type rawA2ADetail struct {
+	PolicyVersion   *int     `json:"policy_version"`
+	Mode            string   `json:"mode"`
+	Method          string   `json:"method"`
+	AgentName       string   `json:"agent_name"`
+	AgentURL        string   `json:"agent_url"`
+	AgentVersion    string   `json:"agent_version"`
+	Skills          []string `json:"skills"`
+	AuthSchemes     []string `json:"auth_schemes"`
+	DelegationDepth *int     `json:"delegation_depth"`
+	RuleID          string   `json:"rule_id"`
+	ActionTaken     string   `json:"action_taken"`
+	Reason          string   `json:"reason"`
 }
 
 // rawClientSideDetail CLIENT_SIDE_* 事件的嵌套明细（与网关 events.ClientSideDetail 同形；
@@ -369,6 +485,21 @@ func ParseEventLine(line []byte, defaultNode string) (*Event, error) {
 	}
 	if isClientSideEventType(evt.EventType) {
 		if err := applyClientSideEvent(evt, &raw); err != nil {
+			return nil, err
+		}
+	}
+	if isA2AEventType(evt.EventType) {
+		if err := applyA2AEvent(evt, &raw); err != nil {
+			return nil, err
+		}
+	}
+	if isSemanticEventType(evt.EventType) {
+		if err := applySemanticEvent(evt, &raw); err != nil {
+			return nil, err
+		}
+	}
+	if isWasmPluginEventType(evt.EventType) {
+		if err := applyWasmPluginEvent(evt, &raw); err != nil {
 			return nil, err
 		}
 	}
@@ -532,6 +663,205 @@ func applyClientSideEvent(evt *Event, raw *rawEvent) error {
 	}
 	evt.Details = map[string]interface{}{"client_side": details}
 	return nil
+}
+
+// isA2AEventType 判定 A2A 协议安全事件类型（A2A_*）。
+func isA2AEventType(t string) bool {
+	switch t {
+	case EventTypeA2AAgentCardDiscovered,
+		EventTypeA2AObserved,
+		EventTypeA2ABlocked,
+		EventTypeA2ALoopKilled,
+		EventTypeA2ALethalTrifecta:
+		return true
+	}
+	return false
+}
+
+// applyA2AEvent 校验 A2A_* 事件并填充 details.a2a 证据载荷
+// （a2a 对象缺失 → 解析失败入错误文件，不静默落库；未声明字段由类型系统丢弃）。
+func applyA2AEvent(evt *Event, raw *rawEvent) error {
+	a2a := raw.A2A
+	if a2a == nil {
+		return fmt.Errorf("a2a event missing a2a details")
+	}
+	details := map[string]interface{}{}
+	if a2a.PolicyVersion != nil {
+		details["policy_version"] = *a2a.PolicyVersion
+	}
+	if a2a.Mode != "" {
+		details["mode"] = truncate(a2a.Mode, 16)
+	}
+	if a2a.Method != "" {
+		details["method"] = truncate(a2a.Method, 128)
+	}
+	if a2a.AgentName != "" {
+		details["agent_name"] = truncate(a2a.AgentName, 256)
+	}
+	if a2a.AgentURL != "" {
+		details["agent_url"] = truncate(a2a.AgentURL, 2048)
+	}
+	if a2a.AgentVersion != "" {
+		details["agent_version"] = truncate(a2a.AgentVersion, 64)
+	}
+	if len(a2a.Skills) > 0 {
+		details["skills"] = clampStringSlice(a2a.Skills, 32, 128)
+	}
+	if len(a2a.AuthSchemes) > 0 {
+		details["auth_schemes"] = clampStringSlice(a2a.AuthSchemes, 16, 64)
+	}
+	if a2a.DelegationDepth != nil {
+		details["delegation_depth"] = *a2a.DelegationDepth
+	}
+	if a2a.RuleID != "" {
+		details["rule_id"] = truncate(a2a.RuleID, 128)
+	}
+	if a2a.ActionTaken != "" {
+		details["action_taken"] = truncate(a2a.ActionTaken, 32)
+	}
+	if a2a.Reason != "" {
+		details["reason"] = truncate(a2a.Reason, 512)
+	}
+	evt.Details = map[string]interface{}{"a2a": details}
+	return nil
+}
+
+// isSemanticEventType 判定本地语义防火墙事件类型（SEMANTIC_*）。
+func isSemanticEventType(t string) bool {
+	switch t {
+	case EventTypeSemanticObserved,
+		EventTypeSemanticBlocked,
+		EventTypeSemanticUnavailable:
+		return true
+	}
+	return false
+}
+
+// applySemanticEvent 校验 SEMANTIC_* 事件并填充 details.semantic 证据载荷
+// （semantic 对象缺失 → 解析失败入错误文件，不静默落库；未声明字段由类型系统丢弃，绝不落原始文本）。
+func applySemanticEvent(evt *Event, raw *rawEvent) error {
+	sem := raw.Semantic
+	if sem == nil {
+		return fmt.Errorf("semantic event missing semantic details")
+	}
+	details := map[string]interface{}{}
+	if sem.PolicyVersion != nil {
+		details["policy_version"] = *sem.PolicyVersion
+	}
+	if sem.Mode != "" {
+		details["mode"] = truncate(sem.Mode, 16)
+	}
+	if sem.Channel != "" {
+		details["channel"] = truncate(sem.Channel, 32)
+	}
+	if sem.RuleID != "" {
+		details["rule_id"] = truncate(sem.RuleID, 128)
+	}
+	if sem.Label != "" {
+		details["label"] = truncate(sem.Label, 64)
+	}
+	if sem.Score != nil && !math.IsNaN(*sem.Score) && !math.IsInf(*sem.Score, 0) {
+		details["score"] = *sem.Score
+	}
+	if sem.ModelID != "" {
+		details["model_id"] = truncate(sem.ModelID, 128)
+	}
+	if sem.LatencyMs != nil {
+		details["latency_ms"] = *sem.LatencyMs
+	}
+	if sem.InputRunes != nil {
+		details["input_runes"] = *sem.InputRunes
+	}
+	if sem.FailPolicy != "" {
+		details["fail_policy"] = truncate(sem.FailPolicy, 16)
+	}
+	if sem.ActionTaken != "" {
+		details["action_taken"] = truncate(sem.ActionTaken, 32)
+	}
+	if sem.Reason != "" {
+		details["reason"] = truncate(sem.Reason, 512)
+	}
+	evt.Details = map[string]interface{}{"semantic": details}
+	return nil
+}
+
+// isWasmPluginEventType 判定 Wasm 检测插件事件类型（WASM_PLUGIN_*）。
+func isWasmPluginEventType(t string) bool {
+	switch t {
+	case EventTypeWasmPluginObserved,
+		EventTypeWasmPluginBlock,
+		EventTypeWasmPluginRateLimit,
+		EventTypeWasmPluginError:
+		return true
+	}
+	return false
+}
+
+// applyWasmPluginEvent 校验 WASM_PLUGIN_* 事件并填充 details.wasm_plugin 证据载荷
+// （wasm_plugin 对象缺失 → 解析失败入错误文件，不静默落库；未声明字段由类型系统丢弃）。
+func applyWasmPluginEvent(evt *Event, raw *rawEvent) error {
+	wp := raw.WasmPlugin
+	if wp == nil {
+		return fmt.Errorf("wasm plugin event missing wasm_plugin details")
+	}
+	details := map[string]interface{}{}
+	if wp.PluginID != "" {
+		details["plugin_id"] = truncate(wp.PluginID, 64)
+	}
+	if wp.PluginName != "" {
+		details["plugin_name"] = truncate(wp.PluginName, 128)
+	}
+	if wp.PluginVersion != nil {
+		details["plugin_version"] = *wp.PluginVersion
+	}
+	if wp.ABIVersion != "" {
+		details["abi_version"] = truncate(wp.ABIVersion, 32)
+	}
+	if wp.Mode != "" {
+		details["mode"] = truncate(wp.Mode, 16)
+	}
+	if wp.SHA256 != "" {
+		details["sha256"] = truncate(wp.SHA256, 64)
+	}
+	if wp.RuleID != "" {
+		details["rule_id"] = truncate(wp.RuleID, 128)
+	}
+	if wp.Reason != "" {
+		details["reason"] = truncate(wp.Reason, 256)
+	}
+	if wp.ScoreDelta != nil {
+		details["score_delta"] = *wp.ScoreDelta
+	}
+	if wp.LatencyMs != nil {
+		details["latency_ms"] = *wp.LatencyMs
+	}
+	if wp.FailPolicy != "" {
+		details["fail_policy"] = truncate(wp.FailPolicy, 16)
+	}
+	if wp.ActionTaken != "" {
+		details["action_taken"] = truncate(wp.ActionTaken, 32)
+	}
+	if wp.Error != "" {
+		details["error"] = truncate(wp.Error, 256)
+	}
+	evt.Details = map[string]interface{}{"wasm_plugin": details}
+	return nil
+}
+
+func clampStringSlice(in []string, maxItems, maxItemLen int) []string {
+	limit := len(in)
+	if limit > maxItems {
+		limit = maxItems
+	}
+	out := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		s := strings.TrimSpace(in[i])
+		if s == "" {
+			continue
+		}
+		out = append(out, truncate(s, maxItemLen))
+	}
+	return out
 }
 
 // applyRiskPolicyEvent 校验风险处置事件并填充 details 证据载荷与 action 列

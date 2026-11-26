@@ -24,6 +24,8 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 		authz(middleware.RequirePermission("api_spec.manage")(http.HandlerFunc(h.DeleteCatalog))))
 	mux.Handle("POST /api/v1/api-security/mcp/tool-catalogs/{id}/tools/{toolId}/review",
 		authz(middleware.RequirePermission("api_spec.manage")(http.HandlerFunc(h.ReviewTool))))
+	mux.Handle("POST /api/v1/api-security/mcp/tools/{id}/pin",
+		authz(middleware.RequirePermission("api_spec.manage")(http.HandlerFunc(h.PinTool))))
 	// 绑定 CRUD
 	mux.Handle("GET /api/v1/api-security/mcp/bindings",
 		authz(middleware.RequirePermission("api_spec.read")(http.HandlerFunc(h.ListBindings))))

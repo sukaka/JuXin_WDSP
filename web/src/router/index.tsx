@@ -99,6 +99,9 @@ const AiCrawlPage = lazy(() => import('../pages/ai-crawl/AiCrawlPage'))
 const ClientSideSecurityPage = lazy(
   () => import('../pages/client-side-security/ClientSideSecurityPage'),
 )
+const WasmPluginsPage = lazy(
+  () => import('../pages/wasm-plugins/WasmPluginsPage'),
+)
 const ApiEndpointsPage = lazy(
   () => import('../pages/api-endpoints/ApiEndpointsPage'),
 )
@@ -132,6 +135,7 @@ const ApiSensitiveFieldsPage = lazy(
 )
 const ApiSpecsPage = lazy(() => import('../pages/api-specs/ApiSpecsPage'))
 const ApiMcpPage = lazy(() => import('../pages/api-mcp/ApiMcpPage'))
+const ApiA2aPage = lazy(() => import('../pages/api-a2a/ApiA2aPage'))
 const ApiMachineIdentitiesPage = lazy(
   () => import('../pages/api-machine-identities/ApiMachineIdentitiesPage'),
 )
@@ -289,6 +293,9 @@ const NetworkConfigPage = lazy(
 )
 const NetworkToolsPage = lazy(
   () => import('../pages/network-tools/NetworkToolsPage'),
+)
+const XdpAccelerationPage = lazy(
+  () => import('../pages/xdp-acceleration/XdpAccelerationPage'),
 )
 const SystemContainersPage = lazy(
   () => import('../pages/system-containers/SystemContainersPage'),
@@ -840,6 +847,15 @@ export default function AppRoutes() {
               </RequirePermission>
             }
           />
+          {/* WDSP Phase 9D-1：Wasm 热插拔自定义检测插件沙箱 */}
+          <Route
+            path="wasm-plugins"
+            element={
+              <RequirePermission permission="wasm_plugins.read">
+                <WasmPluginsPage />
+              </RequirePermission>
+            }
+          />
           <Route
             path="api-endpoints"
             element={
@@ -984,6 +1000,17 @@ export default function AppRoutes() {
               <RequireAPIDynamicProtection>
                 <RequirePermission permission="api_spec.read">
                   <ApiMcpPage />
+                </RequirePermission>
+              </RequireAPIDynamicProtection>
+            }
+          />
+          {/* WDSP Phase 9C-1：A2A 协议安全与 AgBOM 治理 */}
+          <Route
+            path="api-a2a"
+            element={
+              <RequireAPIDynamicProtection>
+                <RequirePermission permission="api_a2a.read">
+                  <ApiA2aPage />
                 </RequirePermission>
               </RequireAPIDynamicProtection>
             }
@@ -1531,6 +1558,14 @@ export default function AppRoutes() {
             element={
               <RequirePermission permission="network_tools.execute">
                 <NetworkToolsPage />
+              </RequirePermission>
+            }
+          />
+          <Route
+            path="xdp-acceleration"
+            element={
+              <RequirePermission permission="xdp_accel.read">
+                <XdpAccelerationPage />
               </RequirePermission>
             }
           />

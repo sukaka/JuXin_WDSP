@@ -15,6 +15,7 @@ vi.mock('../../../api/mcp', () => ({
     updateCatalog: vi.fn(),
     deleteCatalog: vi.fn(),
     reviewTool: vi.fn(),
+    pinTool: vi.fn(),
     listBindings: vi.fn(),
   },
 }))
@@ -60,6 +61,8 @@ const tools = [
     description_digest: 'd1',
     description_preview: '回显参数',
     tool_hash: `mcp-tool-sha256:v1:${'b'.repeat(64)}`,
+    pinned_definition_hash: `mcp-def-sha256:v1:${'f'.repeat(64)}`,
+    pin_enforcement: 'PROTECT',
     capability_tags: [],
     risk_level: 'LOW',
     data_classification: 'PUBLIC',
@@ -144,6 +147,13 @@ describe('ApiMcpPage / CatalogsTab（NG-MCP G1 目录列表与审核状态机）
     vi.mocked(mcpApi.reviewTool).mockImplementation((_c, _t, body) =>
       Promise.resolve({ ...tools[1], ...body, reviewed_by: 'sec', reviewed_at: '2026-10-06T00:00:00Z' } as never),
     )
+    vi.mocked(mcpApi.pinTool).mockImplementation((_toolId, body) =>
+      Promise.resolve({
+        ...tools[1],
+        pin_enforcement: body.pin_enforcement,
+        pinned_definition_hash: `mcp-def-sha256:v1:${'e'.repeat(64)}`,
+      } as never),
+    )
     vi.mocked(mcpApi.listBindings).mockResolvedValue({ items: [], total: 0 })
   })
 
@@ -220,10 +230,33 @@ describe('ApiMcpPage / CatalogsTab（NG-MCP G1 目录列表与审核状态机）
     expect(screen.queryByRole('button', { name: /导入工具目录/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '再导入' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '删除' })).not.toBeInTheDocument()
-    // 详情抽屉内审核按钮同样隐藏
+    // 详情抽屉内审核与钉扎按钮同样隐藏
     fireEvent.click(screen.getByRole('button', { name: '详情' }))
     await screen.findByText('charge')
     expect(screen.queryByRole('button', { name: '审核' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '钉扎/策略' })).not.toBeInTheDocument()
+  })
+
+  it('Phase 9C-1 工具定义钉扎：展示缩短钉扎哈希/策略标签，并支持弹窗切换 PROTECT 与 repin', async () => {
+    renderUi(<CatalogsTab />, FULL)
+    fireEvent.click(await screen.findByRole('button', { name: '详情' }))
+    expect(await screen.findByText(`${'f'.repeat(12)}…`)).toBeInTheDocument()
+    expect(screen.getByText('强制阻断')).toBeInTheDocument()
+    expect(screen.getAllByText('未钉扎').length).toBeGreaterThanOrEqual(1)
+
+    const chargeRow = (await screen.findByText('charge')).closest('tr') as HTMLElement
+    fireEvent.click(within(chargeRow).getByRole('button', { name: '钉扎/策略' }))
+    const dialogs = await screen.findAllByRole('dialog')
+    const modal = dialogs[dialogs.length - 1]
+    fireEvent.click(within(modal).getByText('强制阻断（漂移即拒返）'))
+    fireEvent.click(within(modal).getByRole('button', { name: '保存钉扎策略' }))
+
+    await waitFor(() =>
+      expect(mcpApi.pinTool).toHaveBeenCalledWith('t2', {
+        pin_enforcement: 'PROTECT',
+        repin: true,
+      }),
+    )
   })
 
   it('B12-03：再导入展示只读描述预览；未修改描述发送 preserve_description=true，修改描述则不发送', async () => {

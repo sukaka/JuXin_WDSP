@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +36,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/aiprompts"
 	"github.com/jiuzhang-waf/server/internal/aitools"
 	"github.com/jiuzhang-waf/server/internal/analytics"
+	"github.com/jiuzhang-waf/server/internal/apia2a"
 	"github.com/jiuzhang-waf/server/internal/apiassets"
 	"github.com/jiuzhang-waf/server/internal/apiauthz"
 	"github.com/jiuzhang-waf/server/internal/apiauthzacks"
@@ -114,6 +114,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/security"
 	"github.com/jiuzhang-waf/server/internal/securityevents"
 	"github.com/jiuzhang-waf/server/internal/securityidentities"
+	"github.com/jiuzhang-waf/server/internal/semanticguard"
 	"github.com/jiuzhang-waf/server/internal/sessions"
 	"github.com/jiuzhang-waf/server/internal/settings"
 	"github.com/jiuzhang-waf/server/internal/sitediscovery"
@@ -133,6 +134,8 @@ import (
 	"github.com/jiuzhang-waf/server/internal/vulnintel"
 	"github.com/jiuzhang-waf/server/internal/vulnrefs"
 	"github.com/jiuzhang-waf/server/internal/wafrules"
+	"github.com/jiuzhang-waf/server/internal/wasmplugins"
+	"github.com/jiuzhang-waf/server/internal/xdpaccel"
 )
 
 // App 是管理后端应用。
@@ -200,6 +203,8 @@ type App struct {
 	dataflowWorker          *apidataflow.DataflowWorker
 	requestPCAP             *requestpcap.Runtime
 	acmeWorker              *acme.Worker
+	// 内核级 eBPF/XDP 快速丢包加速同步器（Phase 9D-2；迁移 000250；StartStage6Workers 内启动 fail-open 周期同步）
+	xdpSyncer *xdpaccel.Syncer
 }
 
 func (a *App) StartRequestPCAP(ctx context.Context) {
@@ -397,6 +402,12 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	aiCrawlStore := aicrawl.NewStore(db)
 	// 客户端供应链安全防护（Phase 9B；PCI DSS 4.0 6.4.3 & 11.6.1；迁移 000246）
 	clientSideStore := clientside.NewStore(db)
+	// A2A 协议安全治理与 AgBOM（Phase 9C-1；迁移 000247）
+	apiA2AStore := apia2a.NewStore(db)
+	// 本地离线 ONNX/SLM 语义防火墙策略与边车状态探测（Phase 9C-2；迁移 000248）
+	semanticGuardStore := semanticguard.NewStore(db)
+	// Wasm 热插拔自定义检测插件沙箱（Phase 9D-1；迁移 000249）
+	wasmPluginStore := wasmplugins.NewStore(db)
 	// 安全回归证据登记与发布门禁（WDSP P1-04 R3；表见迁移 000134，权限种子见 000135）。
 	// 受控证据存储为双方共用的受控本地存储适配器（S0 协调表：P0-01 服务端存储不存在，
 	// 由本任务提供）；装配失败 fail-closed（证据根目录不可写时不带病启动）。
@@ -503,6 +514,12 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	}
 	// 客户端供应链安全处理器（Phase 9B；策略草稿、脚本台账、违规处置与 PCI DSS 合规证据导出）
 	clientSideHandler := clientside.NewHandler(clientSideStore, appStore, auditSvc)
+	// A2A 协议安全治理与 AgBOM 处理器（Phase 9C-1）
+	apiA2AHandler := apia2a.NewHandler(apiA2AStore, appStore, auditSvc)
+	// 本地离线 ONNX/SLM 语义防火墙处理器（Phase 9C-2）
+	semanticGuardHandler := semanticguard.NewHandler(semanticGuardStore, appStore, auditSvc)
+	// Wasm 热插拔自定义检测插件处理器（Phase 9D-1）
+	wasmPluginHandler := wasmplugins.NewHandler(wasmPluginStore, appStore, auditSvc)
 	// 攻击活动会话处理器
 	attackSessionHandler := attacksessions.NewHandler(attackSessionStore)
 
@@ -547,6 +564,12 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		}
 		// 客户端供应链安全策略与已授权/已封禁脚本清单（Phase 9B；迁移 000246；读取失败 fail-hard）
 		guardProvider.SetClientSideLister(clientSideStore)
+		// A2A 协议安全策略（Phase 9C-1；迁移 000247；读取失败 fail-hard）
+		guardProvider.SetA2ALister(apiA2AStore)
+		// 本地离线 ONNX/SLM 语义防火墙策略（Phase 9C-2；迁移 000248；读取失败 fail-hard）
+		guardProvider.SetSemanticGuardLister(semanticGuardStore)
+		// Wasm 自定义检测插件（Phase 9D-1；迁移 000249；读取失败 fail-hard）
+		guardProvider.SetWasmPluginLister(wasmPluginStore)
 		// API 引擎受限例外（exception_policies target_engine=API 启用行）随发布下发
 		// api_exceptions 段（仅 WDSP 开启；读取失败中止发布 fail-hard；无启用行不下发该段）
 		guardProvider.SetAPIExceptionsLister(exceptionStore)
@@ -1070,6 +1093,11 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	netdiagStore := netdiag.NewStore(db)
 	netdiagWorker := netdiag.NewWorker(netdiagStore, cfg.WAF.SidecarDir, netdiagDataDir, cfg.WAF.GatewayNodeName)
 	netdiagHandler := netdiag.NewHandler(netdiagStore, auditSvc, cfg.WAF.SidecarDir, netdiagDataDir, cfg.WAF.GatewayNodeName)
+	// 内核级 eBPF/XDP 快速丢包加速（Phase 9D-2；迁移 000250；受控本地 Unix Socket 通信，默认关闭）
+	xdpStore := xdpaccel.NewStore(db)
+	xdpClient := xdpaccel.NewUnixClient(0, 0)
+	xdpSyncer := xdpaccel.NewSyncer(xdpStore, xdpClient)
+	xdpHandler := xdpaccel.NewHandler(xdpStore, xdpClient, xdpSyncer, auditSvc)
 	// syslog 外发（三期）：spool 落在可写数据目录
 	syslogFw := syslogfw.NewForwarder(settingsSvc, cfg.Gateway.DataDir)
 	syslogHandler := syslogfw.NewHandler(syslogFw, auditSvc)
@@ -1123,6 +1151,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	a.licenseSvc = licSvc
 	a.attackSessionAgg = attackSessionAgg
 	a.vulnIntelSyncer = vulnIntelSyncer
+	a.xdpSyncer = xdpSyncer
 	// 离线授权配额用量（status/import 响应 usage 字段）：应用计数经 appStore（加密服务
 	// 缺失形态下为 nil 计 0），API 端点计数经 apiassets（表由阶段8迁移建立，waf 包恒 0）
 	licHandler.SetUsageProvider(func(ctx context.Context) (int64, int64, error) {
@@ -1271,6 +1300,12 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	// ---- 网络诊断工具（ping/端口探测/路由追踪/DNS 查询/抓包） ----
 	netdiagHandler.RegisterRoutes(mux, authz)
 
+	// ---- 内核级 eBPF/XDP 快速丢包加速（Phase 9D-2；迁移 000250） ----
+	mux.Handle("GET /api/v1/xdp-acceleration/config", authz(middleware.RequirePermission("xdp_accel.read")(http.HandlerFunc(xdpHandler.GetConfig))))
+	mux.Handle("PUT /api/v1/xdp-acceleration/config", authz(middleware.RequirePermission("xdp_accel.manage")(http.HandlerFunc(xdpHandler.PutConfig))))
+	mux.Handle("GET /api/v1/xdp-acceleration/status", authz(middleware.RequirePermission("xdp_accel.read")(http.HandlerFunc(xdpHandler.GetStatus))))
+	mux.Handle("POST /api/v1/xdp-acceleration/sync", authz(middleware.RequirePermission("xdp_accel.manage")(http.HandlerFunc(xdpHandler.PostSync))))
+
 	// ---- 阶段3：Web应用/域名/源站/证书/配置发布/版本/网关状态 ----
 	if encSvc != nil {
 		// Web应用
@@ -1311,6 +1346,25 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		mux.Handle("GET /api/v1/client-side/violations", authz(middleware.RequirePermission("client_side.read")(http.HandlerFunc(clientSideHandler.ListViolations))))
 		mux.Handle("PUT /api/v1/client-side/violations/{id}/status", authz(middleware.RequirePermission("client_side.manage")(http.HandlerFunc(clientSideHandler.UpdateViolationStatus))))
 		mux.Handle("GET /api/v1/client-side/compliance-export", authz(middleware.RequirePermission("client_side.read")(http.HandlerFunc(clientSideHandler.ExportCompliance))))
+		// A2A 协议安全治理与 AgBOM（Phase 9C-1；迁移 000247）
+		mux.Handle("GET /api/v1/applications/{id}/a2a-policy", authz(middleware.RequirePermission("api_a2a.read")(http.HandlerFunc(apiA2AHandler.GetPolicy))))
+		mux.Handle("PUT /api/v1/applications/{id}/a2a-policy", authz(middleware.RequirePermission("api_a2a.manage")(http.HandlerFunc(apiA2AHandler.PutPolicy))))
+		mux.Handle("GET /api/v1/api-security/a2a/agents", authz(middleware.RequirePermission("api_a2a.read")(http.HandlerFunc(apiA2AHandler.ListAgents))))
+		mux.Handle("POST /api/v1/api-security/a2a/agents", authz(middleware.RequirePermission("api_a2a.manage")(http.HandlerFunc(apiA2AHandler.CreateAgent))))
+		mux.Handle("PUT /api/v1/api-security/a2a/agents/{id}", authz(middleware.RequirePermission("api_a2a.manage")(http.HandlerFunc(apiA2AHandler.UpdateAgent))))
+		mux.Handle("DELETE /api/v1/api-security/a2a/agents/{id}", authz(middleware.RequirePermission("api_a2a.manage")(http.HandlerFunc(apiA2AHandler.DeleteAgent))))
+		mux.Handle("GET /api/v1/api-security/a2a/events", authz(middleware.RequirePermission("api_a2a.read")(http.HandlerFunc(apiA2AHandler.ListEvents))))
+		// 本地离线 ONNX/SLM 语义防火墙（Phase 9C-2；迁移 000248）
+		mux.Handle("GET /api/v1/semantic-guard/status", authz(middleware.RequirePermission("semantic_guard.read")(http.HandlerFunc(semanticGuardHandler.GetStatus))))
+		mux.Handle("GET /api/v1/applications/{id}/semantic-guard-policy", authz(middleware.RequirePermission("semantic_guard.read")(http.HandlerFunc(semanticGuardHandler.GetPolicy))))
+		mux.Handle("PUT /api/v1/applications/{id}/semantic-guard-policy", authz(middleware.RequirePermission("semantic_guard.manage")(http.HandlerFunc(semanticGuardHandler.PutPolicy))))
+		// Wasm 热插拔自定义检测插件沙箱（Phase 9D-1；迁移 000249）
+		mux.Handle("GET /api/v1/wasm-plugins", authz(middleware.RequirePermission("wasm_plugins.read")(http.HandlerFunc(wasmPluginHandler.List))))
+		mux.Handle("POST /api/v1/wasm-plugins", authz(middleware.RequirePermission("wasm_plugins.manage")(http.HandlerFunc(wasmPluginHandler.Create))))
+		mux.Handle("GET /api/v1/wasm-plugins/{id}", authz(middleware.RequirePermission("wasm_plugins.read")(http.HandlerFunc(wasmPluginHandler.Get))))
+		mux.Handle("PUT /api/v1/wasm-plugins/{id}", authz(middleware.RequirePermission("wasm_plugins.manage")(http.HandlerFunc(wasmPluginHandler.Update))))
+		mux.Handle("POST /api/v1/wasm-plugins/{id}/rollback", authz(middleware.RequirePermission("wasm_plugins.manage")(http.HandlerFunc(wasmPluginHandler.Rollback))))
+		mux.Handle("DELETE /api/v1/wasm-plugins/{id}", authz(middleware.RequirePermission("wasm_plugins.manage")(http.HandlerFunc(wasmPluginHandler.Delete))))
 		// 安全回归证据登记与发布门禁（WDSP P1-04 R3 §7.1；权限种子见迁移 000135；
 		// 导入只接受已登记受控对象 ID，不接收 URL/路径/压缩包/shell，不执行测试命令）
 		mux.Handle("GET /api/v1/security/regressions", authz(middleware.RequirePermission("security_regression.read")(http.HandlerFunc(regressionHandler.List))))
@@ -2915,6 +2969,11 @@ func (a *App) StartStage6Workers(ctx context.Context) {
 			return a.settings.GetBool(ctx, vulnintel.SettingsGroup, vulnintel.KeySyncEnabled, false)
 		})
 	}
+	// 内核级 eBPF/XDP 快速丢包加速周期同步（Phase 9D-2：默认关闭空转；启用时按 sync_interval_seconds
+	// fail-open 同步全局 IP 黑名单与全局临时封禁至 xdpguard，不阻断管理面）
+	if a.xdpSyncer != nil {
+		go a.xdpSyncer.StartLoop(ctx)
+	}
 }
 
 // authChain 构造认证链：会话解析 → 认证检查 → CSRF 防护。
@@ -3012,35 +3071,42 @@ type eventExceptionCreator struct {
 
 // CreateFromEvent 实现 securityevents.ExceptionCreator 接口。
 // P0-04 契约 §9：ApplicationID/Method/Path（不含 query）/RuleIDs/SourceEventID 全部
-// 取自服务端事件记录（规则 ID 经 GetByID 重取 matches 去重）；缺应用或规则证据时
-// 草稿为 NEEDS_REVIEW，启用门禁拒绝并说明缺失项。
-func (e *eventExceptionCreator) CreateFromEvent(ctx context.Context, evt *securityevents.Event, createdBy uuid.UUID) (uuid.UUID, error) {
-	var ruleIDs []int
+// 取自服务端事件记录（规则 ID 经 GetByID 重取 matches 去重并自动排除 949110 等评分评估规则）；
+// 客户端仅允许在可信检测规则中勾选子集，以及调整名称/原因/是否限定本次 IP/有效期；
+// 缺应用或规则证据时草稿为 NEEDS_REVIEW，启用门禁拒绝并说明缺失项。
+func (e *eventExceptionCreator) CreateFromEvent(ctx context.Context, evt *securityevents.Event, createdBy uuid.UUID, opts securityevents.CreateExceptionOptions) (uuid.UUID, error) {
+	var rawRuleIDs []int
 	if e.events != nil {
 		_, matches, err := e.events.GetByID(ctx, evt.ID)
 		if err != nil {
 			return uuid.Nil, fmt.Errorf("load event %s matches for exception draft: %w", evt.ID, err)
 		}
-		seen := map[int]bool{}
 		for _, m := range matches {
-			if m.RuleID > 0 && !seen[m.RuleID] {
-				seen[m.RuleID] = true
-				ruleIDs = append(ruleIDs, m.RuleID)
+			if m.RuleID > 0 {
+				rawRuleIDs = append(rawRuleIDs, m.RuleID)
 			}
 		}
-		sort.Ints(ruleIDs) // 编译摘要随 rule_ids 顺序变化，排序保证确定性
+	}
+	ruleIDs, err := exceptions.FilterEventRuleIDs(rawRuleIDs, opts.RuleIDs)
+	if err != nil {
+		return uuid.Nil, err
 	}
 	return e.store.CreateFromEvent(ctx, exceptions.CreateFromEventInput{
-		EventID:       evt.ID,
-		SourceEventID: evt.ID,
-		ApplicationID: evt.ApplicationID,
-		Method:        evt.Method,
-		Path:          evt.Path,
-		ClientIP:      evt.ClientIP,
-		Domain:        evt.Domain,
-		AttackType:    evt.AttackType,
-		RuleIDs:       ruleIDs,
-		CreatedBy:     createdBy,
+		EventID:          evt.ID,
+		SourceEventID:    evt.ID,
+		ApplicationID:    evt.ApplicationID,
+		Method:           evt.Method,
+		Path:             evt.Path,
+		ClientIP:         evt.ClientIP,
+		Domain:           evt.Domain,
+		AttackType:       evt.AttackType,
+		RuleIDs:          ruleIDs,
+		CreatedBy:        createdBy,
+		Name:             opts.Name,
+		Reason:           opts.Reason,
+		RestrictSourceIP: opts.RestrictSourceIP,
+		IsTemporary:      opts.IsTemporary,
+		DurationMinutes:  opts.DurationMinutes,
 	})
 }
 

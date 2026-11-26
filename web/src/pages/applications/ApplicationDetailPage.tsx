@@ -39,6 +39,8 @@ import JwtTrustTab from './detail/JwtTrustTab'
 import BotPolicyTab from './detail/BotPolicyTab'
 import AiCrawlTab from './detail/AiCrawlTab'
 import ClientSideTab from './detail/ClientSideTab'
+import A2aPolicyTab from './detail/A2aPolicyTab'
+import SemanticGuardTab from './detail/SemanticGuardTab'
 
 export default function ApplicationDetailPage() {
   const { id = '' } = useParams()
@@ -293,6 +295,30 @@ export default function ApplicationDetailPage() {
                     label: '客户端供应链安全',
                     children: (
                       <ClientSideTab appId={app.id} appCode={app.code} />
+                    ),
+                  },
+                ]
+              : []),
+            // A2A 安全治理（WDSP Phase 9C-1 / RFC 8693 委派与循环/三要素熔断）：无 api_a2a.read 权限不露入口
+            ...(hasPermission(permissions, 'api_a2a.read')
+              ? [
+                  {
+                    key: 'a2a-policy',
+                    label: 'A2A 安全治理',
+                    children: (
+                      <A2aPolicyTab appId={app.id} appCode={app.code} />
+                    ),
+                  },
+                ]
+              : []),
+            // 本地离线 ONNX/SLM 语义防火墙（WDSP Phase 9C-2）：无 semantic_guard.read 权限不露入口
+            ...(hasPermission(permissions, 'semantic_guard.read')
+              ? [
+                  {
+                    key: 'semantic-guard',
+                    label: '本地语义防火墙',
+                    children: (
+                      <SemanticGuardTab appId={app.id} appCode={app.code} />
                     ),
                   },
                 ]

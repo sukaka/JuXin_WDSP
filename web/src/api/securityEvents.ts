@@ -44,6 +44,15 @@ export interface RuleEffectStatisticsParams {
   page_size: number
 }
 
+export interface CreateExceptionFromEventBody {
+  name?: string
+  reason?: string
+  restrict_source_ip?: boolean
+  is_temporary?: boolean
+  duration_minutes?: number
+  rule_ids?: number[]
+}
+
 export const securityEventsApi = {
   ruleEffectStatistics: async (params: RuleEffectStatisticsParams) => {
     const data = await request<WafRuleEffectStatisticsPage>('/waf-rules/effect-statistics', {
@@ -93,9 +102,10 @@ export const securityEventsApi = {
     request<{ message: string }>(`/security-events/${id}/resolve`, { method: 'POST', body }),
   markAnalyzing: (id: string, body: DispositionBody = {}) =>
     request<{ message: string }>(`/security-events/${id}/mark-analyzing`, { method: 'POST', body }),
-  createException: (id: string) =>
+  createException: (id: string, body?: CreateExceptionFromEventBody) =>
     request<CreateExceptionFromEventResult>(`/security-events/${id}/create-exception`, {
       method: 'POST',
+      ...(body ? { body } : {}),
     }),
   /** 事件→黑名单预填（阶段5 §十一；只读不落库，权限 access_rules.manage） */
   blacklistPrefill: async (id: string) => {

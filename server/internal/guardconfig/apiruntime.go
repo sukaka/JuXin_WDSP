@@ -452,6 +452,12 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		AICrawlPolicy map[string]*gatewayconfig.GuardAICrawlPolicy `json:"ai_crawl_policy,omitempty"`
 		// Phase 9B：客户端供应链安全策略段（按应用；含已授权/已封禁脚本清单，无秘密材料——纳入版本戳）
 		ClientSidePolicy map[string]*gatewayconfig.GuardClientSidePolicy `json:"client_side_policy,omitempty"`
+		// Phase 9C-1：A2A 协议安全策略段（按应用；无秘密材料——纳入版本戳）
+		APIA2APolicy map[string]*gatewayconfig.GuardA2APolicy `json:"api_a2a_policy,omitempty"`
+		// Phase 9C-2：本地离线语义防火墙策略段（按应用；无秘密材料——纳入版本戳）
+		SemanticGuardPolicy map[string]*gatewayconfig.GuardSemanticGuardPolicy `json:"semantic_guard_policy,omitempty"`
+		// Phase 9D-1：Wasm 自定义检测插件段（按应用；仅含元数据+sha256，不含原始 wasm_base64——纳入版本戳）
+		WasmPlugins map[string]*wasmPluginsHashConfig `json:"wasm_plugins,omitempty"`
 		// P0-04：API 引擎受限例外段（按应用；exception_id/version 与规则引用非密钥——纳入版本戳）
 		APIExceptions map[string][]gatewayconfig.GuardAPIException `json:"api_exceptions,omitempty"`
 		// WDSP P1：API 准入策略段（按 application_id；模式与确认集非密钥——纳入版本戳，
@@ -502,6 +508,9 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		JWTTrust: cfg.JWTTrust, BotPolicy: cfg.BotPolicy,
 		AICrawlPolicy:        aiCrawlPolicyForVersionHash(cfg.AICrawlPolicy),
 		ClientSidePolicy:     cfg.ClientSidePolicy,
+		APIA2APolicy:         cfg.APIA2APolicy,
+		SemanticGuardPolicy:  cfg.SemanticGuardPolicy,
+		WasmPlugins:          wasmPluginsForVersionHash(cfg.WasmPlugins),
 		APIExceptions:        cfg.APIExceptions,
 		APIAdmission:         cfg.APIAdmission,
 		APIGraphQL:           cfg.APIGraphQL,

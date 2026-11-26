@@ -6,6 +6,7 @@ import BindingsTab from '../BindingsTab'
 import { ApiError } from '../../../api/client'
 import { useAuthStore } from '../../../stores/auth'
 import type { CurrentUser } from '../../../types'
+import { validateOAuthResourceMetadataUrl } from '../../../utils/mcp'
 
 vi.mock('../../../api/mcp', () => ({
   mcpApi: {
@@ -42,6 +43,9 @@ const binding = {
   catalog_id: 'c1',
   catalog_name: 'pay-tools',
   mode: 'OBSERVE',
+  response_guard_mode: 'SANITIZE',
+  require_session_binding: true,
+  oauth_resource_metadata_url: 'https://mcp.example.com/.well-known/oauth-protected-resource',
   version: 3,
   created_by: 'sec',
   created_at: '2026-10-01T00:00:00Z',
@@ -88,23 +92,37 @@ describe('BindingsTab（NG-MCP G1 绑定管理）', () => {
     } as never)
   })
 
-  it('绑定列表：应用名映射/端点路径/目录/模式/版本', async () => {
+  it('绑定列表：应用名映射/端点路径/目录/模式/响应防护/会话绑定/OAuth元数据/版本', async () => {
     renderTab(FULL)
     expect(await screen.findByText('商城（SHOP）')).toBeInTheDocument()
     expect(screen.getByText('/mcp')).toBeInTheDocument()
     expect(screen.getByText('pay-tools')).toBeInTheDocument()
     expect(screen.getByText('观察')).toBeInTheDocument()
+    expect(screen.getByText('净化隐写')).toBeInTheDocument()
+    expect(screen.getByText('已绑定')).toBeInTheDocument()
+    expect(
+      screen.getByText('https://mcp.example.com/.well-known/oauth-protected-resource'),
+    ).toBeInTheDocument()
     expect(screen.getByText('v3')).toBeInTheDocument()
   })
 
-  it('新建绑定：载荷逐键（应用/路径/目录/缺省 OBSERVE）；路径形态校验', async () => {
+  it('新建绑定：载荷含响应防护/会话绑定/OAuth元数据；路径与 https:// 校验', async () => {
     renderTab(FULL)
     fireEvent.click(await screen.findByRole('button', { name: /新建绑定/ }))
     const dialog = await screen.findByRole('dialog')
-    // 路径形态校验（非 / 开头）
+    // 路径形态校验（非 / 开头）与非 https:// 元数据地址校验
     fireEvent.change(within(dialog).getByPlaceholderText('如：/mcp'), { target: { value: 'mcp' } })
+    fireEvent.change(
+      within(dialog).getByPlaceholderText(
+        'https://mcp.example.com/.well-known/oauth-protected-resource',
+      ),
+      { target: { value: 'http://insecure.example.com/meta' } },
+    )
     fireEvent.click(within(dialog).getByRole('button', { name: '创建绑定' }))
     expect(await within(dialog).findByText(/须为 \/ 开头精确路径/)).toBeInTheDocument()
+    expect(
+      await within(dialog).findByText(/必须以 https:\/\/ 开头/),
+    ).toBeInTheDocument()
     expect(mcpApi.createBinding).not.toHaveBeenCalled()
     // 完整填写后提交
     fireEvent.mouseDown(within(dialog).getByText('选择应用'))
@@ -118,6 +136,13 @@ describe('BindingsTab（NG-MCP G1 绑定管理）', () => {
       el.closest('.ant-select-item-option-content'),
     ) as HTMLElement
     fireEvent.click(catalogOption)
+    fireEvent.click(within(dialog).getByRole('switch'))
+    fireEvent.change(
+      within(dialog).getByPlaceholderText(
+        'https://mcp.example.com/.well-known/oauth-protected-resource',
+      ),
+      { target: { value: 'https://mcp.example.com/.well-known/oauth-protected-resource' } },
+    )
     fireEvent.click(within(dialog).getByRole('button', { name: '创建绑定' }))
     await waitFor(() =>
       expect(mcpApi.createBinding).toHaveBeenCalledWith({
@@ -125,11 +150,15 @@ describe('BindingsTab（NG-MCP G1 绑定管理）', () => {
         endpoint_path: '/mcp',
         catalog_id: 'c1',
         mode: 'OBSERVE',
+        response_guard_mode: 'OBSERVE',
+        require_session_binding: true,
+        oauth_resource_metadata_url:
+          'https://mcp.example.com/.well-known/oauth-protected-resource',
       }),
     )
   })
 
-  it('编辑绑定：PUT 携带乐观锁 version；409 精确提示「版本冲突，请刷新后重试」', async () => {
+  it('编辑绑定：PUT 携带响应防护/会话绑定/OAuth元数据与乐观锁 version；409 精确提示「版本冲突，请刷新后重试」', async () => {
     renderTab(FULL)
     fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
     const dialog = await screen.findByRole('dialog')
@@ -141,7 +170,15 @@ describe('BindingsTab（NG-MCP G1 绑定管理）', () => {
     vi.mocked(mcpApi.updateBinding).mockRejectedValueOnce(new ApiError('binding version conflict（乐观锁不匹配）', 'RESOURCE_CONFLICT', 409))
     fireEvent.click(within(dialog).getByRole('button', { name: '保 存' }))
     expect(await within(dialog).findByText('版本冲突，请刷新后重试')).toBeInTheDocument()
-    expect(mcpApi.updateBinding).toHaveBeenCalledWith('b1', { catalog_id: 'c1', mode: 'PROTECT', version: 3 })
+    expect(mcpApi.updateBinding).toHaveBeenCalledWith('b1', {
+      catalog_id: 'c1',
+      mode: 'PROTECT',
+      response_guard_mode: 'SANITIZE',
+      require_session_binding: true,
+      oauth_resource_metadata_url:
+        'https://mcp.example.com/.well-known/oauth-protected-resource',
+      version: 3,
+    })
   })
 
   it('解绑：Popconfirm 确认后 DELETE', async () => {
@@ -157,5 +194,29 @@ describe('BindingsTab（NG-MCP G1 绑定管理）', () => {
     expect(screen.queryByRole('button', { name: /新建绑定/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '编辑' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '解绑' })).not.toBeInTheDocument()
+  })
+
+  it('OAuth 2.1 资源元数据 URL 校验与后端/网关对齐（拒绝非 https、#片段、引号/反斜杠、控制字符与内嵌凭据）', () => {
+    expect(validateOAuthResourceMetadataUrl('')).toBeNull()
+    expect(
+      validateOAuthResourceMetadataUrl(
+        'https://mcp.example.com/.well-known/oauth-protected-resource',
+      ),
+    ).toBeNull()
+    expect(validateOAuthResourceMetadataUrl('http://mcp.example.com/meta')).toContain(
+      'https://',
+    )
+    expect(
+      validateOAuthResourceMetadataUrl('https://mcp.example.com/meta#frag'),
+    ).toContain('片段标识')
+    expect(
+      validateOAuthResourceMetadataUrl('https://mcp.example.com/meta#'),
+    ).toContain('片段标识')
+    expect(
+      validateOAuthResourceMetadataUrl('https://mcp.example.com/"bad'),
+    ).toContain('引号')
+    expect(
+      validateOAuthResourceMetadataUrl('https://user:pass@mcp.example.com/meta'),
+    ).toContain('不含内嵌凭据')
   })
 })

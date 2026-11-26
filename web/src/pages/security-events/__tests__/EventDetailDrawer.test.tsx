@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -646,7 +646,7 @@ describe('EventDetailDrawer 处置操作收敛与加入白名单入口', () => {
     useAuthStore.setState({ user: null, csrfToken: null, initialized: false })
   })
 
-  it('底部处置操作收敛为研判下拉 + 执行处置/仅添备注，并提供加入黑名单/加入白名单/创建例外草稿', async () => {
+  it('底部处置操作收敛为研判下拉 + 执行处置/仅添备注，并提供加入黑名单/加入白名单/创建例外', async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderDrawer()
 
@@ -654,9 +654,13 @@ describe('EventDetailDrawer 处置操作收敛与加入白名单入口', () => {
     expect(screen.getByRole('button', { name: '仅添备注' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '加入黑名单' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '加入白名单' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '创建例外草稿' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '创建例外' })).toBeInTheDocument()
     // 原平铺的多余状态按钮已收进下拉，不再平铺占满三行
     expect(screen.queryByRole('button', { name: '标记分析中' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '忽略' })).not.toBeInTheDocument()
+
+    // 点击「创建例外」打开弹窗，而非旧的盲目草稿确认框
+    fireEvent.click(screen.getByRole('button', { name: '创建例外' }))
+    expect(await screen.findByText('从安全事件创建例外')).toBeInTheDocument()
   })
 })

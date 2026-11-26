@@ -7,6 +7,7 @@ require (
 	github.com/caddyserver/caddy/v2 v2.11.4
 	github.com/corazawaf/coraza-caddy/v2 v2.5.0
 	github.com/jiuzhang-waf/gateway/dynamic_security v0.0.0
+	github.com/tetratelabs/wazero v1.12.0
 	github.com/valkey-io/valkey-go v1.0.76
 	go.uber.org/zap v1.28.0
 	golang.org/x/net v0.58.0

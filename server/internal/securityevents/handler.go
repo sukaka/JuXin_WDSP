@@ -2,7 +2,9 @@ package securityevents
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -28,9 +30,21 @@ type Handler struct {
 	geoLookup apigeo.GeoLookup
 }
 
+// CreateExceptionOptions 是从安全事件创建例外草稿的可选偏好参数。
+// P0-04 契约 §9：应用、域名、路径、方法及来源事件均由服务端从事件记录提取，
+// 客户端仅可调整名称、原因、是否限定本次客户端 IP、有效期，或在事件命中的可例外检测规则中勾选子集。
+type CreateExceptionOptions struct {
+	Name             string `json:"name,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	RestrictSourceIP *bool  `json:"restrict_source_ip,omitempty"`
+	IsTemporary      *bool  `json:"is_temporary,omitempty"`
+	DurationMinutes  *int   `json:"duration_minutes,omitempty"`
+	RuleIDs          []int  `json:"rule_ids,omitempty"`
+}
+
 // ExceptionCreator 是从事件创建例外草稿的接口。
 type ExceptionCreator interface {
-	CreateFromEvent(ctx context.Context, evt *Event, createdBy uuid.UUID) (uuid.UUID, error)
+	CreateFromEvent(ctx context.Context, evt *Event, createdBy uuid.UUID, opts CreateExceptionOptions) (uuid.UUID, error)
 }
 
 // NewHandler 创建事件中心处理器。
@@ -372,13 +386,20 @@ func (h *Handler) MarkAnalyzing(w http.ResponseWriter, r *http.Request) {
 	h.disposition(w, r, "ANALYZING", "mark_analyzing")
 }
 
-// CreateException 从事件创建例外草稿。
+// CreateException 从事件创建例外草稿（支持可选偏好体；空请求体沿用 30 分钟临时 + 限定事件 IP 默认值）。
 func (h *Handler) CreateException(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的事件ID")
 		return
+	}
+	var opts CreateExceptionOptions
+	if r.Body != nil {
+		if err := response.DecodeJSON(w, r, &opts, 8192); err != nil && !errors.Is(err, io.EOF) {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+			return
+		}
 	}
 	evt, _, err := h.store.GetByID(r.Context(), id)
 	if err != nil {
@@ -389,7 +410,7 @@ func (h *Handler) CreateException(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusServiceUnavailable, response.CodeServiceUnavailable, "例外服务未配置")
 		return
 	}
-	excID, err := h.exceptionCreator.CreateFromEvent(r.Context(), evt, p.UserID)
+	excID, err := h.exceptionCreator.CreateFromEvent(r.Context(), evt, p.UserID, opts)
 	if err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return

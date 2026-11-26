@@ -275,16 +275,26 @@ describe('ApplicationDetailPage 资产价值', () => {
     expect(screen.queryByRole('tab', { name: 'AI 爬虫治理' })).not.toBeInTheDocument()
     // 无 client_side.read 权限时不露出「客户端供应链安全」页签
     expect(screen.queryByRole('tab', { name: '客户端供应链安全' })).not.toBeInTheDocument()
+    // 无 api_a2a.read 权限时不露出「A2A 安全治理」页签
+    expect(screen.queryByRole('tab', { name: 'A2A 安全治理' })).not.toBeInTheDocument()
+    // 无 semantic_guard.read 权限时不露出「本地语义防火墙」页签
+    expect(screen.queryByRole('tab', { name: '本地语义防火墙' })).not.toBeInTheDocument()
   })
 
-  it('有 ai_crawl.read 与 client_side.read 权限时露出对应页签', async () => {
+  it('有 ai_crawl.read、client_side.read、api_a2a.read 与 semantic_guard.read 权限时露出对应页签', async () => {
     const user: CurrentUser = {
       id: 'u3',
       username: 'crawl-reader',
       display_name: '爬虫治理员',
       status: 'ACTIVE',
       roles: [{ code: 'SECURITY_ADMIN', name: '安全管理员' }],
-      permissions: ['applications.read', 'ai_crawl.read', 'client_side.read'],
+      permissions: [
+        'applications.read',
+        'ai_crawl.read',
+        'client_side.read',
+        'api_a2a.read',
+        'semantic_guard.read',
+      ],
       must_change_password: false,
     }
     useAuthStore.setState({ user, csrfToken: null, initialized: true })
@@ -337,6 +347,12 @@ describe('ApplicationDetailPage 资产价值', () => {
     expect(screen.getByRole('tab', { name: 'AI 爬虫治理' })).toBeInTheDocument()
     expect(
       screen.getByRole('tab', { name: '客户端供应链安全' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('tab', { name: 'A2A 安全治理' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('tab', { name: '本地语义防火墙' }),
     ).toBeInTheDocument()
   })
 })

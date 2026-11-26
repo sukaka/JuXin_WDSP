@@ -9,8 +9,10 @@ package apimcp
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 )
@@ -38,17 +40,29 @@ const (
 	ModeObserve = "OBSERVE"
 	ModeProtect = "PROTECT"
 
+	// PinEnforcement 工具定义钉扎执行模式（Phase 9C-1：Rug Pull 检测）。
+	PinEnforcementOff     = "OFF"
+	PinEnforcementObserve = "OBSERVE"
+	PinEnforcementProtect = "PROTECT"
+
+	// ResponseGuardMode MCP 响应间接提示词注入防护模式（Phase 9C-1）。
+	ResponseGuardOff      = "OFF"
+	ResponseGuardObserve  = "OBSERVE"
+	ResponseGuardSanitize = "SANITIZE"
+	ResponseGuardProtect  = "PROTECT"
+
 	// ArgConstraint 两种确定性约束（设计 §1.4 第 4 条）
 	ArgKindPathPrefix   = "path_prefix"
 	ArgKindDomainSuffix = "domain_suffix"
 
-	maxNameLen         = 128
-	maxServiceIdentLen = 256
-	maxToolVersionLen  = 128
-	maxEndpointPathLen = 1024
-	maxDescriptionLen  = 65536 // 描述全文入 tool_hash 的体量上限（防畸形载荷；规范化 sha256 仍确定性）
-	maxPreviewLen      = 512   // description_preview 截断（仅管理面展示，永不为证据）
-	maxSchemaBytes     = 65536 // 单 schema JSONB 体量上限（与 success_rule 同量纲先例）
+	maxNameLen             = 128
+	maxServiceIdentLen     = 256
+	maxToolVersionLen      = 128
+	maxEndpointPathLen     = 1024
+	maxDescriptionLen      = 65536 // 描述全文入 tool_hash 的体量上限（防畸形载荷；规范化 sha256 仍确定性）
+	maxPreviewLen          = 512   // description_preview 截断（仅管理面展示，永不为证据）
+	maxSchemaBytes         = 65536 // 单 schema JSONB 体量上限（与 success_rule 同量纲先例）
+	maxOAuthMetadataURLLen = 512   // OAuth 2.1 Protected Resource Metadata URL 上限
 )
 
 // 哨兵错误（handler 映射 400/404/409 精确区分）。
@@ -82,21 +96,22 @@ type ArgConstraint struct {
 
 // ToolInput 工具行写入载荷（导入/整体再导入共用）。
 type ToolInput struct {
-	ToolName           string          `json:"tool_name"`
+	ToolName            string          `json:"tool_name"`
 	ToolVersion         string          `json:"tool_version"`
 	Description         string          `json:"description"`                    // 规范化描述全文（入 tool_hash；preview 截断另存）
 	PreserveDescription bool            `json:"preserve_description,omitempty"` // 再导入未重填描述时保留存量 description_digest/preview
 	InputSchema         *map[string]any `json:"input_schema"`
-	OutputSchema       *map[string]any `json:"output_schema"`
-	CapabilityTags     []string        `json:"capability_tags"`
-	RiskLevel          string          `json:"risk_level"`          // 导入缺省 HIGH
-	DataClassification string          `json:"data_classification"` // 导入缺省 UNKNOWN
-	AllowedPrincipals  []string        `json:"allowed_principals"`
-	AllowedRoles       []string        `json:"allowed_roles"`
-	AllowedTenants     []string        `json:"allowed_tenants"`
-	ApprovalRequired   bool            `json:"approval_required"`
-	MaxCallsPerMinute  int             `json:"max_calls_per_minute"`
-	ArgConstraints     []ArgConstraint `json:"arg_constraints"`
+	OutputSchema        *map[string]any `json:"output_schema"`
+	CapabilityTags      []string        `json:"capability_tags"`
+	RiskLevel           string          `json:"risk_level"`          // 导入缺省 HIGH
+	DataClassification  string          `json:"data_classification"` // 导入缺省 UNKNOWN
+	AllowedPrincipals   []string        `json:"allowed_principals"`
+	AllowedRoles        []string        `json:"allowed_roles"`
+	AllowedTenants      []string        `json:"allowed_tenants"`
+	ApprovalRequired    bool            `json:"approval_required"`
+	MaxCallsPerMinute   int             `json:"max_calls_per_minute"`
+	ArgConstraints      []ArgConstraint `json:"arg_constraints"`
+	PinEnforcement      string          `json:"pin_enforcement,omitempty"` // OFF|OBSERVE|PROTECT（缺省 OBSERVE）
 }
 
 // CatalogInput 目录写入载荷（POST 导入 / PUT 整体再导入，整体替换语义）。
@@ -134,31 +149,40 @@ type CatalogSummary struct {
 
 // Tool 工具行（读模型）。
 type Tool struct {
-	ID                 uuid.UUID       `json:"id"`
-	CatalogID          uuid.UUID       `json:"catalog_id"`
-	ToolName           string          `json:"tool_name"`
-	ToolVersion        string          `json:"tool_version"`
-	DescriptionDigest  string          `json:"description_digest"`
-	DescriptionPreview string          `json:"description_preview"`
-	InputSchema        map[string]any  `json:"input_schema"`
-	OutputSchema       map[string]any  `json:"output_schema"`
-	InputSchemaDigest  string          `json:"input_schema_digest"`
-	OutputSchemaDigest string          `json:"output_schema_digest"`
-	ToolHash           string          `json:"tool_hash"`
-	CapabilityTags     []string        `json:"capability_tags"`
-	RiskLevel          string          `json:"risk_level"`
-	DataClassification string          `json:"data_classification"`
-	AllowedPrincipals  []string        `json:"allowed_principals"`
-	AllowedRoles       []string        `json:"allowed_roles"`
-	AllowedTenants     []string        `json:"allowed_tenants"`
-	ApprovalRequired   bool            `json:"approval_required"`
-	MaxCallsPerMinute  int             `json:"max_calls_per_minute"`
-	ArgConstraints     []ArgConstraint `json:"arg_constraints"`
-	ReviewStatus       string          `json:"review_status"`
-	ReviewedBy         string          `json:"reviewed_by"`
-	ReviewedAt         *time.Time      `json:"reviewed_at"`
-	CreatedAt          time.Time       `json:"created_at"`
-	UpdatedAt          time.Time       `json:"updated_at"`
+	ID                   uuid.UUID       `json:"id"`
+	CatalogID            uuid.UUID       `json:"catalog_id"`
+	ToolName             string          `json:"tool_name"`
+	ToolVersion          string          `json:"tool_version"`
+	Description          string          `json:"description"`
+	DescriptionDigest    string          `json:"description_digest"`
+	DescriptionPreview   string          `json:"description_preview"`
+	InputSchema          map[string]any  `json:"input_schema"`
+	OutputSchema         map[string]any  `json:"output_schema"`
+	InputSchemaDigest    string          `json:"input_schema_digest"`
+	OutputSchemaDigest   string          `json:"output_schema_digest"`
+	ToolHash             string          `json:"tool_hash"`
+	PinnedDefinitionHash string          `json:"pinned_definition_hash"`
+	PinEnforcement       string          `json:"pin_enforcement"`
+	CapabilityTags       []string        `json:"capability_tags"`
+	RiskLevel            string          `json:"risk_level"`
+	DataClassification   string          `json:"data_classification"`
+	AllowedPrincipals    []string        `json:"allowed_principals"`
+	AllowedRoles         []string        `json:"allowed_roles"`
+	AllowedTenants       []string        `json:"allowed_tenants"`
+	ApprovalRequired     bool            `json:"approval_required"`
+	MaxCallsPerMinute    int             `json:"max_calls_per_minute"`
+	ArgConstraints       []ArgConstraint `json:"arg_constraints"`
+	ReviewStatus         string          `json:"review_status"`
+	ReviewedBy           string          `json:"reviewed_by"`
+	ReviewedAt           *time.Time      `json:"reviewed_at"`
+	CreatedAt            time.Time       `json:"created_at"`
+	UpdatedAt            time.Time       `json:"updated_at"`
+}
+
+// PinToolInput 工具定义钉扎策略写入载荷（POST /api-security/mcp/tools/{id}/pin）。
+type PinToolInput struct {
+	PinEnforcement string `json:"pin_enforcement"` // OFF|OBSERVE|PROTECT
+	Repin          bool   `json:"repin,omitempty"` // true 时按当前工具定义重算 pinned_definition_hash
 }
 
 // ReviewInput 审核载荷（action + 定级更新（可选字段；未给出保持原值））。
@@ -175,25 +199,31 @@ type ReviewInput struct {
 
 // BindingInput 绑定写入载荷。
 type BindingInput struct {
-	ApplicationID string `json:"application_id"`
-	EndpointPath  string `json:"endpoint_path"`
-	CatalogID     string `json:"catalog_id"`
-	Mode          string `json:"mode"`
-	Version       int    `json:"version"`
+	ApplicationID            string `json:"application_id"`
+	EndpointPath             string `json:"endpoint_path"`
+	CatalogID                string `json:"catalog_id"`
+	Mode                     string `json:"mode"`
+	Version                  int    `json:"version"`
+	ResponseGuardMode        string `json:"response_guard_mode,omitempty"`         // OFF|OBSERVE|SANITIZE|PROTECT（缺省 OBSERVE）
+	RequireSessionBinding    bool   `json:"require_session_binding,omitempty"`     // Streamable HTTP Mcp-Session-Id 主体会话绑定
+	OAuthResourceMetadataURL string `json:"oauth_resource_metadata_url,omitempty"` // 可选 https:// OAuth 2.1 Protected Resource Metadata URL（≤512）
 }
 
 // Binding 绑定行（读模型；catalog_name JOIN 带出）。
 type Binding struct {
-	ID            uuid.UUID `json:"id"`
-	ApplicationID uuid.UUID `json:"application_id"`
-	EndpointPath  string    `json:"endpoint_path"`
-	CatalogID     uuid.UUID `json:"catalog_id"`
-	CatalogName   string    `json:"catalog_name"`
-	Mode          string    `json:"mode"`
-	Version       int       `json:"version"`
-	CreatedBy     string    `json:"created_by"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID                       uuid.UUID `json:"id"`
+	ApplicationID            uuid.UUID `json:"application_id"`
+	EndpointPath             string    `json:"endpoint_path"`
+	CatalogID                uuid.UUID `json:"catalog_id"`
+	CatalogName              string    `json:"catalog_name"`
+	Mode                     string    `json:"mode"`
+	ResponseGuardMode        string    `json:"response_guard_mode"`
+	RequireSessionBinding    bool      `json:"require_session_binding"`
+	OAuthResourceMetadataURL string    `json:"oauth_resource_metadata_url"`
+	Version                  int       `json:"version"`
+	CreatedBy                string    `json:"created_by"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 // ValidateToolInput 工具行校验（词表/长度——tool_hash 计算在 store 层）。
@@ -223,6 +253,11 @@ func ValidateToolInput(i int, in ToolInput) string {
 	}
 	if in.MaxCallsPerMinute < 0 {
 		return fmt.Sprintf("tools[%d].max_calls_per_minute 必须 ≥0", i)
+	}
+	if in.PinEnforcement != "" {
+		if msg := ValidatePinEnforcement(in.PinEnforcement, true); msg != "" {
+			return fmt.Sprintf("tools[%d].%s", i, msg)
+		}
 	}
 	for j, c := range in.ArgConstraints {
 		if strings.TrimSpace(c.Field) == "" || len(c.Field) > maxNameLen {
@@ -265,6 +300,63 @@ func ValidateCatalogInput(in CatalogInput) string {
 	return ""
 }
 
+// ValidatePinEnforcement 校验工具定义钉扎执行模式（OFF|OBSERVE|PROTECT）。
+func ValidatePinEnforcement(v string, allowEmpty bool) string {
+	norm := strings.ToUpper(strings.TrimSpace(v))
+	if norm == "" {
+		if allowEmpty {
+			return ""
+		}
+		return "pin_enforcement 必填（OFF|OBSERVE|PROTECT）"
+	}
+	switch norm {
+	case PinEnforcementOff, PinEnforcementObserve, PinEnforcementProtect:
+		return ""
+	default:
+		return "pin_enforcement 词表外（OFF|OBSERVE|PROTECT）"
+	}
+}
+
+// ValidatePinToolInput 校验工具钉扎接口载荷。
+func ValidatePinToolInput(in PinToolInput) string {
+	return ValidatePinEnforcement(in.PinEnforcement, false)
+}
+
+// ValidateResponseGuardMode 校验响应间接提示词防护模式（OFF|OBSERVE|SANITIZE|PROTECT）。
+func ValidateResponseGuardMode(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "", ResponseGuardOff, ResponseGuardObserve, ResponseGuardSanitize, ResponseGuardProtect:
+		return ""
+	default:
+		return "response_guard_mode 非法（OFF|OBSERVE|SANITIZE|PROTECT，缺省 OBSERVE）"
+	}
+}
+
+// ValidateOAuthResourceMetadataURL 校验 OAuth 2.1 Protected Resource Metadata URL（RFC 9728 §3.1）：
+// 允许空串；非空须为合法 https:// URL（不含控制字符、空白、引号、反斜杠或 #fragment，长度 ≤512，禁止内嵌凭据）。
+func ValidateOAuthResourceMetadataURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if len(trimmed) > maxOAuthMetadataURLLen {
+		return fmt.Sprintf("oauth_resource_metadata_url 长度不能超过 %d 字符", maxOAuthMetadataURLLen)
+	}
+	for _, r := range trimmed {
+		if r < 0x20 || r == 0x7f || r == '"' || r == '\\' || unicode.IsSpace(r) {
+			return "oauth_resource_metadata_url 不得包含空白、引号、反斜杠或控制字符"
+		}
+	}
+	if strings.Contains(trimmed, "#") {
+		return "oauth_resource_metadata_url 不得包含 #fragment（RFC 9728 §3.1）"
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
+		return "oauth_resource_metadata_url 须为合法的 https:// URL（不含内嵌凭据或 #fragment）"
+	}
+	return ""
+}
+
 // ValidateBindingInput 绑定载荷校验。
 func ValidateBindingInput(in BindingInput) string {
 	if _, err := uuid.Parse(strings.TrimSpace(in.ApplicationID)); err != nil {
@@ -281,6 +373,12 @@ func ValidateBindingInput(in BindingInput) string {
 	case "", ModeObserve, ModeProtect:
 	default:
 		return "mode 非法（OBSERVE|PROTECT，缺省 OBSERVE）"
+	}
+	if msg := ValidateResponseGuardMode(in.ResponseGuardMode); msg != "" {
+		return msg
+	}
+	if msg := ValidateOAuthResourceMetadataURL(in.OAuthResourceMetadataURL); msg != "" {
+		return msg
 	}
 	return ""
 }

@@ -23,7 +23,7 @@ var ProtocolLevels = map[string][]string{
 	"http":    {"1.0", "1.1", "2"},
 	"graphql": {"off", "parse", "cost_v1"},
 	"grpc":    {"frame", "unary_g1", "stream_g2"},
-	"mcp":     {"observe", "acl_v1"},
+	"mcp":     {"observe", "acl_v1", "pin_v2"},
 	"tls_mux": {"v1"},
 	"tlcp":    {"1.1"},
 }

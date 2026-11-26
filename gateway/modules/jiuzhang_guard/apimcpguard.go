@@ -55,9 +55,11 @@ type mcpToolJSON struct {
 	AllowedTenants     []string               `json:"allowed_tenants"`
 	ApprovalRequired   bool                   `json:"approval_required"`
 	MaxCallsPerMinute  int                    `json:"max_calls_per_minute"`
-	InputSchema        json.RawMessage        `json:"input_schema"`
-	OutputSchema       json.RawMessage        `json:"output_schema"`
-	ArgConstraints     []mcpArgConstraintJSON `json:"arg_constraints"`
+	InputSchema          json.RawMessage        `json:"input_schema"`
+	OutputSchema         json.RawMessage        `json:"output_schema"`
+	ArgConstraints       []mcpArgConstraintJSON `json:"arg_constraints"`
+	PinnedDefinitionHash string                 `json:"pinned_definition_hash,omitempty"`
+	PinEnforcement       string                 `json:"pin_enforcement,omitempty"`
 }
 
 // mcpArgConstraintJSON 参数范围约束（G1 两种确定性约束）。
@@ -69,10 +71,13 @@ type mcpArgConstraintJSON struct {
 
 // mcpBindingJSON MCP 绑定（api_mcp_bindings 数组项；跨轨线契约不得改名）。
 type mcpBindingJSON struct {
-	ApplicationID string `json:"application_id"`
-	EndpointPath  string `json:"endpoint_path"`
-	CatalogName   string `json:"catalog_name"`
-	Mode          string `json:"mode"`
+	ApplicationID            string `json:"application_id"`
+	EndpointPath             string `json:"endpoint_path"`
+	CatalogName              string `json:"catalog_name"`
+	Mode                     string `json:"mode"`
+	ResponseGuardMode        string `json:"response_guard_mode,omitempty"`
+	RequireSessionBinding    bool   `json:"require_session_binding,omitempty"`
+	OAuthResourceMetadataURL string `json:"oauth_resource_metadata_url,omitempty"`
 }
 
 // buildMCPGuardConfig mcpguard 装配置装配（Provision 调用；nil = 零行为 NG-T-C01）。
@@ -112,18 +117,26 @@ func (g *Guard) buildMCPGuardConfig() *mcpguard.Config {
 				classification != mcpguard.ClassificationConfidential && classification != "UNKNOWN" {
 				classification = "UNKNOWN"
 			}
+			pinEnfRaw := strings.ToUpper(strings.TrimSpace(tj.PinEnforcement))
+			pinEnf := mcpguard.NormalizePinEnforcement(pinEnfRaw)
+			if pinEnfRaw != "" && pinEnfRaw != pinEnf {
+				g.logger.Warn("api_mcp_tool_catalogs pin_enforcement 词表外归一 OBSERVE（fail-safe）",
+					zap.String("catalog", name), zap.String("tool", toolName), zap.String("pin_enforcement", tj.PinEnforcement))
+			}
 			tool := &mcpguard.Tool{
-				Name:               toolName,
-				Version:            tj.ToolVersion,
-				Hash:               toolHash,
-				RiskLevel:          risk,
-				DataClassification: classification,
-				CapabilityTags:     tj.CapabilityTags,
-				AllowedPrincipals:  tj.AllowedPrincipals,
-				AllowedRoles:       tj.AllowedRoles,
-				AllowedTenants:     tj.AllowedTenants,
-				ApprovalRequired:   tj.ApprovalRequired,
-				MaxCallsPerMinute:  tj.MaxCallsPerMinute,
+				Name:                 toolName,
+				Version:              tj.ToolVersion,
+				Hash:                 toolHash,
+				RiskLevel:            risk,
+				DataClassification:   classification,
+				CapabilityTags:       tj.CapabilityTags,
+				AllowedPrincipals:    tj.AllowedPrincipals,
+				AllowedRoles:         tj.AllowedRoles,
+				AllowedTenants:       tj.AllowedTenants,
+				ApprovalRequired:     tj.ApprovalRequired,
+				MaxCallsPerMinute:    tj.MaxCallsPerMinute,
+				PinnedDefinitionHash: strings.TrimSpace(tj.PinnedDefinitionHash),
+				PinEnforcement:       pinEnf,
 			}
 			// Schema 编译（缺席 nil；含不支持关键字登记降级）
 			tool.InputSchema = mcpguard.CompileSchema(tj.InputSchema)
@@ -161,8 +174,9 @@ func (g *Guard) buildMCPGuardConfig() *mcpguard.Config {
 	}
 	// 绑定归一（应用 × endpoint_path；同名后行覆盖前行——稳定序后胜与 grpcdesc 同纪律）
 	cfg := &mcpguard.Config{
-		Apps:         map[string]map[string]mcpguard.Endpoint{},
-		IdentitySalt: g.IdentitySalt,
+		Apps:          map[string]map[string]mcpguard.Endpoint{},
+		IdentitySalt:  g.IdentitySalt,
+		SessionBinder: mcpguard.NewSessionBinder(),
 	}
 	for i, bj := range g.APIMCPBindings {
 		appID := strings.TrimSpace(bj.ApplicationID)
@@ -185,6 +199,21 @@ func (g *Guard) buildMCPGuardConfig() *mcpguard.Config {
 				zap.Int("index", i), zap.String("mode", bj.Mode))
 			mode = mcpguard.ModeObserve
 		}
+		rgmRaw := strings.ToUpper(strings.TrimSpace(bj.ResponseGuardMode))
+		rgm := mcpguard.NormalizeResponseGuardMode(rgmRaw)
+		if rgmRaw != "" && rgmRaw != rgm {
+			g.logger.Warn("api_mcp_bindings response_guard_mode 词表外归一 OBSERVE（fail-safe）",
+				zap.Int("index", i), zap.String("response_guard_mode", bj.ResponseGuardMode))
+		}
+		oauthMetaURL := ""
+		if rawURL := strings.TrimSpace(bj.OAuthResourceMetadataURL); rawURL != "" {
+			if valid, ok := mcpguard.ValidateOAuthResourceMetadataURL(rawURL); ok {
+				oauthMetaURL = valid
+			} else {
+				g.logger.Warn("api_mcp_bindings oauth_resource_metadata_url 非合法 https:// URL，已忽略",
+					zap.Int("index", i), zap.String("endpoint_path", path))
+			}
+		}
 		cat := catalogs[catalogName]
 		if cat == nil {
 			g.logger.Warn("api_mcp_bindings 引用未知/拒装目录（运行期 COV_NO_CATALOG 放行不误断）",
@@ -193,7 +222,13 @@ func (g *Guard) buildMCPGuardConfig() *mcpguard.Config {
 		if cfg.Apps[appID] == nil {
 			cfg.Apps[appID] = map[string]mcpguard.Endpoint{}
 		}
-		cfg.Apps[appID][path] = mcpguard.Endpoint{Catalog: cat, Mode: mode}
+		cfg.Apps[appID][path] = mcpguard.Endpoint{
+			Catalog:                  cat,
+			Mode:                     mode,
+			ResponseGuardMode:        rgm,
+			RequireSessionBinding:    bj.RequireSessionBinding,
+			OAuthResourceMetadataURL: oauthMetaURL,
+		}
 	}
 	return cfg
 }

@@ -18,6 +18,7 @@ describe('filterMenusByRoles', () => {
       '/node-interfaces',
       '/network-config',
       '/network-tools',
+      '/xdp-acceleration',
       '/system-containers',
       '/ha-groups',
       '/storage',
@@ -247,6 +248,7 @@ describe('filterMenusByRoles', () => {
       '/reports',
       '/report-templates',
       '/report-archives',
+      '/xdp-acceleration',
       '/ha-groups',
       '/license',
       '/ai/assistant',
@@ -716,5 +718,108 @@ describe('filterMenusByRoles', () => {
       webWafEnabled: true,
     })
     expect(hidden.map((m) => m.key)).not.toContain('/client-side-security')
+  })
+
+  it('Wasm 检测插件菜单按 wasm_plugins.read 权限门控并归属访问控制分组', () => {
+    const visible = filterMenusByRoles(['SECURITY_ADMIN'], ['wasm_plugins.read'], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    const entry = visible.find((m) => m.key === '/wasm-plugins')
+    expect(entry).toMatchObject({
+      key: '/wasm-plugins',
+      label: 'Wasm 检测插件',
+      group: '访问控制',
+    })
+
+    const auditVisible = filterMenusByRoles(['AUDIT_ADMIN'], ['wasm_plugins.read'], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    expect(auditVisible.map((m) => m.key)).toContain('/wasm-plugins')
+
+    const hidden = filterMenusByRoles(['SYSTEM_ADMIN'], [], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    expect(hidden.map((m) => m.key)).not.toContain('/wasm-plugins')
+  })
+
+  it('A2A 与 AgBOM 治理菜单按 api_a2a.read 与 API 动态防护能力门控，并归属 API 防护 / 资产与接入', () => {
+    const visible = filterMenusByRoles(['SECURITY_ADMIN'], ['api_a2a.read'], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    const entry = visible.find((m) => m.key === '/api-a2a')
+    expect(entry).toMatchObject({
+      key: '/api-a2a',
+      label: 'A2A 与 AgBOM 治理',
+      group: 'API 防护',
+      capability: 'api_dynamic_protection',
+    })
+    expect(API_MENU_SECTIONS['/api-a2a']).toBe('资产与接入')
+
+    // 紧邻 MCP 工具目录
+    const mcpIdx = visible.findIndex((m) => m.key === '/api-mcp')
+    const a2aIdx = visible.findIndex((m) => m.key === '/api-a2a')
+    expect(a2aIdx).toBe(mcpIdx + 1)
+
+    // AUDIT_ADMIN 持有 api_a2a.read 时可见
+    const auditVisible = filterMenusByRoles(['AUDIT_ADMIN'], ['api_a2a.read'], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    expect(auditVisible.map((m) => m.key)).toContain('/api-a2a')
+
+    // 纯 WAF（apiDynamicProtection=false）即使持有 api_a2a.read 也隐藏
+    const wafOnly = filterMenusByRoles(['SECURITY_ADMIN'], ['api_a2a.read'], {
+      apiDynamicProtection: false,
+      webWafEnabled: true,
+    })
+    expect(wafOnly.map((m) => m.key)).not.toContain('/api-a2a')
+
+    // 无权限时隐藏
+    const noPerm = filterMenusByRoles(['SYSTEM_ADMIN'], [], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    expect(noPerm.map((m) => m.key)).not.toContain('/api-a2a')
+  })
+
+  it('内核 XDP 加速菜单归属系统运维，面向系统/运维管理员及持有 xdp_accel.read 的角色可见', () => {
+    for (const role of ['SYSTEM_ADMIN', 'SECURITY_ADMIN']) {
+      const visible = filterMenusByRoles([role], [], {
+        apiDynamicProtection: true,
+        webWafEnabled: true,
+      })
+      const entry = visible.find((m) => m.key === '/xdp-acceleration')
+      expect(entry).toMatchObject({
+        key: '/xdp-acceleration',
+        label: '内核 XDP 加速',
+        group: '系统运维',
+      })
+    }
+
+    // 紧邻网络工具
+    const sysMenus = filterMenusByRoles(['SYSTEM_ADMIN'], [], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    const netToolsIdx = sysMenus.findIndex((m) => m.key === '/network-tools')
+    const xdpIdx = sysMenus.findIndex((m) => m.key === '/xdp-acceleration')
+    expect(xdpIdx).toBe(netToolsIdx + 1)
+
+    // 审计管理员持有 xdp_accel.read 时按权限点补显，未持有时隐藏
+    const auditVisible = filterMenusByRoles(['AUDIT_ADMIN'], ['xdp_accel.read'], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    expect(auditVisible.map((m) => m.key)).toContain('/xdp-acceleration')
+
+    const auditHidden = filterMenusByRoles(['AUDIT_ADMIN'], [], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    expect(auditHidden.map((m) => m.key)).not.toContain('/xdp-acceleration')
   })
 })

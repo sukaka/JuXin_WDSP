@@ -53,6 +53,18 @@ var acEventTypeLabels = map[string]string{
 	EventTypeClientSideScriptTampered:       "客户端脚本篡改",
 	EventTypeClientSideCSPViolation:         "客户端 CSP 违规",
 	EventTypeClientSideProbeAlert:           "客户端探针告警",
+	EventTypeA2AAgentCardDiscovered:         "A2A Agent 发现",
+	EventTypeA2AObserved:                    "A2A 安全观测",
+	EventTypeA2ABlocked:                     "A2A 安全阻断",
+	EventTypeA2ALoopKilled:                  "A2A 递归循环熔断",
+	EventTypeA2ALethalTrifecta:              "A2A 致命三要素拦截",
+	EventTypeSemanticObserved:               "语义安全观测",
+	EventTypeSemanticBlocked:                "语义安全阻断",
+	EventTypeSemanticUnavailable:            "语义服务不可用",
+	EventTypeWasmPluginObserved:             "Wasm 插件观测",
+	EventTypeWasmPluginBlock:                "Wasm 插件阻断",
+	EventTypeWasmPluginRateLimit:            "Wasm 插件限速",
+	EventTypeWasmPluginError:                "Wasm 插件执行异常",
 }
 
 // acEventActionLabels 访问控制事件动作中文映射（与 web/src/utils/stage5.ts AC_EVENT_ACTION_META 对齐，
@@ -72,6 +84,7 @@ var acEventActionLabels = map[string]string{
 	"CONNECTION_FALLBACK": "回退连接 IP",
 	"IGNORED":             "已忽略",
 	"ENGINE_ERROR":        "引擎异常",
+	"RATE_LIMIT":          "限速",
 	"blocked":             "已阻断",
 	"would_block":         "拟阻断（观察）",
 	"challenged":          "已挑战",

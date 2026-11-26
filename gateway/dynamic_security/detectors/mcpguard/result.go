@@ -107,6 +107,15 @@ func EvaluateResult(ctx *dsctx.RequestContext, msg *mcprpc.Message, result json.
 			return hits < maxResultFindings && scans < 512
 		})
 	}
+
+	// ③ Phase 9C-1 响应侧间接提示词注入 / Unicode 走私 / Markdown 外带扫描与清洗
+	ipBlocked, sanitized := ScanAndSanitizeResult(ctx, toolName, result, ep, engineProtect)
+	if ipBlocked {
+		blockedOut = true
+		ClearSanitizedResult(ctx)
+	} else if !blockedOut && len(sanitized) > 0 {
+		SetSanitizedResult(ctx, sanitized)
+	}
 	return blockedOut
 }
 
@@ -217,6 +226,46 @@ func ExtractResultMemberRaw(data []byte) (json.RawMessage, bool) {
 		return nil, false
 	}
 	return doc.Result, true
+}
+
+// ReplaceResultMember 将清洗后的 result 成员回填到已解析的 JSON-RPC 响应信封克隆体，
+// 返回完整 JSON-RPC 响应字节（不修改原 doc，供 pipeline/response 与 apiprotect 替换外发响应体）。
+func ReplaceResultMember(doc any, sanitizedResult json.RawMessage) ([]byte, bool) {
+	obj, ok := doc.(map[string]any)
+	if !ok || len(sanitizedResult) == 0 {
+		return nil, false
+	}
+	cloned := make(map[string]any, len(obj))
+	for k, v := range obj {
+		cloned[k] = v
+	}
+	cloned["result"] = sanitizedResult
+	out, err := json.Marshal(cloned)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// ReplaceResultMemberRaw 将清洗后的 result 成员回填到原始 JSON-RPC 响应字节（SSE data 形态，
+// 保留 jsonrpc/id 及其他顶层字段原样形态）。
+func ReplaceResultMemberRaw(data []byte, sanitizedResult json.RawMessage) ([]byte, bool) {
+	if len(data) == 0 || len(sanitizedResult) == 0 {
+		return nil, false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil || obj == nil {
+		return nil, false
+	}
+	if _, exists := obj["result"]; !exists {
+		return nil, false
+	}
+	obj["result"] = sanitizedResult
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }
 
 // IsSSEContentType text/event-stream 判定（挂点侧捕获模式分流）。

@@ -14,11 +14,18 @@ import {
   Space,
   Switch,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { ApiError } from '../../api/client'
-import { mcpApi, type McpTool, type McpToolReviewInput } from '../../api/mcp'
+import {
+  mcpApi,
+  type McpPinEnforcement,
+  type McpTool,
+  type McpToolPinInput,
+  type McpToolReviewInput,
+} from '../../api/mcp'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
@@ -26,6 +33,7 @@ import { formatDateTime } from '../../utils/format'
 import {
   MCP_CATALOG_STATUS_META,
   MCP_DATA_CLASSIFICATION_META,
+  MCP_PIN_ENFORCEMENT_META,
   MCP_REVIEW_NOTE,
   MCP_REVIEW_STATUS_META,
   MCP_RISK_LEVEL_META,
@@ -169,9 +177,136 @@ function ReviewModal({
   )
 }
 
+interface PinFormValues {
+  pin_enforcement: McpPinEnforcement
+  repin: boolean
+}
+
+/** 工具定义钉扎 / Rug Pull 策略对话框（POST /api-security/mcp/tools/{id}/pin） */
+function PinToolModal({
+  catalogId,
+  tool,
+  onClose,
+}: {
+  catalogId: string
+  tool: McpTool
+  onClose: () => void
+}) {
+  const { message } = AntdApp.useApp()
+  const qc = useQueryClient()
+  const [form] = Form.useForm<PinFormValues>()
+  const [submitError, setSubmitError] = useState<string | null>(null)
+
+  const pinMut = useMutation({
+    mutationFn: (body: McpToolPinInput) => mcpApi.pinTool(tool.id, body),
+    onSuccess: (saved) => {
+      message.success(
+        `已更新工具「${saved.tool_name}」钉扎策略（${MCP_PIN_ENFORCEMENT_META[saved.pin_enforcement || 'OBSERVE']?.label ?? saved.pin_enforcement}）`,
+      )
+      void qc.invalidateQueries({ queryKey: ['mcp-catalog', catalogId] })
+      void qc.invalidateQueries({ queryKey: ['mcp-catalogs'] })
+      onClose()
+    },
+    onError: (e: unknown) =>
+      setSubmitError(e instanceof ApiError ? e.message : '钉扎策略更新失败'),
+  })
+
+  const normalizedEnforcement: McpPinEnforcement =
+    tool.pin_enforcement === 'OFF' ||
+    tool.pin_enforcement === 'OBSERVE' ||
+    tool.pin_enforcement === 'PROTECT'
+      ? tool.pin_enforcement
+      : 'OBSERVE'
+
+  return (
+    <Modal
+      title={`工具定义钉扎与 Rug Pull 策略：${tool.tool_name}`}
+      open
+      onCancel={onClose}
+      okText="保存钉扎策略"
+      cancelText="取消"
+      confirmLoading={pinMut.isPending}
+      onOk={() => form.submit()}
+      width={560}
+    >
+      {submitError ? (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 12 }}
+          title="更新钉扎策略失败"
+          description={submitError}
+        />
+      ) : null}
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 14 }}
+        title="网关在 tools/list 响应侧实时计算工具定义哈希并与钉扎基线做恒定时间比对，防御工具投毒与 Rug Pull 漂移。"
+      />
+      <Descriptions size="small" column={1} bordered style={{ marginBottom: 16 }}>
+        <Descriptions.Item label="当前钉扎哈希">
+          {tool.pinned_definition_hash ? (
+            <Typography.Text
+              code
+              copyable={{ text: tool.pinned_definition_hash }}
+              style={{ fontSize: 12 }}
+            >
+              {tool.pinned_definition_hash}
+            </Typography.Text>
+          ) : (
+            <Tag>未钉扎</Tag>
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="当前钉扎策略">
+          <StatusTag
+            value={tool.pin_enforcement || 'OBSERVE'}
+            map={MCP_PIN_ENFORCEMENT_META}
+          />
+        </Descriptions.Item>
+      </Descriptions>
+      <Form<PinFormValues>
+        form={form}
+        layout="vertical"
+        initialValues={{
+          pin_enforcement: normalizedEnforcement,
+          repin: !tool.pinned_definition_hash,
+        }}
+        onFinish={(values) => {
+          setSubmitError(null)
+          pinMut.mutate({
+            pin_enforcement: values.pin_enforcement,
+            repin: Boolean(values.repin),
+          })
+        }}
+      >
+        <Form.Item
+          name="pin_enforcement"
+          label="漂移检测执行策略"
+          rules={[{ required: true, message: '请选择执行策略' }]}
+        >
+          <Radio.Group>
+            <Radio value="OFF">关闭（不校验定义漂移）</Radio>
+            <Radio value="OBSERVE">观察（记录漂移事件不阻断）</Radio>
+            <Radio value="PROTECT">强制阻断（漂移即拒返）</Radio>
+          </Radio.Group>
+        </Form.Item>
+        <Form.Item
+          name="repin"
+          label="重新计算并钉扎定义指纹（repin）"
+          valuePropName="checked"
+          extra="开启后基于当前目录内工具名称、描述全文与输入 Schema 重算 mcp-def-sha256:v1 指纹并刷新基线"
+        >
+          <Switch />
+        </Form.Item>
+      </Form>
+    </Modal>
+  )
+}
+
 /**
- * 目录详情抽屉（NG-MCP G1 §1.14 端点 3/6）：工具行表格（review_status 状态机展示）+
- * 审核对话框（审核状态机：APPROVED/REJECTED + 定级/允许维度/预算）。
+ * 目录详情抽屉（NG-MCP G1 §1.14 端点 3/6 + Phase 9C-1 工具定义钉扎）：工具行表格（review_status 与
+ * pin_enforcement / pinned_definition_hash 展示）+ 审核对话框 + 钉扎/策略弹窗。
  */
 export default function CatalogDetailDrawer({
   id,
@@ -183,6 +318,7 @@ export default function CatalogDetailDrawer({
   onClose: () => void
 }) {
   const [reviewing, setReviewing] = useState<McpTool | null>(null)
+  const [pinning, setPinning] = useState<McpTool | null>(null)
   const detailQuery = useQuery({
     queryKey: ['mcp-catalog', id],
     queryFn: () => mcpApi.getCatalog(id),
@@ -198,6 +334,29 @@ export default function CatalogDetailDrawer({
     {
       title: '工具哈希', dataIndex: 'tool_hash', width: 120,
       render: (v: string) => <Typography.Text code title={v}>{shortMcpHash(v)}</Typography.Text>,
+    },
+    {
+      title: '定义钉扎指纹',
+      dataIndex: 'pinned_definition_hash',
+      width: 145,
+      render: (v?: string) =>
+        v ? (
+          <Tooltip title={v}>
+            <Tag color="geekblue" style={{ fontFamily: 'monospace', marginInlineEnd: 0 }}>
+              {shortMcpHash(v)}
+            </Tag>
+          </Tooltip>
+        ) : (
+          <Tag style={{ marginInlineEnd: 0 }}>未钉扎</Tag>
+        ),
+    },
+    {
+      title: '钉扎策略',
+      dataIndex: 'pin_enforcement',
+      width: 105,
+      render: (v?: string) => (
+        <StatusTag value={v || 'OBSERVE'} map={MCP_PIN_ENFORCEMENT_META} />
+      ),
     },
     {
       title: '允许维度', key: 'allowed', width: 190,
@@ -224,10 +383,13 @@ export default function CatalogDetailDrawer({
         ),
     },
     {
-      title: '操作', key: 'actions', width: 80, fixed: 'right',
+      title: '操作', key: 'actions', width: 140, fixed: 'right',
       render: (_, record) =>
         canManage ? (
-          <Button type="link" size="small" onClick={() => setReviewing(record)}>审核</Button>
+          <Space size={0}>
+            <Button type="link" size="small" onClick={() => setReviewing(record)}>审核</Button>
+            <Button type="link" size="small" onClick={() => setPinning(record)}>钉扎/策略</Button>
+          </Space>
         ) : null,
     },
   ]
@@ -235,7 +397,7 @@ export default function CatalogDetailDrawer({
   return (
     <Drawer
       title={detail ? `工具目录：${detail.catalog.name}` : '工具目录详情'}
-      width={1080}
+      width={1140}
       open
       onClose={onClose}
       destroyOnHidden
@@ -262,7 +424,7 @@ export default function CatalogDetailDrawer({
             columns={columns}
             dataSource={detail.tools}
             pagination={false}
-            scroll={{ x: 1400 }}
+            scroll={{ x: 1700 }}
             locale={{ emptyText: '空目录（整体再导入可补充工具行）' }}
           />
         </Space>
@@ -270,6 +432,7 @@ export default function CatalogDetailDrawer({
         <Typography.Text type="secondary">加载中…</Typography.Text>
       )}
       {reviewing ? <ReviewModal catalogId={id} tool={reviewing} onClose={() => setReviewing(null)} /> : null}
+      {pinning ? <PinToolModal catalogId={id} tool={pinning} onClose={() => setPinning(null)} /> : null}
     </Drawer>
   )
 }

@@ -10,31 +10,63 @@ import {
   Popconfirm,
   Select,
   Space,
+  Switch,
+  Tag,
   Typography,
 } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { applicationsApi } from '../../api/applications'
 import { ApiError } from '../../api/client'
-import { mcpApi, type McpBinding, type McpBindingInput, type McpBindingUpdateInput } from '../../api/mcp'
+import {
+  mcpApi,
+  type McpBinding,
+  type McpBindingInput,
+  type McpBindingUpdateInput,
+  type McpResponseGuardMode,
+} from '../../api/mcp'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
-import { MCP_BINDING_MODE_META } from '../../utils/mcp'
+import {
+  MCP_BINDING_MODE_META,
+  MCP_RESPONSE_GUARD_MODE_META,
+  validateOAuthResourceMetadataUrl,
+} from '../../utils/mcp'
 import { hasPermission } from '../../utils/permission'
+
+const RESPONSE_GUARD_OPTIONS: { value: McpResponseGuardMode; label: string }[] = [
+  { value: 'OFF', label: '关闭' },
+  { value: 'OBSERVE', label: '观察（仅记录）' },
+  { value: 'SANITIZE', label: '净化隐写' },
+  { value: 'PROTECT', label: '强制阻断' },
+]
 
 interface CreateFormValues {
   application_id: string
   endpoint_path: string
   catalog_id: string
   mode: string
+  response_guard_mode: McpResponseGuardMode
+  require_session_binding: boolean
+  oauth_resource_metadata_url?: string
 }
 
 interface EditFormValues {
   catalog_id: string
   mode: string
+  response_guard_mode: McpResponseGuardMode
+  require_session_binding: boolean
+  oauth_resource_metadata_url?: string
+}
+
+function normalizeResponseGuardMode(v?: string): McpResponseGuardMode {
+  if (v === 'OFF' || v === 'OBSERVE' || v === 'SANITIZE' || v === 'PROTECT') {
+    return v
+  }
+  return 'OBSERVE'
 }
 
 /** 目录下拉（hook 封装——新建/编辑两处复用） */
@@ -81,7 +113,12 @@ function CreateBindingModal({ onClose, onSaved }: { onClose: () => void; onSaved
       <Form<CreateFormValues>
         form={form}
         layout="vertical"
-        initialValues={{ mode: 'OBSERVE' }}
+        initialValues={{
+          mode: 'OBSERVE',
+          response_guard_mode: 'OBSERVE',
+          require_session_binding: false,
+          oauth_resource_metadata_url: '',
+        }}
         onFinish={(values) => {
           setSubmitError(null)
           createMut.mutate({
@@ -89,6 +126,9 @@ function CreateBindingModal({ onClose, onSaved }: { onClose: () => void; onSaved
             endpoint_path: values.endpoint_path.trim(),
             catalog_id: values.catalog_id,
             mode: values.mode,
+            response_guard_mode: values.response_guard_mode,
+            require_session_binding: Boolean(values.require_session_binding),
+            oauth_resource_metadata_url: (values.oauth_resource_metadata_url ?? '').trim(),
           })
         }}
       >
@@ -118,6 +158,37 @@ function CreateBindingModal({ onClose, onSaved }: { onClose: () => void; onSaved
         </Form.Item>
         <Form.Item name="mode" label="模式" rules={[{ required: true, message: '请选择模式' }]}>
           <Select options={Object.entries(MCP_BINDING_MODE_META).map(([value, meta]) => ({ value, label: meta.label }))} />
+        </Form.Item>
+        <Form.Item
+          name="response_guard_mode"
+          label="响应侧防护模式"
+          rules={[{ required: true, message: '请选择响应侧防护模式' }]}
+          extra="针对 tools/call、resources/read、prompts/get 响应检测间接提示词注入、Unicode 隐写与 Markdown 外链渗出"
+        >
+          <Select options={RESPONSE_GUARD_OPTIONS} />
+        </Form.Item>
+        <Form.Item
+          name="require_session_binding"
+          label="Mcp-Session-Id 会话绑定"
+          valuePropName="checked"
+          extra="开启后将 Streamable HTTP Mcp-Session-Id 绑定到可信调用主体，阻断跨主体会话劫持复用"
+        >
+          <Switch />
+        </Form.Item>
+        <Form.Item
+          name="oauth_resource_metadata_url"
+          label="OAuth 2.1 资源元数据地址（可选）"
+          extra="须以 https:// 开头；配置后在 401/403 质询响应中携带 WWW-Authenticate Bearer resource_metadata 声明"
+          rules={[
+            {
+              validator: (_, v?: string) => {
+                const err = validateOAuthResourceMetadataUrl(v)
+                return err ? Promise.reject(new Error(err)) : Promise.resolve()
+              },
+            },
+          ]}
+        >
+          <Input placeholder="https://mcp.example.com/.well-known/oauth-protected-resource" autoComplete="off" />
         </Form.Item>
         {watchedMode === 'PROTECT' ? (
           <Alert
@@ -183,11 +254,24 @@ function EditBindingModal({
       <Form<EditFormValues>
         form={form}
         layout="vertical"
-        initialValues={{ catalog_id: binding.catalog_id, mode: binding.mode }}
+        initialValues={{
+          catalog_id: binding.catalog_id,
+          mode: binding.mode,
+          response_guard_mode: normalizeResponseGuardMode(binding.response_guard_mode),
+          require_session_binding: Boolean(binding.require_session_binding),
+          oauth_resource_metadata_url: binding.oauth_resource_metadata_url ?? '',
+        }}
         onFinish={(values) => {
           setSubmitError(null)
           setConflict(null)
-          updateMut.mutate({ catalog_id: values.catalog_id, mode: values.mode, version: binding.version })
+          updateMut.mutate({
+            catalog_id: values.catalog_id,
+            mode: values.mode,
+            response_guard_mode: values.response_guard_mode,
+            require_session_binding: Boolean(values.require_session_binding),
+            oauth_resource_metadata_url: (values.oauth_resource_metadata_url ?? '').trim(),
+            version: binding.version,
+          })
         }}
       >
         <Form.Item name="catalog_id" label="工具目录" rules={[{ required: true, message: '请选择工具目录' }]}>
@@ -195,6 +279,34 @@ function EditBindingModal({
         </Form.Item>
         <Form.Item name="mode" label="模式" rules={[{ required: true, message: '请选择模式' }]}>
           <Select options={Object.entries(MCP_BINDING_MODE_META).map(([value, meta]) => ({ value, label: meta.label }))} />
+        </Form.Item>
+        <Form.Item
+          name="response_guard_mode"
+          label="响应侧防护模式"
+          rules={[{ required: true, message: '请选择响应侧防护模式' }]}
+        >
+          <Select options={RESPONSE_GUARD_OPTIONS} />
+        </Form.Item>
+        <Form.Item
+          name="require_session_binding"
+          label="Mcp-Session-Id 会话绑定"
+          valuePropName="checked"
+        >
+          <Switch />
+        </Form.Item>
+        <Form.Item
+          name="oauth_resource_metadata_url"
+          label="OAuth 2.1 资源元数据地址（可选）"
+          rules={[
+            {
+              validator: (_, v?: string) => {
+                const err = validateOAuthResourceMetadataUrl(v)
+                return err ? Promise.reject(new Error(err)) : Promise.resolve()
+              },
+            },
+          ]}
+        >
+          <Input placeholder="https://mcp.example.com/.well-known/oauth-protected-resource" autoComplete="off" />
         </Form.Item>
       </Form>
     </Modal>
@@ -246,7 +358,35 @@ export default function BindingsTab() {
     },
     { title: '端点路径', dataIndex: 'endpoint_path', width: 240, render: (v: string) => <Typography.Text code>{v}</Typography.Text> },
     { title: '工具目录', dataIndex: 'catalog_name', width: 200, ellipsis: true },
-    { title: '模式', dataIndex: 'mode', width: 150, render: (v: string) => <StatusTag value={v || 'OBSERVE'} map={MCP_BINDING_MODE_META} /> },
+    { title: '模式', dataIndex: 'mode', width: 110, render: (v: string) => <StatusTag value={v || 'OBSERVE'} map={MCP_BINDING_MODE_META} /> },
+    {
+      title: '响应防护',
+      dataIndex: 'response_guard_mode',
+      width: 115,
+      render: (v?: string) => (
+        <StatusTag value={v || 'OBSERVE'} map={MCP_RESPONSE_GUARD_MODE_META} />
+      ),
+    },
+    {
+      title: '会话绑定',
+      dataIndex: 'require_session_binding',
+      width: 100,
+      render: (v?: boolean) => (v ? <Tag color="green">已绑定</Tag> : <Tag>未启用</Tag>),
+    },
+    {
+      title: 'OAuth 资源元数据',
+      dataIndex: 'oauth_resource_metadata_url',
+      width: 220,
+      ellipsis: true,
+      render: (v?: string) =>
+        v ? (
+          <Typography.Text code ellipsis={{ tooltip: v }} style={{ fontSize: 12 }}>
+            {v}
+          </Typography.Text>
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        ),
+    },
     { title: '版本', dataIndex: 'version', width: 80, render: (v: number) => `v${v}` },
     { title: '更新时间', dataIndex: 'updated_at', width: 170, render: formatDateTime },
     {
@@ -298,7 +438,7 @@ export default function BindingsTab() {
         loading={listQuery.isLoading}
         columns={columns}
         dataSource={listQuery.data?.items ?? []}
-        scroll={{ x: 1100 }}
+        scroll={{ x: 1480 }}
         pagination={false}
         locale={{ emptyText: '暂无绑定——空绑定=网关 MCP 管控零行为' }}
       />

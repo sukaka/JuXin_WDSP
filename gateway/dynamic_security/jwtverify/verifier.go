@@ -443,10 +443,13 @@ func (v *Verifier) validateClaims(parsed *parsedToken, ir *issuerRuntime, keyset
 			}
 		}
 	}
-	// 角色只在签名及注册声明验证完成后读取；即使没有身份指纹密钥，也不能
-	// 从未验证 claims 产生角色信号。
+	// 角色、作用域与 RFC 8693 委派链只在签名及注册声明验证完成后读取；
+	// 未验证 Token 绝不得产出任何 VerifiedScopes / DelegationChain / VerifiedAZP 信号。
 	res := v.result(StatusVerified, ReasonValid, ir, keysetVersion, "")
 	res.VerifiedRoles = verifiedRoles(claims.raw, ir.cfg.RoleClaims)
+	res.VerifiedScopes = verifiedScopes(claims.raw)
+	res.DelegationChain, res.DelegationScopes = verifiedDelegationChain(claims.raw)
+	res.VerifiedAZP = verifiedAZP(claims.raw)
 	// 空身份密钥（仅 OBSERVE 可达）：验签结论照常返回 VERIFIED，但不产出
 	// 可信主体/tenant——无可信身份指纹密钥时禁止冒充已建立身份信任链（§5.1）。
 	if len(v.secret) == 0 {
@@ -510,6 +513,149 @@ func appendVerifiedRole(roles *[]string, seen map[string]struct{}, role string) 
 	}
 	seen[role] = struct{}{}
 	*roles = append(*roles, role)
+}
+
+// verifiedScopes strictly parses "scope" (RFC 6749 space-delimited string or
+// string array) and "scp" (string array or space-delimited string) ONLY after
+// cryptographic signature and registered claim verification.
+func verifiedScopes(raw map[string]json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var scopes []string
+	seen := make(map[string]struct{})
+	appendScope := func(s string) bool {
+		if len(scopes) >= MaxVerifiedScopes {
+			return false
+		}
+		s = strings.TrimSpace(s)
+		if s == "" || len(s) > MaxScopeBytes || containsControlOrSpace(s) {
+			return true
+		}
+		if _, dup := seen[s]; dup {
+			return true
+		}
+		seen[s] = struct{}{}
+		scopes = append(scopes, s)
+		return len(scopes) < MaxVerifiedScopes
+	}
+	for _, claim := range []string{"scope", "scp"} {
+		val, ok := raw[claim]
+		if !ok || len(val) == 0 {
+			continue
+		}
+		var single string
+		if json.Unmarshal(val, &single) == nil {
+			for _, f := range strings.Fields(single) {
+				if !appendScope(f) {
+					return scopes
+				}
+			}
+			continue
+		}
+		var many []string
+		if json.Unmarshal(val, &many) == nil {
+			for _, item := range many {
+				if !appendScope(item) {
+					return scopes
+				}
+			}
+		}
+	}
+	if len(scopes) == 0 {
+		return nil
+	}
+	return scopes
+}
+
+// verifiedDelegationChain strictly parses the RFC 8693 nested "act" claim chain
+// (outermost actor first) and any per-hop "scope"/"scp" claims ONLY after
+// cryptographic signature and registered claim verification.
+func verifiedDelegationChain(raw map[string]json.RawMessage) ([]string, [][]string) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	actRaw, ok := raw["act"]
+	if !ok || len(actRaw) == 0 {
+		return nil, nil
+	}
+	var chain []string
+	var allScopes [][]string
+	hasAnyScopes := false
+	for depth := 0; ok && len(actRaw) > 0 && depth < MaxDelegationChain; depth++ {
+		var actObj map[string]json.RawMessage
+		if err := json.Unmarshal(actRaw, &actObj); err != nil || len(actObj) == 0 {
+			break
+		}
+		actor := firstValidClaimString(actObj, MaxDelegationSubBytes, "sub", "client_id", "azp")
+		nextAct, hasNext := actObj["act"]
+		if actor == "" {
+			if !hasNext {
+				break
+			}
+			actor = "unknown"
+		}
+		hopScopes := verifiedScopes(actObj)
+		if len(hopScopes) > 0 {
+			hasAnyScopes = true
+		}
+		chain = append(chain, actor)
+		allScopes = append(allScopes, hopScopes)
+		actRaw, ok = nextAct, hasNext
+	}
+	if len(chain) == 0 {
+		return nil, nil
+	}
+	if !hasAnyScopes {
+		return chain, nil
+	}
+	return chain, allScopes
+}
+
+// verifiedAZP extracts the authorized party ("azp" or fallback "client_id")
+// strictly after cryptographic signature verification.
+func verifiedAZP(raw map[string]json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	return firstValidClaimString(raw, MaxSubjectBytes, "azp", "client_id")
+}
+
+func firstValidClaimString(raw map[string]json.RawMessage, maxLen int, keys ...string) string {
+	for _, k := range keys {
+		v, ok := raw[k]
+		if !ok || len(v) == 0 {
+			continue
+		}
+		var s string
+		if json.Unmarshal(v, &s) != nil {
+			continue
+		}
+		s = strings.TrimSpace(s)
+		if s == "" || len(s) > maxLen || containsControlChar(s) {
+			continue
+		}
+		return s
+	}
+	return ""
+}
+
+func containsControlChar(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func containsControlOrSpace(s string) bool {
+	for _, r := range s {
+		if r <= 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 // result 构造结果基座：填充策略/issuer/密钥版本、评估时间与模式处置动作。

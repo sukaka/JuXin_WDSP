@@ -541,6 +541,22 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 	if err := g.assembleClientSide(); err != nil {
 		return err
 	}
+	// A2A 协议安全与 AgBOM 策略装配（Phase 9C-1；严格解码 DisallowUnknownFields，
+	// 非法配置 fail-closed 拒绝加载；段缺失/OFF = 零开销直通）
+	if err := g.assembleA2A(); err != nil {
+		return err
+	}
+	// 本地离线语义防火墙策略装配（Phase 9C-2；严格解码 DisallowUnknownFields，
+	// 非法配置 fail-closed 拒绝加载；段缺失/OFF = 零开销直通）
+	if err := g.assembleSemanticGuard(); err != nil {
+		return err
+	}
+	// Wasm 热插拔自定义检测插件沙箱装配（Phase 9D-1；严格解码 DisallowUnknownFields +
+	// 常量时间 SHA-256 校验 + wazero 解释器预编译，非法配置 fail-closed 拒绝加载；
+	// 段缺失或无启用插件 = 零开销直通）
+	if err := g.assembleWasmPlugins(); err != nil {
+		return err
+	}
 	// 远程 JWKS 后台刷新（热路径零网络 IO；装配最后一步启动，Provision 失败不泄漏 goroutine）
 	if g.jwtVerifier != nil {
 		rctx, cancel := context.WithCancel(context.Background())
@@ -817,6 +833,27 @@ func (g *Guard) Validate() error {
 			return err
 		}
 	}
+	// A2A 协议安全策略（api_a2a_policy 段）装配期预检：严格解码 DisallowUnknownFields +
+	// 全量校验（schema_version/mode/路径前缀/白名单/委派深度/循环窗口/模式边界）
+	if len(g.APIA2APolicy) > 0 {
+		if err := g.validateA2APolicy(); err != nil {
+			return err
+		}
+	}
+	// 本地离线语义防火墙策略（semantic_guard_policy 段）装配期预检：严格解码 DisallowUnknownFields +
+	// 全量校验（schema_version/mode/socket_path 白名单前缀/阈值与并发熔断边界）
+	if len(g.SemanticGuardPolicy) > 0 {
+		if err := g.validateSemanticGuardPolicy(); err != nil {
+			return err
+		}
+	}
+	// Wasm 自定义检测插件沙箱（wasm_plugins 段）装配期预检：严格解码 DisallowUnknownFields +
+	// 常量时间 SHA-256 校验 + 模块编译与导入导出契约检查，任一失败 fail-closed 拒绝加载
+	if len(g.WasmPlugins) > 0 {
+		if err := g.validateWasmPlugins(); err != nil {
+			return err
+		}
+	}
 	if g.RedirectPortRewrite < 0 || g.RedirectPortRewrite > 65535 {
 		return fmt.Errorf("redirect_port_rewrite must be between 0 and 65535")
 	}
@@ -854,6 +891,15 @@ func (g *Guard) cleanup() error {
 	}
 	if g.clientSide != nil {
 		g.clientSide.Close() // 只关资源不置 nil（Cleanup 幂等纪律）
+	}
+	if g.apiA2A != nil {
+		g.apiA2A.Close() // 只关资源不置 nil（Cleanup 幂等纪律）
+	}
+	if g.semanticGuard != nil {
+		g.semanticGuard.Close() // 只关资源不置 nil（Cleanup 幂等纪律）
+	}
+	if g.wasmPlugins != nil {
+		_ = g.wasmPlugins.Close() // 只关资源不置 nil（Cleanup 幂等纪律）
 	}
 	// 身份与行为防护引擎（关闭其事件记录器与存储；Valkey 共享连接归引擎不在此关）
 	if g.ibh != nil {

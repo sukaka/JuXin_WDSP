@@ -1,0 +1,321 @@
+# 片段：Wasm 热插拔自定义检测插件沙箱（Phase 9D-1）
+# 路由源：server/internal/app/app.go（/wasm-plugins、/wasm-plugins/{id}、/wasm-plugins/{id}/rollback）
+# 数据源：wasm_plugins、wasm_plugin_versions（迁移 000249；
+# 权限种子：wasm_plugins.read 授予 SECURITY_ADMIN/AUDIT_ADMIN，wasm_plugins.manage 授予 SECURITY_ADMIN）。
+# 安全约束：REST 读接口绝不返回原始 wasm_binary 或 wasm_base64；上传强制校验 WebAssembly 结构、零 WASI 导入与 wdsp_v1 导出契约。
+paths:
+  /wasm-plugins:
+    get:
+      operationId: wasmPluginsList
+      tags: [wasm-plugins]
+      summary: 查询 Wasm 检测插件列表
+      description: >-
+        分页查询全局或指定应用的 Wasm 自定义检测插件元数据（按优先级升序）。
+        响应绝不包含原始 wasm_binary 或 wasm_base64。
+        `application_id=global` 过滤仅全局插件，省略返回全部作用域，传 UUID 过滤指定应用。
+        权限：`wasm_plugins.read`
+      parameters:
+        - name: application_id
+          in: query
+          required: false
+          schema: { type: string }
+          description: 作用域过滤：省略=全部，`global`=仅全局插件，应用 UUID=指定应用插件
+        - name: mode
+          in: query
+          required: false
+          schema: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+          description: 运行模式过滤
+        - name: keyword
+          in: query
+          required: false
+          schema: { type: string }
+          description: 名称或描述关键词模糊搜索
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+          description: 页码（从 1 开始）
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+          description: 每页条数（1~100）
+      responses:
+        '200':
+          description: 插件元数据分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WasmPluginListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: wasmPluginsCreate
+      tags: [wasm-plugins]
+      summary: 上传并创建 Wasm 检测插件
+      description: >-
+        上传并创建全局或应用级 Wasm 检测插件（v1），同时写入不可变版本历史并记录操作审计。
+        服务端纯 Go 校验 WebAssembly 魔数/版本/LEB128 节边界、体积 <= 4MiB、零 WASI 导入及导出函数 `wdsp_on_request` 与内存 `memory`；
+        若提供 `expected_sha256` 则以常量时间校验摘要一致；每个作用域最多 16 个插件，同作用域名称唯一（冲突返回 409）。
+        权限：`wasm_plugins.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WasmPluginCreateRequest' }
+      responses:
+        '201':
+          description: 创建成功（返回插件元数据，不含原始二进制）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WasmPluginMutationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /wasm-plugins/{id}:
+    get:
+      operationId: wasmPluginsGet
+      tags: [wasm-plugins]
+      summary: 查看 Wasm 检测插件详情与版本历史
+      description: >-
+        返回插件当前元数据及按版本号倒序排列的不可变版本历史列表。
+        响应绝不包含原始 wasm_binary 或 wasm_base64。
+        权限：`wasm_plugins.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 插件 ID }
+      responses:
+        '200':
+          description: 插件详情与不可变版本历史
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WasmPluginDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: wasmPluginsUpdate
+      tags: [wasm-plugins]
+      summary: 更新 Wasm 检测插件配置或替换二进制
+      description: >-
+        更新插件配置参数与可选的新 `.wasm` 二进制（省略 `wasm_base64` 时保留现有二进制），
+        按 `expected_version` 执行乐观锁校验（冲突返回 409），同事务追加新不可变版本并记录操作审计。
+        权限：`wasm_plugins.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 插件 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WasmPluginUpdateRequest' }
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WasmPluginMutationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: wasmPluginsDelete
+      tags: [wasm-plugins]
+      summary: 删除 Wasm 检测插件
+      description: 删除指定 Wasm 检测插件及其不可变版本历史，并记录高风险操作审计。权限：`wasm_plugins.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 插件 ID }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WasmPluginDeleteResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /wasm-plugins/{id}/rollback:
+    post:
+      operationId: wasmPluginsRollback
+      tags: [wasm-plugins]
+      summary: 回滚 Wasm 检测插件至历史版本
+      description: >-
+        从不可变版本表克隆 `target_version` 的二进制与配置快照生成 `version + 1` 新版本（绝不覆盖或删除既有版本），
+        强制校验 `expected_version` 乐观锁（冲突返回 409）与目标二进制 SHA-256 完整性，并记录高风险操作审计。
+        权限：`wasm_plugins.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 插件 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WasmPluginRollbackRequest' }
+      responses:
+        '200':
+          description: 回滚成功（返回新版本插件元数据）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WasmPluginMutationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    WasmPlugin:
+      type: object
+      description: Wasm 检测插件元数据（绝不包含 wasm_binary 或 wasm_base64）
+      required:
+        - id
+        - name
+        - description
+        - version
+        - abi_version
+        - mode
+        - sha256
+        - wasm_size
+        - priority
+        - timeout_ms
+        - max_memory_kb
+        - max_body_bytes
+        - fail_policy
+        - path_prefixes
+        - updated_by
+        - created_at
+        - updated_at
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid, nullable: true, description: 所属应用 ID；null 表示全局插件 }
+        application_code: { type: string, description: 所属应用编码（可选展示字段） }
+        application_name: { type: string, description: 所属应用名称（可选展示字段） }
+        name: { type: string, minLength: 1, maxLength: 128, pattern: '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$' }
+        description: { type: string, maxLength: 1000 }
+        version: { type: integer, minimum: 1, description: 乐观锁版本号 }
+        abi_version: { type: string, enum: [wdsp_v1], description: 宿主 ABI 版本 }
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT], description: 运行模式（OFF=关闭、OBSERVE=观测、PROTECT=拦截/限速） }
+        sha256: { type: string, minLength: 64, maxLength: 64, description: Wasm 二进制小写十六进制 SHA-256 摘要 }
+        wasm_size: { type: integer, minimum: 8, maximum: 4194304, description: Wasm 二进制字节大小（上限 4MiB） }
+        priority: { type: integer, minimum: 0, maximum: 10000, default: 100, description: 执行优先级（数值越小越先执行） }
+        timeout_ms: { type: integer, minimum: 1, maximum: 50, default: 2, description: 单次请求执行硬超时（毫秒） }
+        max_memory_kb: { type: integer, minimum: 256, maximum: 16384, default: 4096, description: 单实例线性内存硬上限（KiB） }
+        max_body_bytes: { type: integer, minimum: 0, maximum: 65536, default: 65536, description: 插件可读请求体最大字节数 }
+        fail_policy: { type: string, enum: [FAIL_OPEN, FAIL_CLOSED], default: FAIL_OPEN, description: 超时/超内存/异常降级策略（FAIL_CLOSED 返回 503） }
+        path_prefixes:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 256 }
+          description: 命中路径前缀过滤（空数组表示全路径；须以 / 开头，不含 ? 与 #）
+        updated_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    WasmPluginVersion:
+      type: object
+      description: 不可变插件版本历史条目（绝不包含 wasm_binary 或 wasm_base64）
+      required: [id, version, abi_version, mode, sha256, wasm_size, reason, created_by, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, minimum: 1 }
+        abi_version: { type: string, enum: [wdsp_v1] }
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+        sha256: { type: string, minLength: 64, maxLength: 64 }
+        wasm_size: { type: integer, minimum: 8, maximum: 4194304 }
+        reason: { type: string }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+
+    WasmPluginListResponse:
+      type: object
+      required: [items, total, page, page_size]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/WasmPlugin' }
+        total: { type: integer, minimum: 0 }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+
+    WasmPluginDetailResponse:
+      type: object
+      required: [plugin, versions]
+      properties:
+        plugin: { $ref: '#/components/schemas/WasmPlugin' }
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/WasmPluginVersion' }
+
+    WasmPluginMutationResponse:
+      type: object
+      required: [plugin]
+      properties:
+        plugin: { $ref: '#/components/schemas/WasmPlugin' }
+
+    WasmPluginDeleteResponse:
+      type: object
+      required: [deleted, id]
+      properties:
+        deleted: { type: boolean }
+        id: { type: string, format: uuid }
+
+    WasmPluginCreateRequest:
+      type: object
+      required: [name, mode, wasm_base64, reason]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128, pattern: '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$' }
+        application_id: { type: string, format: uuid, nullable: true, description: 所属应用 ID；省略或 null 表示全局插件 }
+        description: { type: string, maxLength: 1000 }
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+        wasm_base64: { type: string, description: 标准 Base64 编码的 .wasm 二进制（解码后 <= 4MiB） }
+        expected_sha256: { type: string, minLength: 64, maxLength: 64, description: 可选的期望 SHA-256 十六进制摘要（服务端常量时间校验） }
+        priority: { type: integer, minimum: 0, maximum: 10000, default: 100 }
+        timeout_ms: { type: integer, minimum: 1, maximum: 50, default: 2 }
+        max_memory_kb: { type: integer, minimum: 256, maximum: 16384, default: 4096 }
+        max_body_bytes: { type: integer, minimum: 0, maximum: 65536, default: 65536 }
+        fail_policy: { type: string, enum: [FAIL_OPEN, FAIL_CLOSED], default: FAIL_OPEN }
+        path_prefixes:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 256 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+
+    WasmPluginUpdateRequest:
+      type: object
+      required: [expected_version, mode, reason]
+      properties:
+        expected_version: { type: integer, minimum: 1, description: 乐观锁期望版本号（不匹配返回 409） }
+        description: { type: string, maxLength: 1000 }
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+        wasm_base64: { type: string, description: 可选的新 .wasm 二进制（省略时保留现有二进制） }
+        expected_sha256: { type: string, minLength: 64, maxLength: 64, description: 可选的期望 SHA-256 摘要校验 }
+        priority: { type: integer, minimum: 0, maximum: 10000, default: 100 }
+        timeout_ms: { type: integer, minimum: 1, maximum: 50, default: 2 }
+        max_memory_kb: { type: integer, minimum: 256, maximum: 16384, default: 4096 }
+        max_body_bytes: { type: integer, minimum: 0, maximum: 65536, default: 65536 }
+        fail_policy: { type: string, enum: [FAIL_OPEN, FAIL_CLOSED], default: FAIL_OPEN }
+        path_prefixes:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 256 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+
+    WasmPluginRollbackRequest:
+      type: object
+      required: [target_version, expected_version, reason]
+      properties:
+        target_version: { type: integer, minimum: 1, description: 目标历史版本号 }
+        expected_version: { type: integer, minimum: 1, description: 当前乐观锁期望版本号（冲突返回 409） }
+        reason: { type: string, minLength: 1, maxLength: 500, description: 回滚说明（必填） }

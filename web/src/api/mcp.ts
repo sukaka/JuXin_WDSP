@@ -8,6 +8,12 @@ import { request } from './client'
  * 发布通道只下发 APPROVED 工具行。
  */
 
+/** 工具定义钉扎执行模式（Phase 9C-1 Rug Pull 防护） */
+export type McpPinEnforcement = 'OFF' | 'OBSERVE' | 'PROTECT'
+
+/** 绑定响应侧安全防护模式（Phase 9C-1 间接提示词注入/隐写净化） */
+export type McpResponseGuardMode = 'OFF' | 'OBSERVE' | 'SANITIZE' | 'PROTECT'
+
 /** 参数范围约束（G1 两种确定性形态） */
 export interface McpArgConstraint {
   /** 参数字段点路径（如 path/url，≤128） */
@@ -23,6 +29,8 @@ export interface McpTool {
   catalog_id: string
   tool_name: string
   tool_version: string
+  /** 规范化描述全文（可选返回，参与定义钉扎哈希计算） */
+  description?: string
   /** 规范化描述全文 sha256（hex） */
   description_digest: string
   /** 描述截断预览（仅管理面展示，永不为证据） */
@@ -33,6 +41,10 @@ export interface McpTool {
   output_schema_digest?: string
   /** 五元组（名称/版本/规范化描述全文/双 schema）域分隔 sha256：mcp-tool-sha256:v1:<64hex> */
   tool_hash: string
+  /** 工具定义钉扎哈希（Phase 9C-1：mcp-def-sha256:v1:<64hex>，用于 tools/list Rug Pull 漂移检测） */
+  pinned_definition_hash?: string
+  /** 工具定义钉扎执行模式（OFF|OBSERVE|PROTECT，缺省 OBSERVE） */
+  pin_enforcement?: McpPinEnforcement | string
   capability_tags?: string[]
   /** LOW|MEDIUM|HIGH（导入缺省 HIGH——未定级按高风险对待） */
   risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | string
@@ -133,6 +145,12 @@ export interface McpToolReviewInput {
   max_calls_per_minute?: number
 }
 
+/** 工具定义钉扎策略载荷（Phase 9C-1：更新 pin_enforcement 并可选重算 pinned_definition_hash） */
+export interface McpToolPinInput {
+  pin_enforcement: McpPinEnforcement
+  repin?: boolean
+}
+
 /** MCP 目录 per-app 绑定（绑定驱动识别；空绑定=网关 MCP 管控零行为） */
 export interface McpBinding {
   id: string
@@ -144,6 +162,12 @@ export interface McpBinding {
   catalog_name: string
   /** OBSERVE 只记录 / PROTECT 协议化执行（JSON-RPC 错误对象） */
   mode: 'OBSERVE' | 'PROTECT' | string
+  /** 响应侧间接提示词/隐写防护模式（OFF|OBSERVE|SANITIZE|PROTECT，缺省 OBSERVE） */
+  response_guard_mode?: McpResponseGuardMode | string
+  /** Streamable HTTP Mcp-Session-Id 跨主体会话绑定校验 */
+  require_session_binding?: boolean
+  /** OAuth 2.1 受保护资源元数据地址（可选，须为 https://） */
+  oauth_resource_metadata_url?: string
   /** 乐观锁版本 */
   version: number
   created_by?: string
@@ -156,12 +180,18 @@ export interface McpBindingInput {
   endpoint_path: string
   catalog_id: string
   mode?: string
+  response_guard_mode?: McpResponseGuardMode | string
+  require_session_binding?: boolean
+  oauth_resource_metadata_url?: string
 }
 
 /** 绑定更新载荷（绑定身份维度（应用/endpoint_path）不可改——改即删建；version 乐观锁必填） */
 export interface McpBindingUpdateInput {
   catalog_id: string
   mode?: string
+  response_guard_mode?: McpResponseGuardMode | string
+  require_session_binding?: boolean
+  oauth_resource_metadata_url?: string
   version: number
 }
 
@@ -186,6 +216,16 @@ export const mcpApi = {
   /** 审核工具行（action=APPROVED/REJECTED + 可选定级更新；审核人/时间落列） */
   reviewTool: (catalogId: string, toolId: string, body: McpToolReviewInput) =>
     request<McpTool>(`/api-security/mcp/tool-catalogs/${catalogId}/tools/${toolId}/review`, { method: 'POST', body }),
+  /** 钉扎工具定义并设置 Rug Pull 漂移执行策略（POST /api-security/mcp/tools/{id}/pin） */
+  pinTool: async (toolId: string, body: McpToolPinInput): Promise<McpTool> => {
+    const data = await request<McpTool | { tool: McpTool }>(
+      `/api-security/mcp/tools/${toolId}/pin`,
+      { method: 'POST', body },
+    )
+    return typeof data === 'object' && data !== null && 'tool' in data && data.tool
+      ? data.tool
+      : (data as McpTool)
+  },
 
   /* ---------- 绑定 ---------- */
   /** 绑定列表（application_id 可选过滤；不分页） */

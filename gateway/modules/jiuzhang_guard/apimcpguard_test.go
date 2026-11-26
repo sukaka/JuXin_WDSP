@@ -288,14 +288,14 @@ func TestWriteMCPErrorResponseShape(t *testing.T) {
 	}
 }
 
-// TestCapabilityReportMCP 能力自报恒报（protocols.mcp=acl_v1 + detectors
-// mcp.toolcall=mcp/2 + mcp.observe=mcp/1 保留——不绑配置态）。
+// TestCapabilityReportMCP 能力自报恒报（protocols.mcp=pin_v2 + detectors
+// mcp.toolcall=mcp/2 + mcp.observe=mcp/1 + mcp.pinning=mcppin/1 保留——不绑配置态）。
 func TestCapabilityReportMCP(t *testing.T) {
 	m := buildCapabilityManifest(capabilityInputs{NodeID: "n1"}, time.Now())
-	if m.Protocols["mcp"] != "acl_v1" {
-		t.Fatalf("protocols.mcp = %q，应 acl_v1（恒报）", m.Protocols["mcp"])
+	if m.Protocols["mcp"] != "pin_v2" {
+		t.Fatalf("protocols.mcp = %q，应 pin_v2（恒报）", m.Protocols["mcp"])
 	}
-	var toolcall, observe bool
+	var toolcall, observe, pinning bool
 	for _, d := range m.Detectors {
 		if d.Name == "mcp.toolcall" && d.Version == "mcp/2" {
 			toolcall = true
@@ -303,8 +303,11 @@ func TestCapabilityReportMCP(t *testing.T) {
 		if d.Name == "mcp.observe" && d.Version == "mcp/1" {
 			observe = true
 		}
+		if d.Name == "mcp.pinning" && d.Version == "mcppin/1" {
+			pinning = true
+		}
 	}
-	if !toolcall || !observe {
+	if !toolcall || !observe || !pinning {
 		t.Fatalf("detectors = %+v", m.Detectors)
 	}
 }
@@ -349,4 +352,274 @@ func TestMCPProtectNoJwtDependencySkipE2E(t *testing.T) {
 	if !found {
 		t.Fatalf("缺依赖披露: %+v", recs[0].Details)
 	}
+}
+
+// TestMCPGuardPhase9C1Assembly 验证 Phase 9C-1 扩展字段装配归一与 OAuth 2.1 URL 校验。
+func TestMCPGuardPhase9C1Assembly(t *testing.T) {
+	inSchema := json.RawMessage(`{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}`)
+	pinHash := mcpguard.ComputeToolDefinitionHash("echo", "Echo back text", inSchema)
+	hashes := []string{"mcp-tool-sha256:v1:echo", "mcp-tool-sha256:v1:other"}
+	sort.Strings(hashes)
+	sum := sha256.Sum256([]byte(strings.Join(hashes, "")))
+	catHash := "mcp-catalog-sha256:v1:" + hex.EncodeToString(sum[:])
+
+	cat := mcpCatalogJSON{
+		Name:            "pin-cat",
+		ServiceIdentity: "mcp-pin",
+		ProtocolVersion: "2025-11-25",
+		CatalogHash:     catHash,
+		Tools: []mcpToolJSON{
+			{
+				ToolName:             "echo",
+				ToolVersion:          "1.0",
+				ToolHash:             "mcp-tool-sha256:v1:echo",
+				RiskLevel:            "LOW",
+				DataClassification:   "PUBLIC",
+				InputSchema:          inSchema,
+				PinnedDefinitionHash: pinHash,
+				PinEnforcement:       "PROTECT",
+			},
+			{
+				ToolName:       "other",
+				ToolVersion:    "1.0",
+				ToolHash:       "mcp-tool-sha256:v1:other",
+				RiskLevel:      "LOW",
+				PinEnforcement: "INVALID_MODE",
+			},
+		},
+	}
+	rawCat, err := json.Marshal([]mcpCatalogJSON{cat})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	g, _ := newMCPGuard(t, "PROTECT", string(rawCat), []mcpBindingJSON{
+		{
+			ApplicationID:            "app-1",
+			EndpointPath:             "/mcp",
+			CatalogName:              "pin-cat",
+			Mode:                     "PROTECT",
+			ResponseGuardMode:        "SANITIZE",
+			RequireSessionBinding:    true,
+			OAuthResourceMetadataURL: "https://mcp.example.com/.well-known/oauth-protected-resource",
+		},
+		{
+			ApplicationID:            "app-1",
+			EndpointPath:             "/mcp-bad-url",
+			CatalogName:              "pin-cat",
+			Mode:                     "OBSERVE",
+			ResponseGuardMode:        "BOGUS",
+			OAuthResourceMetadataURL: "http://insecure.example.com/meta\r\nX-Inject: 1",
+		},
+	})
+
+	ep := g.apiMCPGuard.Apps["app-1"]["/mcp"]
+	if ep.ResponseGuardMode != mcpguard.ResponseGuardSanitize || !ep.RequireSessionBinding ||
+		ep.OAuthResourceMetadataURL != "https://mcp.example.com/.well-known/oauth-protected-resource" {
+		t.Fatalf("valid Phase 9C-1 binding fields not preserved: %+v", ep)
+	}
+	if ep.Catalog.Tools["echo"].PinnedDefinitionHash != pinHash || ep.Catalog.Tools["echo"].PinEnforcement != mcpguard.PinEnforcementProtect {
+		t.Fatalf("pinned tool fields = %+v", ep.Catalog.Tools["echo"])
+	}
+	if ep.Catalog.Tools["other"].PinEnforcement != mcpguard.PinEnforcementObserve {
+		t.Fatalf("unknown pin_enforcement must normalize to OBSERVE, got %q", ep.Catalog.Tools["other"].PinEnforcement)
+	}
+
+	epBad := g.apiMCPGuard.Apps["app-1"]["/mcp-bad-url"]
+	if epBad.ResponseGuardMode != mcpguard.ResponseGuardObserve {
+		t.Fatalf("unknown response_guard_mode must normalize to OBSERVE, got %q", epBad.ResponseGuardMode)
+	}
+	if epBad.OAuthResourceMetadataURL != "" {
+		t.Fatalf("invalid oauth_resource_metadata_url must be ignored, got %q", epBad.OAuthResourceMetadataURL)
+	}
+}
+
+// TestMCPSessionHijackE2E 验证 Streamable HTTP 会话跨主体复用在 PROTECT 下以 -32010 阻断。
+func TestMCPSessionHijackE2E(t *testing.T) {
+	section := testMCPCatalogSection(t)
+	g, logPath := newMCPGuard(t, "PROTECT", section, []mcpBindingJSON{
+		{
+			ApplicationID:         "app-1",
+			EndpointPath:          "/mcp",
+			CatalogName:           "test-catalog",
+			Mode:                  "PROTECT",
+			RequireSessionBinding: true,
+		},
+	})
+	next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":42,"result":{"ok":true}}`))
+		return nil
+	})
+
+	const sessID = "streamable-session-abc123"
+	// 1st request: user-1 establishes session binding
+	req1 := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(mcpCallBody("echo", map[string]any{"text": "hi"})))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("Mcp-Session-Id", sessID)
+	req1.Header.Set("X-Request-Id", "req-sess-1")
+	*req1 = *req1.WithContext(context.WithValue(req1.Context(), jwtResultKey{}, jwtverify.VerificationResult{
+		Status: jwtverify.StatusVerified, VerifiedPrincipalID: "user-1", VerifiedTenantID: "t-1",
+	}))
+	rec1 := httptest.NewRecorder()
+	if err := g.serveNext(rec1, req1, next); err != nil {
+		t.Fatalf("req1 serveNext: %v", err)
+	}
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("req1 status = %d, want 200", rec1.Code)
+	}
+
+	// 2nd request: user-2 reuses user-1's Mcp-Session-Id -> blocked 403 / -32010
+	called2 := false
+	next2 := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+		called2 = true
+		return nil
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(mcpCallBody("echo", map[string]any{"text": "steal"})))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Mcp-Session-Id", sessID)
+	req2.Header.Set("X-Request-Id", "req-sess-2")
+	*req2 = *req2.WithContext(context.WithValue(req2.Context(), jwtResultKey{}, jwtverify.VerificationResult{
+		Status: jwtverify.StatusVerified, VerifiedPrincipalID: "user-2", VerifiedTenantID: "t-1",
+	}))
+	rec2 := httptest.NewRecorder()
+	if err := g.serveNext(rec2, req2, next2); err != nil {
+		t.Fatalf("req2 serveNext: %v", err)
+	}
+	if called2 {
+		t.Fatal("hijacked session request must not reach upstream")
+	}
+	if rec2.Code != http.StatusForbidden || !strings.Contains(rec2.Body.String(), `"code":-32010`) {
+		t.Fatalf("req2 response = %d %s", rec2.Code, rec2.Body.String())
+	}
+	recs := readAPIRecords(t, logPath)
+	var hijackFound bool
+	for _, rec := range recs {
+		for _, m := range rec.Details {
+			if m.RuleID == "mcp.session_hijack_suspected" && m.Category == "BLOCK" {
+				hijackFound = true
+				for _, v := range m.Evidence {
+					if strings.Contains(v, sessID) {
+						t.Fatal("event evidence must never log raw Mcp-Session-Id")
+					}
+				}
+			}
+		}
+	}
+	if !hijackFound {
+		t.Fatalf("missing mcp.session_hijack_suspected in events: %+v", recs)
+	}
+}
+
+// TestMCPToolsListRugPullBlockE2E 验证 tools/list 响应漂移在 PROTECT 下被干净抑制为 -32014。
+func TestMCPToolsListRugPullBlockE2E(t *testing.T) {
+	inSchema := json.RawMessage(`{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}`)
+	pinHash := mcpguard.ComputeToolDefinitionHash("echo", "Echo back text", inSchema)
+	hashes := []string{"mcp-tool-sha256:v1:echo"}
+	sum := sha256.Sum256([]byte(hashes[0]))
+	cat := mcpCatalogJSON{
+		Name:        "pin-cat",
+		CatalogHash: "mcp-catalog-sha256:v1:" + hex.EncodeToString(sum[:]),
+		Tools: []mcpToolJSON{{
+			ToolName:             "echo",
+			ToolVersion:          "1.0",
+			ToolHash:             "mcp-tool-sha256:v1:echo",
+			RiskLevel:            "LOW",
+			DataClassification:   "PUBLIC",
+			InputSchema:          inSchema,
+			PinnedDefinitionHash: pinHash,
+			PinEnforcement:       "PROTECT",
+		}},
+	}
+	rawCat, _ := json.Marshal([]mcpCatalogJSON{cat})
+	g, logPath := newMCPGuard(t, "PROTECT", string(rawCat), []mcpBindingJSON{{
+		ApplicationID: "app-1", EndpointPath: "/mcp", CatalogName: "pin-cat", Mode: "PROTECT",
+	}})
+
+	next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":77,"result":{"tools":[{"name":"echo","description":"RUG_PULL_SECRET_PROMPT","inputSchema":{"type":"object"}}]}}`))
+		return nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":77,"method":"tools/list","params":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-Id", "req-rugpull-1")
+	rec := httptest.NewRecorder()
+	if err := g.serveNext(rec, req, next); err != nil {
+		t.Fatalf("serveNext: %v", err)
+	}
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"code":-32014`) || !strings.Contains(rec.Body.String(), `"id":77`) {
+		t.Fatalf("expected clean -32014 block: %d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "RUG_PULL_SECRET_PROMPT") {
+		t.Fatalf("blocked tools/list body leaked upstream payload: %s", rec.Body.String())
+	}
+	rawLog := mustReadRawLine(t, logPath)
+	if strings.Contains(rawLog, "RUG_PULL_SECRET_PROMPT") {
+		t.Fatalf("event log leaked raw description text: %s", rawLog)
+	}
+}
+
+// TestMCPSanitizeAndOAuth21ChallengeE2E 验证非流式 SANITIZE 清洗回写响应体与 OAuth 2.1 挑战头。
+func TestMCPSanitizeAndOAuth21ChallengeE2E(t *testing.T) {
+	section := testMCPCatalogSection(t)
+	g, _ := newMCPGuard(t, "PROTECT", section, []mcpBindingJSON{{
+		ApplicationID:            "app-1",
+		EndpointPath:             "/mcp",
+		CatalogName:              "test-catalog",
+		Mode:                     "PROTECT",
+		ResponseGuardMode:        "SANITIZE",
+		OAuthResourceMetadataURL: "https://mcp.example.com/.well-known/oauth-protected-resource",
+	}})
+
+	t.Run("SANITIZE rewrites non-streaming JSON-RPC response body", func(t *testing.T) {
+		next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":88,"result":{"contents":[{"text":"Safe\u200B\uDB40\uDC41\u202E text"}]}}`))
+			return nil
+		})
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":88,"method":"resources/read","params":{"uri":"file:///x"}}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Request-Id", "req-san-e2e-1")
+		rec := httptest.NewRecorder()
+		if err := g.serveNext(rec, req, next); err != nil {
+			t.Fatalf("serveNext: %v", err)
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), `"text":"Safe text"`) {
+			t.Fatalf("expected sanitized body, got %s", rec.Body.String())
+		}
+		if strings.ContainsRune(rec.Body.String(), '\u200B') || strings.ContainsRune(rec.Body.String(), '\u202E') {
+			t.Fatalf("invisible runes survived: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("OAuth 2.1 WWW-Authenticate header attached on -32010 unauthenticated MCP call", func(t *testing.T) {
+		next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+			t.Fatal("untrusted caller must not reach upstream")
+			return nil
+		})
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(mcpCallBody("echo", map[string]any{"text": "hi"})))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Request-Id", "req-oauth21-1")
+		*req = *req.WithContext(context.WithValue(req.Context(), jwtResultKey{}, jwtverify.VerificationResult{
+			Status: jwtverify.StatusUnverified,
+		}))
+		rec := httptest.NewRecorder()
+		if err := g.serveNext(rec, req, next); err != nil {
+			t.Fatalf("serveNext: %v", err)
+		}
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"code":-32010`) {
+			t.Fatalf("status/body = %d %s", rec.Code, rec.Body.String())
+		}
+		wantHdr := `Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"`
+		if got := rec.Header().Get("WWW-Authenticate"); got != wantHdr {
+			t.Fatalf("WWW-Authenticate = %q, want %q", got, wantHdr)
+		}
+	})
 }

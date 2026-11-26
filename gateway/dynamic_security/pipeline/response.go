@@ -218,16 +218,54 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 	// 截断/流式/不可解析时披露未检测，不把缺失内容视为安全
 	detectors.CheckLLMOutputSecurity(ctx, jsonRoot, in.Truncated, in.Streamed, cfg.LLMSecurityPolicy)
 
-	// 1f2. MCP 结果检查（NG-MCP G1 D7）：请求相位已确认 tools/call（mcp.call
-	// 上下文）且非流式 JSON 响应完整捕获时全量检查——output_schema 校验 + 值级
-	// 敏感规则（复用请求侧同一编译产物，location=json）；PROTECT 双闸违规 →
-	// BLOCK 明细定案（挂点侧抑制未外发响应返回 -32014 错误对象——干净阻断零
-	// 字节泄漏）；截断/流式零行为（SSE 由挂点侧逐消息链承担）；UNKNOWN 恒不阻断
+	// 1f2. MCP 结果检查（NG-MCP G1 D7 + Phase 9C-1 纵深防护）：
+	// 请求相位已登记 CallContext（tools/call | tools/list | resources/read | prompts/get）且非流式 JSON
+	// 响应完整捕获时全量检查：
+	//   - tools/call：output_schema + 值级敏感规则 + 间接提示词/Unicode 走私/Markdown 外带（SANITIZE 回写完整响应体）；
+	//   - tools/list：描述投毒 + 未登记工具声明 + 固定定义摘要漂移（Rug Pull）；
+	//   - resources/read & prompts/get：间接提示词注入 / Unicode 走私 / Markdown 外带扫描与清洗；
+	// PROTECT 双闸违规 → BLOCK 明细定案（-32014 干净阻断零字节泄漏）；
+	// SANITIZE 改动 → 完整清洗后 JSON-RPC 响应体写入扩展 "mcp.sanitized_result"；
+	// 截断/流式零行为（SSE 由挂点侧逐消息链承担）；UNKNOWN 恒不阻断。
 	if cfg.MCPGuard != nil && !in.Truncated && !in.Streamed && rc.IsJSON && jsonRoot != nil {
 		if call := mcpguard.CallFromContext(ctx); call != nil {
 			if resultRaw, ok := mcpguard.ExtractResultMember(jsonRoot); ok {
 				engineProtect := mode == decision.ModeProtect
-				mcpguard.EvaluateResult(ctx, call.Message, resultRaw, call.Config, compileMCPResultValueRules(cfg), engineProtect)
+				method := call.Method
+				if method == "" && call.Message != nil {
+					method = call.Message.Method
+				}
+				switch method {
+				case "", "tools/call":
+					blocked := mcpguard.EvaluateResult(ctx, call.Message, resultRaw, call.Config, compileMCPResultValueRules(cfg), engineProtect)
+					if !blocked {
+						if sanitizedMember, ok := mcpguard.SanitizedResultFromContext(ctx); ok {
+							if fullBody, ok := mcpguard.ReplaceResultMember(jsonRoot, sanitizedMember); ok {
+								mcpguard.SetSanitizedResult(ctx, fullBody)
+							} else {
+								mcpguard.ClearSanitizedResult(ctx)
+							}
+						}
+					} else {
+						mcpguard.ClearSanitizedResult(ctx)
+					}
+				case "tools/list":
+					blocked, sanitizedMember := mcpguard.EvaluateToolsListResult(ctx, resultRaw, call.Config, engineProtect)
+					if !blocked && len(sanitizedMember) > 0 {
+						if fullBody, ok := mcpguard.ReplaceResultMember(jsonRoot, sanitizedMember); ok {
+							mcpguard.SetSanitizedResult(ctx, fullBody)
+						}
+					}
+				case "resources/read", "prompts/get":
+					if ep := call.Config.ResolvedEndpoint(""); ep != nil {
+						blocked, sanitizedMember := mcpguard.ScanAndSanitizeResult(ctx, method, resultRaw, ep, engineProtect)
+						if !blocked && len(sanitizedMember) > 0 {
+							if fullBody, ok := mcpguard.ReplaceResultMember(jsonRoot, sanitizedMember); ok {
+								mcpguard.SetSanitizedResult(ctx, fullBody)
+							}
+						}
+					}
+				}
 			}
 		}
 	}

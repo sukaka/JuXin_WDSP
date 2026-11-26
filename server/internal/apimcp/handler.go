@@ -209,6 +209,32 @@ func (h *Handler) ReviewTool(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, t)
 }
 
+// PinTool POST /mcp/tools/{id}/pin（工具定义钉扎策略与重算钉扎哈希；HIGH 审计）。
+func (h *Handler) PinTool(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	toolID, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	var req PinToolInput
+	if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	if msg := ValidatePinToolInput(req); msg != "" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, msg)
+		return
+	}
+	t, err := h.repo.PinTool(r.Context(), toolID, req)
+	if err != nil {
+		writeStoreError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "pin", "mcp_catalog_tool", toolID.String(), t.ToolName,
+		"", pinSummary(t, req.Repin), audits.ResultSuccess, audits.RiskHigh)
+	response.JSON(w, r, http.StatusOK, t)
+}
+
 // validateReviewLevels 审核定级词表（risk/data_classification 给出即校）。
 func validateReviewLevels(in ReviewInput) string {
 	if v := strings.ToUpper(strings.TrimSpace(in.RiskLevel)); v != "" {
@@ -299,6 +325,14 @@ func (h *Handler) UpdateBinding(w http.ResponseWriter, r *http.Request) {
 	case "", ModeObserve, ModeProtect:
 	default:
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "mode 非法（OBSERVE|PROTECT）")
+		return
+	}
+	if msg := ValidateResponseGuardMode(req.ResponseGuardMode); msg != "" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, msg)
+		return
+	}
+	if msg := ValidateOAuthResourceMetadataURL(req.OAuthResourceMetadataURL); msg != "" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, msg)
 		return
 	}
 	if req.Version < 1 {
@@ -408,8 +442,14 @@ func reviewSummary(t *Tool) string {
 		t.ToolName, t.ReviewStatus, t.RiskLevel, t.DataClassification, t.ToolHash, t.ReviewedBy)
 }
 
+// pinSummary 工具钉扎审计摘要（JSON 形态，仅摘要前缀与策略词表，不落描述原文）。
+func pinSummary(t *Tool, repin bool) string {
+	return fmt.Sprintf(`{"tool_name":%q,"pin_enforcement":%q,"pinned_definition_hash":%q,"repin":%t}`,
+		t.ToolName, t.PinEnforcement, t.PinnedDefinitionHash, repin)
+}
+
 // bindingSummary 绑定审计摘要（JSON 形态）。
 func bindingSummary(b *Binding) string {
-	return fmt.Sprintf(`{"application_id":%q,"endpoint_path":%q,"catalog_id":%q,"catalog_name":%q,"mode":%q,"version":%d}`,
-		b.ApplicationID.String(), b.EndpointPath, b.CatalogID.String(), b.CatalogName, b.Mode, b.Version)
+	return fmt.Sprintf(`{"application_id":%q,"endpoint_path":%q,"catalog_id":%q,"catalog_name":%q,"mode":%q,"response_guard_mode":%q,"require_session_binding":%t,"version":%d}`,
+		b.ApplicationID.String(), b.EndpointPath, b.CatalogID.String(), b.CatalogName, b.Mode, b.ResponseGuardMode, b.RequireSessionBinding, b.Version)
 }

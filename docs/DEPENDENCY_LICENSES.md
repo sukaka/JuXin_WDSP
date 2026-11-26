@@ -16,6 +16,7 @@
 
 | 依赖 | 锁定版本 | 许可证 | 用途 | 归档 |
 |------|---------|--------|------|------|
+| github.com/cilium/ebpf | v0.22.0 | MIT | 阶段9D-2 `gateway/xdpguard` eBPF/XDP 内核态快速丢包守护进程（纯 Go 零 CGO，与 `wdsp-agent/go.mod` 同版本复用） | [licenses/cilium-ebpf/](../licenses/cilium-ebpf/) |
 | github.com/corazawaf/coraza/v3 | v3.7.0 | Apache-2.0 | WAF 检测引擎（网关与 mirrorcap 旁路采集共用） | [licenses/coraza/](../licenses/coraza/) |
 | github.com/google/gopacket | v1.1.19 | BSD-3-Clause | mirrorcap 旁路抓包/TCP 重组（pcapgo AF_PACKET 纯 syscall） | [licenses/gopacket/](../licenses/gopacket/) |
 
@@ -27,6 +28,7 @@
 | github.com/corazawaf/coraza-caddy/v2 | v2.5.0 | Apache-2.0 | Coraza 的 Caddy 集成模块 | [licenses/coraza-caddy/](../licenses/coraza-caddy/) |
 | github.com/valkey-io/valkey-go | v1.0.76 | Apache-2.0 | Valkey 客户端（CC 计数/临时封禁） | [licenses/valkey-go/](../licenses/valkey-go/) |
 | github.com/andybalholm/brotli | v1.3.0 | MIT | gzip/Brotli 压缩响应的安全解压与重编码 | [licenses/brotli/](../licenses/brotli/) |
+| github.com/tetratelabs/wazero | v1.12.0 | Apache-2.0 | Wasm 自定义检测插件沙箱运行时（纯 Go 零 CGO 解释器模式，无 WASI） | [licenses/wazero/](../licenses/wazero/) |
 | go.uber.org/zap | v1.28.0 | MIT | 结构化日志 | SBOM 收录，未单独归档 |
 | google.golang.org/protobuf | v1.36.11 | BSD-3-Clause | gRPC 描述符级解析（protodesc/dynamicpb） | SBOM 收录，未单独归档 |
 

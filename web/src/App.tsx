@@ -57,13 +57,15 @@ export default function App() {
 
   return (
     <ConfigProvider locale={zhCN} theme={{ token: { colorPrimary: '#2f54eb' } }}>
-      <AntdApp>
-        <QueryClientProvider client={queryClient}>
-          <BrowserRouter>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          {/* AntdApp 必须在 BrowserRouter / QueryClientProvider 内部，确保 modal/message/notification
+              中渲染的 <Link> 与路由/查询上下文不会因脱离 Router 抛出 basename 空解构异常 */}
+          <AntdApp>
             <AppRoutes />
-          </BrowserRouter>
-        </QueryClientProvider>
-      </AntdApp>
+          </AntdApp>
+        </BrowserRouter>
+      </QueryClientProvider>
     </ConfigProvider>
   )
 }

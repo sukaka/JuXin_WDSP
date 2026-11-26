@@ -71,9 +71,33 @@ func Evaluate(ctx *dsctx.RequestContext, msg *mcprpc.Message, cfg *Config, jwtRe
 	rc := &chainRecorder{ctx: ctx, cov: baseCoverage(ctx), cfg: cfg, ep: ep, engineProtect: engineProtect}
 	rc.cov.Scope.Bytes = int64(msg.Stats.Bytes)
 
+	// Phase 9C-1 Streamable HTTP 会话绑定校验：启用 RequireSessionBinding 且存在
+	// Mcp-Session-Id 头（NoteHeadObservations 已产出指纹）时，跨主体复用会话即告警，
+	// 双闸 PROTECT 下以 -32010 阻断并短路（保留最小 CallContext 以便回显请求 id）。
+	if ep.RequireSessionBinding {
+		if checkSessionBindingFromContext(ctx, cfg, ep, jwtRes, appID, msg.Method, engineProtect) {
+			setCallContext(ctx, &CallContext{Config: cfg, Message: msg, Method: msg.Method, Mode: ep.Mode, Catalog: ep.Catalog})
+			rc.cov.Status = coverage.StatusPartial
+			rc.cov.Truncated = true
+			rc.emitMethodCoverage("partial", "", msg, nil)
+			return rc.cov
+		}
+	}
+
 	// 方法门：tools/call 以外方法转发不动（覆盖 NOT_APPLICABLE——G1 深检只对
-	// tools/call；词表外方法=llm.mcp_unknown_method 单源，mcpguard 不重复产出）
+	// tools/call；词表外方法=llm.mcp_unknown_method 单源，mcpguard 不重复产出）。
+	// Phase 9C-1：tools/list / resources/read / prompts/get 登记 CallContext（记录 Method），
+	// 以便响应相位执行工具定义固定/Rug Pull/间接提示词注入检查，同时保持请求相位 NOT_APPLICABLE。
 	if msg.Method != "tools/call" {
+		if msg.Method == "tools/list" || msg.Method == "resources/read" || msg.Method == "prompts/get" {
+			setCallContext(ctx, &CallContext{
+				Config:  cfg,
+				Message: msg,
+				Method:  msg.Method,
+				Mode:    ep.Mode,
+				Catalog: ep.Catalog,
+			})
+		}
 		rc.cov.Status = coverage.StatusNotApplicable
 		rc.cov.ReasonCode = coverage.ReasonNAFrozenRule
 		rc.cov.NARuleID = "MCP-NA-METHOD-001"
@@ -93,7 +117,7 @@ func Evaluate(ctx *dsctx.RequestContext, msg *mcprpc.Message, cfg *Config, jwtRe
 	// 最小调用上下文先行留存（§1.11 id 回显的消费点——错误对象 id 回显请求 id
 	// （可解析时）；白名单后的完整上下文（Tool/Catalog）在步骤 2 命中后覆盖，
 	// 响应相位结果检查只认完整上下文（Tool+Catalog 非空））
-	setCallContext(ctx, &CallContext{Config: cfg, Message: msg, Mode: ep.Mode})
+	setCallContext(ctx, &CallContext{Config: cfg, Message: msg, Method: msg.Method, Mode: ep.Mode})
 
 	// 目录门：缺失/摘要不符（装配已拒装）→ SKIPPED(COV_NO_CATALOG) 放行不误断
 	// （不消费未验证摘要的目录；管理面差集可见，Warn 已在装配期留痕）
@@ -150,7 +174,7 @@ func Evaluate(ctx *dsctx.RequestContext, msg *mcprpc.Message, cfg *Config, jwtRe
 
 	// 完整调用上下文覆盖（响应相位结果检查消费点——Tool+Catalog 非空才认；
 	// 后续步骤成败不回收：OBSERVE 拟动作流响应侧照检）
-	setCallContext(ctx, &CallContext{Config: cfg, Message: msg, Mode: ep.Mode, Tool: tool, Catalog: catalog})
+	setCallContext(ctx, &CallContext{Config: cfg, Message: msg, Method: msg.Method, Mode: ep.Mode, Tool: tool, Catalog: catalog})
 
 	// 步骤 2b：目录 ACL（§1.5：allowed_principals/roles/tenants 逐维 AND——
 	// 空=该维度不约束；仅消费 VERIFIED 信号，请求体/普通头/提示词文本中的

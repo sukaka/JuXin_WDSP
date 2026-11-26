@@ -210,3 +210,73 @@ func TestEmitRealClientIPFields(t *testing.T) {
 		t.Errorf("direct connection source = %q, want CONNECTION", direct.ClientIPSource)
 	}
 }
+
+func TestEmitA2ADetailSanitizeAndCap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.log")
+	l, err := NewLogger(path, "node-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	skills := make([]string, 40)
+	for i := range skills {
+		skills[i] = "skill-\n" + strings.Repeat("s", 10)
+	}
+	schemes := make([]string, 20)
+	for i := range schemes {
+		schemes[i] = "Bearer\r\n"
+	}
+
+	if err := l.Emit(Event{
+		RequestID: "req-a2a-1",
+		ClientIP:  "198.51.100.10",
+		EventType: A2AAgentCardDiscovered,
+		Action:    "DISCOVERED",
+		A2A: &A2ADetail{
+			PolicyVersion:   2,
+			Mode:            "PROTECT",
+			Method:          "GET",
+			AgentName:       "Agent\nInject",
+			AgentURL:        "https://agent.example.com/a2a",
+			AgentVersion:    "1.0.0",
+			Skills:          skills,
+			AuthSchemes:     schemes,
+			DelegationDepth: 2,
+			RuleID:          "a2a.delegation_depth_exceeded",
+			ActionTaken:     "BLOCKED",
+			Reason:          "depth\nexceeded",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Emit(Event{RequestID: "req-a2a-2", ClientIP: "198.51.100.11", EventType: IPAllowMatch}); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("lines=%d", len(lines))
+	}
+	var got Event
+	if err := json.Unmarshal([]byte(lines[0]), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.A2A == nil {
+		t.Fatal("missing a2a detail")
+	}
+	if got.A2A.AgentName != "AgentInject" || got.A2A.Reason != "depthexceeded" {
+		t.Fatalf("control chars not stripped: %+v", got.A2A)
+	}
+	if len(got.A2A.Skills) != 32 || len(got.A2A.AuthSchemes) != 16 {
+		t.Fatalf("caps not enforced: skills=%d auth=%d", len(got.A2A.Skills), len(got.A2A.AuthSchemes))
+	}
+	if strings.Contains(lines[1], `"a2a"`) {
+		t.Fatalf("non-A2A event must omit a2a key: %s", lines[1])
+	}
+}

@@ -160,10 +160,14 @@ const (
 	MaxAudiences      = 16         // 单 issuer audience 数上限
 	MaxAudienceBytes  = 256
 	MaxTenantBytes    = 256
-	MaxRoleClaims     = 8
-	MaxRoleClaimBytes = 64
-	MaxVerifiedRoles  = 32
-	MaxRoleBytes      = 128
+	MaxRoleClaims         = 8
+	MaxRoleClaimBytes     = 64
+	MaxVerifiedRoles      = 32
+	MaxRoleBytes          = 128
+	MaxVerifiedScopes     = 64
+	MaxScopeBytes         = 128
+	MaxDelegationChain    = 16
+	MaxDelegationSubBytes = 256
 
 	DefaultClockSkewSeconds = 30
 	MaxClockSkewSeconds     = 120
@@ -185,6 +189,20 @@ type VerificationResult struct {
 	// VerifiedRoles is populated only after the JWT signature and all claims
 	// required by the trust policy have been verified.
 	VerifiedRoles []string
+	// VerifiedScopes is populated strictly AFTER JWT signature and registered
+	// claim verification from "scope" and "scp" claims — NEVER from unverified tokens.
+	VerifiedScopes []string
+	// DelegationChain is populated strictly AFTER JWT signature and registered
+	// claim verification from RFC 8693 nested "act" claims (outermost actor first)
+	// — NEVER from unverified tokens.
+	DelegationChain []string
+	// DelegationScopes holds per-hop scopes parsed from nested RFC 8693 "act"
+	// objects (aligned by index with DelegationChain; empty when that hop omits
+	// scope/scp). Populated strictly AFTER signature verification.
+	DelegationScopes [][]string
+	// VerifiedAZP is populated strictly AFTER signature verification from the
+	// verified "azp" (or fallback "client_id") string claim.
+	VerifiedAZP string
 	// TokenBindingVerified 令牌持有证明校验结果（"" | "DPOP" | "MTLS"），仅 VERIFIED 且绑定通过时非空。
 	TokenBindingVerified string
 	// TokenScheme 实际解析出的认证方案（"Bearer" | "DPoP"），供 401 challenge 响应头选择。

@@ -4,6 +4,7 @@ package gatewayconfig
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
 
@@ -325,24 +326,26 @@ type GuardMCPArgConstraint struct {
 	Allow []string `json:"allow,omitempty"`
 }
 
-// GuardMCPTool MCP 目录工具行下发形态（NG-MCP G1 批次 B1；对应 mcp_catalog_tools
+// GuardMCPTool MCP 目录工具行下发形态（NG-MCP G1 批次 B1 + Phase 9C-1；对应 mcp_catalog_tools
 // APPROVED 行（发布通道只下发 APPROVED——PENDING/REJECTED 不出现在快照）；
 // json tag 为跨轨线契约（§5 批次 B1 逐字冻结，网关 buildMCPGuardConfig 消费），不得改名）。
 type GuardMCPTool struct {
-	ToolName           string                  `json:"tool_name"`
-	ToolVersion        string                  `json:"tool_version"`
-	ToolHash           string                  `json:"tool_hash"`
-	RiskLevel          string                  `json:"risk_level"`
-	DataClassification string                  `json:"data_classification"`
-	CapabilityTags     []string                `json:"capability_tags"`
-	AllowedPrincipals  []string                `json:"allowed_principals"`
-	AllowedRoles       []string                `json:"allowed_roles"`
-	AllowedTenants     []string                `json:"allowed_tenants"`
-	ApprovalRequired   bool                    `json:"approval_required"`
-	MaxCallsPerMinute  int                     `json:"max_calls_per_minute"`
-	InputSchema        map[string]any          `json:"input_schema"` // 无 schema 下发 null（键存在）
-	OutputSchema       map[string]any          `json:"output_schema"`
-	ArgConstraints     []GuardMCPArgConstraint `json:"arg_constraints"`
+	ToolName             string                  `json:"tool_name"`
+	ToolVersion          string                  `json:"tool_version"`
+	ToolHash             string                  `json:"tool_hash"`
+	PinnedDefinitionHash string                  `json:"pinned_definition_hash,omitempty"`
+	PinEnforcement       string                  `json:"pin_enforcement,omitempty"`
+	RiskLevel            string                  `json:"risk_level"`
+	DataClassification   string                  `json:"data_classification"`
+	CapabilityTags       []string                `json:"capability_tags"`
+	AllowedPrincipals    []string                `json:"allowed_principals"`
+	AllowedRoles         []string                `json:"allowed_roles"`
+	AllowedTenants       []string                `json:"allowed_tenants"`
+	ApprovalRequired     bool                    `json:"approval_required"`
+	MaxCallsPerMinute    int                     `json:"max_calls_per_minute"`
+	InputSchema          map[string]any          `json:"input_schema"` // 无 schema 下发 null（键存在）
+	OutputSchema         map[string]any          `json:"output_schema"`
+	ArgConstraints       []GuardMCPArgConstraint `json:"arg_constraints"`
 }
 
 // GuardMCPToolCatalog MCP 工具目录下发形态（ENABLED 目录+APPROVED 工具行；
@@ -356,13 +359,16 @@ type GuardMCPToolCatalog struct {
 	Tools           []GuardMCPTool `json:"tools"`
 }
 
-// GuardMCPBinding MCP 目录绑定下发形态（NG-MCP G1 批次 B1；对应 mcp_catalog_bindings
-// 表全行（迁移 000182）；json tag 为跨轨线契约（§5 批次 B1 逐字冻结），不得改名）。
+// GuardMCPBinding MCP 目录绑定下发形态（NG-MCP G1 批次 B1 + Phase 9C-1；对应 mcp_catalog_bindings
+// 表全行（迁移 000182/000247）；json tag 为跨轨线契约（§5 批次 B1 逐字冻结），不得改名）。
 type GuardMCPBinding struct {
-	ApplicationID string `json:"application_id"` // 应用 ID（UUID）
-	EndpointPath  string `json:"endpoint_path"`  // 精确路径（大小写敏感，绑定驱动识别）
-	CatalogName   string `json:"catalog_name"`   // 引用的目录名（mcp_tool_catalogs.name）
-	Mode          string `json:"mode"`           // OBSERVE（缺省）| PROTECT（tools/call 违规协议化执行）
+	ApplicationID            string `json:"application_id"`                        // 应用 ID（UUID）
+	EndpointPath             string `json:"endpoint_path"`                         // 精确路径（大小写敏感，绑定驱动识别）
+	CatalogName              string `json:"catalog_name"`                          // 引用的目录名（mcp_tool_catalogs.name）
+	Mode                     string `json:"mode"`                                  // OBSERVE（缺省）| PROTECT（tools/call 违规协议化执行）
+	ResponseGuardMode        string `json:"response_guard_mode,omitempty"`         // OFF|OBSERVE|SANITIZE|PROTECT
+	RequireSessionBinding    bool   `json:"require_session_binding,omitempty"`     // Streamable HTTP Mcp-Session-Id 主体绑定
+	OAuthResourceMetadataURL string `json:"oauth_resource_metadata_url,omitempty"` // OAuth 2.1 Protected Resource Metadata URL
 }
 
 // GuardMachineIdentityKey 机器身份公钥下发形态（NG-ID g1 批次 B1，设计
@@ -906,6 +912,80 @@ type GuardClientSidePolicy struct {
 	AuthorizedScripts        []GuardClientSideScript `json:"authorized_scripts"`
 }
 
+// ---------- Phase 9C-1：A2A 协议安全治理（api_a2a_policy 段，跨分片契约已冻结） ----------
+
+// GuardA2APolicy 应用级 A2A 协议安全策略（下发网关 api_a2a_policy 段；严格对齐网关 DisallowUnknownFields 冻结契约，无秘密材料）。
+type GuardA2APolicy struct {
+	SchemaVersion            int      `json:"schema_version"`
+	ApplicationID            string   `json:"application_id"`
+	Mode                     string   `json:"mode"` // OFF | OBSERVE | PROTECT
+	Version                  int      `json:"version"`
+	CardDiscoveryEnabled     bool     `json:"card_discovery_enabled"`
+	A2APathPrefixes          []string `json:"a2a_path_prefixes"`
+	AllowedCallerAgents      []string `json:"allowed_caller_agents"`
+	MaxDelegationDepth       int      `json:"max_delegation_depth"`
+	EnforceScopeAttenuation  bool     `json:"enforce_scope_attenuation"`
+	LoopWindowSeconds        int      `json:"loop_window_seconds"`
+	MaxCallsPerTaskWindow    int      `json:"max_calls_per_task_window"`
+	LethalTrifectaEnabled    bool     `json:"lethal_trifecta_enabled"`
+	ConfidentialReadPatterns []string `json:"confidential_read_patterns"`
+	ExternalEgressPatterns   []string `json:"external_egress_patterns"`
+}
+
+// ---------- Phase 9C-2：本地离线 ONNX/SLM 语义防火墙（semantic_guard_policy 段，跨分片契约已冻结） ----------
+
+// GuardSemanticGuardPolicy 应用级本地离线语义防火墙策略（下发网关 semantic_guard_policy 段；
+// 严格对齐网关 DisallowUnknownFields 冻结契约，共 16 字段，无任何秘密材料）。
+type GuardSemanticGuardPolicy struct {
+	SchemaVersion           int     `json:"schema_version"`
+	ApplicationID           string  `json:"application_id"`
+	Mode                    string  `json:"mode"` // OFF | OBSERVE | PROTECT
+	Version                 int     `json:"version"`
+	SocketPath              string  `json:"socket_path"`
+	TimeoutMs               int     `json:"timeout_ms"`
+	MaxConcurrency          int     `json:"max_concurrency"`
+	MaxInputRunes           int     `json:"max_input_runes"`
+	BlockThreshold          float64 `json:"block_threshold"`
+	ObserveThreshold        float64 `json:"observe_threshold"`
+	FailPolicy              string  `json:"fail_policy"` // FAIL_OPEN | FAIL_CLOSED
+	InspectLLMPrompts       bool    `json:"inspect_llm_prompts"`
+	InspectMCPContent       bool    `json:"inspect_mcp_content"`
+	InspectWebGrayzone      bool    `json:"inspect_web_grayzone"`
+	CircuitFailureThreshold int     `json:"circuit_failure_threshold"`
+	CircuitOpenSeconds      int     `json:"circuit_open_seconds"`
+}
+
+// ---------- Phase 9D-1：Wasm 热插拔自定义检测插件沙箱（wasm_plugins 段，跨分片契约已冻结） ----------
+
+// WasmPluginsGlobalScopeKey 用于 GuardConfig.WasmPlugins 中可选全局插件键（buildGuardHandler 按应用合并）。
+const WasmPluginsGlobalScopeKey = "*"
+
+// GuardWasmPlugin 单个 Wasm 检测插件下发形态（下发网关 wasm_plugins.plugins 数组条目；
+// 严格对齐网关 wasmplugin/policy.go DisallowUnknownFields 冻结契约）。
+type GuardWasmPlugin struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Version      int      `json:"version"`
+	ABIVersion   string   `json:"abi_version"`
+	Mode         string   `json:"mode"` // OFF | OBSERVE | PROTECT
+	SHA256       string   `json:"sha256"`
+	WasmBase64   string   `json:"wasm_base64"`
+	Priority     int      `json:"priority"`
+	TimeoutMs    int      `json:"timeout_ms"`
+	MaxMemoryKB  int      `json:"max_memory_kb"`
+	MaxBodyBytes int      `json:"max_body_bytes"`
+	FailPolicy   string   `json:"fail_policy"` // FAIL_OPEN | FAIL_CLOSED
+	PathPrefixes []string `json:"path_prefixes"`
+}
+
+// GuardWasmPluginsConfig 应用级 Wasm 检测插件下发段（下发网关 wasm_plugins 段；
+// 严格对齐网关 wasmplugin/policy.go DisallowUnknownFields 冻结契约，schema_version=1）。
+type GuardWasmPluginsConfig struct {
+	SchemaVersion int               `json:"schema_version"`
+	ApplicationID string            `json:"application_id"`
+	Plugins       []GuardWasmPlugin `json:"plugins"`
+}
+
 // GuardAPIAdmissionPolicy API 准入策略（按应用；docs/API_ADMISSION_CONTROL_DESIGN.md §4.2，
 // 迁移 000166 应用级 api_admission_mode）。随发布经 api_admission 段下发网关：
 // 网关 api_admission 检测器按本应用准入模式对未确认端点（不在 confirmed_endpoints
@@ -1227,6 +1307,18 @@ type GuardConfig struct {
 	// client_script_inventory 已授权/封禁脚本，迁移 000246；key=应用编码，仅 WDSP 开启时下发
 	// 并纳入 api_policy_version 版本戳，读取失败中止发布 fail-hard；无任何秘密材料）。
 	ClientSidePolicy map[string]*GuardClientSidePolicy `json:"client_side_policy,omitempty"`
+	// APIA2APolicy 应用级 A2A 协议安全策略（Phase 9C-1；api_a2a_policies 按应用行，
+	// 迁移 000247；key=应用编码，仅 WDSP 开启时下发并纳入 api_policy_version 版本戳，
+	// 读取失败中止发布 fail-hard；无任何秘密材料）。
+	APIA2APolicy map[string]*GuardA2APolicy `json:"api_a2a_policy,omitempty"`
+	// SemanticGuardPolicy 应用级本地离线语义防火墙策略（Phase 9C-2；semantic_guard_policies 按应用行，
+	// 迁移 000248；key=应用编码，仅 WDSP 开启时下发并纳入 api_policy_version 版本戳，
+	// 读取失败中止发布 fail-hard；无任何秘密材料）。
+	SemanticGuardPolicy map[string]*GuardSemanticGuardPolicy `json:"semantic_guard_policy,omitempty"`
+	// WasmPlugins 应用级 Wasm 自定义检测插件配置（Phase 9D-1；wasm_plugins 全局+应用合并编译，
+	// 迁移 000249；key=应用编码（并兼容可选 "*" 全局键），仅 WDSP 开启时下发，元数据+sha256
+	// 纳入 api_policy_version 版本戳（不含 raw wasm_base64），读取失败中止发布 fail-hard）。
+	WasmPlugins map[string]*GuardWasmPluginsConfig `json:"wasm_plugins,omitempty"`
 	// APIExceptions API 引擎受限例外（WDSP P0-04；exception_policies 表
 	// target_engine='API' 且启用行，列由迁移 000130 建立；nil/空 map 时不下发——
 	// 网关 API 决策零行为变化；key 为应用编码，随 WDSP API 动态防护门控下发
@@ -1718,6 +1810,20 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 		if pol, ok := g.ClientSidePolicy[app.Code]; ok && pol != nil {
 			h["client_side_policy"] = pol
 		}
+		// A2A 协议安全治理（Phase 9C-1 api_a2a_policy 段；按应用注入本应用策略——
+		// OFF 同样下发以覆盖旧配置残留；无秘密材料）
+		if pol, ok := g.APIA2APolicy[app.Code]; ok && pol != nil {
+			h["api_a2a_policy"] = pol
+		}
+		// 本地离线 ONNX/SLM 语义防火墙（Phase 9C-2 semantic_guard_policy 段；按应用注入本应用策略——
+		// OFF 同样下发以覆盖旧配置残留；无秘密材料）
+		if pol, ok := g.SemanticGuardPolicy[app.Code]; ok && pol != nil {
+			h["semantic_guard_policy"] = pol
+		}
+		// Wasm 热插拔自定义检测插件沙箱（Phase 9D-1 wasm_plugins 段；合并全局 "*" 与本应用插件并按优先级排序下发）
+		if wp := resolveAppWasmPlugins(g.WasmPlugins, app.AppID, app.Code); wp != nil {
+			h["wasm_plugins"] = wp
+		}
 		// API 引擎受限例外（P0-04 api_exceptions 段；按应用注入本应用例外集——
 		// 网关侧 ParseAPIExceptionsSection 以应用编码为 key 严格解码（fail-closed），
 		// 故以单条目 map 形态下发本应用切片；无启用例外时不下发，网关零行为变化；
@@ -1732,4 +1838,75 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 		h["redirect_port_rewrite"] = publicPort
 	}
 	return h
+}
+
+// resolveAppWasmPlugins 为指定应用解析最终下发网关的 wasm_plugins 冻结段：
+// 合并可选全局键（"*"）与应用键（appCode）的插件列表，按 ID 去重（应用级覆盖同 ID 项）并按
+// (priority ASC, name ASC, id ASC) 稳定排序；两者皆空时返回 nil（不下发 wasm_plugins 段）。
+func resolveAppWasmPlugins(all map[string]*GuardWasmPluginsConfig, appID, appCode string) *GuardWasmPluginsConfig {
+	if len(all) == 0 {
+		return nil
+	}
+	globalCfg := all[WasmPluginsGlobalScopeKey]
+	appCfg := all[appCode]
+	if (globalCfg == nil || len(globalCfg.Plugins) == 0) && (appCfg == nil || len(appCfg.Plugins) == 0) {
+		return nil
+	}
+
+	seen := make(map[string]int)
+	merged := make([]GuardWasmPlugin, 0, 16)
+	appendPlugins := func(src *GuardWasmPluginsConfig) {
+		if src == nil {
+			return
+		}
+		for _, pl := range src.Plugins {
+			cp := pl
+			if cp.PathPrefixes == nil {
+				cp.PathPrefixes = []string{}
+			} else {
+				cp.PathPrefixes = append([]string(nil), cp.PathPrefixes...)
+			}
+			if idx, dup := seen[cp.ID]; dup && cp.ID != "" {
+				merged[idx] = cp
+				continue
+			}
+			if cp.ID != "" {
+				seen[cp.ID] = len(merged)
+			}
+			merged = append(merged, cp)
+		}
+	}
+	appendPlugins(globalCfg)
+	appendPlugins(appCfg)
+	if len(merged) == 0 {
+		return nil
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].Priority != merged[j].Priority {
+			return merged[i].Priority < merged[j].Priority
+		}
+		if merged[i].Name != merged[j].Name {
+			return merged[i].Name < merged[j].Name
+		}
+		return merged[i].ID < merged[j].ID
+	})
+
+	schemaVer := 1
+	resolvedAppID := appID
+	if appCfg != nil {
+		if appCfg.SchemaVersion > 0 {
+			schemaVer = appCfg.SchemaVersion
+		}
+		if resolvedAppID == "" && appCfg.ApplicationID != "" {
+			resolvedAppID = appCfg.ApplicationID
+		}
+	} else if globalCfg != nil && globalCfg.SchemaVersion > 0 {
+		schemaVer = globalCfg.SchemaVersion
+	}
+
+	return &GuardWasmPluginsConfig{
+		SchemaVersion: schemaVer,
+		ApplicationID: resolvedAppID,
+		Plugins:       merged,
+	}
 }

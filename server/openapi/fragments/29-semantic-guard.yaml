@@ -1,0 +1,160 @@
+# 片段：本地离线 ONNX/SLM 语义防火墙（Phase 9C-2）
+# 路由源：server/internal/app/app.go（/semantic-guard/status、/applications/{id}/semantic-guard-policy）
+# 数据源：semantic_guard_policies、semantic_guard_policy_versions（迁移 000248；
+# 权限种子：semantic_guard.read 授予 SECURITY_ADMIN/AUDIT_ADMIN，semantic_guard.manage 授予 SECURITY_ADMIN）。
+# 发布：策略草稿保存不自动发布，经既有 gateway-config 发布通道下发 semantic_guard_policy 段（schema_version=1）。
+paths:
+  # ==================== 本地语义防火墙边车实时健康状态 ====================
+  /semantic-guard/status:
+    get:
+      operationId: semanticGuardStatus
+      tags: [semantic-guard]
+      summary: 探测本地语义防火墙边车状态
+      description: >-
+        通过受控本地 Unix Domain Socket（仅允许 /var/run/caddy/sidecars/ 或 /run/jiuzhang/ 前缀，禁止 .. 与控制字符）
+        调用边车 GET /healthz 接口。边车未部署、Socket 缺失或不可达时如实返回 200 且 available=false（绝不模拟在线）；
+        socket_path 越界或格式非法返回 400。权限：`semantic_guard.read`
+      parameters:
+        - name: socket_path
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 256
+            default: /var/run/caddy/sidecars/semantic.sock
+          description: 待探测的边车 Unix Domain Socket 绝对路径（须位于 /var/run/caddy/sidecars/ 或 /run/jiuzhang/ 下）
+      responses:
+        '200':
+          description: 边车实时健康状态（在线或如实不可用）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SemanticGuardStatus' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 应用级本地语义防火墙策略 ====================
+  /applications/{id}/semantic-guard-policy:
+    get:
+      operationId: semanticGuardPolicyGet
+      tags: [semantic-guard]
+      summary: 读取应用本地语义防火墙策略
+      description: 读取应用本地语义防火墙策略草稿及发布状态摘要（无记录返回默认 OFF 策略 version=0）。权限：`semantic_guard.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      responses:
+        '200':
+          description: 策略草稿与状态摘要
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SemanticGuardPolicyGetResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: semanticGuardPolicyUpdate
+      tags: [semantic-guard]
+      summary: 保存应用本地语义防火墙策略草稿
+      description: >-
+        校验并保存应用本地语义防火墙策略草稿（expected_version 乐观锁冲突返回 409；
+        强制校验 socket_path 位于受控目录且 observe_threshold <= block_threshold；
+        reason 必填并记录不可变版本与操作审计；保存后经既有 gateway-config 发布通道下发 semantic_guard_policy 段）。
+        权限：`semantic_guard.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SemanticGuardPolicyUpdateRequest' }
+      responses:
+        '200':
+          description: 草稿保存成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SemanticGuardPolicyDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    SemanticGuardStatus:
+      type: object
+      required: [available, status, socket_path, model_id, model_sha256, backend]
+      properties:
+        available: { type: boolean, description: 边车是否真实可达且处于就绪状态 }
+        status: { type: string, description: 边车健康状态（ok / unavailable / unhealthy / error） }
+        socket_path: { type: string, maxLength: 256, description: 本次探测的 Unix Domain Socket 路径 }
+        model_id: { type: string, description: 当前加载的模型标识（未部署时为空串） }
+        model_sha256: { type: string, description: 模型文件 SHA-256 校验摘要（heuristic_fallback 或未部署时为空串） }
+        backend: { type: string, description: 推理后端类型（onnxruntime / heuristic_fallback，未部署时为空串） }
+        error: { type: string, description: 不可用或异常原因说明（可选） }
+
+    SemanticGuardPolicy:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        schema_version: { type: integer, enum: [1] }
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT], description: 运行模式（默认 OFF） }
+        version: { type: integer, description: 策略乐观锁版本号 }
+        socket_path: { type: string, maxLength: 256, default: /var/run/caddy/sidecars/semantic.sock, description: 本地 Unix Domain Socket 路径（仅限 /var/run/caddy/sidecars/ 或 /run/jiuzhang/） }
+        timeout_ms: { type: integer, minimum: 5, maximum: 200, default: 15, description: 单次推理硬超时（毫秒） }
+        max_concurrency: { type: integer, minimum: 1, maximum: 256, default: 32, description: 非阻塞推理并发信号量上限 }
+        max_input_runes: { type: integer, minimum: 256, maximum: 8192, default: 4096, description: 单次送检文本最大字符数（按 rune 截断） }
+        block_threshold: { type: number, format: double, minimum: 0.5, maximum: 0.99, default: 0.85, description: PROTECT 阻断置信度阈值（须 >= observe_threshold） }
+        observe_threshold: { type: number, format: double, minimum: 0.1, maximum: 0.99, default: 0.50, description: 观测告警置信度阈值（须 <= block_threshold） }
+        fail_policy: { type: string, enum: [FAIL_OPEN, FAIL_CLOSED], default: FAIL_OPEN, description: 边车不可用/超时/熔断时的降级策略（PROTECT+FAIL_CLOSED 返回 503） }
+        inspect_llm_prompts: { type: boolean, default: true, description: 是否对 LLM 提示词通道进行语义检测 }
+        inspect_mcp_content: { type: boolean, default: true, description: 是否对 MCP 工具入参与缓冲返回内容进行语义检测 }
+        inspect_web_grayzone: { type: boolean, default: true, description: 是否对 Web 灰区样本（RiskScore>=10 或非 INFO 观察命中）复检 }
+        circuit_failure_threshold: { type: integer, minimum: 1, maximum: 100, default: 5, description: 连续失败触发熔断打开的次数阈值 }
+        circuit_open_seconds: { type: integer, minimum: 5, maximum: 300, default: 30, description: 熔断打开后进入半开试探的冷却时长（秒） }
+        updated_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    SemanticGuardStatusSummary:
+      type: object
+      properties:
+        state: { type: string, enum: [NOT_CONFIGURED, DRAFT_PENDING, PUBLISHED] }
+        draft_version: { type: integer }
+        published_version: { type: integer }
+
+    SemanticGuardPolicyGetResponse:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/SemanticGuardPolicy' }
+        summary: { $ref: '#/components/schemas/SemanticGuardStatusSummary' }
+
+    SemanticGuardPolicyDetailResponse:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/SemanticGuardPolicy' }
+
+    SemanticGuardPolicyUpdateRequest:
+      type: object
+      required: [mode, expected_version, reason]
+      properties:
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+        expected_version: { type: integer, minimum: 0 }
+        socket_path: { type: string, maxLength: 256 }
+        timeout_ms: { type: integer, minimum: 5, maximum: 200 }
+        max_concurrency: { type: integer, minimum: 1, maximum: 256 }
+        max_input_runes: { type: integer, minimum: 256, maximum: 8192 }
+        block_threshold: { type: number, format: double, minimum: 0.5, maximum: 0.99 }
+        observe_threshold: { type: number, format: double, minimum: 0.1, maximum: 0.99 }
+        fail_policy: { type: string, enum: [FAIL_OPEN, FAIL_CLOSED] }
+        inspect_llm_prompts: { type: boolean }
+        inspect_mcp_content: { type: boolean }
+        inspect_web_grayzone: { type: boolean }
+        circuit_failure_threshold: { type: integer, minimum: 1, maximum: 100 }
+        circuit_open_seconds: { type: integer, minimum: 5, maximum: 300 }
+        reason: { type: string, minLength: 1, maxLength: 500 }

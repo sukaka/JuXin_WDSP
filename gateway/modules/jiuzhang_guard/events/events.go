@@ -88,6 +88,24 @@ const (
 	ClientSideScriptTampered     Type = "CLIENT_SIDE_SCRIPT_TAMPERED"
 	ClientSideCSPViolation       Type = "CLIENT_SIDE_CSP_VIOLATION"
 	ClientSideProbeAlert         Type = "CLIENT_SIDE_PROBE_ALERT"
+	// A2A 协议安全与 Agent 物料清单事件（Phase 9C-1；网关 api_a2a_policy 产生——
+	// 明细嵌套在 a2a 对象下，URL 剥离凭据与查询串，绝不落原始 JWT/Token/明文 sub）。
+	A2AAgentCardDiscovered Type = "A2A_AGENT_CARD_DISCOVERED"
+	A2AObserved            Type = "A2A_OBSERVED"
+	A2ABlocked             Type = "A2A_BLOCKED"
+	A2ALoopKilled          Type = "A2A_LOOP_KILLED"
+	A2ALethalTrifecta      Type = "A2A_LETHAL_TRIFECTA"
+	// 本地离线语义防火墙事件（Phase 9C-2；网关 semantic_guard_policy 产生——
+	// 明细嵌套在 semantic 对象下，绝不落原始提示词、请求体或响应体原文。）
+	SemanticObserved    Type = "SEMANTIC_OBSERVED"
+	SemanticBlocked     Type = "SEMANTIC_BLOCKED"
+	SemanticUnavailable Type = "SEMANTIC_UNAVAILABLE"
+	// Wasm 自定义检测插件沙箱事件（Phase 9D-1；网关 wasm_plugins 产生——
+	// 明细嵌套在 wasm_plugin 对象下，绝不落原始请求体、凭据或 Wasm 字节码。）
+	WasmPluginObserved  Type = "WASM_PLUGIN_OBSERVED"
+	WasmPluginBlock     Type = "WASM_PLUGIN_BLOCK"
+	WasmPluginRateLimit Type = "WASM_PLUGIN_RATE_LIMIT"
+	WasmPluginError     Type = "WASM_PLUGIN_ERROR"
 )
 
 // Event 访问控制/CC 事件（字段与数据库 access_control_events 对应）。
@@ -141,6 +159,15 @@ type Event struct {
 	// ClientSide 客户端供应链安全明细（仅 CLIENT_SIDE_* 事件携带；URL 均已剥离查询串与凭据；
 	// 其余事件为 nil 零变化）
 	ClientSide *ClientSideDetail `json:"client_side,omitempty"`
+	// A2A A2A 协议安全与 AgBOM 发现明细（仅 A2A_* 事件携带；URL 已剥离查询串与凭据；
+	// 其余事件为 nil 零变化）
+	A2A *A2ADetail `json:"a2a,omitempty"`
+	// Semantic 本地离线语义防火墙明细（仅 SEMANTIC_* 事件携带；绝不落提示词/请求体/响应体原文；
+	// 其余事件为 nil 零变化）
+	Semantic *SemanticDetail `json:"semantic,omitempty"`
+	// WasmPlugin Wasm 自定义检测插件沙箱明细（仅 WASM_PLUGIN_* 事件携带；绝不落原始请求体/凭据；
+	// 其余事件为 nil 零变化）
+	WasmPlugin *WasmPluginDetail `json:"wasm_plugin,omitempty"`
 	// FinalDecision 请求最终处置上下文快照（WDSP P0-04，final_decision JSON
 	// schema_version=1）：仅终止分支事件挂载（RecordTerminal 后取，内容完整——
 	// 终止后不再产生新事实）；放行/观察事件不挂（请求未完成，提前 Finalize 会
@@ -238,6 +265,61 @@ type ClientSideDetail struct {
 	BlockedURI        string `json:"blocked_uri,omitempty"`
 	ActionTaken       string `json:"action_taken,omitempty"`
 	Reason            string `json:"reason,omitempty"`
+}
+
+// A2ADetail A2A 协议安全与 Agent 物料清单明细（Phase 9C-1）：
+// 承载策略版本/模式、方法、脱敏 Agent 卡片元数据、委派深度、命中规则与处置动作；
+// 绝不落原始 JWT/Token/明文 sub 或未脱敏参数原值。
+type A2ADetail struct {
+	PolicyVersion   int      `json:"policy_version,omitempty"`
+	Mode            string   `json:"mode,omitempty"`
+	Method          string   `json:"method,omitempty"`
+	AgentName       string   `json:"agent_name,omitempty"`
+	AgentURL        string   `json:"agent_url,omitempty"`
+	AgentVersion    string   `json:"agent_version,omitempty"`
+	Skills          []string `json:"skills,omitempty"`
+	AuthSchemes     []string `json:"auth_schemes,omitempty"`
+	DelegationDepth int      `json:"delegation_depth,omitempty"`
+	RuleID          string   `json:"rule_id,omitempty"`
+	ActionTaken     string   `json:"action_taken,omitempty"`
+	Reason          string   `json:"reason,omitempty"`
+}
+
+// SemanticDetail 本地离线语义防火墙明细（Phase 9C-2）：
+// 仅承载策略版本/模式、通道、规则、分类标签/分数、模型标识、耗时、输入 rune 数与故障处置——
+// 绝不落原始提示词、MCP 参数或请求/响应体文本。
+type SemanticDetail struct {
+	PolicyVersion int     `json:"policy_version,omitempty"`
+	Mode          string  `json:"mode,omitempty"`
+	Channel       string  `json:"channel,omitempty"`
+	RuleID        string  `json:"rule_id,omitempty"`
+	Label         string  `json:"label,omitempty"`
+	Score         float64 `json:"score,omitempty"`
+	ModelID       string  `json:"model_id,omitempty"`
+	LatencyMS     int64   `json:"latency_ms,omitempty"`
+	InputRunes    int     `json:"input_runes,omitempty"`
+	FailPolicy    string  `json:"fail_policy,omitempty"`
+	ActionTaken   string  `json:"action_taken,omitempty"`
+	Reason        string  `json:"reason,omitempty"`
+}
+
+// WasmPluginDetail Wasm 自定义检测插件沙箱事件明细（Phase 9D-1）：
+// 仅承载插件标识/版本/模式/摘要、命中规则、原因、评分增量、耗时、故障策略与脱敏错误说明——
+// 绝不落原始请求体、凭据头或 Wasm 字节码。
+type WasmPluginDetail struct {
+	PluginID      string `json:"plugin_id,omitempty"`
+	PluginName    string `json:"plugin_name,omitempty"`
+	PluginVersion int    `json:"plugin_version,omitempty"`
+	ABIVersion    string `json:"abi_version,omitempty"`
+	Mode          string `json:"mode,omitempty"`
+	SHA256        string `json:"sha256,omitempty"`
+	RuleID        string `json:"rule_id,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	ScoreDelta    int    `json:"score_delta,omitempty"`
+	LatencyMS     int64  `json:"latency_ms,omitempty"`
+	FailPolicy    string `json:"fail_policy,omitempty"`
+	ActionTaken   string `json:"action_taken,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 // 字段长度上限（防超大输入撑爆日志）。
@@ -347,6 +429,70 @@ func (l *Logger) Emit(e Event) error {
 		cs.ActionTaken = sanitize(cs.ActionTaken, 32)
 		cs.Reason = sanitize(cs.Reason, maxMsgLen)
 		e.ClientSide = &cs
+	}
+	if e.A2A != nil {
+		a2 := *e.A2A
+		a2.Mode = sanitize(a2.Mode, 16)
+		a2.Method = sanitize(a2.Method, 128)
+		a2.AgentName = sanitize(a2.AgentName, 256)
+		a2.AgentURL = sanitize(a2.AgentURL, 512)
+		a2.AgentVersion = sanitize(a2.AgentVersion, 64)
+		a2.RuleID = sanitize(a2.RuleID, 128)
+		a2.ActionTaken = sanitize(a2.ActionTaken, 32)
+		a2.Reason = sanitize(a2.Reason, maxMsgLen)
+		if len(a2.Skills) > 0 {
+			n := len(a2.Skills)
+			if n > 32 {
+				n = 32
+			}
+			skills := make([]string, 0, n)
+			for i := 0; i < n; i++ {
+				if s := sanitize(a2.Skills[i], 128); s != "" {
+					skills = append(skills, s)
+				}
+			}
+			a2.Skills = skills
+		}
+		if len(a2.AuthSchemes) > 0 {
+			n := len(a2.AuthSchemes)
+			if n > 16 {
+				n = 16
+			}
+			schemes := make([]string, 0, n)
+			for i := 0; i < n; i++ {
+				if s := sanitize(a2.AuthSchemes[i], 64); s != "" {
+					schemes = append(schemes, s)
+				}
+			}
+			a2.AuthSchemes = schemes
+		}
+		e.A2A = &a2
+	}
+	if e.Semantic != nil {
+		sm := *e.Semantic
+		sm.Mode = sanitize(sm.Mode, 16)
+		sm.Channel = sanitize(sm.Channel, 32)
+		sm.RuleID = sanitize(sm.RuleID, 128)
+		sm.Label = sanitize(sm.Label, 64)
+		sm.ModelID = sanitize(sm.ModelID, maxVerLen)
+		sm.FailPolicy = sanitize(sm.FailPolicy, 16)
+		sm.ActionTaken = sanitize(sm.ActionTaken, 32)
+		sm.Reason = sanitize(sm.Reason, maxMsgLen)
+		e.Semantic = &sm
+	}
+	if e.WasmPlugin != nil {
+		wp := *e.WasmPlugin
+		wp.PluginID = sanitize(wp.PluginID, maxVerLen)
+		wp.PluginName = sanitize(wp.PluginName, maxVerLen)
+		wp.ABIVersion = sanitize(wp.ABIVersion, 32)
+		wp.Mode = sanitize(wp.Mode, 16)
+		wp.SHA256 = sanitize(wp.SHA256, 64)
+		wp.RuleID = sanitize(wp.RuleID, 128)
+		wp.Reason = sanitize(wp.Reason, 128)
+		wp.FailPolicy = sanitize(wp.FailPolicy, 16)
+		wp.ActionTaken = sanitize(wp.ActionTaken, 32)
+		wp.Error = sanitize(wp.Error, 256)
+		e.WasmPlugin = &wp
 	}
 	data, err := json.Marshal(e)
 	if err != nil {

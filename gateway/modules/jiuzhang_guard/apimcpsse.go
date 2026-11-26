@@ -96,15 +96,31 @@ type mcpSSEWriter struct {
 	streamBytes int64  // 流入合计（流预算读数）
 }
 
-// wrapMCPSSEResponse MCP SSE 捕获包装（tools/call 调用上下文存在时包装；
-// 否则原 writer 直返零行为 NG-T-C01）。返回（使用的 writer, 记录器或 nil）。
+// wrapMCPSSEResponse MCP SSE 捕获包装（tools/call、tools/list、resources/read、prompts/get
+// 调用上下文存在时包装；否则原 writer 直返零行为 NG-T-C01）。返回（使用的 writer, 记录器或 nil）。
 func (g *Guard) wrapMCPSSEResponse(w http.ResponseWriter, rc *dsctx.RequestContext) (http.ResponseWriter, *mcpSSEWriter) {
 	if g.apiMCPGuard == nil || rc == nil {
 		return w, nil
 	}
 	call := mcpguard.CallFromContext(rc)
-	if call == nil || call.Tool == nil || call.Catalog == nil {
-		return w, nil // 无完整调用上下文（非 tools/call/白名单前短路）——零行为
+	if call == nil {
+		return w, nil
+	}
+	method := call.Method
+	if method == "" && call.Message != nil {
+		method = call.Message.Method
+	}
+	switch method {
+	case "", "tools/call":
+		if call.Tool == nil || call.Catalog == nil {
+			return w, nil // 无完整调用上下文（非 tools/call/白名单前短路）——零行为
+		}
+	case "tools/list", "resources/read", "prompts/get":
+		if call.Config == nil {
+			return w, nil
+		}
+	default:
+		return w, nil
 	}
 	var vrs []detectors.CompiledSensitiveValueRule
 	if len(g.APISensitiveValueRules) > 0 {
@@ -240,8 +256,35 @@ func (m *mcpSSEWriter) processEvent(block []byte) error {
 	if !ok {
 		return m.forward(block)
 	}
-	// 结果检查（output_schema + 值级敏感规则；双闸定案）
-	if mcpguard.EvaluateResult(m.rc, m.call.Message, result, m.call.Config, m.vrs, m.engineProtect) {
+	// 结果检查（tools/call: output_schema + 值级敏感 + 间接提示词；
+	// tools/list: 描述投毒 + 未入册 + Rug Pull 固定漂移；
+	// resources/read / prompts/get: 间接提示词注入扫描与清洗）
+	method := m.call.Method
+	if method == "" && m.call.Message != nil {
+		method = m.call.Message.Method
+	}
+	mcpguard.ClearSanitizedResult(m.rc)
+	var blocked bool
+	var sanitizedMember []byte
+	switch method {
+	case "", "tools/call":
+		blocked = mcpguard.EvaluateResult(m.rc, m.call.Message, result, m.call.Config, m.vrs, m.engineProtect)
+		if !blocked {
+			if sm, ok := mcpguard.SanitizedResultFromContext(m.rc); ok {
+				sanitizedMember = sm
+			}
+		}
+	case "tools/list":
+		blocked, sanitizedMember = mcpguard.EvaluateToolsListResult(m.rc, result, m.call.Config, m.engineProtect)
+	case "resources/read", "prompts/get":
+		if ep := m.call.Config.ResolvedEndpoint(""); ep != nil {
+			var sm []byte
+			blocked, sm = mcpguard.ScanAndSanitizeResult(m.rc, method, result, ep, m.engineProtect)
+			sanitizedMember = sm
+		}
+	}
+	mcpguard.ClearSanitizedResult(m.rc)
+	if blocked {
 		// 该条不外发：中止上游读取、关闭下游连接、事件逐量如实披露
 		m.rc.AddMatch(dsctx.DetectorMatch{
 			Detector:   "mcpguard",
@@ -263,7 +306,37 @@ func (m *mcpSSEWriter) processEvent(block []byte) error {
 		}
 		return errMCPResultBlocked
 	}
+	if len(sanitizedMember) > 0 {
+		if sanitizedBlock, ok := replaceMCPSSEBlockResult(block, ev.Data, sanitizedMember); ok {
+			return m.forward(sanitizedBlock)
+		}
+	}
 	return m.forward(block)
+}
+
+// replaceMCPSSEBlockResult 用清洗后的 JSON-RPC result 重组单条 SSE 事件块（保留 event/id/retry/注释行）。
+func replaceMCPSSEBlockResult(block, evData, sanitizedResult []byte) ([]byte, bool) {
+	newJSON, ok := mcpguard.ReplaceResultMemberRaw(evData, sanitizedResult)
+	if !ok {
+		return nil, false
+	}
+	var out bytes.Buffer
+	norm := bytes.ReplaceAll(block, []byte("\r\n"), []byte("\n"))
+	norm = bytes.ReplaceAll(norm, []byte("\r"), []byte("\n"))
+	for _, line := range bytes.Split(norm, []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		if bytes.HasPrefix(line, []byte("data:")) || bytes.Equal(line, []byte("data")) {
+			continue
+		}
+		out.Write(line)
+		out.WriteByte('\n')
+	}
+	out.WriteString("data: ")
+	out.Write(newJSON)
+	out.WriteString("\n\n")
+	return out.Bytes(), true
 }
 
 // forward 放行单条事件字节（已放行即外发不撤回——写后立刻 flush：

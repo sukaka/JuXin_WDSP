@@ -873,10 +873,12 @@ paths:
       operationId: certUpload
       tags: [certificates]
       summary: 上传证书
-      description: 以 JSON 方式提交 PEM 文本上传证书（非 multipart）；请求体上限 128KB，单个 PEM 上限 64KB（证书链 128KB）。服务端解析并校验证书格式、密钥强度、私钥匹配与有效期，相同指纹的证书去重（400），名称重复返回 409；私钥加密存储，任何接口均不返回明文私钥。权限：`certificates.create`
+      description: 支持 multipart/form-data 文件上传（推荐，兼容 PEM 与 DER 编码的证书/私钥文件）及向后兼容的 application/json PEM 文本提交，覆盖通用国际证书（INTERNATIONAL）与国密双证书（SM_TLCP）。总请求体上限 512KB，单张证书/私钥上限 64KB（证书链 128KB）。服务端解析并校验证书格式、密钥强度、私钥匹配与有效期，相同指纹的证书去重（400），名称重复返回 409；私钥加密存储，任何接口均不返回明文私钥。权限：`certificates.create`
       requestBody:
         required: true
         content:
+          multipart/form-data:
+            schema: { $ref: '#/components/schemas/CertUploadMultipartRequest' }
           application/json:
             schema: { $ref: '#/components/schemas/CertUploadRequest' }
       responses:
@@ -2011,13 +2013,36 @@ components:
               items: { type: string, format: uuid }
               description: 绑定该证书的应用 ID 列表
 
+    CertUploadMultipartRequest:
+      type: object
+      required: [name, cert_file, key_file]
+      properties:
+        name: { type: string, maxLength: 128, description: 证书名称（唯一） }
+        protocol_type:
+          type: string
+          enum: [INTERNATIONAL, SM_TLCP]
+          default: INTERNATIONAL
+          description: 证书协议类型（INTERNATIONAL 通用国际证书 / SM_TLCP 国密 SM2 双证书）
+        cert_file: { type: string, format: binary, description: 证书文件（国密模式为签名证书文件；支持 PEM/DER，不超过 64KB） }
+        key_file: { type: string, format: binary, description: 私钥文件（国密模式为签名私钥文件；支持未加密 PEM/DER，不超过 64KB；加密存储，任何接口不返回） }
+        enc_cert_file: { type: string, format: binary, description: 国密加密证书文件（SM_TLCP 必填；支持 PEM/DER，不超过 64KB） }
+        enc_key_file: { type: string, format: binary, description: 国密加密私钥文件（SM_TLCP 必填；支持未加密 PEM/DER，不超过 64KB） }
+        chain_file: { type: string, format: binary, description: 证书链文件（可选；支持 PEM/DER，不超过 128KB） }
+
     CertUploadRequest:
       type: object
       required: [name, cert_pem, key_pem]
       properties:
         name: { type: string, maxLength: 128, description: 证书名称（唯一） }
-        cert_pem: { type: string, description: 证书 PEM 文本（不超过 64KB） }
-        key_pem: { type: string, description: 私钥 PEM 文本（不超过 64KB；加密存储，任何接口不返回） }
+        protocol_type:
+          type: string
+          enum: [INTERNATIONAL, SM_TLCP]
+          default: INTERNATIONAL
+          description: 证书协议类型（INTERNATIONAL 通用国际证书 / SM_TLCP 国密 SM2 双证书）
+        cert_pem: { type: string, description: 证书 PEM 文本（国密模式为签名证书；不超过 64KB） }
+        key_pem: { type: string, description: 私钥 PEM 文本（国密模式为签名私钥；不超过 64KB；加密存储，任何接口不返回） }
+        enc_cert_pem: { type: string, description: 国密加密证书 PEM 文本（SM_TLCP 必填，不超过 64KB） }
+        enc_key_pem: { type: string, description: 国密加密私钥 PEM 文本（SM_TLCP 必填，不超过 64KB） }
         chain_pem: { type: string, description: 证书链 PEM 文本（可选，不超过 128KB） }
 
     CertBindRequest:

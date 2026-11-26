@@ -106,6 +106,10 @@ func TestTablesIncludeWDSPStateAndRestoreDependencies(t *testing.T) {
 		"ai_crawler_directories", "ai_crawl_policies", "ai_crawl_policy_versions",
 		"client_side_policies", "client_side_policy_versions",
 		"client_script_inventory", "client_side_violations",
+		"api_a2a_policies", "api_a2a_policy_versions",
+		"api_a2a_agents", "api_a2a_events",
+		"semantic_guard_policies", "semantic_guard_policy_versions",
+		"wasm_plugins", "wasm_plugin_versions",
 		"api_endpoints", "api_model_versions",
 		"api_runtime_policies", "api_runtime_events", "api_runtime_findings",
 		"api_schema_violations", "api_object_models", "api_object_relations",
@@ -183,6 +187,90 @@ func TestTablesIncludeWDSPStateAndRestoreDependencies(t *testing.T) {
 		csPos["applications"] >= csPos["client_script_inventory"] {
 		t.Errorf("invalid client-side restore order: %v", csOrder)
 	}
+	// Phase 9C-1 A2A 协议安全四表分组与拓扑校验
+	a2aGroups := map[string]string{
+		"api_a2a_policies":        GroupConfig,
+		"api_a2a_policy_versions": GroupConfig,
+		"api_a2a_agents":          GroupConfig,
+		"api_a2a_events":          GroupAudit,
+	}
+	for tbl, wantGroup := range a2aGroups {
+		td, ok := TableByName(tbl)
+		if !ok {
+			t.Errorf("missing a2a table %q", tbl)
+			continue
+		}
+		if td.Group != wantGroup {
+			t.Errorf("table %q group = %q, want %q", tbl, td.Group, wantGroup)
+		}
+	}
+	a2aOrder, err := RestoreOrder([]string{"api_a2a_policy_versions", "api_a2a_agents", "api_a2a_policies", "applications"})
+	if err != nil {
+		t.Fatalf("RestoreOrder(a2a) error = %v", err)
+	}
+	a2aPos := map[string]int{}
+	for i, n := range a2aOrder {
+		a2aPos[n] = i
+	}
+	if a2aPos["applications"] >= a2aPos["api_a2a_policies"] ||
+		a2aPos["api_a2a_policies"] >= a2aPos["api_a2a_policy_versions"] ||
+		a2aPos["applications"] >= a2aPos["api_a2a_agents"] {
+		t.Errorf("invalid a2a restore order: %v", a2aOrder)
+	}
+	// Phase 9C-2 本地语义防火墙两表分组与拓扑校验
+	sgGroups := map[string]string{
+		"semantic_guard_policies":        GroupConfig,
+		"semantic_guard_policy_versions": GroupConfig,
+	}
+	for tbl, wantGroup := range sgGroups {
+		td, ok := TableByName(tbl)
+		if !ok {
+			t.Errorf("missing semantic_guard table %q", tbl)
+			continue
+		}
+		if td.Group != wantGroup {
+			t.Errorf("table %q group = %q, want %q", tbl, td.Group, wantGroup)
+		}
+	}
+	sgOrder, err := RestoreOrder([]string{"semantic_guard_policy_versions", "semantic_guard_policies", "applications"})
+	if err != nil {
+		t.Fatalf("RestoreOrder(semantic_guard) error = %v", err)
+	}
+	sgPos := map[string]int{}
+	for i, n := range sgOrder {
+		sgPos[n] = i
+	}
+	if sgPos["applications"] >= sgPos["semantic_guard_policies"] ||
+		sgPos["semantic_guard_policies"] >= sgPos["semantic_guard_policy_versions"] {
+		t.Errorf("invalid semantic_guard restore order: %v", sgOrder)
+	}
+	// Phase 9D-1 Wasm 检测插件两表分组与拓扑校验
+	wasmGroups := map[string]string{
+		"wasm_plugins":         GroupConfig,
+		"wasm_plugin_versions": GroupConfig,
+	}
+	for tbl, wantGroup := range wasmGroups {
+		td, ok := TableByName(tbl)
+		if !ok {
+			t.Errorf("missing wasm_plugins table %q", tbl)
+			continue
+		}
+		if td.Group != wantGroup {
+			t.Errorf("table %q group = %q, want %q", tbl, td.Group, wantGroup)
+		}
+	}
+	wasmOrder, err := RestoreOrder([]string{"wasm_plugin_versions", "wasm_plugins", "applications"})
+	if err != nil {
+		t.Fatalf("RestoreOrder(wasm_plugins) error = %v", err)
+	}
+	wasmPos := map[string]int{}
+	for i, n := range wasmOrder {
+		wasmPos[n] = i
+	}
+	if wasmPos["applications"] >= wasmPos["wasm_plugins"] ||
+		wasmPos["wasm_plugins"] >= wasmPos["wasm_plugin_versions"] {
+		t.Errorf("invalid wasm_plugins restore order: %v", wasmOrder)
+	}
 }
 
 func TestAllWDSPMigrationTablesHaveRestoreClassification(t *testing.T) {
@@ -203,6 +291,9 @@ func TestAllWDSPMigrationTablesHaveRestoreClassification(t *testing.T) {
 		"api_authz_migration_state", "api_authorization_decisions", "api_object_relations", "api_role_baselines",
 		"api_object_ownership", "api_field_permissions", "api_masking_rules", "api_sensitive_data_types",
 		"api_file_compliance_rules", "api_grpc_descriptors", "api_gateway_nodes",
+		"api_a2a_policies", "api_a2a_policy_versions", "api_a2a_agents", "api_a2a_events",
+		"semantic_guard_policies", "semantic_guard_policy_versions",
+		"wasm_plugins", "wasm_plugin_versions",
 	}
 	allowed := map[string]bool{
 		GroupConfig: true, GroupLearning: true, GroupFact: true, GroupAudit: true,

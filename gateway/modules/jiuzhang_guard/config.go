@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/a2aguard"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/flowguard"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/grpcguard"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/machineid"
@@ -16,6 +17,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/pipeline"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/response"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/semantic"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/accesscontrol"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/aicrawl"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/apievents"
@@ -29,6 +31,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/riskengine"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/trustedproxy"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/urlwhitelist"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/wasmplugin"
 	"go.uber.org/zap"
 )
 
@@ -452,6 +455,24 @@ type Guard struct {
 	// 原始 JSON 保留，装配期经 assembleClientSide 严格解码）
 	ClientSidePolicy json.RawMessage `json:"client_side_policy,omitempty"`
 
+	// A2A 协议安全与 Agent 物料清单策略（Phase 9C-1；发布通道下发 api_a2a_policy 处理器段；
+	// 缺省 = 未下发，零行为变化。与 jwt_trust/bot_policy/ai_crawl_policy/client_side_policy
+	// 同一 fail-closed 纪律：严格解码 DisallowUnknownFields + 全量校验，非法配置拒绝加载。
+	// 原始 JSON 保留，装配期经 assembleA2A 严格解码）
+	APIA2APolicy json.RawMessage `json:"api_a2a_policy,omitempty"`
+
+	// 本地离线语义防火墙策略（Phase 9C-2；发布通道下发 semantic_guard_policy 处理器段；
+	// 缺省 = 未下发，零行为变化。与 jwt_trust/bot_policy/ai_crawl_policy/client_side_policy/
+	// api_a2a_policy 同一 fail-closed 纪律：严格解码 DisallowUnknownFields + 全量校验，
+	// 非法配置拒绝加载。原始 JSON 保留，装配期经 assembleSemanticGuard 严格解码）
+	SemanticGuardPolicy json.RawMessage `json:"semantic_guard_policy,omitempty"`
+
+	// Wasm 热插拔自定义检测插件沙箱策略（Phase 9D-1；发布通道下发 wasm_plugins 处理器段；
+	// 缺省 = 未下发，零行为变化。与 jwt_trust/bot_policy/semantic_guard_policy 同一 fail-closed
+	// 纪律：严格解码 DisallowUnknownFields + 常量时间 SHA-256 校验 + 预编译校验，非法配置拒绝加载。
+	// 原始 JSON 保留，装配期经 assembleWasmPlugins 严格解码与预编译）
+	WasmPlugins json.RawMessage `json:"wasm_plugins,omitempty"`
+
 	// 全量访问日志（二期）：默认关闭（nil 或 enabled=false 时零行为变化）
 	AccessLog *accessLogJSON `json:"access_log,omitempty"`
 
@@ -552,6 +573,10 @@ type Guard struct {
 	aiCrawlCancel             context.CancelFunc                      // AI 爬虫远程目录后台刷新取消（nil = 未启动；Cleanup 调用）
 	aiCrawlFetcher            *aicrawl.Fetcher                        // 测试注入钩子（nil = 装配期建默认 SSRF 受限获取器）
 	clientSide                *clientside.Engine                      // 按 ClientSidePolicy 装配（nil = 未下发/OFF，零开销直通）
+	apiA2A                    *a2aguard.Engine                        // 按 APIA2APolicy 装配（nil = 未下发/OFF，零开销直通）
+	semanticGuard             *semantic.Engine                        // 按 SemanticGuardPolicy 装配（nil = 未下发/OFF，零开销直通）
+	semanticSocketOverride    string                                  // 测试注入钩子（仅单元测试覆写临时 Unix Socket 目录，绝不接受 JSON）
+	wasmPlugins               *wasmplugin.Engine                      // 按 WasmPlugins 装配（nil = 未下发/无启用插件，零开销直通；Cleanup 关闭运行时）
 	publishSmokeKey           []byte                                  // 按 PublishSmoke 解码（单次发布独立秘密，不落日志/快照）
 }
 

@@ -83,7 +83,8 @@ func (s *MCPCatalogStore) ListEnabledMCPCatalogs(ctx context.Context) ([]gateway
 func (s *MCPCatalogStore) listApprovedTools(ctx context.Context, catalogID string) ([]gatewayconfig.GuardMCPTool, []string, error) {
 	rows, err := s.db.Query(ctx, `SELECT tool_name, tool_version, tool_hash, risk_level, data_classification,
 		capability_tags, allowed_principals, allowed_roles, allowed_tenants,
-		approval_required, max_calls_per_minute, input_schema, output_schema, arg_constraints
+		approval_required, max_calls_per_minute, input_schema, output_schema, arg_constraints,
+		pinned_definition_hash, pin_enforcement
 		FROM mcp_catalog_tools WHERE catalog_id=$1 AND review_status='APPROVED' ORDER BY tool_name`, catalogID)
 	if err != nil {
 		return nil, nil, err
@@ -96,7 +97,8 @@ func (s *MCPCatalogStore) listApprovedTools(ctx context.Context, catalogID strin
 		var tags, principals, roles, tenants, inSchema, outSchema, constraints []byte
 		if err := rows.Scan(&t.ToolName, &t.ToolVersion, &t.ToolHash, &t.RiskLevel, &t.DataClassification,
 			&tags, &principals, &roles, &tenants,
-			&t.ApprovalRequired, &t.MaxCallsPerMinute, &inSchema, &outSchema, &constraints); err != nil {
+			&t.ApprovalRequired, &t.MaxCallsPerMinute, &inSchema, &outSchema, &constraints,
+			&t.PinnedDefinitionHash, &t.PinEnforcement); err != nil {
 			return nil, nil, err
 		}
 		t.CapabilityTags = decodeStrings(tags)
@@ -141,7 +143,8 @@ func decodeArgConstraints(raw []byte) []gatewayconfig.GuardMCPArgConstraint {
 
 // ListAllMCPBindings 读取全部绑定（应用+endpoint_path 稳定排序；catalog_name JOIN 带出）。
 func (s *MCPCatalogStore) ListAllMCPBindings(ctx context.Context) ([]gatewayconfig.GuardMCPBinding, error) {
-	rows, err := s.db.Query(ctx, `SELECT b.application_id, b.endpoint_path, COALESCE(c.name,''), b.mode
+	rows, err := s.db.Query(ctx, `SELECT b.application_id, b.endpoint_path, COALESCE(c.name,''), b.mode,
+		b.response_guard_mode, b.require_session_binding, b.oauth_resource_metadata_url
 		FROM mcp_catalog_bindings b LEFT JOIN mcp_tool_catalogs c ON c.id=b.catalog_id
 		ORDER BY b.application_id, b.endpoint_path`)
 	if err != nil {
@@ -151,7 +154,8 @@ func (s *MCPCatalogStore) ListAllMCPBindings(ctx context.Context) ([]gatewayconf
 	out := []gatewayconfig.GuardMCPBinding{}
 	for rows.Next() {
 		var b gatewayconfig.GuardMCPBinding
-		if err := rows.Scan(&b.ApplicationID, &b.EndpointPath, &b.CatalogName, &b.Mode); err != nil {
+		if err := rows.Scan(&b.ApplicationID, &b.EndpointPath, &b.CatalogName, &b.Mode,
+			&b.ResponseGuardMode, &b.RequireSessionBinding, &b.OAuthResourceMetadataURL); err != nil {
 			return nil, err
 		}
 		out = append(out, b)

@@ -75,6 +75,19 @@ type CapabilityFacts struct {
 	//（MCP 工具调用 ACL 实断消费需要 mcp/2 + protocols.mcp=acl_v1——不认识 MCP 目录
 	// 段的旧节点会把 PROTECT 绑定漏放行，fail-closed；全 OBSERVE/空绑定不产生需求）
 	MCPToolCallProtect bool
+	// MCPPinningProtect Phase 9C-1：任一 PROTECT MCP 绑定开启了 response_guard_mode=PROTECT、
+	// require_session_binding=true，或其关联目录存在 pin_enforcement=PROTECT 的工具——
+	// 需要节点自报 protocols.mcp="pin_v2" 与 detectors.mcp.pinning="mcppin/1"。
+	MCPPinningProtect bool
+	// A2AProtect Phase 9C-1：api_a2a_policy 含任一 mode=PROTECT 策略——
+	// 需要节点自报 detectors.a2aguard="a2a/1"。
+	A2AProtect bool
+	// SemanticProtect Phase 9C-2：semantic_guard_policy 含任一 mode=PROTECT 策略——
+	// 需要节点自报 detectors.semantic="semantic/1"。
+	SemanticProtect bool
+	// WasmPluginProtect Phase 9D-1：wasm_plugins 含任一 mode=PROTECT 插件——
+	// 需要节点自报 detectors.wasmplugin="wasm/1"。
+	WasmPluginProtect bool
 	// MachineIDProtect NG-ID g1 批次 B1：api_machine_identity_bindings 含任一 mode=PROTECT
 	// 绑定（机器身份签名验证 PROTECT 消费需要 detectors.machineid=mid/1——不认识机器
 	// 身份段的旧节点会把签名验证漏做或误形态处置，fail-closed；ProtocolLevels 不动——
@@ -219,12 +232,38 @@ func capabilityFactsFromGuard(guardCfg *GuardConfig, targetAppIDs ...uuid.UUID) 
 			break
 		}
 	}
-	// NG-MCP G1 批次 B1：MCP 绑定任一 PROTECT → mcp/2 + acl_v1 需求（全 OBSERVE/空
-	// 绑定不产生需求，滚动升级可行——grpc/2、flow/1 同纪律）
+	// NG-MCP G1 批次 B1 + Phase 9C-1：MCP 绑定任一 PROTECT → mcp/2 + acl_v1 需求；
+	// 若 PROTECT 绑定同时开启 response_guard_mode=PROTECT、require_session_binding=true，
+	// 或其关联目录包含 pin_enforcement=PROTECT 工具 → 升级需求 protocols.mcp=pin_v2 + detectors.mcp.pinning=mcppin/1；
+	// 全 OBSERVE/空绑定不产生需求，滚动升级可行——grpc/2、flow/1 同纪律。
+	protectMCPCatalogs := map[string]bool{}
+	anyProtectMCP := false
 	for _, b := range guardCfg.APIMCPBindings {
 		if b.Mode == "PROTECT" {
 			facts.MCPToolCallProtect = true
-			break
+			anyProtectMCP = true
+			if b.CatalogName != "" {
+				protectMCPCatalogs[b.CatalogName] = true
+			}
+			if b.ResponseGuardMode == "PROTECT" || b.RequireSessionBinding {
+				facts.MCPPinningProtect = true
+			}
+		}
+	}
+	if anyProtectMCP && !facts.MCPPinningProtect {
+		for _, cat := range guardCfg.APIMCPToolCatalogs {
+			if len(protectMCPCatalogs) > 0 && !protectMCPCatalogs[cat.Name] {
+				continue
+			}
+			for _, tool := range cat.Tools {
+				if tool.PinEnforcement == "PROTECT" {
+					facts.MCPPinningProtect = true
+					break
+				}
+			}
+			if facts.MCPPinningProtect {
+				break
+			}
 		}
 	}
 	// NG-ID g1 批次 B1：机器身份绑定任一 PROTECT → mid/1 需求（全 OBSERVE/空绑定
@@ -261,6 +300,35 @@ func capabilityFactsFromGuard(guardCfg *GuardConfig, targetAppIDs ...uuid.UUID) 
 	for _, pol := range guardCfg.ClientSidePolicy {
 		if pol != nil && (pol.Mode == "PROTECT" || pol.CSPMode == "ENFORCE") {
 			facts.ClientSideProtect = true
+			break
+		}
+	}
+	// Phase 9C-1：A2A 协议安全策略含任一 PROTECT → detectors.a2aguard=a2a/1
+	for _, pol := range guardCfg.APIA2APolicy {
+		if pol != nil && pol.Mode == "PROTECT" {
+			facts.A2AProtect = true
+			break
+		}
+	}
+	// Phase 9C-2：本地离线语义防火墙策略含任一 PROTECT → detectors.semantic=semantic/1
+	for _, pol := range guardCfg.SemanticGuardPolicy {
+		if pol != nil && pol.Mode == "PROTECT" {
+			facts.SemanticProtect = true
+			break
+		}
+	}
+	// Phase 9D-1：Wasm 检测插件含任一 PROTECT → detectors.wasmplugin=wasm/1
+	for _, wp := range guardCfg.WasmPlugins {
+		if wp == nil {
+			continue
+		}
+		for _, pl := range wp.Plugins {
+			if pl.Mode == "PROTECT" {
+				facts.WasmPluginProtect = true
+				break
+			}
+		}
+		if facts.WasmPluginProtect {
 			break
 		}
 	}
@@ -348,6 +416,19 @@ func RequiredCapabilities(f CapabilityFacts) capability.Manifest {
 	if f.MCPToolCallProtect {
 		protocols["mcp"] = "acl_v1"
 		detectors = append(detectors, capability.DetectorCap{Name: "mcp.toolcall", Version: "mcp/2"})
+	}
+	if f.MCPPinningProtect {
+		protocols["mcp"] = "pin_v2"
+		detectors = append(detectors, capability.DetectorCap{Name: "mcp.pinning", Version: "mcppin/1"})
+	}
+	if f.A2AProtect {
+		detectors = append(detectors, capability.DetectorCap{Name: "a2aguard", Version: "a2a/1"})
+	}
+	if f.SemanticProtect {
+		detectors = append(detectors, capability.DetectorCap{Name: "semantic", Version: "semantic/1"})
+	}
+	if f.WasmPluginProtect {
+		detectors = append(detectors, capability.DetectorCap{Name: "wasmplugin", Version: "wasm/1"})
 	}
 	// NG-ID g1 批次 B1（D11）：含任一 PROTECT 机器身份绑定的快照需要
 	// detectors.machineid=mid/1 消费语义（登记册消费+十步验证链+重放原子存储+轮换撤销
