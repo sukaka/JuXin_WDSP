@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import dayjs from 'dayjs'
-import SystemUpgradePage from '../SystemUpgradePage'
+import SystemUpgradePage, { type SystemUpgradePageProps } from '../SystemUpgradePage'
 import { useAuthStore } from '../../../stores/auth'
 import { ApiError, type UploadProgress } from '../../../api/client'
 import { formatDateTime } from '../../../utils/format'
@@ -68,12 +68,16 @@ function startedExecution() {
   }
 }
 
-function renderPage() {
+function renderPage(props?: SystemUpgradePageProps) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
       <AntdApp>
-        <SystemUpgradePage />
+        <SystemUpgradePage
+          onReloadAfterUpgrade={props?.onReloadAfterUpgrade ?? vi.fn()}
+          upgradePollIntervalMs={props?.upgradePollIntervalMs ?? 30}
+          upgradeSuccessRedirectDelayMs={props?.upgradeSuccessRedirectDelayMs ?? 30}
+        />
       </AntdApp>
     </QueryClientProvider>,
   )
@@ -128,6 +132,7 @@ async function pickTimeViaNowButton() {
 
 describe('SystemUpgradePage 升级包上传（单文件 + 自动识别版本 + 自动升级）', () => {
   beforeEach(() => {
+    window.sessionStorage.clear()
     requestMock.mockImplementation(async (path, options) => {
       const method = options?.method ?? 'GET'
       if (method === 'GET' && path === '/upgrades') {
@@ -138,6 +143,12 @@ describe('SystemUpgradePage 升级包上传（单文件 + 自动识别版本 + �
       }
       if (method === 'GET' && path === '/upgrades/nodes') {
         return { items: [], current_version: '1.12.0', split_brain: false, cluster_ready: false }
+      }
+      if (method === 'GET' && path === '/upgrades/job-1') {
+        return {
+          job: startedExecution(),
+          server_status: { ready: false, current_version: '2.5.5', health_ok: true },
+        }
       }
       throw new ApiError(`未打桩的请求：${method} ${path}`, 'MOCK_MISS', 500)
     })
@@ -150,6 +161,7 @@ describe('SystemUpgradePage 升级包上传（单文件 + 自动识别版本 + �
   })
 
   afterEach(() => {
+    window.sessionStorage.clear()
     vi.clearAllMocks()
     useAuthStore.getState().reset()
   })
@@ -189,22 +201,20 @@ describe('SystemUpgradePage 升级包上传（单文件 + 自动识别版本 + �
     expect(screen.getByText(/jiuzhang-wdsp-upgrade-1\.3\.0-amd64\.tar\.gz/)).toBeInTheDocument()
   })
 
-  it('成功响应带 execution：展示检测到的版本与自动开始升级提示，并刷新执行列表', async () => {
+  it('成功响应带 execution：立即切换至「系统正在升级」页面并持续向后端探测状态', async () => {
     renderPage()
     const pkgInput = await openUploadModal()
-    // 挂载后首次执行列表加载完成，作为刷新前基线
-    await waitFor(() => expect(requestMock.mock.calls.some(([p]) => p === '/upgrades')).toBe(true), SLOW)
-    const listCallsBefore = requestMock.mock.calls.filter(([p]) => p === '/upgrades').length
 
     selectPackageFile(pkgInput)
     await waitFor(() => expect(okButton()).toBeEnabled(), SLOW)
     fireEvent.click(okButton())
 
-    expect(await screen.findByText('检测到的版本：从 2.5.5 → 2.6.0', undefined, SLOW)).toBeInTheDocument()
-    expect(screen.getByText('已开始自动升级，可在下方列表查看进度')).toBeInTheDocument()
-    // 上传成功后失效并重新拉取执行列表（轮询复用现有列表查询）
+    expect(await screen.findByTestId('upgrade-progress-screen', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.getByText('系统正在升级，请稍候…')).toBeInTheDocument()
+    expect(screen.getByText('V2.5.5 → V2.6.0')).toBeInTheDocument()
+    // 进入升级中视图后主动调用 GET /upgrades/job-1 探测后端状态
     await waitFor(
-      () => expect(requestMock.mock.calls.filter(([p]) => p === '/upgrades').length).toBeGreaterThan(listCallsBefore),
+      () => expect(requestMock.mock.calls.some(([p]) => p === '/upgrades/job-1')).toBe(true),
       SLOW,
     )
   })
@@ -265,7 +275,8 @@ describe('SystemUpgradePage 升级包上传（单文件 + 自动识别版本 + �
     expect(okButton()).toBeDisabled()
 
     act(() => resolveUpload?.({ package: uploadedPackage(), execution: startedExecution() }))
-    expect(await screen.findByText('已开始自动升级，可在下方列表查看进度', undefined, SLOW)).toBeInTheDocument()
+    expect(await screen.findByTestId('upgrade-progress-screen', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.getByText('系统正在升级，请稍候…')).toBeInTheDocument()
   })
 
   it('非 .tar.gz 文件：拒绝选择并提示，不发起上传', async () => {
@@ -297,6 +308,14 @@ function stubListRequests(
     if (method === 'GET' && path === '/upgrades/nodes') {
       return { items: [], current_version: '1.12.0', split_brain: false, cluster_ready: false }
     }
+    if (method === 'GET' && path.startsWith('/upgrades/')) {
+      const id = path.slice('/upgrades/'.length)
+      const matched = jobs.find((j) => j.id === id) ?? { ...startedExecution(), id }
+      return {
+        job: matched,
+        server_status: { ready: matched.status === 'SUCCESS', current_version: '1.12.0', health_ok: true },
+      }
+    }
     if (method === 'POST' && path === '/upgrades/job-sched-1/cancel') {
       return { job: { ...scheduledJob(), status: 'CANCELLED' } }
     }
@@ -319,6 +338,7 @@ function scheduledJob() {
 
 describe('SystemUpgradePage 定时更新（scheduled_at + SCHEDULED 任务取消）', () => {
   beforeEach(() => {
+    window.sessionStorage.clear()
     stubListRequests([])
     uploadMock.mockResolvedValue({ package: uploadedPackage(), execution: startedExecution() })
     useAuthStore.setState({
@@ -329,6 +349,7 @@ describe('SystemUpgradePage 定时更新（scheduled_at + SCHEDULED 任务取消
   })
 
   afterEach(() => {
+    window.sessionStorage.clear()
     vi.clearAllMocks()
     useAuthStore.getState().reset()
   })
@@ -421,11 +442,12 @@ describe('SystemUpgradePage 定时更新（scheduled_at + SCHEDULED 任务取消
     )
   })
 
-  it('PENDING 行：不展示取消按钮', async () => {
+  it('PENDING 活动任务进入页面时自动切入「系统正在升级」视图且不展示取消按钮', async () => {
     stubListRequests([{ ...startedExecution(), id: 'job-pending-1', status: 'PENDING' }])
     renderPage()
 
-    expect(await screen.findByText('排队中', undefined, SLOW)).toBeInTheDocument()
+    expect(await screen.findByTestId('upgrade-progress-screen', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.getAllByText('排队中').length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: '取消' })).toBeNull()
   })
 
@@ -580,7 +602,7 @@ describe('SystemUpgradePage 定时更新（scheduled_at + SCHEDULED 任务取消
     ).toBeInTheDocument()
   })
 
-  it('差量升级包展示变更组件清单与镜像层差量标记', async () => {
+  it('差量升级包在「系统正在升级」视图展示变更组件清单与镜像层差量标记', async () => {
     const deltaPkg = {
       ...uploadedPackage(),
       id: 'pkg-delta-1',
@@ -607,14 +629,8 @@ describe('SystemUpgradePage 定时更新（scheduled_at + SCHEDULED 任务取消
     await waitFor(() => expect(okButton()).toBeEnabled(), SLOW)
     fireEvent.click(okButton())
 
-    expect(
-      await screen.findByText(
-        '已开始自动升级，可在下方列表查看进度（变更组件：api、web，镜像层差量包）',
-        undefined,
-        SLOW,
-      ),
-    ).toBeInTheDocument()
-    expect(await screen.findByText('精确差量路径：1.11.1 → 1.11.2', undefined, SLOW)).toBeInTheDocument()
+    expect(await screen.findByTestId('upgrade-progress-screen', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.getByText('V1.11.1 → V1.11.2')).toBeInTheDocument()
     expect(screen.getByText('镜像层差量')).toBeInTheDocument()
     expect(screen.getByText('api')).toBeInTheDocument()
     expect(screen.getByText('web')).toBeInTheDocument()
@@ -657,6 +673,7 @@ describe('SystemUpgradePage HA 集群滚动升级（节点版本、模式选择�
   }
 
   beforeEach(() => {
+    window.sessionStorage.clear()
     uploadMock.mockResolvedValue({ package: uploadedPackage(), execution: startedExecution() })
     useAuthStore.setState({
       user: makeUser(['upgrades.execute', 'upgrades.precheck', 'upgrades.rollback']),
@@ -666,6 +683,7 @@ describe('SystemUpgradePage HA 集群滚动升级（节点版本、模式选择�
   })
 
   afterEach(() => {
+    window.sessionStorage.clear()
     vi.clearAllMocks()
     useAuthStore.getState().reset()
   })
@@ -695,6 +713,12 @@ describe('SystemUpgradePage HA 集群滚动升级（节点版本、模式选择�
       if (method === 'POST' && path === '/upgrades') {
         return { job: { ...startedExecution(), cluster_mode: 'HA_ROLLING' } }
       }
+      if (method === 'GET' && path === '/upgrades/job-1') {
+        return {
+          job: { ...startedExecution(), cluster_mode: 'HA_ROLLING' },
+          server_status: { ready: false, current_version: '1.12.0', health_ok: true },
+        }
+      }
       throw new ApiError(`未打桩的请求：${method} ${path}`, 'MOCK_MISS', 500)
     })
 
@@ -704,10 +728,21 @@ describe('SystemUpgradePage HA 集群滚动升级（节点版本、模式选择�
     expect(screen.getByText('版本不一致')).toBeInTheDocument()
     expect(screen.getByText(/检测到主备双主脑裂（HA_SPLIT_BRAIN）/)).toBeInTheDocument()
 
-    // 预检与执行均透传 cluster_mode: HA_ROLLING
-    const select = screen.getByRole('combobox')
-    fireEvent.mouseDown(select)
-    fireEvent.click(await screen.findByText(/jiuzhang-wdsp-offline-2\.6\.0-amd64\.tar\.gz/, undefined, SLOW))
+    // 先验证上传弹窗在集群模式下携带 cluster_mode=HA_ROLLING（定时更新不切入升级中页，便于同用例继续验预检与立即执行）
+    uploadMock.mockResolvedValueOnce({
+      package: uploadedPackage(),
+      execution: { ...startedExecution(), status: 'SCHEDULED', scheduled_at: '2026-09-15T02:00:00Z' },
+    })
+    const pkgInput = await openUploadModal()
+    selectPackageFile(pkgInput)
+    await waitFor(() => expect(okButton()).toBeEnabled(), SLOW)
+    fireEvent.click(okButton())
+    await waitFor(() => expect(uploadMock).toHaveBeenCalledTimes(1), SLOW)
+    const [, form] = uploadMock.mock.calls[0]
+    expect(form.get('cluster_mode')).toBe('HA_ROLLING')
+
+    // 上传成功后自动选中该升级包，执行预检并透传 cluster_mode: HA_ROLLING
+    await waitFor(() => expect(screen.getByRole('button', { name: /执行预检/ })).toBeEnabled(), SLOW)
     fireEvent.click(screen.getByRole('button', { name: /执行预检/ }))
 
     await waitFor(
@@ -724,6 +759,8 @@ describe('SystemUpgradePage HA 集群滚动升级（节点版本、模式选择�
     expect(await screen.findByText('备节点健康与数量检查', undefined, SLOW)).toBeInTheDocument()
     expect(screen.getByText('备节点升级就绪检查（gw-b）')).toBeInTheDocument()
 
+    // 点击执行升级 → 确认升级透传 cluster_mode=HA_ROLLING 并进入「系统正在升级」页
+    await waitFor(() => expect(screen.getByRole('button', { name: /执行升级/ })).toBeEnabled(), SLOW)
     fireEvent.click(screen.getByRole('button', { name: /执行升级/ }))
     expect(await screen.findByText(/将按「先备后主」顺序执行 HA 集群滚动升级/, undefined, SLOW)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /确认升级/ }))
@@ -740,15 +777,8 @@ describe('SystemUpgradePage HA 集群滚动升级（节点版本、模式选择�
         ).toBe(true),
       SLOW,
     )
-
-    // 上传弹窗在集群模式下也携带 cluster_mode=HA_ROLLING
-    const pkgInput = await openUploadModal()
-    selectPackageFile(pkgInput)
-    await waitFor(() => expect(okButton()).toBeEnabled(), SLOW)
-    fireEvent.click(okButton())
-    await waitFor(() => expect(uploadMock).toHaveBeenCalledTimes(1), SLOW)
-    const [, form] = uploadMock.mock.calls[0]
-    expect(form.get('cluster_mode')).toBe('HA_ROLLING')
+    expect(await screen.findByTestId('upgrade-progress-screen', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.getByText('HA 集群滚动升级（先备后主）')).toBeInTheDocument()
   })
 
   it('任务详情抽屉展示逐节点执行明细并支持失败备节点「重试节点升级」', async () => {
@@ -852,5 +882,149 @@ describe('SystemUpgradePage HA 集群滚动升级（节点版本、模式选择�
         ).toBe(true),
       SLOW,
     )
+  })
+})
+
+describe('SystemUpgradePage 独立「系统正在升级」页面与后端自主成功检测', () => {
+  beforeEach(() => {
+    window.sessionStorage.clear()
+    useAuthStore.setState({
+      user: makeUser(['upgrades.execute', 'upgrades.precheck', 'upgrades.rollback']),
+      csrfToken: null,
+      initialized: true,
+    })
+  })
+
+  afterEach(() => {
+    window.sessionStorage.clear()
+    vi.clearAllMocks()
+    useAuthStore.getState().reset()
+  })
+
+  it('服务重启期间静默吸收网络断连/502 报错，仅在后端确认 SUCCESS 且 ready=true 后才退回正常页并触发重载', async () => {
+    const reloadSpy = vi.fn()
+    let pollStep = 0
+    const pkg = uploadedPackage()
+
+    requestMock.mockImplementation(async (path, options) => {
+      const method = options?.method ?? 'GET'
+      if (method === 'GET' && path === '/upgrades') {
+        return { items: [], page: 1, page_size: 20, total: 0 }
+      }
+      if (method === 'GET' && path === '/upgrade-packages') {
+        return { items: [pkg], page: 1, page_size: 50, total: 1 }
+      }
+      if (method === 'GET' && path === '/upgrades/nodes') {
+        return { items: [], current_version: '2.5.5', split_brain: false, cluster_ready: false }
+      }
+      if (method === 'GET' && path === '/upgrades/job-1') {
+        pollStep += 1
+        if (pollStep === 1) {
+          return {
+            job: { ...startedExecution(), status: 'APPLYING' },
+            server_status: { ready: false, current_version: '2.5.5', health_ok: true },
+          }
+        }
+        if (pollStep === 2) {
+          throw new ApiError('网络异常，请检查网络连接后重试', 'NETWORK_ERROR', 0)
+        }
+        if (pollStep === 3) {
+          throw new ApiError('请求失败（HTTP 502）', 'HTTP_ERROR', 502)
+        }
+        if (pollStep === 4) {
+          // 任务已标记 SUCCESS，但后端健康检查尚未通过：不得提前退出升级中页
+          return {
+            job: { ...startedExecution(), status: 'SUCCESS' },
+            server_status: {
+              ready: false,
+              current_version: '2.6.0',
+              health_ok: false,
+              health_detail: 'postgres ping: starting',
+            },
+          }
+        }
+        // 第 5 次探测：后端自检全部通过（status=SUCCESS 且 ready=true）
+        return {
+          job: { ...startedExecution(), status: 'SUCCESS' },
+          server_status: { ready: true, current_version: '2.6.0', health_ok: true },
+        }
+      }
+      throw new ApiError(`未打桩的请求：${method} ${path}`, 'MOCK_MISS', 500)
+    })
+    uploadMock.mockResolvedValue({ package: pkg, execution: startedExecution() })
+
+    renderPage({
+      onReloadAfterUpgrade: reloadSpy,
+      upgradePollIntervalMs: 40,
+      upgradeSuccessRedirectDelayMs: 40,
+    })
+
+    const pkgInput = await openUploadModal()
+    selectPackageFile(pkgInput)
+    await waitFor(() => expect(okButton()).toBeEnabled(), SLOW)
+    fireEvent.click(okButton())
+
+    expect(await screen.findByTestId('upgrade-progress-screen', undefined, SLOW)).toBeInTheDocument()
+    // 升级重启期间绝不出现旧版红色列表报错
+    expect(screen.queryByText('加载升级任务失败')).toBeNull()
+
+    // 经历网络断连、502、health未就绪后，直到后端确认 ready=true 才自动退回正常页并触发重载
+    await waitFor(() => expect(reloadSpy).toHaveBeenCalledTimes(1), SLOW)
+    expect(pollStep).toBeGreaterThanOrEqual(5)
+    // 回到正常页面，sessionStorage 已清空
+    expect(await screen.findByText('升级包与预检', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.queryByTestId('upgrade-progress-screen')).toBeNull()
+    expect(window.sessionStorage.getItem('jiuzhang_wdsp_active_upgrade')).toBeNull()
+  })
+
+  it('升级失败并自动回滚时展示回滚原因且不自动刷新，点击「返回系统升级页」后回到正常页', async () => {
+    const reloadSpy = vi.fn()
+    const pkg = uploadedPackage()
+
+    requestMock.mockImplementation(async (path, options) => {
+      const method = options?.method ?? 'GET'
+      if (method === 'GET' && path === '/upgrades') {
+        return { items: [], page: 1, page_size: 20, total: 0 }
+      }
+      if (method === 'GET' && path === '/upgrade-packages') {
+        return { items: [pkg], page: 1, page_size: 50, total: 1 }
+      }
+      if (method === 'GET' && path === '/upgrades/nodes') {
+        return { items: [], current_version: '2.5.5', split_brain: false, cluster_ready: false }
+      }
+      if (method === 'GET' && path === '/upgrades/job-1') {
+        return {
+          job: {
+            ...startedExecution(),
+            status: 'ROLLED_BACK',
+            failure_code: 'APPLY_FAILED',
+            failure_message: '宿主机镜像校验失败，已自动恢复原版本',
+          },
+          server_status: { ready: false, current_version: '2.5.5', health_ok: true },
+        }
+      }
+      throw new ApiError(`未打桩的请求：${method} ${path}`, 'MOCK_MISS', 500)
+    })
+    uploadMock.mockResolvedValue({ package: pkg, execution: startedExecution() })
+
+    renderPage({
+      onReloadAfterUpgrade: reloadSpy,
+      upgradePollIntervalMs: 30,
+      upgradeSuccessRedirectDelayMs: 30,
+    })
+
+    const pkgInput = await openUploadModal()
+    selectPackageFile(pkgInput)
+    await waitFor(() => expect(okButton()).toBeEnabled(), SLOW)
+    fireEvent.click(okButton())
+
+    expect(await screen.findByText('升级未成功，系统已自动回滚', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.getByText('宿主机镜像校验失败，已自动恢复原版本')).toBeInTheDocument()
+    expect(reloadSpy).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '返回系统升级页' }))
+    expect(await screen.findByText('升级包与预检', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.queryByTestId('upgrade-progress-screen')).toBeNull()
+    expect(reloadSpy).not.toHaveBeenCalled()
   })
 })

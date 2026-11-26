@@ -38,6 +38,15 @@ type ExecutorResult struct {
 	FinishedAt time.Time `json:"finished_at"`
 }
 
+// ServerUpgradeStatus 后端自主检测升级完成与服务就绪态结果。
+// Ready 仅在升级任务已终态 SUCCESS 且后端实时健康检查（数据库、缓存与迁移版本）通过时为 true。
+type ServerUpgradeStatus struct {
+	Ready          bool   `json:"ready"`
+	CurrentVersion string `json:"current_version"`
+	HealthOK       bool   `json:"health_ok"`
+	HealthDetail   string `json:"health_detail,omitempty"`
+}
+
 // SetExecutorDirs 配置容器内共享的升级包目录与执行器任务目录。
 func (s *Service) SetExecutorDirs(packagesDir, executorDir string) {
 	s.packagesDir = filepath.Clean(packagesDir)
@@ -259,6 +268,48 @@ func (s *Service) RunResultReconciler(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// ReconcileJobResult 按需检查单个升级任务的宿主机执行器结果文件并立即执行后端核验与收敛。
+// 供 GET /api/v1/upgrades/{id} 在 API 重启恢复后立即反映最终状态，无需等待后台轮询周期。
+func (s *Service) ReconcileJobResult(ctx context.Context, id uuid.UUID) error {
+	if s == nil || s.executorDir == "" {
+		return nil
+	}
+	path := filepath.Join(s.executorDir, "results", id.String()+".json")
+	result, err := readExecutorResult(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("读取宿主机执行结果失败: %w", err)
+	}
+	if result.JobID != id.String() {
+		return errors.New("宿主机执行器结果任务 ID 不匹配")
+	}
+	return s.processExecutorResult(ctx, result)
+}
+
+// EvaluateJobReadiness 由后端实时核验升级任务是否已真正成功且核心依赖健康就绪。
+// 仅当 job.Status == SUCCESS 且数据库/缓存/迁移版本核验全部通过时 Ready 才为 true。
+func (s *Service) EvaluateJobReadiness(ctx context.Context, job *Job) ServerUpgradeStatus {
+	curVer := s.currentSystemVersion(ctx)
+	var healthErr error
+	switch {
+	case s.verifyFn != nil:
+		healthErr = s.verifyFn(ctx)
+	case s.db != nil && s.prechecker != nil:
+		healthErr = s.verify(ctx)
+	}
+	status := ServerUpgradeStatus{
+		CurrentVersion: curVer,
+		HealthOK:       healthErr == nil,
+	}
+	if healthErr != nil {
+		status.HealthDetail = failMsg(healthErr)
+	}
+	status.Ready = job != nil && job.Status == StatusSuccess && status.HealthOK
+	return status
 }
 
 func (s *Service) reconcileResults(ctx context.Context) {

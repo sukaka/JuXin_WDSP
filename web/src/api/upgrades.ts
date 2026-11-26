@@ -41,6 +41,20 @@ interface PrecheckRawResp {
   passed?: boolean
 }
 
+/** 后端自主检测升级完成与核心服务就绪态（GET /api/v1/upgrades/{id} 附带） */
+export interface UpgradeServerStatus {
+  ready: boolean
+  current_version?: string
+  health_ok?: boolean
+  health_detail?: string
+}
+
+/** 单条升级任务状态与后端就绪核验响应 */
+export interface UpgradeJobStatusResp {
+  job: UpgradeJobItem
+  server_status?: UpgradeServerStatus
+}
+
 /**
  * 系统升级（upgrades.read / upgrades.precheck / upgrades.execute / upgrades.rollback）。
  * 执行升级与回滚为高危操作，页面层必须二次确认。
@@ -103,6 +117,11 @@ export const upgradesApi = {
   get: async (id: string) => {
     const data = await request<{ job: UpgradeJobItem }>(`/upgrades/${id}`)
     return data.job
+  },
+  /** 查询单条升级任务及后端实时就绪态（短超时 8s，供「系统正在升级」页在容器重启窗口快速重连探测） */
+  getStatus: async (id: string): Promise<UpgradeJobStatusResp> => {
+    const data = await request<UpgradeJobStatusResp>(`/upgrades/${id}`, { timeoutMs: 8_000 })
+    return { job: data.job, server_status: data.server_status }
   },
   rollback: async (id: string) => {
     const data = await request<{ job: UpgradeJobItem }>(`/upgrades/${id}/rollback`, { method: 'POST' })

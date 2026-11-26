@@ -2,13 +2,17 @@ package upgrades
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/audits"
 )
 
 func TestExecutorResultRoundTrip(t *testing.T) {
@@ -316,5 +320,152 @@ func TestResolveEffectiveSystemVersion(t *testing.T) {
 	// 异常库值原样返回给预检 fail-closed
 	if got := resolveEffectiveSystemVersion("corrupted", "1.12.0"); got != "corrupted" {
 		t.Fatalf("got %q, want corrupted", got)
+	}
+}
+
+type fakeJobGetStore struct {
+	fakeVersionResultStore
+}
+
+func (f *fakeJobGetStore) ListJobs(_ context.Context, _ string, _, _ int) ([]Job, int64, error) {
+	out := make([]Job, 0, len(f.jobs))
+	for _, j := range f.jobs {
+		out = append(out, *j)
+	}
+	return out, int64(len(out)), nil
+}
+
+func (f *fakeJobGetStore) ListNodeExecutions(_ context.Context, _ uuid.UUID) ([]NodeExecution, error) {
+	return nil, nil
+}
+
+func (f *fakeJobGetStore) ListNodeExecutionsByJobIDs(_ context.Context, _ []uuid.UUID) (map[uuid.UUID][]NodeExecution, error) {
+	return map[uuid.UUID][]NodeExecution{}, nil
+}
+
+func TestReconcileJobResultAndEvaluateReadiness(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	jobID := uuid.New()
+	pkgID := uuid.New()
+	fs := &fakeJobGetStore{
+		fakeVersionResultStore: fakeVersionResultStore{
+			fakeResultStore: fakeResultStore{
+				jobs: map[uuid.UUID]*Job{
+					jobID: {ID: jobID, PackageID: &pkgID, Status: StatusApplying},
+				},
+			},
+			packages: map[uuid.UUID]*Package{
+				pkgID: {ID: pkgID, VersionFrom: "1.15.0", VersionTo: "1.15.1"},
+			},
+		},
+	}
+	var verifyErr error
+	svc := &Service{
+		executorDir: dir,
+		resStore:    fs,
+		verifyFn:    func(context.Context) error { return verifyErr },
+	}
+
+	// 1. 执行器尚未写入结果文件：按需收敛不报错，状态保持 APPLYING，server_status.ready=false
+	if err := svc.ReconcileJobResult(context.Background(), jobID); err != nil {
+		t.Fatalf("ReconcileJobResult (pending): %v", err)
+	}
+	st := svc.EvaluateJobReadiness(context.Background(), fs.jobs[jobID])
+	if st.Ready || !st.HealthOK {
+		t.Fatalf("pending job readiness = %+v, want ready=false health_ok=true", st)
+	}
+
+	// 2. 执行器写入 SUCCESS 结果文件：ReconcileJobResult 立即核验并落库 SUCCESS 与目标版本
+	resPath := filepath.Join(dir, "results", jobID.String()+".json")
+	if err := writeJSONAtomic(resPath, ExecutorResult{
+		JobID: jobID.String(), Status: "SUCCESS", Stage: StatusVerifying, FinishedAt: time.Now().UTC(),
+	}, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ReconcileJobResult(context.Background(), jobID); err != nil {
+		t.Fatalf("ReconcileJobResult (success): %v", err)
+	}
+	if fs.jobs[jobID].Status != StatusSuccess {
+		t.Fatalf("job status = %s, want SUCCESS", fs.jobs[jobID].Status)
+	}
+	if fs.currentVersion != "1.15.1" {
+		t.Fatalf("currentVersion = %q, want 1.15.1", fs.currentVersion)
+	}
+	st = svc.EvaluateJobReadiness(context.Background(), fs.jobs[jobID])
+	if !st.Ready || !st.HealthOK {
+		t.Fatalf("success job readiness = %+v, want ready=true health_ok=true", st)
+	}
+
+	// 3. 若后端实时健康检查失败，即使 job 为 SUCCESS 也必须返回 ready=false
+	verifyErr = errors.New("valkey ping failed")
+	st = svc.EvaluateJobReadiness(context.Background(), fs.jobs[jobID])
+	if st.Ready || st.HealthOK || st.HealthDetail == "" {
+		t.Fatalf("unhealthy readiness = %+v, want ready=false health_ok=false with detail", st)
+	}
+}
+
+func TestHandlerGetReconcilesAndReturnsServerStatus(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	jobID := uuid.New()
+	pkgID := uuid.New()
+	fs := &fakeJobGetStore{
+		fakeVersionResultStore: fakeVersionResultStore{
+			fakeResultStore: fakeResultStore{
+				jobs: map[uuid.UUID]*Job{
+					jobID: {ID: jobID, PackageID: &pkgID, Status: StatusApplying},
+				},
+			},
+			packages: map[uuid.UUID]*Package{
+				pkgID: {ID: pkgID, VersionFrom: "1.15.0", VersionTo: "1.15.1"},
+			},
+		},
+	}
+	svc := &Service{
+		executorDir: dir,
+		resStore:    fs,
+		verifyFn:    func(context.Context) error { return nil },
+	}
+	h := NewHandler(nil, svc, audits.NewService(nil))
+	h.jobReader = fs
+
+	callGet := func() (Job, ServerUpgradeStatus) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/upgrades/"+jobID.String(), nil)
+		req.SetPathValue("id", jobID.String())
+		rec := httptest.NewRecorder()
+		h.Get(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var env struct {
+			Data struct {
+				Job          Job                 `json:"job"`
+				ServerStatus ServerUpgradeStatus `json:"server_status"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		return env.Data.Job, env.Data.ServerStatus
+	}
+
+	// 执行器尚未写结果文件：返回 APPLYING 且 server_status.ready=false
+	job, st := callGet()
+	if job.Status != StatusApplying || st.Ready {
+		t.Fatalf("before result: status=%s ready=%v, want APPLYING/false", job.Status, st.Ready)
+	}
+
+	// 执行器写入 SUCCESS 结果文件后：GET 立即收敛返回 SUCCESS 且 server_status.ready=true
+	resPath := filepath.Join(dir, "results", jobID.String()+".json")
+	if err := writeJSONAtomic(resPath, ExecutorResult{
+		JobID: jobID.String(), Status: "SUCCESS", Stage: StatusVerifying, FinishedAt: time.Now().UTC(),
+	}, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	job, st = callGet()
+	if job.Status != StatusSuccess || !st.Ready || !st.HealthOK {
+		t.Fatalf("after result: status=%s server_status=%+v, want SUCCESS/ready=true", job.Status, st)
 	}
 }

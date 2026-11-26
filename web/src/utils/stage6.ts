@@ -252,6 +252,20 @@ export function isTerminalUpgradeStatus(status: string): boolean {
   return status === 'SUCCESS' || status === 'FAILED' || status === 'ROLLED_BACK' || status === 'CANCELLED'
 }
 
+/** 升级任务是否正处于执行中的升级/回滚过程（不含 SCHEDULED 定时等待与终态） */
+export function isActiveUpgradingStatus(status: string): boolean {
+  return (
+    status === 'PENDING' ||
+    status === 'PRECHECK' ||
+    status === 'BACKUP' ||
+    status === 'APPLYING' ||
+    status === 'MIGRATING' ||
+    status === 'VERIFYING' ||
+    status === 'RUNNING' ||
+    status === 'ROLLING_BACK'
+  )
+}
+
 /** 汇总预检/检查项整体结果：任一 FAIL → FAIL，否则任一 WARNING → WARNING，全 PASS → PASS */
 export function summarizeCheckResult(items: { result: string }[]): string {
   if (items.some((i) => i.result === 'FAIL')) return 'FAIL'

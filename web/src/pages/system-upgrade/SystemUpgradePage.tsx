@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import {
@@ -46,8 +46,16 @@ import {
   CHECK_RESULT_META,
   UPGRADE_PACKAGE_STATUS_META,
   UPGRADE_STATUS_META,
+  isActiveUpgradingStatus,
   isTerminalUpgradeStatus,
 } from '../../utils/stage6'
+import UpgradeProgressScreen from './UpgradeProgressScreen'
+import {
+  clearActiveUpgrade,
+  loadActiveUpgrade,
+  saveActiveUpgrade,
+  type ActiveUpgradeContext,
+} from './upgradeProgressState'
 import type {
   UpgradeClusterMode,
   UpgradeClusterNode,
@@ -132,14 +140,42 @@ function formatPrecheckName(name: string): string {
   return name
 }
 
-/** 系统升级：升级包上传/登记 → 预检 → 执行升级（任务轮询）→ 失败回滚 */
-export default function SystemUpgradePage() {
+export interface SystemUpgradePageProps {
+  /** 升级成功确认后的整页刷新钩子（生产默认 window.location.reload 以加载新版本静态资源；测试可注入桩函数） */
+  onReloadAfterUpgrade?: () => void
+  /** 「系统正在升级」页的后端状态轮询间隔（毫秒），默认 2500 */
+  upgradePollIntervalMs?: number
+  /** 升级成功后自动返回正常页前的停留时间（毫秒），默认 1500 */
+  upgradeSuccessRedirectDelayMs?: number
+}
+
+function normalizeClusterMode(mode?: string | null): UpgradeClusterMode {
+  return mode === 'HA_ROLLING' ? 'HA_ROLLING' : 'LOCAL'
+}
+
+function defaultReloadBrowserPage(): void {
+  try {
+    window.location.reload()
+  } catch {
+    // 忽略测试环境（jsdom）不支持 location.reload 时的异常
+  }
+}
+
+/** 系统升级：升级包上传/登记 → 预检 → 执行升级（独立升级中视图 + 后端自检）→ 失败回滚 */
+export default function SystemUpgradePage({
+  onReloadAfterUpgrade,
+  upgradePollIntervalMs,
+  upgradeSuccessRedirectDelayMs,
+}: SystemUpgradePageProps = {}) {
   const { message, modal } = AntdApp.useApp()
   const queryClient = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canPrecheck = hasPermission(permissions, 'upgrades.precheck')
   const canExecute = hasPermission(permissions, 'upgrades.execute')
   const canRollback = hasPermission(permissions, 'upgrades.rollback')
+
+  const [activeUpgrade, setActiveUpgrade] = useState<ActiveUpgradeContext | null>(() => loadActiveUpgrade())
+  const isUpgradingView = activeUpgrade !== null
 
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -170,6 +206,7 @@ export default function SystemUpgradePage() {
   const clusterNodesQuery = useQuery({
     queryKey: ['upgrade-cluster-nodes'],
     queryFn: () => upgradesApi.listClusterNodes(),
+    enabled: !isUpgradingView,
     retry: false,
   })
   const clusterNodesData = clusterNodesQuery.data
@@ -189,7 +226,7 @@ export default function SystemUpgradePage() {
   const detailJobQuery = useQuery({
     queryKey: ['upgrade-job', detailJob?.id],
     queryFn: () => upgradesApi.get(detailJob!.id),
-    enabled: detailJob !== null,
+    enabled: detailJob !== null && !isUpgradingView,
     retry: false,
     refetchInterval: (query) =>
       query.state.data && !isTerminalUpgradeStatus(query.state.data.status) ? 3000 : false,
@@ -199,6 +236,7 @@ export default function SystemUpgradePage() {
   const packagesQuery = useQuery({
     queryKey: ['upgrade-packages'],
     queryFn: () => upgradesApi.listPackages({ page: 1, page_size: 50 }),
+    enabled: !isUpgradingView,
   })
   const packages = useMemo(() => packagesQuery.data?.items ?? [], [packagesQuery.data?.items])
   const packageMap = useMemo(() => new Map(packages.map((p) => [p.id, p])), [packages])
@@ -215,9 +253,50 @@ export default function SystemUpgradePage() {
   const listQuery = useQuery({
     queryKey: ['upgrades', page, pageSize],
     queryFn: () => upgradesApi.list({ page, page_size: pageSize }),
+    enabled: !isUpgradingView,
     refetchInterval: (query) =>
       (query.state.data?.items ?? []).some((j) => !isTerminalUpgradeStatus(j.status)) ? 3000 : false,
   })
+
+  const enterUpgradingView = (ctx: ActiveUpgradeContext) => {
+    saveActiveUpgrade(ctx)
+    setActiveUpgrade(ctx)
+  }
+
+  // 页面加载或刷新时若检测到后端已有正在执行的升级/回滚任务（不含 SCHEDULED 定时等待），自动进入升级中视图
+  useEffect(() => {
+    if (activeUpgrade !== null) return
+    const runningJob = (listQuery.data?.items ?? []).find((j) => isActiveUpgradingStatus(j.status))
+    if (!runningJob) return
+    const pkg = runningJob.package_id ? packageMap.get(runningJob.package_id) : undefined
+    const meta = parseUpgradeManifestMeta(pkg?.manifest)
+    enterUpgradingView({
+      jobId: runningJob.id,
+      initialStatus: runningJob.status,
+      versionFrom: pkg?.version_from,
+      versionTo: pkg?.version_to,
+      components: meta.components,
+      hasLayerDelta: meta.hasLayerDelta,
+      clusterMode: normalizeClusterMode(runningJob.cluster_mode),
+      startedAtMs: runningJob.started_at ? Date.parse(runningJob.started_at) || Date.now() : Date.now(),
+    })
+  }, [activeUpgrade, listQuery.data?.items, packageMap])
+
+  const handleUpgradeFinished = (succeeded: boolean) => {
+    clearActiveUpgrade()
+    setActiveUpgrade(null)
+    setUploadResult(null)
+    invalidatePackages()
+    invalidate()
+    void queryClient.invalidateQueries({ queryKey: ['product-edition'] })
+    if (succeeded) {
+      if (onReloadAfterUpgrade) {
+        onReloadAfterUpgrade()
+      } else {
+        defaultReloadBrowserPage()
+      }
+    }
+  }
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['upgrades'] })
@@ -266,16 +345,31 @@ export default function SystemUpgradePage() {
     mutationFn: (vars: { file: File; scheduledAt?: string; clusterMode?: UpgradeClusterMode }) =>
       upgradesApi.uploadPackage(vars.file, vars.scheduledAt, setUploadProgress, vars.clusterMode),
     onSuccess: (resp) => {
-      // 上传响应即最终处置：execution 非空表示验证通过且已创建升级任务
-      // （立即更新为执行态，定时更新为 SCHEDULED）；为 null 时 warning 说明原因
-      setUploadResult(resp)
+      // 上传响应即最终处置：立即更新创建了进行态任务时切入独立「系统正在升级」页面；
+      // 定时更新（SCHEDULED）或未自动执行（execution=null）仍停留在当前页展示提示。
       setUploadOpen(false)
       resetUploadForm()
-      invalidatePackages()
-      invalidate()
       if (resp.package.status !== 'REJECTED') {
         selectPackage(resp.package.id)
       }
+      if (resp.execution && isActiveUpgradingStatus(resp.execution.status)) {
+        const meta = parseUpgradeManifestMeta(resp.package.manifest)
+        setUploadResult(null)
+        enterUpgradingView({
+          jobId: resp.execution.id,
+          initialStatus: resp.execution.status,
+          versionFrom: resp.package.version_from,
+          versionTo: resp.package.version_to,
+          components: meta.components,
+          hasLayerDelta: meta.hasLayerDelta,
+          clusterMode: normalizeClusterMode(resp.execution.cluster_mode),
+          startedAtMs: Date.now(),
+        })
+        return
+      }
+      setUploadResult(resp)
+      invalidatePackages()
+      invalidate()
     },
     onError: (e) => {
       setUploadProgress(null)
@@ -324,7 +418,22 @@ export default function SystemUpgradePage() {
   const executeMutation = useMutation({
     mutationFn: (vars: { packageId: string; clusterMode?: UpgradeClusterMode }) =>
       upgradesApi.execute(vars.packageId, vars.clusterMode),
-    onSuccess: () => {
+    onSuccess: (job, vars) => {
+      if (job && isActiveUpgradingStatus(job.status)) {
+        const pkg = packageMap.get(vars.packageId)
+        const meta = parseUpgradeManifestMeta(pkg?.manifest)
+        enterUpgradingView({
+          jobId: job.id,
+          initialStatus: job.status,
+          versionFrom: pkg?.version_from,
+          versionTo: pkg?.version_to,
+          components: meta.components,
+          hasLayerDelta: meta.hasLayerDelta,
+          clusterMode: normalizeClusterMode(job.cluster_mode ?? vars.clusterMode),
+          startedAtMs: Date.now(),
+        })
+        return
+      }
       message.success('升级任务已启动')
       invalidate()
     },
@@ -346,7 +455,19 @@ export default function SystemUpgradePage() {
 
   const rollbackMutation = useMutation({
     mutationFn: (id: string) => upgradesApi.rollback(id),
-    onSuccess: () => {
+    onSuccess: (job) => {
+      if (job && isActiveUpgradingStatus(job.status)) {
+        const pkg = job.package_id ? packageMap.get(job.package_id) : undefined
+        enterUpgradingView({
+          jobId: job.id,
+          initialStatus: job.status,
+          versionFrom: pkg?.version_from,
+          versionTo: pkg?.version_to,
+          clusterMode: normalizeClusterMode(job.cluster_mode),
+          startedAtMs: Date.now(),
+        })
+        return
+      }
       message.success('回滚任务已启动')
       invalidate()
     },
@@ -607,6 +728,17 @@ export default function SystemUpgradePage() {
       ),
     },
   ]
+
+  if (activeUpgrade) {
+    return (
+      <UpgradeProgressScreen
+        context={activeUpgrade}
+        pollIntervalMs={upgradePollIntervalMs}
+        successRedirectDelayMs={upgradeSuccessRedirectDelayMs}
+        onFinish={handleUpgradeFinished}
+      />
+    )
+  }
 
   return (
     <Space direction="vertical" size={16} style={{ display: 'flex' }}>

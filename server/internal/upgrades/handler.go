@@ -385,6 +385,15 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	if len(list) > 0 {
 		ids := make([]uuid.UUID, len(list))
 		for i := range list {
+			if h.service != nil && (list[i].Status == StatusApplying || list[i].Status == StatusMigrating || list[i].Status == StatusVerifying) {
+				if rerr := h.service.ReconcileJobResult(r.Context(), list[i].ID); rerr == nil {
+					if updated, gerr := reader.GetJob(r.Context(), list[i].ID); gerr == nil {
+						list[i] = *updated
+					}
+				} else {
+					slog.Warn("reconcile upgrade job result on list failed", "job_id", list[i].ID, "error", rerr)
+				}
+			}
 			if list[i].ClusterMode == "" {
 				list[i].ClusterMode = ClusterModeLocal
 			}
@@ -461,6 +470,13 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "升级任务不存在")
 		return
 	}
+	if h.service != nil && !TerminalStatus(job.Status) && job.Status != StatusRollingBack && job.Status != StatusScheduled {
+		if rerr := h.service.ReconcileJobResult(r.Context(), job.ID); rerr != nil {
+			slog.Warn("reconcile upgrade job result on get failed", "job_id", job.ID, "error", rerr)
+		} else if updated, gerr := reader.GetJob(r.Context(), id); gerr == nil {
+			job = updated
+		}
+	}
 	if job.ClusterMode == "" {
 		job.ClusterMode = ClusterModeLocal
 	}
@@ -473,7 +489,11 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.Warn("list upgrade node executions for job failed", "job_id", job.ID, "error", nerr)
 	}
-	response.JSON(w, r, http.StatusOK, map[string]interface{}{"job": job})
+	resp := map[string]interface{}{"job": job}
+	if h.service != nil {
+		resp["server_status"] = h.service.EvaluateJobReadiness(r.Context(), job)
+	}
+	response.JSON(w, r, http.StatusOK, resp)
 }
 
 type retryNodeRequest struct {
