@@ -4,6 +4,35 @@
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-11-26
+
+### 新增
+
+- **MCP 工具固定、OAuth 2.1 令牌约束、间接提示注入防护与 A2A 智能体安全（Phase 9C-1）**：
+  - **数据库迁移与备份拓扑**：新增迁移 `000247_mcp_pinning_and_a2a_security`，扩展 MCP 工具审核/固定基线与 A2A 智能体卡片/委托链/熔断策略表，同步纳入 `backups/tables.go` 恢复拓扑。
+  - **网关实时防护**：`gateway/dynamic_security/detectors/mcpguard/{tool_pinning,oauth21,indirect_prompt}.go`、`detectors/a2aguard/{card,delegation,killswitch,policy}.go`、`pipeline/response.go` 与 `jiuzhang_guard/{apimcpguard,apimcpsse,apia2a}.go` 实现 MCP 工具定义漂移固定（Rug-Pull 防护）、OAuth 2.1 Resource/Audience 校验、响应侧间接提示注入检测，以及 A2A Agent Card 校验、委托跳数限制与全局紧急熔断（Kill Switch）。
+  - **管理后端与前端**：扩展 `server/internal/apimcp`，新增 `server/internal/apia2a`、`guardconfig/a2a.go`、能力门禁与 OpenAPI 片段 `28-a2a-security.yaml`；前端新增 `ApiA2aPage`、应用详情「A2A 安全」页签 `A2aPolicyTab` 并增强 `BindingsTab` / `CatalogDetailDrawer`。
+- **离线语义安全检测策略与独立推理边车（Phase 9C-2）**：
+  - **数据库与部署模板**：新增迁移 `000248_semantic_guard_policy` 与独立推理边车 `deployment/semantic-guard/`（支持模型清单 SHA-256 防篡改校验、ONNX 推理或诚实上报启发式回退、`/healthz` 状态探针及 systemd 单元模板）。
+  - **网关、后端与前端**：新增 `gateway/dynamic_security/semantic/{breaker,client,evaluate,policy}.go` 与 `jiuzhang_guard/apisemantic.go`（熔断器保护、多通道分类打分与安全事件采集）、`server/internal/semanticguard`、`guardconfig/semantic_guard.go`、OpenAPI 片段 `29-semantic-guard.yaml` 及应用详情「语义防护」页签 `SemanticGuardTab`。
+- **Wasm 热插拔自定义检测插件沙箱（wazero，Phase 9D-1）**：
+  - **合规与数据库**：引入 Apache-2.0 许可的 `github.com/tetratelabs/wazero v1.12.0`（纯 Go 零 CGO 解释器模式、无 WASI），归档 `licenses/wazero/{LICENSE,NOTICE}` 并更新 `THIRD_PARTY_NOTICES.md`、`docs/DEPENDENCIES.md` 与 `docs/DEPENDENCY_LICENSES.md`；新增迁移 `000249_wasm_plugins`。
+  - **网关、后端与前端**：新增 `gateway/modules/jiuzhang_guard/wasmplugin/{abi,policy,runtime}.go` 与 `apiwasm.go`、`server/internal/wasmplugins`（Wasm 字节码校验、沙箱限额与多应用绑定）、`guardconfig/wasm_plugins.go`、OpenAPI 片段 `30-wasm-plugins.yaml` 及独立管理页 `WasmPluginsPage`。
+- **eBPF/XDP 内核级快速丢包加速管理面与守护进程（Phase 9D-2）**：
+  - **守护进程与运维文档**：复用 MIT 许可的 `github.com/cilium/ebpf v0.22.0`，新增 `gateway/cmd/xdpguard`、`gateway/xdpguard/{bpf,backend,filter,server}`、`deployment/systemd/jiuzhang-xdpguard.service` 与 [docs/XDP_ACCELERATION_OPERATIONS.md](docs/XDP_ACCELERATION_OPERATIONS.md)。
+  - **数据库、后端与前端**：新增迁移 `000250_xdp_acceleration_settings`、`server/internal/xdpaccel`（黑名单/临时封禁状态同步、网卡过滤与健康监控）、OpenAPI 片段 `31-xdp-acceleration.yaml` 及独立管理页 `XdpAccelerationPage`。
+- **证书上传归一化弹窗与安全事件一键精细化创建例外**：
+  - `server/internal/certificates/normalize.go` 规范化多格式/带 BOM/空白符 PEM 证书链输入，前端重构独立 `CertificateUploadModal` 优化国际证书、国密 SM2 双证书与 Auto-SSL 管理体验；
+  - `server/internal/exceptions/fromevent.go` 与 `securityevents/handler.go` 支持从安全事件按需自定义例外名称、原因、来源 IP 限制、临时/永久有效期及命中规则子集（自动排除 `949110` 等汇总评分规则），前端新增 `ExceptionFromEventModal` 并完善 `EventDetailDrawer` 与 `ExceptionsPage`。
+
+### 验证与边界
+
+- **网关**：`cd gateway && go build ./...`、`xdpguard`/`cmd/xdpguard`、`dynamic_security`（`capability`、`mcpguard`、`a2aguard`、`jwtverify`、`pipeline`、`semantic`）与 `modules/jiuzhang_guard`（`events`、`wasmplugin` 及 MCP/A2A/Semantic/Wasm/Capability 用例）全部通过。
+- **后端与 OpenAPI**：`cd server && go build ./...`、`go test -c ./tests` 及全部 14 个变更/新增包（`accesscontrolevents`、`apia2a`、`apimcp`、`backups`、`certificates`、`exceptions`、`gatewayconfig`、`guardconfig`、`securityevents`、`semanticguard`、`settings`、`upgrades`、`wasmplugins`、`xdpaccel`）全部通过；`python3 tools/check-api-reconcile.py` 确认 1.17.0 新增路由 0 缺失（代码 877 条 / OpenAPI 859 条，仅余 18 条历史既有缺口）。
+- **语义防护边车**：`python3 -m unittest discover -s deployment/semantic-guard -p 'test_*.py' -v` 7/7 用例通过。
+- **前端**：`cd web && npm run typecheck && npm run lint && npm run build` 0 报错通过（改动与新增文件 0 lint 警告）；16 个变更/新增 Vitest 测试文件（131/131 用例）全部通过。
+- **未执行项（`NOT_RUN`）**：打标发布时的目标 Linux/amd64 实机 PostgreSQL 迁移（`000242`–`000250`）、XDP 内核驱动真机加载压测、语义防护 ONNX 模型实机推理及 Playwright E2E 均为 `NOT_RUN`。
+
 ## [1.16.0] - 2026-11-26
 
 ### 新增
