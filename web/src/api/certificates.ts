@@ -1,4 +1,4 @@
-import { request } from './client'
+import { request, upload } from './client'
 import type {
   ApplicationCertificatesResult,
   CertificateDetail,
@@ -26,6 +26,16 @@ export interface UploadCertificateBody {
   chain_pem: string
 }
 
+export interface UploadCertificateFilesBody {
+  name: string
+  protocol_type: CertificateProtocolType
+  cert_file: File
+  key_file: File
+  enc_cert_file?: File
+  enc_key_file?: File
+  chain_file?: File | null
+}
+
 export interface CertificateApplications {
   application_ids: string[]
   count: number
@@ -37,6 +47,23 @@ export const certificatesApi = {
   get: (id: string) => request<CertificateDetail>(`/certificates/${id}`),
   upload: (body: UploadCertificateBody) =>
     request<CertificateItem>('/certificates', { method: 'POST', body }),
+  uploadFiles: (body: UploadCertificateFilesBody) => {
+    const form = new FormData()
+    form.append('name', body.name)
+    form.append('protocol_type', body.protocol_type)
+    form.append('cert_file', body.cert_file)
+    form.append('key_file', body.key_file)
+    if (body.enc_cert_file) {
+      form.append('enc_cert_file', body.enc_cert_file)
+    }
+    if (body.enc_key_file) {
+      form.append('enc_key_file', body.enc_key_file)
+    }
+    if (body.chain_file) {
+      form.append('chain_file', body.chain_file)
+    }
+    return upload<CertificateItem>('/certificates', form)
+  },
   remove: (id: string) => request<{ message: string }>(`/certificates/${id}`, { method: 'DELETE' }),
   applications: (id: string) =>
     request<CertificateApplications>(`/certificates/${id}/applications`),

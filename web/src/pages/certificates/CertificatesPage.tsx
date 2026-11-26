@@ -9,10 +9,7 @@ import {
   Descriptions,
   Divider,
   Drawer,
-  Form,
   Input,
-  Modal,
-  Radio,
   Select,
   Space,
   Tabs,
@@ -26,11 +23,11 @@ import { ApiError } from '../../api/client'
 import { acmeApi } from '../../api/acme'
 import { applicationsApi } from '../../api/applications'
 import { certificatesApi } from '../../api/certificates'
-import type { UploadCertificateBody } from '../../api/certificates'
 import SmartTable from '../../components/SmartTable'
 import AcmeOrdersTable from './AcmeOrdersTable'
 import AcmeSettingsModal from './AcmeSettingsModal'
 import CertificateBindingModal from './CertificateBindingModal'
+import CertificateUploadModal from './CertificateUploadModal'
 import StatusTag from '../../components/StatusTag'
 import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
@@ -51,16 +48,6 @@ interface Filters {
   status?: string
   protocol_type?: CertificateProtocolType
   include_replaced?: boolean
-}
-
-const PRIVATE_KEY_BEGIN_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/
-
-/** PEM 文本基本格式前端校验（仅做头尾标记检查，真实解析由后端完成） */
-function validatePem(value: string, beginPattern: RegExp, label: string): string | null {
-  const v = value.trim()
-  if (!v) return `请粘贴${label}`
-  if (!beginPattern.test(v) || !v.includes('-----END')) return `${label}格式不正确，应为 PEM 文本`
-  return null
 }
 
 /** 证书详情里的绑定应用列表（按 ID 反查应用名称） */
@@ -113,9 +100,6 @@ export default function CertificatesPage() {
   const [activeTab, setActiveTab] = useState<'list' | 'orders'>('list')
   const [detailId, setDetailId] = useState<string | null>(null)
   const [binding, setBinding] = useState<{ operation: 'bind' | 'unbind'; certificate: CertificateItem } | null>(null)
-  const [uploadForm] = Form.useForm<UploadCertificateBody>()
-  const uploadProtocol = Form.useWatch('protocol_type', uploadForm) ?? 'INTERNATIONAL'
-  const isUploadGM = isGMProtocol(uploadProtocol)
 
   const listQuery = useQuery({
     queryKey: ['certificates', filters, page, pageSize],
@@ -138,17 +122,6 @@ export default function CertificatesPage() {
     }
     message.error(e instanceof ApiError ? e.message : '操作失败')
   }
-
-  const uploadMutation = useMutation({
-    mutationFn: (body: UploadCertificateBody) => certificatesApi.upload(body),
-    onSuccess: (data) => {
-      setUploadOpen(false)
-      uploadForm.resetFields()
-      message.success(`证书「${data.name}」上传成功`)
-      void invalidate()
-    },
-    onError,
-  })
 
   const removeMutation = useMutation({
     mutationFn: (id: string) => certificatesApi.remove(id),
@@ -376,11 +349,7 @@ export default function CertificatesPage() {
             <Button
               type="primary"
               icon={<PlusOutlined />}
-              onClick={() => {
-                uploadForm.resetFields()
-                uploadForm.setFieldsValue({ protocol_type: 'INTERNATIONAL' })
-                setUploadOpen(true)
-              }}
+              onClick={() => setUploadOpen(true)}
             >
               上传证书
             </Button>
@@ -491,183 +460,17 @@ export default function CertificatesPage() {
         ]}
       />
 
-      <Modal
-        title="上传证书"
+      <CertificateUploadModal
         open={uploadOpen}
-        onCancel={() => setUploadOpen(false)}
-        onOk={() => uploadForm.submit()}
-        confirmLoading={uploadMutation.isPending}
-        width={680}
-        destroyOnHidden
-      >
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 16 }}
-          message={
-            isUploadGM
-              ? '国密 TLCP 1.1 需同时上传 SM2 签名证书/私钥与加密证书/私钥；所有私钥仅用于服务端校验并加密存储，不会在任何 API 中返回'
-              : '粘贴 PEM 文本上传，私钥仅用于服务端校验并加密存储，不会在任何 API 中返回'
-          }
-        />
-        <Form
-          form={uploadForm}
-          layout="vertical"
-          initialValues={{ protocol_type: 'INTERNATIONAL' }}
-          onFinish={(values) => {
-            const protocolType = values.protocol_type ?? 'INTERNATIONAL'
-            const payload: UploadCertificateBody = {
-              name: values.name.trim(),
-              protocol_type: protocolType,
-              cert_pem: values.cert_pem.trim(),
-              key_pem: values.key_pem.trim(),
-              chain_pem: (values.chain_pem ?? '').trim(),
-            }
-            if (isGMProtocol(protocolType)) {
-              payload.enc_cert_pem = (values.enc_cert_pem ?? '').trim()
-              payload.enc_key_pem = (values.enc_key_pem ?? '').trim()
-            }
-            uploadMutation.mutate(payload)
-          }}
-        >
-          <Form.Item name="protocol_type" label="协议类型" rules={[{ required: true }]}>
-            <Radio.Group optionType="button" buttonStyle="solid">
-              <Radio.Button value="INTERNATIONAL">
-                通用协议证书 (RSA/ECDSA/Ed25519)
-              </Radio.Button>
-              <Radio.Button value="SM_TLCP">
-                国密协议双证书 (SM2 签名+加密)
-              </Radio.Button>
-            </Radio.Group>
-          </Form.Item>
-          <Form.Item
-            name="name"
-            label="证书名称"
-            rules={[
-              { required: true, message: '请输入证书名称' },
-              { max: 128, message: '不超过 128 个字符' },
-            ]}
-          >
-            <Input
-              placeholder={
-                isUploadGM ? '如 example.com 2026 国密双证书' : '如 example.com 2026 证书'
-              }
-              autoComplete="off"
-            />
-          </Form.Item>
-          <Form.Item
-            name="cert_pem"
-            label={isUploadGM ? '签名证书 PEM' : '证书 PEM'}
-            rules={[
-              { required: true, message: isUploadGM ? '请粘贴签名证书内容' : '请粘贴证书内容' },
-              {
-                validator: (_, v: string) => {
-                  if (!v) return Promise.resolve()
-                  const err = validatePem(
-                    v,
-                    /-----BEGIN CERTIFICATE-----/,
-                    isUploadGM ? '签名证书 PEM' : '证书 PEM',
-                  )
-                  return err ? Promise.reject(new Error(err)) : Promise.resolve()
-                },
-              },
-            ]}
-          >
-            <Input.TextArea
-              rows={4}
-              style={{ fontFamily: 'monospace', fontSize: 12 }}
-              placeholder="-----BEGIN CERTIFICATE-----&#10;…&#10;-----END CERTIFICATE-----"
-            />
-          </Form.Item>
-          <Form.Item
-            name="key_pem"
-            label={isUploadGM ? '签名私钥 PEM' : '私钥 PEM'}
-            rules={[
-              { required: true, message: isUploadGM ? '请粘贴签名私钥内容' : '请粘贴私钥内容' },
-              {
-                validator: (_, v: string) => {
-                  if (!v) return Promise.resolve()
-                  const err = validatePem(
-                    v,
-                    PRIVATE_KEY_BEGIN_RE,
-                    isUploadGM ? '签名私钥 PEM' : '私钥 PEM',
-                  )
-                  return err ? Promise.reject(new Error(err)) : Promise.resolve()
-                },
-              },
-            ]}
-          >
-            <Input.TextArea
-              rows={4}
-              style={{ fontFamily: 'monospace', fontSize: 12 }}
-              placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"
-            />
-          </Form.Item>
-          {isUploadGM && (
-            <>
-              <Form.Item
-                name="enc_cert_pem"
-                label="加密证书 PEM"
-                rules={[
-                  { required: true, message: '请粘贴加密证书内容' },
-                  {
-                    validator: (_, v: string) => {
-                      if (!v) return Promise.resolve()
-                      const err = validatePem(v, /-----BEGIN CERTIFICATE-----/, '加密证书 PEM')
-                      return err ? Promise.reject(new Error(err)) : Promise.resolve()
-                    },
-                  },
-                ]}
-              >
-                <Input.TextArea
-                  rows={4}
-                  style={{ fontFamily: 'monospace', fontSize: 12 }}
-                  placeholder="-----BEGIN CERTIFICATE-----&#10;（SM2 加密证书）&#10;-----END CERTIFICATE-----"
-                />
-              </Form.Item>
-              <Form.Item
-                name="enc_key_pem"
-                label="加密私钥 PEM"
-                rules={[
-                  { required: true, message: '请粘贴加密私钥内容' },
-                  {
-                    validator: (_, v: string) => {
-                      if (!v) return Promise.resolve()
-                      const err = validatePem(v, PRIVATE_KEY_BEGIN_RE, '加密私钥 PEM')
-                      return err ? Promise.reject(new Error(err)) : Promise.resolve()
-                    },
-                  },
-                ]}
-              >
-                <Input.TextArea
-                  rows={4}
-                  style={{ fontFamily: 'monospace', fontSize: 12 }}
-                  placeholder="-----BEGIN PRIVATE KEY-----&#10;（SM2 加密私钥）&#10;-----END PRIVATE KEY-----"
-                />
-              </Form.Item>
-            </>
-          )}
-          <Form.Item
-            name="chain_pem"
-            label="证书链 PEM（可选）"
-            rules={[
-              {
-                validator: (_, v: string) => {
-                  if (!v || !v.trim()) return Promise.resolve()
-                  const err = validatePem(v, /-----BEGIN CERTIFICATE-----/, '证书链 PEM')
-                  return err ? Promise.reject(new Error(err)) : Promise.resolve()
-                },
-              },
-            ]}
-          >
-            <Input.TextArea
-              rows={3}
-              style={{ fontFamily: 'monospace', fontSize: 12 }}
-              placeholder="中间证书/根证书（可选）"
-            />
-          </Form.Item>
-        </Form>
-      </Modal>
+        onClose={() => setUploadOpen(false)}
+        onSuccess={() => {
+          setUploadOpen(false)
+          void invalidate()
+        }}
+        onConflict={() => {
+          void invalidate()
+        }}
+      />
 
       <Drawer
         title={detail ? `证书详情：${detail.name}` : '证书详情'}

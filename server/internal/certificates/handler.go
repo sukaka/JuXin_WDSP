@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"mime"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/applications"
@@ -14,6 +18,15 @@ import (
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
+const (
+	// maxCertUploadBodyBytes 证书上传请求体上限（兼容国密双证 4×64KB + 证书链 128KB + multipart 封装开销）。
+	maxCertUploadBodyBytes = 512 * 1024
+	// maxCertFileBytes 单张证书/私钥文件上限（64KB，与 Store.Upload 保持一致）。
+	maxCertFileBytes = 64 * 1024
+	// maxChainFileBytes 证书链文件上限（128KB，与 Store.Upload 保持一致）。
+	maxChainFileBytes = 128 * 1024
+)
+
 // DomainLister 提供应用域名查询（由 applications.Store 实现，绑定前域名匹配校验用）。
 type DomainLister interface {
 	ListDomains(ctx context.Context, appID uuid.UUID) ([]applications.Domain, error)
@@ -21,9 +34,10 @@ type DomainLister interface {
 
 // Handler 是证书管理处理器。
 type Handler struct {
-	store  *Store
-	audits *audits.Service
-	apps   DomainLister
+	store    *Store
+	audits   *audits.Service
+	apps     DomainLister
+	uploadFn func(ctx context.Context, in UploadInput) (*Certificate, error)
 }
 
 // NewHandler 创建证书管理处理器。
@@ -90,15 +104,23 @@ type uploadCertRequest struct {
 	ChainPEM     string `json:"chain_pem"`
 }
 
-// Upload 上传证书（支持国际通用单证与国密 SM_TLCP 签名+加密双证）。
+// Upload 上传证书（支持 multipart/form-data 文件上传与 application/json PEM 提交，
+// 兼容国际通用单证与国密 SM_TLCP 签名+加密双证）。
 func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
-	var req uploadCertRequest
-	if err := response.DecodeJSON(w, r, &req, 256*1024); err != nil {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误或文件过大")
+	req, ok := parseUploadRequest(w, r)
+	if !ok {
 		return
 	}
-	c, err := h.store.Upload(r.Context(), UploadInput{
+	var createdBy uuid.UUID
+	if p != nil {
+		createdBy = p.UserID
+	}
+	upload := h.uploadFn
+	if upload == nil {
+		upload = h.store.Upload
+	}
+	c, err := upload(r.Context(), UploadInput{
 		Name:         req.Name,
 		ProtocolType: req.ProtocolType,
 		CertPEM:      req.CertPEM,
@@ -106,7 +128,7 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 		EncCertPEM:   req.EncCertPEM,
 		EncKeyPEM:    req.EncKeyPEM,
 		ChainPEM:     req.ChainPEM,
-		CreatedBy:    p.UserID,
+		CreatedBy:    createdBy,
 	})
 	if err != nil {
 		if errors.Is(err, ErrNameExists) {
@@ -116,9 +138,171 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
-	h.recordAudit(r, p, "certificates", "upload", "certificate", c.ID.String(), c.Name,
-		"", certSummary(c), audits.ResultSuccess, audits.RiskMedium)
+	if p != nil {
+		h.recordAudit(r, p, "certificates", "upload", "certificate", c.ID.String(), c.Name,
+			"", certSummary(c), audits.ResultSuccess, audits.RiskMedium)
+	}
 	response.JSON(w, r, http.StatusOK, certItem(c, 0))
+}
+
+func isMultipartFormData(contentType string) bool {
+	if contentType == "" {
+		return false
+	}
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	return err == nil && strings.EqualFold(mediaType, "multipart/form-data")
+}
+
+// parseUploadRequest 解析证书上传请求：multipart/form-data 按文件读取并规范化为 PEM，
+// 其余 Content-Type 按向后兼容的 JSON 请求体解析。
+func parseUploadRequest(w http.ResponseWriter, r *http.Request) (*uploadCertRequest, bool) {
+	if isMultipartFormData(r.Header.Get("Content-Type")) {
+		return parseMultipartUploadRequest(w, r)
+	}
+	var req uploadCertRequest
+	if err := response.DecodeJSON(w, r, &req, maxCertUploadBodyBytes); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误或文件过大")
+		return nil, false
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	req.CertPEM = stripUTF8BOMString(req.CertPEM)
+	req.KeyPEM = stripUTF8BOMString(req.KeyPEM)
+	req.EncCertPEM = stripUTF8BOMString(req.EncCertPEM)
+	req.EncKeyPEM = stripUTF8BOMString(req.EncKeyPEM)
+	req.ChainPEM = stripUTF8BOMString(req.ChainPEM)
+	return &req, true
+}
+
+func parseMultipartUploadRequest(w http.ResponseWriter, r *http.Request) (*uploadCertRequest, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxCertUploadBodyBytes)
+	if err := r.ParseMultipartForm(maxCertUploadBodyBytes); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误或上传文件总大小超限")
+		return nil, false
+	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+
+	protoType, err := NormalizeProtocolType(r.FormValue("protocol_type"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "证书协议类型参数无效，仅支持 INTERNATIONAL 或 SM_TLCP")
+		return nil, false
+	}
+	isGM := protoType == ProtocolSMTLCP
+
+	certLabel := "证书文件"
+	keyLabel := "私钥文件"
+	if isGM {
+		certLabel = "签名证书文件"
+		keyLabel = "签名私钥文件"
+	}
+
+	certBytes, err := readRequiredMultipartFile(r, "cert_file", certLabel, maxCertFileBytes)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return nil, false
+	}
+	certPEM, err := NormalizeCertFileToPEM(certBytes, protoType)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, fmt.Sprintf("%s：%s", certLabel, err.Error()))
+		return nil, false
+	}
+
+	keyBytes, err := readRequiredMultipartFile(r, "key_file", keyLabel, maxCertFileBytes)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return nil, false
+	}
+	keyPEM, err := NormalizeKeyFileToPEM(keyBytes, protoType)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, fmt.Sprintf("%s：%s", keyLabel, err.Error()))
+		return nil, false
+	}
+
+	req := &uploadCertRequest{
+		Name:         strings.TrimSpace(r.FormValue("name")),
+		ProtocolType: protoType,
+		CertPEM:      certPEM,
+		KeyPEM:       keyPEM,
+	}
+
+	if isGM {
+		encCertBytes, err := readRequiredMultipartFile(r, "enc_cert_file", "加密证书文件", maxCertFileBytes)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+			return nil, false
+		}
+		encCertPEM, err := NormalizeCertFileToPEM(encCertBytes, protoType)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, fmt.Sprintf("加密证书文件：%s", err.Error()))
+			return nil, false
+		}
+
+		encKeyBytes, err := readRequiredMultipartFile(r, "enc_key_file", "加密私钥文件", maxCertFileBytes)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+			return nil, false
+		}
+		encKeyPEM, err := NormalizeKeyFileToPEM(encKeyBytes, protoType)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, fmt.Sprintf("加密私钥文件：%s", err.Error()))
+			return nil, false
+		}
+		req.EncCertPEM = encCertPEM
+		req.EncKeyPEM = encKeyPEM
+	}
+
+	chainBytes, hasChain, err := readOptionalMultipartFile(r, "chain_file", "证书链文件", maxChainFileBytes)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return nil, false
+	}
+	if hasChain {
+		chainPEM, err := NormalizeChainFileToPEM(chainBytes, protoType)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, fmt.Sprintf("证书链文件：%s", err.Error()))
+			return nil, false
+		}
+		req.ChainPEM = chainPEM
+	}
+
+	return req, true
+}
+
+func readRequiredMultipartFile(r *http.Request, fieldName, label string, maxBytes int) ([]byte, error) {
+	data, present, err := readOptionalMultipartFile(r, fieldName, label, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		return nil, fmt.Errorf("请上传%s", label)
+	}
+	return data, nil
+}
+
+func readOptionalMultipartFile(r *http.Request, fieldName, label string, maxBytes int) ([]byte, bool, error) {
+	f, _, err := r.FormFile(fieldName)
+	if err != nil {
+		if errors.Is(err, http.ErrMissingFile) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("读取%s失败", label)
+	}
+	defer func() { _ = f.Close() }()
+
+	data, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)+1))
+	if err != nil {
+		return nil, false, fmt.Errorf("读取%s失败", label)
+	}
+	if len(data) == 0 {
+		return nil, false, fmt.Errorf("%s不能为空", label)
+	}
+	if len(data) > maxBytes {
+		return nil, false, fmt.Errorf("%s超过 %dKB 限制", label, maxBytes/1024)
+	}
+	return data, true, nil
 }
 
 // Delete 删除证书（未使用）。
@@ -332,6 +516,9 @@ func (h *Handler) Unbind(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, action, objType, objID, objName, before, after, result, risk string) {
+	if h.audits == nil || p == nil {
+		return
+	}
 	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:        &p.UserID,
 		Username:      p.Username,

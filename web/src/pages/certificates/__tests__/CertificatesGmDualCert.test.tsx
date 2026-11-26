@@ -17,6 +17,7 @@ vi.mock('../../../api/certificates', () => ({
     list: vi.fn(),
     get: vi.fn(),
     upload: vi.fn(),
+    uploadFiles: vi.fn(),
     remove: vi.fn(),
     applications: vi.fn(),
     bind: vi.fn(),
@@ -95,7 +96,11 @@ function renderPage() {
   )
 }
 
-describe('CertificatesPage 国密双证书管理', () => {
+function makeFile(name: string, content: string): File {
+  return new File([content], name, { type: 'application/x-pem-file' })
+}
+
+describe('CertificatesPage 证书文件上传与国密双证书管理', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useAuthStore.setState({
@@ -121,7 +126,7 @@ describe('CertificatesPage 国密双证书管理', () => {
       application_ids: [],
       count: 0,
     })
-    vi.mocked(certificatesApi.upload).mockResolvedValue(gmCert)
+    vi.mocked(certificatesApi.uploadFiles).mockResolvedValue(gmCert)
     vi.mocked(applicationsApi.list).mockResolvedValue({
       items: [],
       total: 0,
@@ -157,7 +162,82 @@ describe('CertificatesPage 国密双证书管理', () => {
     expect(within(drawer).getByText('sign-sha256-0001')).toBeInTheDocument()
   })
 
-  it('上传国密双证书：校验 PEM 并以 SM_TLCP + enc_cert_pem/enc_key_pem 提交', async () => {
+  it('上传通用协议证书：以文件上传而非粘贴文本提交，选择证书文件后自动填充证书名称并支持校验与移除', async () => {
+    vi.mocked(certificatesApi.uploadFiles).mockResolvedValue(intlCert)
+    renderPage()
+    expect(await screen.findByText('国际主证书')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /上传证书/ }))
+    const dialog = await screen.findByRole('dialog')
+
+    // 弹窗中不再存在粘贴 PEM 的 textarea
+    expect(dialog.querySelectorAll('textarea')).toHaveLength(0)
+
+    // 未选文件直接提交应触发必填校验
+    fireEvent.click(within(dialog).getByRole('button', { name: /^(OK|确\s*定)$/ }))
+    expect(await within(dialog).findByText('请上传证书文件')).toBeInTheDocument()
+    expect(within(dialog).getByText('请上传私钥文件')).toBeInTheDocument()
+    expect(certificatesApi.uploadFiles).not.toHaveBeenCalled()
+
+    // 非法格式（.pfx）与空文件应被拒绝
+    const pfxFile = makeFile('bundle.pfx', 'binary')
+    fireEvent.change(within(dialog).getByLabelText('证书文件'), {
+      target: { files: [pfxFile] },
+    })
+    expect(await screen.findByText(/暂不支持 PFX\/P12/)).toBeInTheDocument()
+
+    const emptyKey = makeFile('empty.key', '')
+    fireEvent.change(within(dialog).getByLabelText('私钥文件'), {
+      target: { files: [emptyKey] },
+    })
+    expect(await screen.findByText('文件内容不能为空')).toBeInTheDocument()
+
+    // 上传有效证书文件：自动填充证书名称（去除扩展名）
+    const certFile = makeFile('portal.example.com.pem', '-----BEGIN CERTIFICATE-----\nCERT\n-----END CERTIFICATE-----')
+    const keyFile = makeFile('portal.example.com.key', '-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----')
+    const chainFile = makeFile('ca-chain.crt', '-----BEGIN CERTIFICATE-----\nCHAIN\n-----END CERTIFICATE-----')
+
+    fireEvent.change(within(dialog).getByLabelText('证书文件'), {
+      target: { files: [certFile] },
+    })
+    await waitFor(() => {
+      expect(within(dialog).getByLabelText('证书名称')).toHaveValue('portal.example.com')
+    })
+    expect(within(dialog).getByText('portal.example.com.pem')).toBeInTheDocument()
+
+    // 测试移除后再重新选择私钥文件
+    fireEvent.change(within(dialog).getByLabelText('私钥文件'), {
+      target: { files: [keyFile] },
+    })
+    expect(await within(dialog).findByText('portal.example.com.key')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: '移除 portal.example.com.key' }))
+    await waitFor(() => {
+      expect(within(dialog).queryByText('portal.example.com.key')).not.toBeInTheDocument()
+    })
+    fireEvent.change(within(dialog).getByLabelText('私钥文件'), {
+      target: { files: [keyFile] },
+    })
+    expect(await within(dialog).findByText('portal.example.com.key')).toBeInTheDocument()
+
+    fireEvent.change(within(dialog).getByLabelText('证书链文件（可选）'), {
+      target: { files: [chainFile] },
+    })
+    expect(await within(dialog).findByText('ca-chain.crt')).toBeInTheDocument()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /^(OK|确\s*定)$/ }))
+
+    await waitFor(() => {
+      expect(vi.mocked(certificatesApi.uploadFiles)).toHaveBeenCalledWith({
+        name: 'portal.example.com',
+        protocol_type: 'INTERNATIONAL',
+        cert_file: expect.objectContaining({ name: 'portal.example.com.pem' }),
+        key_file: expect.objectContaining({ name: 'portal.example.com.key' }),
+        chain_file: expect.objectContaining({ name: 'ca-chain.crt' }),
+      })
+    })
+  })
+
+  it('上传国密双证书：通过文件上传提交 SM_TLCP 签名与加密双证四文件', async () => {
     renderPage()
     expect(await screen.findByText('国际主证书')).toBeInTheDocument()
 
@@ -166,49 +246,47 @@ describe('CertificatesPage 国密双证书管理', () => {
 
     // 切换到国密双证书模式
     fireEvent.click(within(dialog).getByText('国密协议双证书 (SM2 签名+加密)'))
-    expect(await within(dialog).findByLabelText('签名证书 PEM')).toBeInTheDocument()
-    expect(within(dialog).getByLabelText('签名私钥 PEM')).toBeInTheDocument()
-    expect(within(dialog).getByLabelText('加密证书 PEM')).toBeInTheDocument()
-    expect(within(dialog).getByLabelText('加密私钥 PEM')).toBeInTheDocument()
+    expect(await within(dialog).findByLabelText('签名证书文件')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('签名私钥文件')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('加密证书文件')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('加密私钥文件')).toBeInTheDocument()
 
-    // 填写非法 PEM 校验应拦住提交
     fireEvent.change(within(dialog).getByLabelText('证书名称'), {
       target: { value: '国密双证测试' },
     })
-    fireEvent.change(within(dialog).getByLabelText('签名证书 PEM'), {
-      target: { value: 'NOT-A-PEM' },
-    })
-    fireEvent.change(within(dialog).getByLabelText('签名私钥 PEM'), {
-      target: { value: '-----BEGIN SM2 PRIVATE KEY-----\nSIGNKEY\n-----END SM2 PRIVATE KEY-----' },
-    })
-    fireEvent.change(within(dialog).getByLabelText('加密证书 PEM'), {
-      target: { value: '-----BEGIN CERTIFICATE-----\nENCCERT\n-----END CERTIFICATE-----' },
-    })
-    fireEvent.change(within(dialog).getByLabelText('加密私钥 PEM'), {
-      target: { value: '-----BEGIN SM2 PRIVATE KEY-----\nENCKEY\n-----END SM2 PRIVATE KEY-----' },
-    })
-    fireEvent.click(within(dialog).getByRole('button', { name: /^(OK|确\s*定)$/ }))
 
-    expect(
-      await within(dialog).findByText('签名证书 PEM格式不正确，应为 PEM 文本'),
-    ).toBeInTheDocument()
-    expect(certificatesApi.upload).not.toHaveBeenCalled()
+    const signCert = makeFile('sm2.sign.crt', '-----BEGIN CERTIFICATE-----\nSIGN\n-----END CERTIFICATE-----')
+    const signKey = makeFile('sm2.sign.key', '-----BEGIN SM2 PRIVATE KEY-----\nSIGNKEY\n-----END SM2 PRIVATE KEY-----')
+    const encCert = makeFile('sm2.enc.crt', '-----BEGIN CERTIFICATE-----\nENC\n-----END CERTIFICATE-----')
+    const encKey = makeFile('sm2.enc.key', '-----BEGIN SM2 PRIVATE KEY-----\nENCKEY\n-----END SM2 PRIVATE KEY-----')
 
-    // 修正签名证书 PEM 后提交成功
-    fireEvent.change(within(dialog).getByLabelText('签名证书 PEM'), {
-      target: { value: '-----BEGIN CERTIFICATE-----\nSIGNCERT\n-----END CERTIFICATE-----' },
+    fireEvent.change(within(dialog).getByLabelText('签名证书文件'), {
+      target: { files: [signCert] },
     })
+    fireEvent.change(within(dialog).getByLabelText('签名私钥文件'), {
+      target: { files: [signKey] },
+    })
+    fireEvent.change(within(dialog).getByLabelText('加密证书文件'), {
+      target: { files: [encCert] },
+    })
+    fireEvent.change(within(dialog).getByLabelText('加密私钥文件'), {
+      target: { files: [encKey] },
+    })
+
+    // 已有手填名称时，选择证书文件不得覆盖原名称
+    expect(within(dialog).getByLabelText('证书名称')).toHaveValue('国密双证测试')
+
     fireEvent.click(within(dialog).getByRole('button', { name: /^(OK|确\s*定)$/ }))
 
     await waitFor(() => {
-      expect(vi.mocked(certificatesApi.upload)).toHaveBeenCalledWith({
+      expect(vi.mocked(certificatesApi.uploadFiles)).toHaveBeenCalledWith({
         name: '国密双证测试',
         protocol_type: 'SM_TLCP',
-        cert_pem: '-----BEGIN CERTIFICATE-----\nSIGNCERT\n-----END CERTIFICATE-----',
-        key_pem: '-----BEGIN SM2 PRIVATE KEY-----\nSIGNKEY\n-----END SM2 PRIVATE KEY-----',
-        enc_cert_pem: '-----BEGIN CERTIFICATE-----\nENCCERT\n-----END CERTIFICATE-----',
-        enc_key_pem: '-----BEGIN SM2 PRIVATE KEY-----\nENCKEY\n-----END SM2 PRIVATE KEY-----',
-        chain_pem: '',
+        cert_file: expect.objectContaining({ name: 'sm2.sign.crt' }),
+        key_file: expect.objectContaining({ name: 'sm2.sign.key' }),
+        enc_cert_file: expect.objectContaining({ name: 'sm2.enc.crt' }),
+        enc_key_file: expect.objectContaining({ name: 'sm2.enc.key' }),
+        chain_file: null,
       })
     })
   })

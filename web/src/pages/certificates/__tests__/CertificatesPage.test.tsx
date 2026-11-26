@@ -17,6 +17,7 @@ vi.mock('../../../api/certificates', () => ({
     list: vi.fn(),
     get: vi.fn(),
     upload: vi.fn(),
+    uploadFiles: vi.fn(),
     remove: vi.fn(),
     applications: vi.fn(),
     bind: vi.fn(),
