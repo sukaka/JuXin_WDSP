@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [1.15.1] - 2026-11-26
+
+### 修复与体验优化
+
+- **独立「系统正在升级」页面与后端自主升级成功检测**：
+  - **后端按需收敛与实时健康就绪判定**：`server/internal/upgrades/executor.go` 新增 `Service.ReconcileJobResult`（查询单条进行态任务时立即检查宿主机执行器回写的结果文件 `results/<job_id>.json` 并驱动状态收敛与版本持久化）与 `Service.EvaluateJobReadiness` / `ServerUpgradeStatus`（仅当任务终态为 `SUCCESS` 且实时 PostgreSQL Ping、Valkey Ping 及迁移版本一致性校验全部通过时返回 `ready: true`）；`GET /api/v1/upgrades/{id}` 响应新增 `server_status` 字段，`GET /api/v1/upgrades` 同步对执行中任务按需收敛。
+  - **前端全屏升级进度接管与重启断连静默重连**：新增 `web/src/pages/system-upgrade/UpgradeProgressScreen.tsx` 与 `upgradeProgressState.ts`，在触发立即更新、立即执行升级、回滚或页面刷新检测到进行态任务时全屏接管界面并暂停常规列表查询，静默吸收容器重建期间的 `NETWORK_ERROR`/`TIMEOUT`/`502`/`503`/`504` 并持续展示阶段进度与重连提示；仅在后端确认 `job.status === 'SUCCESS'` 且 `server_status.ready === true` 后才自动刷新重载新版本前端静态资源（避免旧 chunk 白屏），若后端确认 `FAILED`/`ROLLED_BACK`/`CANCELLED` 则如实展示失败/回滚原因并提供手动返回按钮。
+
+### 验证与边界
+
+- **后端**：`cd server && go test -count=1 ./internal/upgrades/... && go vet ./internal/upgrades/... && go build ./...` 全部通过（含新增 `TestReconcileJobResultAndEvaluateReadiness`、`TestHandlerGetReconcilesAndReturnsServerStatus` 及版本号基线回归）。
+- **前端**：`cd web && npm run typecheck && npm run lint && npm run build` 0 报错通过（改动与新增文件 0 lint 警告）；`npx vitest run src/pages/system-upgrade/__tests__/SystemUpgradePage.test.tsx src/utils/__tests__/stage6.test.ts` 2/2 文件、45/45 用例全部通过。
+- **未执行项（`NOT_RUN`）**：打标发布时的目标 Linux/amd64 实机升级回滚演练与 Playwright E2E 均为 `NOT_RUN`。
+
 ## [1.15.0] - 2026-11-25
 
 ### 新增
