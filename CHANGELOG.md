@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-11-27
+
+### 新增
+
+- **应用级 HTTP 代理响应压缩（Caddy `encode`：`zstd` / `gzip`）**：
+  - 新增迁移 `000253_header_proxy_response_compression`，在 `app_header_configs` 新增 `response_compression_enabled`（默认 `false`）与 `response_compression_encodings`（默认 `zstd,gzip`）；
+  - `server/internal/appconfigs`、`gatewayconfig/headers.go` 与 OpenAPI 同步支持按站点编译 Caddy `encode` 压缩策略，保持 `jiuzhang_guard` 内部明文检测并自动跳过已压缩、SSE（`text/event-stream`）及小于 512 字节的小响应；新增网关集成测试 `gateway/modules/jiuzhang_guard/response_compression_test.go`；前端「应用详情 → 代理与头合规」`HeaderProxyTab` 同步提供开关与编码算法配置。
+- **源站连通性测试私网受控放行与 CIDR 白名单**：
+  - 新增迁移 `000254_upstream_test_private_settings`，在 `system_settings` 的 `network` 组新增 `upstream_test_allow_private`（默认 `false`）与 `upstream_test_allowed_private_cidrs`（最多 32 条私网 CIDR 白名单）；
+  - `server/internal/config`、`settings`、`upstreams/{handler,tester}.go` 与 `validation/domain.go` 支持按配置受控放行 RFC 1918 / ULA 内网源站手动连通性测试，同时始终硬拦截回环、链路本地与云元数据地址（保持 SSRF 防护底线）；同步补充 `.env.example`、`deployment/docker-compose.stage5.yml`、`ops/baremetal/package/env.template`、`ops/offline-package/build.sh` 可选环境变量透传，前端「系统设置 → 网络」支持在线配置并即时生效。
+- **系统告警全量中文化**：
+  - 新增 `server/internal/systemalerts/i18n.go` 及单元测试，统一规范化后端告警标题、摘要与告警类型中文表达（覆盖告警评估器、API 风险发现、攻击尖峰与导出逻辑）；前端同步中文化顶栏告警弹窗 `HeaderAlertsPopover`、告警列表页 `SystemAlertsPage`、维护窗口抽屉 `MaintenanceWindowsDrawer` 及 `utils/stage6.ts`。
+
+### 验证与边界
+
+- **网关**：`cd gateway/modules/jiuzhang_guard && go test -v -count=1 -run '^TestGatewayResponseCompressionWithCaddyEncode$' .` 5/5 子用例全部通过。
+- **后端与 OpenAPI**：`cd server && go build ./...`、`go test -c ./tests` 及全部 8 个变更包（`appconfigs`、`config`、`gatewayconfig`、`settings`、`systemalerts`、`upgrades`、`upstreams`、`validation`）全部通过；`ops/offline-package/build.sh` `bash -n` 通过；`python3 tools/check-api-reconcile.py` 确认 1.19.0 新增/调整接口 0 缺失（代码 889 条 / OpenAPI 871 条）。
+- **前端**：`cd web && npm run typecheck && npm run lint && npm run build` 0 报错通过（改动与新增文件 0 lint 警告）；4 个变更/新增 Vitest 测试文件（`HeaderProxyTab`、`SystemAlertsPage`、`NetworkUpstreamTestSettings`、`stage6`，共 41/41 用例）全部通过。
+- **未执行项（`NOT_RUN`）**：打标发布时的目标 Linux/amd64 实机迁移（`000253`–`000254`）、实机升级/回滚演练与 Playwright E2E 均为 `NOT_RUN`。
+
 ## [1.18.0] - 2026-11-27
 
 ### 新增
