@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { formatBytes } from '../format'
 import {
+  ALERT_COMPONENT_NAME_META,
   ALERT_SEVERITY_META,
   ALERT_STATUS_META,
   ALERT_TYPE_META,
@@ -21,6 +22,8 @@ import {
   TREND_RANGE_OPTIONS,
   UPGRADE_PACKAGE_STATUS_META,
   UPGRADE_STATUS_META,
+  formatAlertComponent,
+  formatAlertMessage,
   formatUptime,
   isTerminalBackupStatus,
   isTerminalDeliveryStatus,
@@ -61,7 +64,7 @@ describe('阶段6 展示元数据完整性', () => {
     expect(Object.keys(ALERT_STATUS_META)).toEqual(['OPEN', 'ACKNOWLEDGED', 'RESOLVED', 'IGNORED'])
   })
 
-  it('系统告警类型覆盖全部 43 类（含 FD_USAGE_HIGH、VULN_INTEL_NEW、WDSP/APM/HA 告警）', () => {
+  it('系统告警类型覆盖全部 45 类（含 FD_USAGE_HIGH、VULN_INTEL_NEW、WDSP/APM/HA 告警）', () => {
     expect(Object.keys(ALERT_TYPE_META).sort()).toEqual(
       [
         'GATEWAY_DOWN',
@@ -100,6 +103,7 @@ describe('阶段6 展示元数据完整性', () => {
         'LICENSE_EXPIRING_SOON',
         'LICENSE_QUOTA_EXCEEDED',
         'HA_VIP_FAULT',
+        'HA_SPLIT_BRAIN',
         'NETWORK_APPLY_FAILED',
         'LINK_PAIR_DOWN',
         'LINK_PAIR_SUPPRESSED',
@@ -302,5 +306,54 @@ describe('summarizeCheckResult 预检整体结果汇总', () => {
   it('全部 PASS 或空列表 → PASS', () => {
     expect(summarizeCheckResult([{ result: 'PASS' }])).toBe('PASS')
     expect(summarizeCheckResult([])).toBe('PASS')
+  })
+})
+
+describe('系统告警组件与详情中文化格式化', () => {
+  it('formatAlertComponent 支持大小写不敏感组件名与 vuln_intel 前缀', () => {
+    expect(ALERT_COMPONENT_NAME_META.WAF).toBe('WAF 防护')
+    expect(formatAlertComponent('waf')).toBe('WAF 防护')
+    expect(formatAlertComponent('cc')).toBe('CC 防护')
+    expect(formatAlertComponent('clickhouse')).toBe('ClickHouse 时序存储')
+    expect(formatAlertComponent('API_SECURITY')).toBe('API 安全采集')
+    expect(formatAlertComponent('API_ENDPOINT_DISCOVERY')).toBe('API 端点发现')
+    expect(formatAlertComponent('vuln_intel:php')).toBe('漏洞情报：php')
+    expect(formatAlertComponent('shop/GET /v1/orders')).toBe('shop/GET /v1/orders')
+    expect(formatAlertComponent('')).toBe('-')
+  })
+
+  it('formatAlertMessage 中文化存量英文风险发现码、严重级别与检测器标题', () => {
+    expect(
+      formatAlertMessage(
+        '最近 60 分钟同类型风险发现超过阈值 20：IDENTITY_COOKIE_PRESENT 219 条；CREDENTIAL_COOKIE_SENSITIVE 219 条；AUTH_CREDENTIAL_CONCURRENCY 129 条 等 4 类',
+      ),
+    ).toBe(
+      '最近 60 分钟同类型风险发现超过阈值 20：携带 Cookie 会话头 219 条；Cookie 携带敏感凭据 219 条；凭据异常并发使用 129 条 等 4 类',
+    )
+
+    expect(formatAlertMessage('最近 1 分钟 HIGH/CRITICAL 级安全事件 12 条（阈值 10）')).toBe(
+      '最近 1 分钟高危/严重级安全事件 12 条（阈值 10）',
+    )
+
+    expect(
+      formatAlertMessage('最近 10 分钟新增 3 条响应脱敏（MASK_RESPONSE）失败记录，存在未脱敏数据外发风险'),
+    ).toBe('最近 10 分钟新增 3 条响应脱敏失败记录，存在未脱敏数据外发风险')
+
+    const criticalLocalized = formatAlertMessage(
+      '最近 10 分钟新增 2 条 CRITICAL 级风险发现：BOLA_UNAUTHENTICATED_OBJECT_ACCESS（object access without credential）；AUTHZ_BOLA_001（AUTHZ_BOLA_001）',
+    )
+    expect(criticalLocalized).toBe(
+      '最近 10 分钟新增 2 条严重级风险发现：未认证对象越权访问（未携带认证凭据访问对象资源）；对象级越权（BOLA）',
+    )
+    // 二次格式化幂等（后端已中文化后再经前端渲染不二次改写括号简称）
+    expect(formatAlertMessage(criticalLocalized)).toBe(criticalLocalized)
+
+    expect(
+      formatAlertMessage(
+        '最高级别：CRITICAL；CVE 列表：CVE-2026-0001；参考链接：https://example.com/AUTH_TEST/CVE-2026-0001',
+      ),
+    ).toBe(
+      '最高级别：严重；CVE 列表：CVE-2026-0001；参考链接：https://example.com/AUTH_TEST/CVE-2026-0001',
+    )
   })
 })

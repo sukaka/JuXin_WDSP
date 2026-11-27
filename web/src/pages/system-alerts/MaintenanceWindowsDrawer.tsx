@@ -23,7 +23,7 @@ import QueryErrorAlert from '../../components/QueryErrorAlert'
 import { ApiError } from '../../api/client'
 import { systemAlertsApi } from '../../api/systemAlerts'
 import { formatDateTime } from '../../utils/format'
-import { ALERT_TYPE_META, COMPONENT_NAME_META } from '../../utils/stage6'
+import { ALERT_COMPONENT_NAME_META, ALERT_TYPE_META, formatAlertComponent } from '../../utils/stage6'
 import type { SystemAlertMaintenanceWindow, SystemAlertMaintenanceWindowCreateInput } from '../../types'
 
 interface CreateFormValues {
@@ -139,7 +139,7 @@ export default function MaintenanceWindowsDrawer({
             ))}
             {(record.components ?? []).map((c) => (
               <Tag key={c} color="blue">
-                {COMPONENT_NAME_META[c] ?? c}
+                {formatAlertComponent(c)}
               </Tag>
             ))}
           </Space>
@@ -311,7 +311,8 @@ export default function MaintenanceWindowsDrawer({
                 <Select
                   mode="multiple"
                   allowClear
-                  options={Object.entries(COMPONENT_NAME_META).map(([value, label]) => ({ value, label }))}
+                  showSearch
+                  options={Object.entries(ALERT_COMPONENT_NAME_META).map(([value, label]) => ({ value, label }))}
                 />
               </Form.Item>
             </>

@@ -20,7 +20,7 @@ import StatusTag from './StatusTag'
 import { useAuthStore } from '../stores/auth'
 import { formatDateTime } from '../utils/format'
 import { hasAnyPermission } from '../utils/permission'
-import { ALERT_SEVERITY_META, ALERT_STATUS_META, COMPONENT_NAME_META } from '../utils/stage6'
+import { ALERT_SEVERITY_META, ALERT_STATUS_META, formatAlertComponent } from '../utils/stage6'
 import type { SystemAlertItem } from '../types'
 
 const HEADER_ALERT_LIMIT = 8
@@ -186,7 +186,7 @@ export default function HeaderAlertsPopover({ disabled = false }: HeaderAlertsPo
                   }}
                 >
                   <span>
-                    {COMPONENT_NAME_META[item.component] ?? item.component}
+                    {formatAlertComponent(item.component)}
                     {' · '}
                     {ALERT_STATUS_META[item.status]?.label ?? item.status}
                     {item.occurrence_count > 1 ? ` · ×${item.occurrence_count}` : ''}

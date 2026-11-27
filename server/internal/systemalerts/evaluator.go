@@ -496,7 +496,7 @@ func (e *Engine) Evaluate(ctx context.Context, snaps []runtimehealth.Snapshot) e
 	if s, ok := byComp[runtimehealth.ComponentEventCollector]; ok {
 		switch s.Status {
 		case runtimehealth.StatusDegraded, runtimehealth.StatusDown:
-			raise(RaiseRequest{TypeEventCollectorLag, s.Component, "事件采集滞后", msgOr(s.Message, "事件采集 checkpoint 滞后"), ""})
+			raise(RaiseRequest{TypeEventCollectorLag, s.Component, "事件采集滞后", msgOr(s.Message, "事件采集位点滞后"), ""})
 		case runtimehealth.StatusUp:
 			recover(s.Component, TypeEventCollectorLag)
 		}

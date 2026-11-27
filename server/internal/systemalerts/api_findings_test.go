@@ -119,8 +119,14 @@ func TestEvaluateAPICriticalFinding(t *testing.T) {
 	if raised.Severity != SeverityCritical {
 		t.Errorf("等级 = %s, want CRITICAL", raised.Severity)
 	}
-	if !strings.Contains(raised.Message, "2 条") || !strings.Contains(raised.Message, "BOLA_UNAUTHENTICATED_OBJECT_ACCESS") {
-		t.Errorf("message 应含总数与样本摘要: %q", raised.Message)
+	if !strings.Contains(raised.Message, "2 条严重级风险发现") || !strings.Contains(raised.Message, "未认证对象越权访问（未认证对象访问）") || !strings.Contains(raised.Message, "敏感数据泄露") {
+		t.Errorf("message 应含中文总数与样本摘要: %q", raised.Message)
+	}
+	if strings.Contains(raised.Message, "BOLA_UNAUTHENTICATED_OBJECT_ACCESS") || strings.Contains(raised.Message, "SENSITIVE_LEAK") || strings.Contains(raised.Message, "CRITICAL") {
+		t.Errorf("message 不应包含原始英文枚举码: %q", raised.Message)
+	}
+	if strings.Contains(raised.Message, "敏感数据泄露（敏感数据泄露）") {
+		t.Errorf("message 不应重复括注相同中文标题: %q", raised.Message)
 	}
 
 	// 同窗口持续存在 → 合并（occurrence_count+1），不新建
@@ -174,11 +180,11 @@ func TestEvaluateAPIFindingSpike(t *testing.T) {
 	if raised.Severity != SeverityHigh {
 		t.Errorf("等级 = %s, want HIGH", raised.Severity)
 	}
-	if !strings.Contains(raised.Message, "SCHEMA_DEVIATION 30 条") {
-		t.Errorf("message 应含超阈类型与计数: %q", raised.Message)
+	if !strings.Contains(raised.Message, "模型偏离 30 条") {
+		t.Errorf("message 应含中文超阈类型与计数: %q", raised.Message)
 	}
-	if strings.Contains(raised.Message, "ZOMBIE") {
-		t.Errorf("未超阈类型不应出现在 message: %q", raised.Message)
+	if strings.Contains(raised.Message, "SCHEMA_DEVIATION") || strings.Contains(raised.Message, "ZOMBIE") || strings.Contains(raised.Message, "僵尸 API") {
+		t.Errorf("message 不应包含英文类型码或未超阈类型: %q", raised.Message)
 	}
 	firstMsg := raised.Message
 
@@ -195,7 +201,7 @@ func TestEvaluateAPIFindingSpike(t *testing.T) {
 	if err := e.EvaluateAPIFindings(ctx); err != nil {
 		t.Fatalf("冷却期后评估: %v", err)
 	}
-	if got := store.get(raised.ID); !strings.Contains(got.Message, "SCHEMA_DEVIATION 45 条") {
+	if got := store.get(raised.ID); !strings.Contains(got.Message, "模型偏离 45 条") {
 		t.Errorf("冷却期后 message 应更新: %q", got.Message)
 	}
 
@@ -225,8 +231,8 @@ func TestEvaluateAPIMaskFailure(t *testing.T) {
 	for _, a := range store.alerts {
 		if a.AlertType == TypeAPIMaskFailure {
 			found = true
-			if !strings.Contains(a.Message, "3 条") {
-				t.Errorf("message 应含失败条数: %q", a.Message)
+			if !strings.Contains(a.Message, "3 条") || strings.Contains(a.Message, "MASK_RESPONSE") {
+				t.Errorf("message 应含中文失败条数且不含英文枚举码: %q", a.Message)
 			}
 		}
 	}

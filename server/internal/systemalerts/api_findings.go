@@ -198,7 +198,7 @@ func (e *Engine) EvaluateAPIFindings(ctx context.Context) error {
 				AlertType: TypeAPIMaskFailure,
 				Component: ComponentAPISecurity,
 				Title:     "响应脱敏执行失败",
-				Message: fmt.Sprintf("最近 %d 分钟新增 %d 条响应脱敏（MASK_RESPONSE）失败记录，存在未脱敏数据外发风险",
+				Message: fmt.Sprintf("最近 %d 分钟新增 %d 条响应脱敏失败记录，存在未脱敏数据外发风险",
 					int(cfg.ScanWindow.Minutes()), n),
 			}); err != nil {
 				errs = append(errs, err)
@@ -215,11 +215,17 @@ func (e *Engine) EvaluateAPIFindings(ctx context.Context) error {
 // criticalFindingMessage 组装 CRITICAL 告警内容（总数 + 样本摘要）。
 func criticalFindingMessage(window time.Duration, total int64, samples []FindingSample) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "最近 %d 分钟新增 %d 条 CRITICAL 级风险发现", int(window.Minutes()), total)
+	fmt.Fprintf(&b, "最近 %d 分钟新增 %d 条严重级风险发现", int(window.Minutes()), total)
 	if len(samples) > 0 {
 		parts := make([]string, 0, len(samples))
 		for _, s := range samples {
-			parts = append(parts, s.FindingType+"（"+s.Title+"）")
+			label := findingTypeLabel(s.FindingType)
+			title := strings.TrimSpace(s.Title)
+			if title != "" && title != label && !strings.EqualFold(title, s.FindingType) {
+				parts = append(parts, label+"（"+title+"）")
+			} else {
+				parts = append(parts, label)
+			}
 		}
 		fmt.Fprintf(&b, "：%s", strings.Join(parts, "；"))
 		if int64(len(samples)) < total {
@@ -248,7 +254,7 @@ func spikeMessage(window time.Duration, threshold int64, spiked []FindingTypeCou
 	}
 	parts := make([]string, 0, len(top))
 	for _, c := range top {
-		parts = append(parts, fmt.Sprintf("%s %d 条", c.FindingType, c.Count))
+		parts = append(parts, fmt.Sprintf("%s %d 条", findingTypeLabel(c.FindingType), c.Count))
 	}
 	msg := fmt.Sprintf("最近 %d 分钟同类型风险发现超过阈值 %d：%s", int(window.Minutes()), threshold, strings.Join(parts, "；"))
 	if len(spiked) > len(top) {

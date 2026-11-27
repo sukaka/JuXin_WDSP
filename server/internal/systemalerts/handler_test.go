@@ -127,7 +127,8 @@ func TestRenderExportCSV(t *testing.T) {
 		"UPSTREAM": "源站", "CERTIFICATE": "证书", "DISK": "磁盘",
 		"API_SECURITY": "API 安全采集", "APM_CLICKHOUSE": "APM 时序存储",
 		"waf": "WAF 防护", "cc": "CC 防护", "clickhouse": "ClickHouse 时序存储",
-		"vuln_intel:nginx": "漏洞情报:nginx",
+		"API_ENDPOINT_DISCOVERY": "API 端点发现",
+		"vuln_intel:nginx":       "漏洞情报:nginx",
 	} {
 		if got := exportAlertComponentLabel(raw); got != want {
 			t.Errorf("exportAlertComponentLabel(%q) = %q, want %q", raw, got, want)

@@ -104,7 +104,7 @@ func (e *Engine) EvaluateSecuritySpikes(ctx context.Context) error {
 			AlertType: TypeSecurityEventSpike,
 			Component: ComponentWAF,
 			Title:     "安全事件激增",
-			Message: fmt.Sprintf("最近 %d 分钟 HIGH/CRITICAL 级安全事件 %d 条（阈值 %d）",
+			Message: fmt.Sprintf("最近 %d 分钟高危/严重级安全事件 %d 条（阈值 %d）",
 				int(spikeEvalWindow.Minutes()), highCount, th.Security),
 		}); err != nil {
 			errs = append(errs, err)

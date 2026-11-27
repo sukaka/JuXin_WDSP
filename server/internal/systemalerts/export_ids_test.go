@@ -13,14 +13,15 @@ import (
 func TestBuildListWhereAndExportLimit(t *testing.T) {
 	id1 := uuid.New()
 	where, args := buildListWhere(ListFilter{
-		Severity: "HIGH",
-		IDs:      []uuid.UUID{id1},
+		Severity:  "HIGH",
+		Component: "WAF",
+		IDs:       []uuid.UUID{id1},
 	})
-	if !strings.Contains(where, "severity = $1") || !strings.Contains(where, "id = ANY($2::uuid[])") {
+	if !strings.Contains(where, "severity = $1") || !strings.Contains(where, "LOWER(a.component) = LOWER($2)") || !strings.Contains(where, "id = ANY($3::uuid[])") {
 		t.Fatalf("unexpected where: %s", where)
 	}
-	if len(args) != 2 {
-		t.Fatalf("len(args) = %d, want 2", len(args))
+	if len(args) != 3 {
+		t.Fatalf("len(args) = %d, want 3", len(args))
 	}
 	if _, ps := normalizePage(1, exportLimit, exportLimit); ps != exportLimit {
 		t.Fatalf("export pageSize = %d, want %d", ps, exportLimit)

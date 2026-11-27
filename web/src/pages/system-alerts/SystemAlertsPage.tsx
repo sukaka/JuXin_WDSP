@@ -24,7 +24,14 @@ import useExportSelection from '../../hooks/useExportSelection'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasAnyPermission } from '../../utils/permission'
-import { ALERT_SEVERITY_META, ALERT_STATUS_META, ALERT_TYPE_META, COMPONENT_NAME_META } from '../../utils/stage6'
+import {
+  ALERT_COMPONENT_NAME_META,
+  ALERT_SEVERITY_META,
+  ALERT_STATUS_META,
+  ALERT_TYPE_META,
+  formatAlertComponent,
+  formatAlertMessage,
+} from '../../utils/stage6'
 import type { SystemAlertItem } from '../../types'
 import MaintenanceWindowsDrawer from './MaintenanceWindowsDrawer'
 
@@ -131,7 +138,7 @@ export default function SystemAlertsPage() {
       title: '组件',
       dataIndex: 'component',
       width: 120,
-      render: (v: string) => COMPONENT_NAME_META[v] ?? v,
+      render: (v: string) => formatAlertComponent(v),
     },
     { title: '标题', dataIndex: 'title', ellipsis: true },
     { title: '次数', dataIndex: 'occurrence_count', width: 70 },
@@ -236,8 +243,9 @@ export default function SystemAlertsPage() {
         <Select
           placeholder="组件"
           allowClear
-          style={{ width: 140 }}
-          options={Object.entries(COMPONENT_NAME_META).map(([value, label]) => ({ value, label }))}
+          showSearch
+          style={{ width: 160 }}
+          options={Object.entries(ALERT_COMPONENT_NAME_META).map(([value, label]) => ({ value, label }))}
           onChange={(v) => {
             setFilters((f) => ({ ...f, component: v }))
             setPage(1)
@@ -302,15 +310,31 @@ export default function SystemAlertsPage() {
               items={[
                 { key: 'severity', label: '等级', children: <StatusTag value={alert.severity} map={ALERT_SEVERITY_META} /> },
                 { key: 'type', label: '类型', children: <StatusTag value={alert.alert_type} map={ALERT_TYPE_META} /> },
-                { key: 'component', label: '组件', children: COMPONENT_NAME_META[alert.component] ?? alert.component },
+                { key: 'component', label: '组件', children: formatAlertComponent(alert.component) },
                 { key: 'title', label: '标题', children: alert.title },
-                { key: 'message', label: '详情', children: alert.message || '-' },
+                { key: 'message', label: '详情', children: formatAlertMessage(alert.message) || '-' },
                 { key: 'count', label: '发生次数', children: alert.occurrence_count },
                 { key: 'status', label: '状态', children: <StatusTag value={alert.status} map={ALERT_STATUS_META} /> },
                 { key: 'first', label: '首次发生', children: formatDateTime(alert.first_seen_at) },
                 { key: 'last', label: '最近发生', children: formatDateTime(alert.last_seen_at) },
-                { key: 'ack', label: '确认人/时间', children: alert.acknowledged_by ? `${alert.acknowledged_by} / ${formatDateTime(alert.acknowledged_at)}` : '-' },
-                { key: 'resolve', label: '解决人/时间', children: alert.resolved_by ? `${alert.resolved_by} / ${formatDateTime(alert.resolved_at)}` : '-' },
+                {
+                  key: 'ack',
+                  label: '确认人/时间',
+                  children:
+                    alert.acknowledged_by_username || alert.acknowledged_by
+                      ? `${alert.acknowledged_by_username || alert.acknowledged_by} / ${formatDateTime(alert.acknowledged_at)}`
+                      : '-',
+                },
+                {
+                  key: 'resolve',
+                  label: '解决人/时间',
+                  children:
+                    alert.resolved_by_username || alert.resolved_by
+                      ? `${alert.resolved_by_username || alert.resolved_by} / ${formatDateTime(alert.resolved_at)}`
+                      : alert.resolved_at && alert.resolve_type === 'RECOVERED'
+                        ? `自动恢复 / ${formatDateTime(alert.resolved_at)}`
+                        : '-',
+                },
               ]}
             />
             <Typography.Title level={5} style={{ margin: 0 }}>

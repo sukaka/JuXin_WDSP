@@ -72,8 +72,11 @@ func TestEvaluateSecurityEventSpike(t *testing.T) {
 	if raised.Severity != SeverityHigh {
 		t.Errorf("等级 = %s, want HIGH", raised.Severity)
 	}
-	if !strings.Contains(raised.Message, "12 条") || !strings.Contains(raised.Message, "阈值 10") {
-		t.Errorf("message 应含计数与阈值: %q", raised.Message)
+	if !strings.Contains(raised.Message, "高危/严重级安全事件 12 条") || !strings.Contains(raised.Message, "阈值 10") {
+		t.Errorf("message 应含中文级别、计数与阈值: %q", raised.Message)
+	}
+	if strings.Contains(raised.Message, "HIGH/CRITICAL") {
+		t.Errorf("message 不应包含英文级别枚举: %q", raised.Message)
 	}
 
 	// 持续达阈 → 合并不新建

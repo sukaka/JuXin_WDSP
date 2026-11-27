@@ -29,10 +29,12 @@ type Alert struct {
 	FirstSeenAt     time.Time  `json:"first_seen_at"`
 	LastSeenAt      time.Time  `json:"last_seen_at"`
 	OccurrenceCount int        `json:"occurrence_count"`
-	AcknowledgedBy  *uuid.UUID `json:"acknowledged_by"`
-	AcknowledgedAt  *time.Time `json:"acknowledged_at"`
-	ResolvedBy      *uuid.UUID `json:"resolved_by"`
-	ResolvedAt      *time.Time `json:"resolved_at"`
+	AcknowledgedBy         *uuid.UUID `json:"acknowledged_by"`
+	AcknowledgedByUsername string     `json:"acknowledged_by_username,omitempty"`
+	AcknowledgedAt         *time.Time `json:"acknowledged_at"`
+	ResolvedBy             *uuid.UUID `json:"resolved_by"`
+	ResolvedByUsername     string     `json:"resolved_by_username,omitempty"`
+	ResolvedAt             *time.Time `json:"resolved_at"`
 	ResolveType     *string    `json:"resolve_type"`
 	// SilencedUntil 静默截止时刻（迁移 000055）；NULL = 未静默。
 	SilencedUntil *time.Time `json:"silenced_until"`
@@ -207,10 +209,15 @@ SELECT
 
 // ---------- 处置与查询方法 ----------
 
-// GetByID 查询告警详情。
+// GetByID 查询告警详情（关联确认人/解决人用户名）。
 func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*Alert, error) {
-	row := s.db.QueryRow(ctx, `SELECT `+alertColumns+` FROM system_alerts WHERE id = $1`, id)
-	a, err := scanAlert(row)
+	row := s.db.QueryRow(ctx, `
+SELECT `+alertColumnsWithUsers+`
+FROM system_alerts a
+LEFT JOIN users au ON au.id = a.acknowledged_by
+LEFT JOIN users ru ON ru.id = a.resolved_by
+WHERE a.id = $1`, id)
+	a, err := scanAlertWithUsers(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -230,34 +237,34 @@ func buildListWhere(f ListFilter) (string, []interface{}) {
 		argIdx++
 	}
 	if f.Status != "" {
-		add("status = $%d", f.Status)
+		add("a.status = $%d", f.Status)
 	}
 	// 三态视图（与 status 互斥，handler 层已校验）：由 status + silenced_until 推导
 	switch f.View {
 	case ViewActive:
-		where += " AND status IN ('OPEN','ACKNOWLEDGED') AND (silenced_until IS NULL OR silenced_until <= now())"
+		where += " AND a.status IN ('OPEN','ACKNOWLEDGED') AND (a.silenced_until IS NULL OR a.silenced_until <= now())"
 	case ViewSilenced:
-		where += " AND status IN ('OPEN','ACKNOWLEDGED') AND silenced_until > now()"
+		where += " AND a.status IN ('OPEN','ACKNOWLEDGED') AND a.silenced_until > now()"
 	case ViewHistory:
-		where += " AND status IN ('RESOLVED','IGNORED')"
+		where += " AND a.status IN ('RESOLVED','IGNORED')"
 	}
 	if f.Severity != "" {
-		add("severity = $%d", f.Severity)
+		add("a.severity = $%d", f.Severity)
 	}
 	if f.AlertType != "" {
-		add("alert_type = $%d", f.AlertType)
+		add("a.alert_type = $%d", f.AlertType)
 	}
 	if f.Component != "" {
-		add("component = $%d", f.Component)
+		add("LOWER(a.component) = LOWER($%d)", f.Component)
 	}
 	if f.StartTime != nil {
-		add("last_seen_at >= $%d", *f.StartTime)
+		add("a.last_seen_at >= $%d", *f.StartTime)
 	}
 	if f.EndTime != nil {
-		add("last_seen_at <= $%d", *f.EndTime)
+		add("a.last_seen_at <= $%d", *f.EndTime)
 	}
 	if len(f.IDs) > 0 {
-		add("id = ANY($%d::uuid[])", f.IDs)
+		add("a.id = ANY($%d::uuid[])", f.IDs)
 	}
 	return where, args
 }
@@ -287,11 +294,15 @@ func (s *Store) list(ctx context.Context, f ListFilter, maxPageSize int) ([]Aler
 	where, args := buildListWhere(f)
 	argIdx := len(args) + 1
 	var total int64
-	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM system_alerts WHERE `+where, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM system_alerts a WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	query := `SELECT ` + alertColumns + ` FROM system_alerts WHERE ` + where +
-		fmt.Sprintf(" ORDER BY last_seen_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
+	query := `SELECT ` + alertColumnsWithUsers + `
+FROM system_alerts a
+LEFT JOIN users au ON au.id = a.acknowledged_by
+LEFT JOIN users ru ON ru.id = a.resolved_by
+WHERE ` + where +
+		fmt.Sprintf(" ORDER BY a.last_seen_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
 	args = append(args, f.PageSize, (f.Page-1)*f.PageSize)
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
@@ -300,7 +311,7 @@ func (s *Store) list(ctx context.Context, f ListFilter, maxPageSize int) ([]Aler
 	defer rows.Close()
 	out := []Alert{}
 	for rows.Next() {
-		a, err := scanAlert(rows)
+		a, err := scanAlertWithUsers(rows)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -432,12 +443,32 @@ id, alert_type, severity, component, title, message, status,
 first_seen_at, last_seen_at, occurrence_count,
 acknowledged_by, acknowledged_at, resolved_by, resolved_at, resolve_type, silenced_until, created_at`
 
+const alertColumnsWithUsers = `
+a.id, a.alert_type, a.severity, a.component, a.title, a.message, a.status,
+a.first_seen_at, a.last_seen_at, a.occurrence_count,
+a.acknowledged_by, COALESCE(au.username, ''), a.acknowledged_at,
+a.resolved_by, COALESCE(ru.username, ''), a.resolved_at,
+a.resolve_type, a.silenced_until, a.created_at`
+
 func scanAlert(row pgx.Row) (*Alert, error) {
 	var a Alert
 	err := row.Scan(&a.ID, &a.AlertType, &a.Severity, &a.Component, &a.Title, &a.Message,
 		&a.Status, &a.FirstSeenAt, &a.LastSeenAt, &a.OccurrenceCount,
 		&a.AcknowledgedBy, &a.AcknowledgedAt, &a.ResolvedBy, &a.ResolvedAt, &a.ResolveType,
 		&a.SilencedUntil, &a.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+func scanAlertWithUsers(row pgx.Row) (*Alert, error) {
+	var a Alert
+	err := row.Scan(&a.ID, &a.AlertType, &a.Severity, &a.Component, &a.Title, &a.Message,
+		&a.Status, &a.FirstSeenAt, &a.LastSeenAt, &a.OccurrenceCount,
+		&a.AcknowledgedBy, &a.AcknowledgedByUsername, &a.AcknowledgedAt,
+		&a.ResolvedBy, &a.ResolvedByUsername, &a.ResolvedAt,
+		&a.ResolveType, &a.SilencedUntil, &a.CreatedAt)
 	if err != nil {
 		return nil, err
 	}

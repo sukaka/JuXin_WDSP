@@ -1,5 +1,7 @@
 /* ==================== 阶段6：态势/报告/监控告警/备份恢复/升级交付 展示元数据与判定工具 ==================== */
 
+import { formatApiFindingTitle, getApiFindingTypeMeta } from './stage8'
+
 /** 趋势快捷时间范围 */
 export const TREND_RANGE_OPTIONS: { value: string; label: string }[] = [
   { value: '1h', label: '最近1小时' },
@@ -119,6 +121,7 @@ export const ALERT_TYPE_META: Record<string, { color: string; label: string }> =
   LICENSE_EXPIRING_SOON: { color: 'gold', label: '系统授权即将到期' },
   LICENSE_QUOTA_EXCEEDED: { color: 'volcano', label: '授权配额超限' },
   HA_VIP_FAULT: { color: 'red', label: '高可用虚拟 IP 故障' },
+  HA_SPLIT_BRAIN: { color: 'red', label: '主备双主脑裂' },
   NETWORK_APPLY_FAILED: { color: 'red', label: '网络配置应用失败' },
   LINK_PAIR_DOWN: { color: 'red', label: '网桥链路对中断' },
   LINK_PAIR_SUPPRESSED: { color: 'orange', label: '网桥链路对联动抑制' },
@@ -143,6 +146,113 @@ export const COMPONENT_NAME_META: Record<string, string> = {
   DISK: '磁盘',
   API_SECURITY: 'API 安全采集',
   APM_CLICKHOUSE: 'APM 时序存储',
+}
+
+/** 系统告警组件展示名（涵盖运行健康组件与安全/运维/业务告警组件，键统一大写） */
+export const ALERT_COMPONENT_NAME_META: Record<string, string> = {
+  ...COMPONENT_NAME_META,
+  WAF: 'WAF 防护',
+  CC: 'CC 防护',
+  CLICKHOUSE: 'ClickHouse 时序存储',
+  AUDIT: '操作审计',
+  LICENSE: '系统授权',
+  BACKUP: '系统备份',
+  RESTORE: '系统恢复',
+  UPGRADE: '系统升级',
+  REPORT: '安全报告',
+  HA_VIP: '主备虚拟 IP',
+  NETWORK: '网络配置',
+  LINK_PAIR: '网桥链路对',
+  AI_OPS: 'AI 智能运营',
+  API_GATEWAY_NODES: '多节点网关',
+  API_GATEWAY_NODE_SYNC: '网关节点配置同步',
+  API_ENDPOINT_DISCOVERY: 'API 端点发现',
+}
+
+/** 格式化系统告警组件名（大小写不敏感，支持 vuln_intel:<tech> 前缀；未知动态组件原样返回） */
+export function formatAlertComponent(component?: string | null): string {
+  if (!component) return '-'
+  const trimmed = component.trim()
+  if (!trimmed) return '-'
+  const mapped = ALERT_COMPONENT_NAME_META[trimmed.toUpperCase()]
+  if (mapped) return mapped
+  const vulnPrefix = 'vuln_intel:'
+  if (trimmed.toLowerCase().startsWith(vulnPrefix) && trimmed.length > vulnPrefix.length) {
+    return `漏洞情报：${trimmed.slice(vulnPrefix.length)}`
+  }
+  return trimmed
+}
+
+const ALERT_FINDING_CODE_RE = /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g
+const ALERT_ANY_FINDING_CODE_RE = /\b(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|SHADOW|ZOMBIE|DEPRECATED|BOLA|BFLA)\b/g
+const ALERT_HIGHEST_SEV_RE = /最高级别([:：])\s*(CRITICAL|HIGH|MEDIUM|LOW|INFO)\b/g
+const ALERT_PAREN_EN_TITLE_RE = /([（(])([A-Za-z][^（）()]*\s[^（）()]*)([）)])/g
+
+function isAlertTokenJoiner(ch: string | undefined): boolean {
+  return ch === '/' || ch === '.' || ch === '-' || ch === '_'
+}
+
+function replaceBoundedAlertTokens(
+  text: string,
+  re: RegExp,
+  replacer: (token: string, wrappedInParens: boolean) => string,
+): string {
+  return text.replace(re, (match, ...args) => {
+    const offset = args[args.length - 2] as number
+    const full = args[args.length - 1] as string
+    const prev = offset > 0 ? full[offset - 1] : undefined
+    const next = offset + match.length < full.length ? full[offset + match.length] : undefined
+    if (isAlertTokenJoiner(prev) || isAlertTokenJoiner(next)) {
+      return match
+    }
+    const wrapped = (prev === '(' || prev === '（') && (next === ')' || next === '）')
+    return replacer(match, wrapped)
+  })
+}
+
+/**
+ * 格式化系统告警详情文案：兼容存量历史告警中遗留的英文风险发现码、英文严重级别与检测器英文标题，
+ * 统一展示为中文，幂等且不影响 URL、路径、CVE 编号或已中文化的文案。
+ */
+export function formatAlertMessage(message?: string | null): string {
+  if (!message) return ''
+  let out = message
+    .replace(/[（(]MASK_RESPONSE[）)]/g, '')
+    .replace(/\s*HIGH\/CRITICAL\s*级/g, '高危/严重级')
+    .replace(/\s*CRITICAL\s*级/g, '严重级')
+    .replace(/事件采集\s+checkpoint\s+滞后/g, '事件采集位点滞后')
+    .replace(
+      ALERT_HIGHEST_SEV_RE,
+      (_m, sep: string, sev: string) => `最高级别${sep}${ALERT_SEVERITY_META[sev]?.label ?? sev}`,
+    )
+
+  const isFindingAlert = out.includes('风险发现')
+  if (isFindingAlert) {
+    // 去除历史样本中与类型码完全相同的括注（如 AUTHZ_BOLA_001（AUTHZ_BOLA_001））
+    out = out.replace(/\b([A-Z][A-Z0-9_]+)[（(]\1[）)]/g, '$1')
+    // 严重级风险发现样本括号内的网关英文检测消息先行翻译（避免误改已译中文标签中的简称）
+    out = out.replace(
+      ALERT_PAREN_EN_TITLE_RE,
+      (full, open: string, inner: string, close: string) => {
+        const translated = formatApiFindingTitle(inner)
+        return translated !== inner ? `${open}${translated}${close}` : full
+      },
+    )
+  }
+
+  out = replaceBoundedAlertTokens(
+    out,
+    isFindingAlert ? ALERT_ANY_FINDING_CODE_RE : ALERT_FINDING_CODE_RE,
+    (token, wrappedInParens) => {
+      if (wrappedInParens && !token.includes('_')) {
+        return token
+      }
+      const label = getApiFindingTypeMeta(token).label
+      return label !== token ? label : token
+    },
+  )
+
+  return out
 }
 
 /** 组件健康状态（与后端 runtimehealth 状态枚举一致） */

@@ -134,4 +134,82 @@ describe('SystemAlertsPage 系统告警权限对齐', () => {
     })
     expect(screen.queryByPlaceholderText('添加处置备注')).not.toBeInTheDocument()
   })
+
+  it('列表组件与详情抽屉中文化存量英文风险发现码、小写 waf 组件与确认人用户名', async () => {
+    const spikeAlert: SystemAlertItem = {
+      id: 'alert-spike-1',
+      alert_type: 'API_FINDING_SPIKE',
+      severity: 'HIGH',
+      component: 'API_SECURITY',
+      title: 'API风险发现激增',
+      message:
+        '最近 60 分钟同类型风险发现超过阈值 20：IDENTITY_COOKIE_PRESENT 219 条；CREDENTIAL_COOKIE_SENSITIVE 219 条；AUTH_CREDENTIAL_CONCURRENCY 129 条 等 4 类',
+      status: 'ACKNOWLEDGED',
+      first_seen_at: '2026-11-27T06:34:51Z',
+      last_seen_at: '2026-11-27T11:18:51Z',
+      occurrence_count: 568,
+      acknowledged_by: '1f028019-4b1b-4c11-a910-9b59ee4e71ac',
+      acknowledged_by_username: 'secadmin',
+      acknowledged_at: '2026-11-27T11:18:51Z',
+      created_at: '2026-11-27T06:34:51Z',
+    }
+    const wafAlert: SystemAlertItem = {
+      id: 'alert-waf-1',
+      alert_type: 'SECURITY_EVENT_SPIKE',
+      severity: 'HIGH',
+      component: 'waf',
+      title: '安全事件激增',
+      message: '最近 1 分钟 HIGH/CRITICAL 级安全事件 15 条（阈值 10）',
+      status: 'RESOLVED',
+      resolve_type: 'RECOVERED',
+      first_seen_at: '2026-11-27T06:34:51Z',
+      last_seen_at: '2026-11-27T11:18:51Z',
+      resolved_at: '2026-11-27T11:19:51Z',
+      occurrence_count: 2,
+      created_at: '2026-11-27T06:34:51Z',
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/system-alerts/alert-spike-1')) {
+          return Promise.resolve(jsonResponse({ alert: spikeAlert, notes: [] }))
+        }
+        if (url.includes('/system-alerts')) {
+          return Promise.resolve(jsonResponse({ items: [spikeAlert, wafAlert], total: 2, page: 1, page_size: 20 }))
+        }
+        return Promise.reject(new Error(`unexpected url: ${url}`))
+      }),
+    )
+    useAuthStore.setState({
+      user: {
+        id: 'u-oper',
+        username: 'secadmin',
+        display_name: '运维管理员',
+        status: 'ACTIVE',
+        roles: [{ code: 'SECURITY_ADMIN', name: '运维管理员' }],
+        permissions: ['system_alerts.read', 'system_alerts.acknowledge'],
+        must_change_password: false,
+      } as CurrentUser,
+      csrfToken: 'csrf-1',
+      initialized: true,
+    })
+
+    renderPage()
+
+    expect(await screen.findByText('WAF 防护')).toBeInTheDocument()
+    expect(screen.queryByText(/^waf$/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByRole('button', { name: /详\s*情/ })[0])
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          '最近 60 分钟同类型风险发现超过阈值 20：携带 Cookie 会话头 219 条；Cookie 携带敏感凭据 219 条；凭据异常并发使用 129 条 等 4 类',
+        ),
+      ).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/IDENTITY_COOKIE_PRESENT/)).not.toBeInTheDocument()
+    expect(screen.getByText(/secadmin \//)).toBeInTheDocument()
+    expect(screen.queryByText(/1f028019-4b1b-4c11-a910-9b59ee4e71ac/)).not.toBeInTheDocument()
+  })
 })

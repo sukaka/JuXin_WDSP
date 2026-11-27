@@ -48,6 +48,9 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
+	for i := range list {
+		list[i].Message = localizeAlertMessage(list[i].Message)
+	}
 	response.Page(w, r, list, total, f.Page, f.PageSize)
 }
 
@@ -63,6 +66,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "告警不存在")
 		return
 	}
+	a.Message = localizeAlertMessage(a.Message)
 	notes, err := h.store.ListNotes(r.Context(), id)
 	if err != nil {
 		response.InternalError(w, r, err)
@@ -307,7 +311,7 @@ func renderExportCSV(list []Alert) string {
 			csvCell(exportAlertSeverityLabel(a.Severity)),
 			csvCell(exportAlertComponentLabel(a.Component)),
 			csvCell(a.Title),
-			csvCell(a.Message),
+			csvCell(localizeAlertMessage(a.Message)),
 			csvCell(exportAlertStatusLabel(a.Status)),
 			a.OccurrenceCount,
 			a.FirstSeenAt.UTC().Format(time.RFC3339),
@@ -422,8 +426,9 @@ var exportAlertComponentLabels = map[string]string{
 	"NETWORK":               "网络配置",
 	"LINK_PAIR":             "网桥链路对",
 	"AI_OPS":                "AI 智能运营",
-	"API_GATEWAY_NODES":     "多节点网关",
-	"API_GATEWAY_NODE_SYNC": "网关节点配置同步",
+	"API_GATEWAY_NODES":      "多节点网关",
+	"API_GATEWAY_NODE_SYNC":  "网关节点配置同步",
+	"API_ENDPOINT_DISCOVERY": "API 端点发现",
 }
 
 func exportAlertComponentLabel(v string) string {
