@@ -75,20 +75,30 @@ ORDER BY endpoint_key, status_code`, ResponseBaselineMinSamples)
 // SetResponseBaselineLister 注入响应结构基线读取（nil 时不下发 api_response_baselines 段）。
 func (p *Provider) SetResponseBaselineLister(l ResponseBaselineLister) { p.responseBaselines = l }
 
-// loadAPIResponseBaselines 读取达阈值响应结构基线；未注入或查询失败（如迁移 000051 列尚未建立）
-// Warn 并跳过，不阻断发布主流程（与 MaskRuleStore 同一纪律：增量能力，缺失时保持发布通道
-// 既有行为，网关无基线下发时响应偏离检测零行为）。
+// loadAPIResponseBaselines 读取达阈值响应结构基线（兼容旧调用方；BuildGuardConfig 走 loadAPIResponseBaselinesStrict）。
 func (p *Provider) loadAPIResponseBaselines(ctx context.Context) []gatewayconfig.GuardResponseBaseline {
+	baselines, err := p.loadAPIResponseBaselinesStrict(ctx)
+	if err != nil {
+		slog.Warn("list api response baselines failed, skip api_response_baselines", "error", err)
+	}
+	return baselines
+}
+
+// loadAPIResponseBaselinesStrict 仅容忍旧库未建表（42P01）；真实数据库错误中止候选发布（fail-hard）。
+func (p *Provider) loadAPIResponseBaselinesStrict(ctx context.Context) ([]gatewayconfig.GuardResponseBaseline, error) {
 	if p.responseBaselines == nil {
-		return nil
+		return nil, nil
 	}
 	baselines, err := p.responseBaselines.ListResponseBaselines(ctx)
 	if err != nil {
-		slog.Warn("list api response baselines failed, skip api_response_baselines", "error", err)
-		return nil
+		if isMissingLegacyTableError(err, "api_response_schemas") {
+			slog.Warn("optional legacy table api_response_schemas is unavailable", "error", err)
+			return nil, nil
+		}
+		return nil, wrapLegacyLoaderError("api_response_schemas", err)
 	}
 	if len(baselines) == 0 {
-		return nil
+		return nil, nil
 	}
-	return baselines
+	return baselines, nil
 }

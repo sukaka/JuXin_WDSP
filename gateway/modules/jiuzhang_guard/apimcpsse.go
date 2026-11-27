@@ -87,6 +87,7 @@ type mcpSSEWriter struct {
 
 	decided     bool // Content-Type 已判定
 	active      bool // 确认为 text/event-stream（逐事件模式）
+	hijacked    bool // 连接已被劫持
 	status      int
 	pending     []byte // 当前未完结事件块缓冲（≤mcpSSEMaxEventBytes）
 	degraded    bool   // 预算触顶已降级直通（PARTIAL 已如实披露一次）
@@ -152,7 +153,8 @@ func (m *mcpSSEWriter) WriteHeader(code int) {
 		return
 	}
 	m.status = code
-	if mcpguard.IsSSEContentType(m.base.Header().Get("Content-Type")) {
+	if code != http.StatusSwitchingProtocols && m.base.Header().Get("Upgrade") == "" &&
+		mcpguard.IsSSEContentType(m.base.Header().Get("Content-Type")) {
 		m.active = true
 	}
 	m.decided = true
@@ -175,12 +177,18 @@ func (m *mcpSSEWriter) Write(p []byte) (int, error) {
 	// 流合计预算（§1.10：≤16MiB）与事件数预算（≤4096）——触顶降级直通
 	if m.streamBytes > mcpSSEMaxStreamBytes || m.forwarded >= mcpSSEMaxEvents {
 		m.degradePassthrough("stream_budget")
-		return m.flushPending()
+		if _, err := m.flushPending(); err != nil {
+			return 0, err
+		}
+		return len(p), nil
 	}
-	// 单事件预算（§1.10：≤1MiB）——未完结块超限即降级直通（不无限缓冲）
-	if len(m.pending) > mcpSSEMaxEventBytes && !bytes.Contains(m.pending, []byte("\n\n")) {
+	// 单事件预算（§1.10：≤1MiB）——未完结块超限即降级直通（不无限缓冲；覆盖 \n\n、\r\n\r\n、\r\r 三形态）
+	if len(m.pending) > mcpSSEMaxEventBytes && !hasMCPSSEEventBoundary(m.pending) {
 		m.degradePassthrough("event_bytes")
-		return m.flushPending()
+		if _, err := m.flushPending(); err != nil {
+			return 0, err
+		}
+		return len(p), nil
 	}
 	for {
 		block, rest := splitMCPSSEEvent(m.pending)
@@ -192,6 +200,13 @@ func (m *mcpSSEWriter) Write(p []byte) (int, error) {
 			return 0, err
 		}
 	}
+}
+
+// hasMCPSSEEventBoundary 判断缓冲中是否已包含完整 SSE 事件分隔空行（\n\n / \r\n\r\n / \r\r）。
+func hasMCPSSEEventBoundary(buf []byte) bool {
+	return bytes.Contains(buf, []byte("\n\n")) ||
+		bytes.Contains(buf, []byte("\r\n\r\n")) ||
+		bytes.Contains(buf, []byte("\r\r"))
 }
 
 // flushPending 余量直通（降级路径）。
@@ -355,7 +370,7 @@ func (m *mcpSSEWriter) forward(block []byte) error {
 // Finish 流尾收束（挂点侧在下游返回后调用）：未完结块原样外发
 // （半截事件为源站字节——代理透传语义，非消费侧丢弃；UNKNOWN 不冒充判定）。
 func (m *mcpSSEWriter) Finish() {
-	if m.blocked || !m.decided {
+	if m.blocked || m.hijacked || !m.decided {
 		return
 	}
 	if len(m.pending) > 0 && m.active {
@@ -368,12 +383,17 @@ func (m *mcpSSEWriter) Finish() {
 
 // Flush 透传底层 Flusher。
 func (m *mcpSSEWriter) Flush() {
+	if m.hijacked {
+		return
+	}
 	if m.status == 0 {
 		m.WriteHeader(http.StatusOK)
 	}
 	if f, ok := m.base.(http.Flusher); ok {
 		f.Flush()
+		return
 	}
+	_ = http.NewResponseController(m.base).Flush()
 }
 
 // Unwrap 返回底层 writer（http.ResponseController 依赖）。
@@ -381,12 +401,22 @@ func (m *mcpSSEWriter) Unwrap() http.ResponseWriter { return m.base }
 
 // Hijack 透传连接劫持（升级后脱离逐事件检查——如实直通）。
 func (m *mcpSSEWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	m.active = false
-	h, ok := m.base.(http.Hijacker)
-	if !ok {
-		return nil, nil, fmt.Errorf("underlying writer does not support hijacking")
+	var (
+		conn net.Conn
+		rw   *bufio.ReadWriter
+		err  error
+	)
+	if h, ok := m.base.(http.Hijacker); ok {
+		conn, rw, err = h.Hijack()
+	} else {
+		conn, rw, err = http.NewResponseController(m.base).Hijack()
 	}
-	return h.Hijack()
+	if err == nil {
+		m.hijacked = true
+		m.active = false
+		m.pending = nil
+	}
+	return conn, rw, err
 }
 
 // splitMCPSSEEvent 事件边界切分（空行分隔；行尾 \n / \r\n / 孤 \r 三形态）。

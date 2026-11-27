@@ -951,7 +951,8 @@ allowed_caps = {
 }
 forbidden_bind_prefixes = (
     "/etc", "/proc", "/sys", "/dev", "/boot", "/root",
-    "/usr", "/bin", "/sbin", "/lib", "/lib64", "/var/lib/jiuzhang",
+    "/usr", "/bin", "/sbin", "/lib", "/lib64",
+    "/var/run", "/run", "/var", "/opt", "/home",
 )
 manifest_images = {item["service"]: item["image"] for item in manifest.get("images", [])}
 
@@ -1183,5 +1184,6 @@ for queued in "$JOBS_DIR"/*.json; do
     fi
     write_result "$CURRENT_JOB" FAILED "$CURRENT_STAGE" APPLY_FAILED "$CURRENT_MESSAGE"
     mv "$processing" "${processing%.processing}.failed"
+    rm -rf "$WORK_DIR/$CURRENT_JOB"
   fi
 done

@@ -207,6 +207,12 @@ func (n *configSecretNeeds) any() bool {
 	return n.valkey || n.identitySalt || n.scanVerify || n.fileSignature || n.maskCrypto || n.authzObjectKey || n.tlsTicketKey || n.botSigningKeys || n.aiCrawlLabyrinthKey
 }
 
+// guardSecretsLoader 是可选的窄接口：供回滚重注入密钥时仅读取当前运行时密钥与 Valkey 配置，
+// 避免触发完整 BuildGuardConfig（扫 30+ 策略表与 PROTECT 门禁）导致当前策略异常时阻塞应急回滚。
+type guardSecretsLoader interface {
+	LoadCurrentSecrets(ctx context.Context) (*GuardConfig, error)
+}
+
 // reinjectConfigSecrets 回滚重放前将历史配置 JSON 中 guard 段与 jiuzhang_tls_mux 密钥类字段替换为当前设置值
 // （与 RollbackAccessControl 经 GetVersionConfig 重注入同口径；新版本快照为脱敏占位、
 // 存量历史版本可能为旧明文，统一按字段存在性重注入，不信任快照内的密钥值）。
@@ -278,7 +284,15 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 		if p.guard == nil {
 			return "", fmt.Errorf("回滚配置包含 guard 密钥字段，但未装配访问控制配置提供者，无法重注入当前密钥")
 		}
-		cur, err := p.guard.BuildGuardConfig(ctx)
+		var (
+			cur *GuardConfig
+			err error
+		)
+		if sl, ok := p.guard.(guardSecretsLoader); ok {
+			cur, err = sl.LoadCurrentSecrets(ctx)
+		} else {
+			cur, err = p.guard.BuildGuardConfig(ctx)
+		}
 		if err != nil {
 			return "", fmt.Errorf("回滚重注入当前密钥：读取当前访问控制配置失败: %w", err)
 		}

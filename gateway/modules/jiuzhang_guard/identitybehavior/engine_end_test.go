@@ -1,7 +1,9 @@
 package identitybehavior
 
 import (
+	"bufio"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -63,5 +65,79 @@ func TestEndStatusFallbackFromHandlerError(t *testing.T) {
 	e.End(r3, obs3, nil)
 	if store.last.Status != 0 {
 		t.Fatalf("no-error/no-write request must keep status 0, got %d", store.last.Status)
+	}
+}
+
+type wsHijackRecorder struct {
+	header   http.Header
+	codes    []int
+	flushed  int
+	hijacked bool
+}
+
+func (r *wsHijackRecorder) Header() http.Header         { return r.header }
+func (r *wsHijackRecorder) WriteHeader(code int)        { r.codes = append(r.codes, code) }
+func (r *wsHijackRecorder) Write(p []byte) (int, error) { return len(p), nil }
+func (r *wsHijackRecorder) Flush()                      { r.flushed++ }
+func (r *wsHijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	r.hijacked = true
+	c1, c2 := net.Pipe()
+	_ = c2.Close()
+	return c1, bufio.NewReadWriter(bufio.NewReader(c1), bufio.NewWriter(c1)), nil
+}
+
+func TestStatusWriterSwitchingProtocolsAndHijack(t *testing.T) {
+	cfg, err := Compile(&Params{Enabled: true}, zap.NewNop())
+	if err != nil || cfg == nil {
+		t.Fatalf("compile: %v %v", cfg, err)
+	}
+	store := &captureStore{}
+	ev, _ := newEventTestLogger(t)
+	e := NewEngine(cfg, store, ev, Options{Logger: zap.NewNop()})
+	res := clientip.Result{ClientIP: mustIP(t, "203.0.113.11")}
+
+	root := &wsHijackRecorder{header: make(http.Header)}
+	outer := &caddyhttp.ResponseWriterWrapper{ResponseWriter: root}
+	r := httptest.NewRequest(http.MethodGet, "http://waf-test.local/ws", nil)
+	r.RemoteAddr = "203.0.113.11:1"
+	w, obs := e.Begin(outer, r, res)
+	if obs == nil {
+		t.Fatal("observation expected")
+	}
+
+	// Provisional 103 must not lock status; 101 Switching Protocols must be recorded as final.
+	w.WriteHeader(http.StatusEarlyHints)
+	if obs.writer.status != 0 {
+		t.Fatalf("103 must remain provisional, got %d", obs.writer.status)
+	}
+	w.WriteHeader(http.StatusSwitchingProtocols)
+	if obs.writer.status != http.StatusSwitchingProtocols {
+		t.Fatalf("101 must be recorded as final status, got %d", obs.writer.status)
+	}
+	// Flush before hijack must not overwrite 101 and must forward through Unwrap-only outer.
+	w.(http.Flusher).Flush()
+	if root.flushed != 1 || obs.writer.status != http.StatusSwitchingProtocols {
+		t.Fatalf("Flush failed: flushed=%d status=%d", root.flushed, obs.writer.status)
+	}
+	// Direct http.Hijacker assertion must succeed through Caddy ResponseWriterWrapper.
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		t.Fatalf("Hijack failed: %v", err)
+	}
+	_ = conn.Close()
+	if !root.hijacked {
+		t.Fatal("root writer not hijacked")
+	}
+	// Flush after hijack must be a no-op.
+	w.(http.Flusher).Flush()
+	if root.flushed != 1 {
+		t.Fatalf("Flush after Hijack must be a no-op, flushed=%d", root.flushed)
+	}
+	e.End(r, obs, nil)
+	if store.last.Status != http.StatusSwitchingProtocols {
+		t.Fatalf("End must observe status 101, got %d", store.last.Status)
+	}
+	if len(root.codes) != 2 || root.codes[0] != http.StatusEarlyHints || root.codes[1] != http.StatusSwitchingProtocols {
+		t.Fatalf("codes = %v, want [103 101]", root.codes)
 	}
 }

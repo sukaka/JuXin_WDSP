@@ -32,34 +32,39 @@ func (a *LogAnalysisAgent) Analyze(ctx context.Context, in *aiorchestrator.Analy
 		res, ref, err := callTool(ctx, in, in.Principal, "request_trace.get",
 			map[string]interface{}{"request_id": idRe[0]}, "Request ID 链路 %s", idRe[0])
 		if err == nil {
-			t := res.(map[string]interface{})
-			b.WriteString(fmt.Sprintf("\nRequest ID %s：\n", idRe[0]))
-			b.WriteString(fmtKV("WAF 事件数", len(t["waf_events"].([]interface{}))))
-			b.WriteString(fmtKV("访问控制事件数", len(t["access_control_events"].([]interface{}))))
-			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
+			if t := safeMap(res); t != nil {
+				b.WriteString(fmt.Sprintf("\nRequest ID %s：\n", idRe[0]))
+				b.WriteString(fmtKV("WAF 事件数", len(safeAnySlice(t, "waf_events"))))
+				b.WriteString(fmtKV("访问控制事件数", len(safeAnySlice(t, "access_control_events"))))
+				b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
+			}
 		}
 	}
 	// 访问控制事件摘要
 	res, ref, err := callTool(ctx, in, in.Principal, "access_control_log.search",
 		map[string]interface{}{"page": 1}, "最近访问控制/CC事件")
 	if err == nil {
-		d := res.(map[string]interface{})
-		b.WriteString(fmt.Sprintf("\n最近访问控制/CC事件（共 %v 条）：\n", d["total"]))
-		for _, it := range d["items"].([]map[string]interface{})[:min(5, len(d["items"].([]map[string]interface{})))] {
-			b.WriteString(fmt.Sprintf("- %v %s %s（%s）\n", it["occurred_at"], it["event_type"], it["client_ip"], it["action"]))
+		if d := safeMap(res); d != nil {
+			b.WriteString(fmt.Sprintf("\n最近访问控制/CC事件（共 %v 条）：\n", d["total"]))
+			items := safeMapSlice(d, "items")
+			for _, it := range items[:min(5, len(items))] {
+				b.WriteString(fmt.Sprintf("- %v %s %s（%s）\n", it["occurred_at"], it["event_type"], it["client_ip"], it["action"]))
+			}
+			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
 		}
-		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
 	}
 	// 审计摘要（运维类查询）
 	res2, ref2, err := callTool(ctx, in, in.Principal, "audit_log.search",
 		map[string]interface{}{"page": 1}, "最近操作审计")
 	if err == nil {
-		d := res2.(map[string]interface{})
-		b.WriteString(fmt.Sprintf("\n最近操作审计（共 %v 条）：\n", d["total"]))
-		for _, it := range d["items"].([]map[string]interface{})[:min(5, len(d["items"].([]map[string]interface{})))] {
-			b.WriteString(fmt.Sprintf("- %v %s %s/%s\n", it["occurred_at"], it["username"], it["module"], it["action"]))
+		if d := safeMap(res2); d != nil {
+			b.WriteString(fmt.Sprintf("\n最近操作审计（共 %v 条）：\n", d["total"]))
+			items := safeMapSlice(d, "items")
+			for _, it := range items[:min(5, len(items))] {
+				b.WriteString(fmt.Sprintf("- %v %s %s/%s\n", it["occurred_at"], it["username"], it["module"], it["action"]))
+			}
+			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref2))
 		}
-		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref2))
 	}
 	return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
 }
@@ -80,17 +85,19 @@ func (a *AssetAgent) Analyze(ctx context.Context, in *aiorchestrator.AnalyzeInpu
 	b.WriteString("**资产概览**\n")
 	res, ref, err := callTool(ctx, in, in.Principal, "application.search", map[string]interface{}{}, "应用清单")
 	if err == nil {
-		d := res.(map[string]interface{})
-		b.WriteString(fmtKV("受保护应用数", d["total"]))
-		for _, it := range d["items"].([]map[string]interface{})[:min(5, len(d["items"].([]map[string]interface{})))] {
-			b.WriteString(fmt.Sprintf("- %s（%s，%s）\n", it["name"], it["code"], it["protection_mode"]))
+		if d := safeMap(res); d != nil {
+			b.WriteString(fmtKV("受保护应用数", d["total"]))
+			items := safeMapSlice(d, "items")
+			for _, it := range items[:min(5, len(items))] {
+				b.WriteString(fmt.Sprintf("- %s（%s，%s）\n", it["name"], it["code"], it["protection_mode"]))
+			}
+			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
 		}
-		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
 	}
 	res2, ref2, err := callTool(ctx, in, in.Principal, "certificate.get_metadata",
 		map[string]interface{}{"expiring_days": 30}, "30天内到期证书")
 	if err == nil {
-		items := res2.(map[string]interface{})["items"].([]map[string]interface{})
+		items := safeMapSlice(safeMap(res2), "items")
 		b.WriteString(fmtKV("30天内到期证书", len(items)))
 		for _, it := range items[:min(5, len(items))] {
 			b.WriteString(fmt.Sprintf("- %s（剩余 %v 天）\n", it["common_name"], it["days_remaining"]))
@@ -99,9 +106,10 @@ func (a *AssetAgent) Analyze(ctx context.Context, in *aiorchestrator.AnalyzeInpu
 	}
 	res3, ref3, err := callTool(ctx, in, in.Principal, "gateway.get_status", map[string]interface{}{}, "网关状态")
 	if err == nil {
-		d := res3.(map[string]interface{})
-		b.WriteString(fmtKV("当前配置版本", d["current_version"]))
-		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref3))
+		if d := safeMap(res3); d != nil {
+			b.WriteString(fmtKV("当前配置版本", d["current_version"]))
+			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref3))
+		}
 	}
 	return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
 }
@@ -123,9 +131,8 @@ func (a *OpsDiagnosticAgent) Analyze(ctx context.Context, in *aiorchestrator.Ana
 	// 组件状态
 	res, ref, err := callTool(ctx, in, in.Principal, "statistics.runtime", map[string]interface{}{}, "组件健康快照")
 	if err == nil {
-		d := res.(map[string]interface{})
 		var downs []string
-		for _, c := range d["components"].([]map[string]interface{}) {
+		for _, c := range safeMapSlice(safeMap(res), "components") {
 			if c["status"] != "UP" {
 				downs = append(downs, fmt.Sprintf("%s(%s)", c["component"], c["status"]))
 			}
@@ -141,7 +148,7 @@ func (a *OpsDiagnosticAgent) Analyze(ctx context.Context, in *aiorchestrator.Ana
 	res2, ref2, err := callTool(ctx, in, in.Principal, "system_log.search",
 		map[string]interface{}{"status": "OPEN"}, "未关闭系统告警")
 	if err == nil {
-		items := res2.(map[string]interface{})["items"].([]map[string]interface{})
+		items := safeMapSlice(safeMap(res2), "items")
 		b.WriteString(fmtKV("未关闭告警", len(items)))
 		for _, it := range items[:min(5, len(items))] {
 			b.WriteString(fmt.Sprintf("- [%s] %s（%s）\n", it["severity"], it["title"], it["component"]))
@@ -150,14 +157,18 @@ func (a *OpsDiagnosticAgent) Analyze(ctx context.Context, in *aiorchestrator.Ana
 	}
 	// 最近发布/变更
 	var pubFail, pubTotal int64
-	_ = a.db.QueryRow(ctx, `
+	if a.db != nil {
+		_ = a.db.QueryRow(ctx, `
 SELECT count(*), count(*) FILTER (WHERE status='FAILED') FROM gateway_publish_tasks
 WHERE requested_at > now() - interval '7 days'`).Scan(&pubTotal, &pubFail)
+	}
 	b.WriteString(fmtKV("近7天发布", fmt.Sprintf("%d 次（失败 %d）", pubTotal, pubFail)))
 	// 采集滞后
 	var lag float64
-	_ = a.db.QueryRow(ctx, `
+	if a.db != nil {
+		_ = a.db.QueryRow(ctx, `
 SELECT COALESCE(EXTRACT(EPOCH FROM (now() - max(updated_at))), 0) FROM event_collector_checkpoints`).Scan(&lag)
+	}
 	if lag > 120 {
 		b.WriteString(fmtKV("事件采集滞后", fmt.Sprintf("%.0f 秒（超阈值 120s）", lag)))
 	}
@@ -220,10 +231,13 @@ GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, start)
 		for rows.Next() {
 			var t string
 			var c int64
-			_ = rows.Scan(&t, &c)
-			parts = append(parts, fmt.Sprintf("%s(%d)", t, c))
+			if rows.Scan(&t, &c) == nil {
+				parts = append(parts, fmt.Sprintf("%s(%d)", t, c))
+			}
 		}
-		b.WriteString(fmtKV("主要攻击类型", strings.Join(parts, "、")))
+		if rows.Err() == nil {
+			b.WriteString(fmtKV("主要攻击类型", strings.Join(parts, "、")))
+		}
 	}
 	ref := in.Evidence.Add("statistics.security_overview", "近7天事件统计", nil)
 	// 来源 IP TOP
@@ -231,7 +245,7 @@ GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, start)
 		map[string]interface{}{"limit": 5, "start_time": start.Format(time.RFC3339)}, "近7天攻击源 TOP5")
 	if err == nil {
 		b.WriteString("\n主要攻击源：\n")
-		for _, it := range res.(map[string]interface{})["items"].([]map[string]interface{}) {
+		for _, it := range safeMapSlice(safeMap(res), "items") {
 			b.WriteString(fmt.Sprintf("- %s：%v 次\n", it["ip"], it["events"]))
 		}
 		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref2))
@@ -282,9 +296,10 @@ func (a *KnowledgeAgent) Analyze(ctx context.Context, in *aiorchestrator.Analyze
 		res, ref, err := callTool(ctx, in, in.Principal, "rule.get",
 			map[string]interface{}{"rule_id": in.RuleIDs[0]}, "规则 %d 元数据", in.RuleIDs[0])
 		if err == nil {
-			r := res.(map[string]interface{})
-			b.WriteString(fmtKV("规则", fmt.Sprintf("%d（%s / %s / %s）", r["rule_id"], r["name"], r["attack_type"], r["severity"])))
-			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
+			if r := safeMap(res); r != nil {
+				b.WriteString(fmtKV("规则", fmt.Sprintf("%d（%s / %s / %s）", r["rule_id"], r["name"], r["attack_type"], r["severity"])))
+				b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
+			}
 		}
 	} else {
 		// 关键字搜索规则库：过短或明显非规则/攻击类问题不直接拿整句去 ILIKE（防「你好」「天气」类误查）
@@ -303,12 +318,17 @@ ORDER BY rule_id LIMIT 5`, kw)
 				for rows.Next() {
 					var rid int
 					var n, s, at string
-					_ = rows.Scan(&rid, &n, &s, &at)
+					if rows.Scan(&rid, &n, &s, &at) != nil {
+						continue
+					}
 					if !found {
 						b.WriteString("\n相关规则：\n")
 						found = true
 					}
 					b.WriteString(fmt.Sprintf("- %d %s（%s，%s）\n", rid, n, s, at))
+				}
+				if rows.Err() != nil {
+					found = false
 				}
 				if !found {
 					b.WriteString(fmt.Sprintf("\n未在本地规则库中找到与「%s」直接相关的条目。可尝试：规则 ID（如 942100）、攻击类型英文代号（SQL_INJECTION / XSS）或更具体的规则名称关键词。\n", kw))

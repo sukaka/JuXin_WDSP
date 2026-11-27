@@ -220,3 +220,59 @@ func TestJSONHelpersRoundTrip(t *testing.T) {
 		t.Errorf("empty ints should round trip to nil, got %v", got)
 	}
 }
+
+func TestCompilePreviewContent(t *testing.T) {
+	e := preciseException()
+	e.ID = uuid.MustParse("11111111-2222-3333-4444-555555555555")
+	e.Version = 3
+	secLang, apiPayload, compileErr := CompilePreviewContent(e, nil)
+	if compileErr != "" || apiPayload != nil {
+		t.Fatalf("unexpected apiPayload=%v compileErr=%q", apiPayload, compileErr)
+	}
+	if !strings.Contains(secLang, "id:8000001") || !strings.Contains(secLang, "ctl:ruleRemoveTargetById=942100;ARGS:content") {
+		t.Errorf("unexpected SecLang: %s", secLang)
+	}
+
+	// REMOVE_RULE_TAG 草稿通过 resolvedOverride 展开预览 SecLang
+	tagExc := &Exception{
+		ID:              e.ID,
+		Version:         1,
+		URIExact:        "/api/search",
+		RuleTags:        []string{"attack-sqli"},
+		ExceptionAction: ActionRemoveRuleTag,
+	}
+	secLang, _, compileErr = CompilePreviewContent(tagExc, []int{942100, 942110})
+	if compileErr != "" {
+		t.Fatalf("tag exception preview compileErr=%q", compileErr)
+	}
+	if !strings.Contains(secLang, "ctl:ruleRemoveById=942100") || !strings.Contains(secLang, "ctl:ruleRemoveById=942110") {
+		t.Errorf("expected resolved rule IDs in SecLang: %s", secLang)
+	}
+
+	// 不支持动作返回明确 compileErr
+	badExc := preciseException()
+	badExc.ExceptionAction = ActionLogOnly
+	secLang, _, compileErr = CompilePreviewContent(badExc, nil)
+	if secLang != "" || compileErr == "" {
+		t.Errorf("expected compileErr for LOG_ONLY, got secLang=%q err=%q", secLang, compileErr)
+	}
+
+	// API 引擎返回编译后 JSON 契约对象
+	apiExc := &Exception{
+		ID:              e.ID,
+		Version:         2,
+		TargetEngine:    EngineAPI,
+		Domain:          "API.Example.com",
+		URIExact:        "/v1/orders",
+		Methods:         []string{"post", "get"},
+		ExceptionAction: ActionObserveRule,
+		APIRuleRefs:     []APIRuleRef{{DetectorID: "schema", RuleID: "schema.type_mismatch"}},
+	}
+	secLang, apiPayload, compileErr = CompilePreviewContent(apiExc, nil)
+	if secLang != "" || compileErr != "" || apiPayload == nil {
+		t.Fatalf("expected apiPayload, got secLang=%q payload=%v err=%q", secLang, apiPayload, compileErr)
+	}
+	if apiPayload["domain"] != "api.example.com" {
+		t.Errorf("normalized domain = %v", apiPayload["domain"])
+	}
+}

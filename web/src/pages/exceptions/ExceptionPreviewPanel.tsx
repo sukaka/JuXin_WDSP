@@ -221,6 +221,49 @@ export default function ExceptionPreviewPanel({
                 '-'
               )}
             </Descriptions.Item>
+            {p.generated_seclang ? (
+              <Descriptions.Item label="预览生成的 SecLang">
+                <pre
+                  style={{
+                    margin: 0,
+                    maxHeight: 220,
+                    overflow: 'auto',
+                    background: '#f5f5f5',
+                    padding: 10,
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-all',
+                  }}
+                >
+                  {p.generated_seclang}
+                </pre>
+              </Descriptions.Item>
+            ) : p.compiled_api_exception ? (
+              <Descriptions.Item label="预览生成的 API 例外 JSON">
+                <pre
+                  style={{
+                    margin: 0,
+                    maxHeight: 220,
+                    overflow: 'auto',
+                    background: '#f5f5f5',
+                    padding: 10,
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-all',
+                  }}
+                >
+                  {JSON.stringify(p.compiled_api_exception, null, 2)}
+                </pre>
+              </Descriptions.Item>
+            ) : p.compile_error ? (
+              <Descriptions.Item label="编译状态">
+                <Typography.Text type="warning">{p.compile_error}</Typography.Text>
+              </Descriptions.Item>
+            ) : null}
           </Descriptions>
         </div>
       )}

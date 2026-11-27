@@ -55,35 +55,39 @@ func (a *WafPolicyAgent) falsePositive(ctx context.Context, in *aiorchestrator.A
 		res, ref, err := callTool(ctx, in, in.Principal, "security_event.get",
 			map[string]interface{}{"event_id": in.EventIDs[0]}, "误报事件详情 %s", in.EventIDs[0])
 		if err == nil {
-			event = res.(map[string]interface{})
-			if ruleID == 0 {
-				if matches, ok := event["matches"].([]map[string]interface{}); ok && len(matches) > 0 {
-					if rid, ok := matches[0]["rule_id"].(int); ok {
-						ruleID = rid
+			if event = safeMap(res); event != nil {
+				if ruleID == 0 {
+					if matches := safeMapSlice(event, "matches"); len(matches) > 0 {
+						if rid := int(safeInt64(matches[0]["rule_id"])); rid > 0 {
+							ruleID = rid
+						}
 					}
 				}
+				b.WriteString(fmt.Sprintf("\n事件 %s：%s %s %s（%s）\n", shortIDPrefix(in.EventIDs[0], 8),
+					event["method"], event["domain"], event["path"], event["attack_type"]))
+				b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
 			}
-			b.WriteString(fmt.Sprintf("\n事件 %s：%s %s %s（%s）\n", in.EventIDs[0][:8]+"...",
-				event["method"], event["domain"], event["path"], event["attack_type"]))
-			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
 		}
 	}
 	if ruleID > 0 {
 		res, ref, err := callTool(ctx, in, in.Principal, "rule.get",
 			map[string]interface{}{"rule_id": ruleID}, "规则 %d 详情", ruleID)
 		if err == nil {
-			r := res.(map[string]interface{})
-			b.WriteString(fmtKV("命中规则", fmt.Sprintf("%d（%s，%s，%s）", ruleID, r["name"], r["severity"], r["attack_type"])))
-			b.WriteString(fmtKV("累计命中", r["hit_count"]))
-			b.WriteString(fmtKV("历史误报标记", r["false_positive_count"]))
-			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
+			if r := safeMap(res); r != nil {
+				b.WriteString(fmtKV("命中规则", fmt.Sprintf("%d（%s，%s，%s）", ruleID, r["name"], r["severity"], r["attack_type"])))
+				b.WriteString(fmtKV("累计命中", r["hit_count"]))
+				b.WriteString(fmtKV("历史误报标记", r["false_positive_count"]))
+				b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
+			}
 		}
 		// 历史误报率
 		var hits, fps int64
-		_ = a.db.QueryRow(ctx, `
+		if a.db != nil {
+			_ = a.db.QueryRow(ctx, `
 SELECT count(*), count(*) FILTER (WHERE e.disposition_status='CONFIRMED_FALSE_POSITIVE')
 FROM security_event_matches m JOIN security_events e ON e.id = m.event_id
 WHERE m.rule_id = $1 AND e.occurred_at > now() - interval '30 days'`, ruleID).Scan(&hits, &fps)
+		}
 		if hits > 0 {
 			b.WriteString(fmtKV("近30天误报率", fmt.Sprintf("%d/%d（%.1f%%）", fps, hits, float64(fps)*100/float64(hits))))
 		}
@@ -91,7 +95,7 @@ WHERE m.rule_id = $1 AND e.occurred_at > now() - interval '30 days'`, ruleID).Sc
 		res2, ref2, err := callTool(ctx, in, in.Principal, "exception.search",
 			map[string]interface{}{"status": "ENABLED"}, "当前生效例外")
 		if err == nil {
-			items := res2.(map[string]interface{})["items"].([]map[string]interface{})
+			items := safeMapSlice(safeMap(res2), "items")
 			b.WriteString(fmtKV("当前生效例外数", len(items)))
 			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref2))
 		}
@@ -129,7 +133,11 @@ func (a *WafPolicyAgent) ruleExplain(ctx context.Context, in *aiorchestrator.Ana
 		b.WriteString(fmt.Sprintf("\n规则 %d 不存在或未同步到本地库，无法确认。", ruleID))
 		return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
 	}
-	r := res.(map[string]interface{})
+	r := safeMap(res)
+	if r == nil {
+		b.WriteString(fmt.Sprintf("\n规则 %d 返回格式异常，无法确认。", ruleID))
+		return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
+	}
 	b.WriteString(fmtKV("规则", fmt.Sprintf("%d（来源 %s，CRS %s）", ruleID, r["rule_source"], crsVersion(a.db, ctx, ruleID))))
 	b.WriteString(fmtKV("名称", r["name"]))
 	b.WriteString(fmtKV("攻击类型", r["attack_type"]))
@@ -143,6 +151,9 @@ func (a *WafPolicyAgent) ruleExplain(ctx context.Context, in *aiorchestrator.Ana
 }
 
 func crsVersion(db *pgxpool.Pool, ctx context.Context, ruleID int) string {
+	if db == nil {
+		return ""
+	}
 	var v string
 	_ = db.QueryRow(ctx, `SELECT crs_version FROM waf_rules WHERE rule_id = $1`, ruleID).Scan(&v)
 	return v
@@ -156,15 +167,15 @@ func (a *WafPolicyAgent) recommend(ctx context.Context, in *aiorchestrator.Analy
 	if err != nil {
 		return nil, err
 	}
-	items := res.(map[string]interface{})["items"].([]map[string]interface{})
+	items := safeMapSlice(safeMap(res), "items")
 	if len(items) == 0 {
 		b.WriteString("\n当前无策略数据，无法给出建议。")
 		return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
 	}
-	for _, p := range items[:3] {
-		b.WriteString(fmt.Sprintf("- 策略「%s」：模式 %s，PL%d，阈值 入%d/出%d%s\n",
+	for _, p := range items[:min(3, len(items))] {
+		b.WriteString(fmt.Sprintf("- 策略「%v」：模式 %v，PL%v，阈值 入%v/出%v%s\n",
 			p["name"], p["protection_mode"], p["paranoia_level"], p["inbound_threshold"], p["outbound_threshold"],
-			map[bool]string{true: "（内置）", false: ""}[p["is_builtin"].(bool)]))
+			map[bool]string{true: "（内置）", false: ""}[safeBool(p, "is_builtin")]))
 	}
 	b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
 	// 近 7 天事件统计支撑
@@ -172,7 +183,8 @@ func (a *WafPolicyAgent) recommend(ctx context.Context, in *aiorchestrator.Analy
 		map[string]interface{}{"dimension": "attack_type"}, "近7天攻击类型分布")
 	if err == nil {
 		b.WriteString("\n近 7 天攻击类型分布：\n")
-		for _, it := range res2.(map[string]interface{})["items"].([]map[string]interface{})[:min(5, len(res2.(map[string]interface{})["items"].([]map[string]interface{})))] {
+		statItems := safeMapSlice(safeMap(res2), "items")
+		for _, it := range statItems[:min(5, len(statItems))] {
 			b.WriteString(fmt.Sprintf("- %s：%v 次\n", it["key"], it["count"]))
 		}
 		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref2))
@@ -181,7 +193,7 @@ func (a *WafPolicyAgent) recommend(ctx context.Context, in *aiorchestrator.Analy
 		map[string]interface{}{"limit": 5}, "近7天误报规则 TOP")
 	if err == nil {
 		b.WriteString("\n规则命中与误报 TOP5：\n")
-		for _, it := range res3.(map[string]interface{})["items"].([]map[string]interface{}) {
+		for _, it := range safeMapSlice(safeMap(res3), "items") {
 			b.WriteString(fmt.Sprintf("- 规则 %v：命中 %v，误报 %v\n", it["rule_id"], it["hits"], it["false_positives"]))
 		}
 		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref3))
@@ -280,7 +292,7 @@ WHERE attack_type = (SELECT attack_type FROM waf_rules WHERE rule_id = $1 ORDER 
 		res, ref, err := callTool(ctx, in, in.Principal, "exception.search",
 			map[string]interface{}{"status": "ENABLED"}, "当前生效例外")
 		if err == nil {
-			items := res.(map[string]interface{})["items"].([]map[string]interface{})
+			items := safeMapSlice(safeMap(res), "items")
 			b.WriteString(fmtKV("当前生效例外数", len(items)))
 			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
 		}
@@ -322,9 +334,10 @@ WHERE m.rule_id = $1 AND e.occurred_at > now() - interval '30 days'`, ruleID).Sc
 	b.WriteString(fmtKV("可能漏拦的攻击", blocks))
 	res, ref, err := callTool(ctx, in, in.Principal, "rule.get", map[string]interface{}{"rule_id": ruleID}, "规则 %d 详情", ruleID)
 	if err == nil {
-		r := res.(map[string]interface{})
-		b.WriteString(fmtKV("规则风险", fmt.Sprintf("%s / %s", r["severity"], r["attack_type"])))
-		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
+		if r := safeMap(res); r != nil {
+			b.WriteString(fmtKV("规则风险", fmt.Sprintf("%s / %s", r["severity"], r["attack_type"])))
+			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
+		}
 	}
 	risk := "MEDIUM"
 	if blocks > 0 {

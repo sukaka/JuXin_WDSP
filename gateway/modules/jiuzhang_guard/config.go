@@ -180,6 +180,10 @@ type Guard struct {
 	// 装配期校验大小硬上限并白名单净化 HTML 正文，见 blockresponse.go）
 	BlockResponse *blockResponseJSON `json:"block_response,omitempty"`
 
+	// 自定义多版本拦截页面（迁移 000251；发布通道按当前应用预解析为场景映射
+	// DEFAULT / WAF / ACCESS_CONTROL / RATE_LIMIT；nil 或空 = 未配置，零行为变化）
+	BlockPages map[string]*blockPageItemJSON `json:"block_pages,omitempty"`
+
 	// L7 访问控制规则（发布通道下发；nil 或空 = 未配置，零行为变化）
 	L7Rules *l7rules.Config `json:"l7_rules,omitempty"`
 
@@ -528,8 +532,9 @@ type Guard struct {
 	apiEventsClose func() error // 测试注入钩子；生产路径为空时直接关闭 apiEvents
 	accessLog      *accessLogWriter
 	engine         *sharedEngine
-	failOpen       bool                   // 本实例故障策略（Provision 时确定，配置重载即可切换）
-	blockResponse  *compiledBlockResponse // 自定义 429/阻断响应（Provision 编译；nil = 内置默认模板）
+	failOpen       bool                          // 本实例故障策略（Provision 时确定，配置重载即可切换）
+	blockResponse  *compiledBlockResponse        // 自定义 429/阻断响应（Provision 编译；nil = 内置默认模板）
+	blockPages     map[string]*compiledBlockPage // 自定义多版本拦截页（Provision 净化编译；nil = 未配置）
 	heartbeat      *heartbeatRunner       // 节点心跳（nil = 关闭；Cleanup 停止并等待退出）
 
 	behaviorStores            *detectors.StoreOverrides     // 按 BehaviorStore 构建（nil = 进程内默认内存）

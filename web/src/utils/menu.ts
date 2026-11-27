@@ -111,6 +111,14 @@ export const MENU_ITEMS: MenuDef[] = [
     capability: 'web_waf',
     group: '应用防护策略',
   },
+  // 自定义拦截页面与多版本管理（迁移 000251；全产品形态可用，按 block_pages.read 权限门控）
+  {
+    key: '/block-pages',
+    label: '拦截页面',
+    roles: ['SECURITY_ADMIN'],
+    permissions: ['block_pages.read'],
+    group: '应用防护策略',
+  },
   // AI 自动化渗透防护 阶段1：行为检测策略（全局单例）
   {
     key: '/behavior-policy',

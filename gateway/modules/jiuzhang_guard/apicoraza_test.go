@@ -12,7 +12,7 @@ import (
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 )
 
-// corazaInterruption 识别矩阵：仅「HandlerError + 哨兵消息」命中（与 coraza-caddy v2.5.0
+// corazaInterruption 识别矩阵：仅「HandlerError + 哨兵消息」命中（与 coraza-caddy v2.6.0
 // 实际返回形态一致：值类型 HandlerError{StatusCode, ID, Err: errInterruptionTriggered}）；
 // 包装链经 errors.As 穿透；nil/普通错误/其他 HandlerError（反代 502、guard 自身 4xx）一律不命中。
 func TestCorazaInterruption(t *testing.T) {

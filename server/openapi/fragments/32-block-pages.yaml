@@ -1,0 +1,143 @@
+# 自定义拦截页面与多版本管理（迁移 000251）
+# 数据源：block_pages、block_page_versions、block_page_bindings
+# 权限种子：block_pages.read（SECURITY_ADMIN / AUDIT_ADMIN）、block_pages.manage（SECURITY_ADMIN）
+paths:
+  /block-pages:
+    get:
+      operationId: listBlockPages
+      tags: [block-pages]
+      summary: 查询自定义拦截页模板列表
+      description: 分页返回拦截页模板及内置主题、占位变量和拦截场景元数据。权限：`block_pages.read`
+      parameters:
+        - name: keyword
+          in: query
+          schema: { type: string }
+        - name: editor_mode
+          in: query
+          schema: { type: string, enum: [VISUAL, HTML] }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        '200':
+          description: 模板分页列表与元数据
+    post:
+      operationId: createBlockPage
+      tags: [block-pages]
+      summary: 新建自定义拦截页模板（v1）
+      description: 创建可视化配置或自定义 HTML/CSS 模板（或从现有模板/历史版本复制），HTML 经白名单净化并保存不可变 v1 版本。权限：`block_pages.manage`
+      responses:
+        '201':
+          description: 创建成功
+        '400':
+          description: 参数校验失败
+        '409':
+          description: 模板名称冲突
+
+  /block-pages/preview:
+    post:
+      operationId: previewBlockPage
+      tags: [block-pages]
+      summary: 实时预览自定义拦截页
+      description: 无状态执行与生产网关一致的可视化渲染、HTML/CSS 安全净化与示例变量替换，返回可直接放进沙箱 iframe 渲染的 HTML 及安全过滤告警。权限：`block_pages.read`
+      responses:
+        '200':
+          description: 预览渲染结果
+
+  /block-pages/bindings:
+    get:
+      operationId: listBlockPageBindings
+      tags: [block-pages]
+      summary: 查询拦截页生效绑定列表
+      description: 查询全局默认及应用级 × 拦截场景（DEFAULT/WAF/ACCESS_CONTROL/RATE_LIMIT）的生效绑定。权限：`block_pages.read`
+      responses:
+        '200':
+          description: 生效绑定清单
+    put:
+      operationId: upsertBlockPageBinding
+      tags: [block-pages]
+      summary: 创建或更新拦截页生效绑定
+      description: 将全局或指定应用的某个拦截场景绑定到指定拦截页模板（可跟随最新版或锁定历史版本），需在配置发布后同步至网关生效。权限：`block_pages.manage`
+      responses:
+        '200':
+          description: 绑定保存成功
+
+  /block-pages/bindings/{id}:
+    delete:
+      operationId: deleteBlockPageBinding
+      tags: [block-pages]
+      summary: 解除拦截页生效绑定
+      description: 移除指定作用域与场景的绑定，使其恢复按优先级继承上级或系统内置默认页。权限：`block_pages.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 解除成功
+
+  /block-pages/{id}:
+    get:
+      operationId: getBlockPage
+      tags: [block-pages]
+      summary: 查询拦截页模板详情与版本历史
+      description: 返回当前模板配置、按版本号倒序的不可变修订版本历史及引用该模板的绑定列表。权限：`block_pages.read`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 模板详情与版本历史
+    put:
+      operationId: updateBlockPage
+      tags: [block-pages]
+      summary: 更新拦截页模板并生成新修订版本
+      description: 校验 optimistic lock（expected_version），更新模板内容并追加不可变历史版本 version+1。权限：`block_pages.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 更新成功
+        '409':
+          description: 乐观锁版本冲突或重名
+    delete:
+      operationId: deleteBlockPage
+      tags: [block-pages]
+      summary: 删除自定义拦截页模板
+      description: 删除未被绑定引用的非内置拦截页模板及其历史版本。权限：`block_pages.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 删除成功
+        '409':
+          description: 内置模板不可删除或仍存在生效绑定
+
+  /block-pages/{id}/rollback:
+    post:
+      operationId: rollbackBlockPage
+      tags: [block-pages]
+      summary: 回滚拦截页模板到历史版本
+      description: 将目标历史版本快照克隆为新的不可变修订版本（version+1），保留完整审计轨迹。权限：`block_pages.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 回滚成功
+        '409':
+          description: 乐观锁版本冲突

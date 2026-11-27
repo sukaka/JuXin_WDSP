@@ -242,6 +242,9 @@ func (c *apiResponseCapture) Write(p []byte) (int, error) {
 
 // Flush 透传底层 Flusher；缓冲未溢出的响应扣留 Flush（完成后一次性写回，防提前提交状态行）。
 func (c *apiResponseCapture) Flush() {
+	if c.hijacked {
+		return
+	}
 	if c.status == 0 {
 		c.WriteHeader(http.StatusOK)
 	}
@@ -250,24 +253,34 @@ func (c *apiResponseCapture) Flush() {
 	}
 	if f, ok := c.base.(http.Flusher); ok {
 		f.Flush()
+		return
 	}
+	_ = http.NewResponseController(c.base).Flush()
 }
 
 // Unwrap 返回底层 writer（http.ResponseController 依赖）。
 func (c *apiResponseCapture) Unwrap() http.ResponseWriter { return c.base }
 
-// Hijack 透传连接劫持（WebSocket 升级需要；底层不支持时如实报错）。
+// Hijack 透传连接劫持（WebSocket 升级需要；支持底层直接 Hijacker 与 Unwrap 链）。
 // 劫持后响应脱离捕获：存在命中规则时只能 fail-open 并 Warn（无法向已劫持连接注入封闭响应）。
 func (c *apiResponseCapture) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	c.hijacked = true
-	if c.hasMaskRules {
-		c.warnSkip("connection hijacked, mask transform unavailable (fail-open)")
+	var (
+		conn net.Conn
+		rw   *bufio.ReadWriter
+		err  error
+	)
+	if h, ok := c.base.(http.Hijacker); ok {
+		conn, rw, err = h.Hijack()
+	} else {
+		conn, rw, err = http.NewResponseController(c.base).Hijack()
 	}
-	h, ok := c.base.(http.Hijacker)
-	if !ok {
-		return nil, nil, fmt.Errorf("underlying writer does not support hijacking")
+	if err == nil {
+		c.hijacked = true
+		if c.hasMaskRules {
+			c.warnSkip("connection hijacked, mask transform unavailable (fail-open)")
+		}
 	}
-	return h.Hijack()
+	return conn, rw, err
 }
 
 // warnSkip 跳过/抑制原因告警（每请求一次，必带端点与请求 ID）。

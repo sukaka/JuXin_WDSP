@@ -332,6 +332,9 @@ func (t *UpstreamTransport) roundTripHTTP10(req *http.Request) (*http.Response, 
 	return resp, nil
 }
 
+// maxHTTP10RequestBodyBytes 限制 HTTP/1.0 短连接回源单次缓冲请求体体积（32 MiB），防止无界 io.ReadAll 触发 OOM。
+const maxHTTP10RequestBodyBytes = 32 << 20
+
 // writeHTTP10Request 写出精确的 "METHOD /path HTTP/1.0\r\n" 请求行、请求头与请求体。
 func writeHTTP10Request(w io.Writer, req *http.Request) error {
 	bw := bufio.NewWriter(w)
@@ -354,10 +357,13 @@ func writeHTTP10Request(w io.Writer, req *http.Request) error {
 	var bodyBytes []byte
 	if req.Body != nil {
 		var err error
-		bodyBytes, err = io.ReadAll(req.Body)
+		bodyBytes, err = io.ReadAll(io.LimitReader(req.Body, maxHTTP10RequestBodyBytes+1))
 		_ = req.Body.Close()
 		if err != nil {
 			return err
+		}
+		if len(bodyBytes) > maxHTTP10RequestBodyBytes {
+			return fmt.Errorf("jiuzhang_tls transport: HTTP/1.0 request body exceeds %d bytes limit", maxHTTP10RequestBodyBytes)
 		}
 		if len(bodyBytes) > 0 && req.Header.Get("Content-Length") == "" {
 			req.Header.Set("Content-Length", fmt.Sprintf("%d", len(bodyBytes)))

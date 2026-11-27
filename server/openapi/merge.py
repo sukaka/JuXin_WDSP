@@ -59,6 +59,7 @@ TAG_DESCRIPTIONS = {
     'semantic-guard': '本地离线 ONNX/SLM 语义防火墙（Phase 9C-2）',
     'wasm-plugins': 'Wasm 热插拔自定义检测插件沙箱（Phase 9D-1）',
     'xdp-acceleration': '内核级 eBPF/XDP 快速丢包加速（Phase 9D-2）',
+    'block-pages': '自定义拦截页面（模板、多版本与作用域绑定）',
     'security-regression': '安全回归证据与发布门禁（WDSP P1-04）',
     'attack-sessions': '攻击活动（Attack Session）',
     'access-logs': '访问日志',

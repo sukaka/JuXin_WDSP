@@ -21,6 +21,7 @@ type apiResponseSSEWriter struct {
 	decided     bool
 	active      bool
 	degraded    bool
+	hijacked    bool
 	status      int
 	pending     []byte
 	events      int
@@ -58,7 +59,8 @@ func (w *apiResponseSSEWriter) WriteHeader(code int) {
 	}
 	w.status = code
 	encoding, supported := apiResponseContentEncoding(w.base.Header())
-	if supported && encoding == apiResponseEncodingIdentity && mcpguard.IsSSEContentType(w.base.Header().Get("Content-Type")) {
+	if code != http.StatusSwitchingProtocols && w.base.Header().Get("Upgrade") == "" &&
+		supported && encoding == apiResponseEncodingIdentity && mcpguard.IsSSEContentType(w.base.Header().Get("Content-Type")) {
 		w.active = true
 	}
 	w.decided = true
@@ -179,7 +181,7 @@ func (w *apiResponseSSEWriter) flushPending() error {
 }
 
 func (w *apiResponseSSEWriter) Finish() {
-	if !w.decided {
+	if w.hijacked || !w.decided {
 		return
 	}
 	if len(w.pending) > 0 && w.active {
@@ -189,21 +191,36 @@ func (w *apiResponseSSEWriter) Finish() {
 }
 
 func (w *apiResponseSSEWriter) Flush() {
+	if w.hijacked {
+		return
+	}
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
 	}
 	if f, ok := w.base.(http.Flusher); ok {
 		f.Flush()
+		return
 	}
+	_ = http.NewResponseController(w.base).Flush()
 }
 
 func (w *apiResponseSSEWriter) Unwrap() http.ResponseWriter { return w.base }
 
 func (w *apiResponseSSEWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	w.active = false
-	h, ok := w.base.(http.Hijacker)
-	if !ok {
-		return nil, nil, fmt.Errorf("underlying writer does not support hijacking")
+	var (
+		conn net.Conn
+		rw   *bufio.ReadWriter
+		err  error
+	)
+	if h, ok := w.base.(http.Hijacker); ok {
+		conn, rw, err = h.Hijack()
+	} else {
+		conn, rw, err = http.NewResponseController(w.base).Hijack()
 	}
-	return h.Hijack()
+	if err == nil {
+		w.hijacked = true
+		w.active = false
+		w.pending = nil
+	}
+	return conn, rw, err
 }

@@ -47,15 +47,62 @@ var llmInjectionRules = []struct {
 	{"cn_reveal_system_prompt", regexp.MustCompile(`(泄露|透露|输出|打印|重复).{0,6}(系统提示词|系统指令|初始指令|提示词)`)},
 }
 
-// llmPromptValuePaths 参与注入词表匹配的留存标量路径（JSONValues 键）。
-// messages 数组仅首个元素可见（parser 护栏），message_index 恒为 "0"（如实记录口径）。
+// llmPromptValuePaths 参与注入词表匹配的归一化留存标量路径（JSONValues 键经 [N]→[] 归一后匹配，
+// 覆盖 messages[0..63].content / messages[0..63].content[0..63].text 等多轮消息与分片）。
 var llmPromptValuePaths = map[string]bool{
-	"messages[].content":        true, // chat/messages 形态首条消息文本
+	"messages[].content":        true, // chat/messages 形态各轮消息文本
 	"messages[].content[].text": true, // 结构化 content 分片文本
 	"prompt":                    true, // completions 形态
 	"input":                     true, // embeddings/audio 形态
 	"system":                    true, // 旧版 chat system 字段
 	"instructions":              true, // Responses API 形态
+}
+
+var reJSONArrayIndex = regexp.MustCompile(`\[\d+\]`)
+
+func isLLMPromptValuePath(path string) bool {
+	if llmPromptValuePaths[path] {
+		return true
+	}
+	return llmPromptValuePaths[reJSONArrayIndex.ReplaceAllString(path, "[]")]
+}
+
+func extractLLMMessageMeta(p *parser.Parsed, path string) (idx string, role string, ok bool) {
+	if strings.HasPrefix(path, "messages[]") {
+		return "0", strings.TrimSpace(p.JSONValues["messages[].role"]), true
+	}
+	if strings.HasPrefix(path, "messages[") {
+		if end := strings.IndexByte(path, ']'); end > len("messages[") {
+			idx = path[len("messages["):end]
+			role = strings.TrimSpace(p.JSONValues["messages["+idx+"].role"])
+			return idx, role, true
+		}
+	}
+	return "", "", false
+}
+
+func sortLLMPromptPaths(paths []string) {
+	parseMsgIdx := func(path string) (int, bool) {
+		if strings.HasPrefix(path, "messages[]") {
+			return 0, true
+		}
+		if strings.HasPrefix(path, "messages[") {
+			if end := strings.IndexByte(path, ']'); end > len("messages[") {
+				if n, err := strconv.Atoi(path[len("messages["):end]); err == nil {
+					return n, true
+				}
+			}
+		}
+		return 0, false
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		mi, okI := parseMsgIdx(paths[i])
+		mj, okJ := parseMsgIdx(paths[j])
+		if okI && okJ && mi != mj {
+			return mi < mj
+		}
+		return paths[i] < paths[j]
+	})
 }
 
 // PromptLenBucket prompt 体量桶（近似口径：chat 请求体以 prompt 为主体，
@@ -128,12 +175,11 @@ func checkLLMPromptInjection(ctx *dsctx.RequestContext, p *parser.Parsed, policy
 	}
 	paths := make([]string, 0, len(p.JSONValues))
 	for path := range p.JSONValues {
-		if llmPromptValuePaths[path] {
+		if isLLMPromptValuePath(path) {
 			paths = append(paths, path)
 		}
 	}
-	sort.Strings(paths) // 确定性顺序（事件可重现）
-	role := strings.TrimSpace(p.JSONValues["messages[].role"])
+	sortLLMPromptPaths(paths) // 确定性顺序（messages[0..N] 递增序，事件可重现）
 	n := 0
 	for _, path := range paths {
 		value := p.JSONValues[path]
@@ -152,9 +198,8 @@ func checkLLMPromptInjection(ctx *dsctx.RequestContext, p *parser.Parsed, policy
 				evidence["policy_id"] = policy.ID
 				evidence["policy_version"] = strconv.FormatInt(policy.Version, 10)
 			}
-			if strings.HasPrefix(path, "messages[]") {
-				// parser 数组只走首元素：可见消息序号恒为 0（口径如实记录）
-				evidence["message_index"] = "0"
+			if msgIdx, role, isMsg := extractLLMMessageMeta(p, path); isMsg {
+				evidence["message_index"] = msgIdx
 				if role != "" {
 					evidence["role"] = role
 				}

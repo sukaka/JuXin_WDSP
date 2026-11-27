@@ -3,7 +3,6 @@ package detectors
 import (
 	"fmt"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -111,11 +110,11 @@ func llmPolicyEvidence(policy *LLMSecurityPolicy) map[string]string {
 func llmPromptPaths(p *parser.Parsed) []string {
 	paths := make([]string, 0, len(p.JSONValues))
 	for path := range p.JSONValues {
-		if llmPromptValuePaths[path] {
+		if isLLMPromptValuePath(path) {
 			paths = append(paths, path)
 		}
 	}
-	sort.Strings(paths)
+	sortLLMPromptPaths(paths)
 	return paths
 }
 

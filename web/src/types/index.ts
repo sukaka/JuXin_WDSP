@@ -671,6 +671,91 @@ export interface ProtectionPolicyDetail extends ProtectionPolicyItem {
   domains?: ProtectionPolicyBoundDomain[] | null
 }
 
+/** 防护策略生效规则统计摘要 */
+export interface ProtectionPolicyContentSummary {
+  total_rules: number
+  active_rules: number
+  disabled_by_override: number
+  skipped_by_pl: number
+  mode_off_rules: number
+  custom_rules_count: number
+  global_exceptions_count: number
+  overrides_count: number
+}
+
+/** 防护策略关联的规则覆盖项 */
+export interface ProtectionPolicyOverrideItem {
+  id: string
+  rule_id: number
+  scope_type: string
+  action: string
+  reason: string
+  effective_active: boolean
+}
+
+/** 防护策略生效的自定义规则项 */
+export interface ProtectionPolicyCustomRuleItem {
+  rule_id: number
+  name: string
+  attack_type: string
+  severity: string
+  phase: number
+  action: string
+  generated_rule: string
+}
+
+/** 防护策略生效的全局 WAF 例外项 */
+export interface ProtectionPolicyExceptionItem {
+  exception_id: string
+  rule_id: number
+  scope_type: string
+  exception_version: number
+  seclang: string
+}
+
+/** 防护策略下规则库单条规则的生效视图 */
+export interface ProtectionPolicyEffectiveRuleItem {
+  rule_id: number
+  name: string
+  attack_type: string
+  severity: string
+  phase: number
+  rule_source: string
+  file_name: string
+  paranoia_level: number
+  effective_status: 'ACTIVE' | 'DISABLED_BY_OVERRIDE' | 'SKIPPED_BY_PL' | 'MODE_OFF' | string
+  raw_rule: string
+}
+
+/** 防护策略加载的规则文件顺序阶段 */
+export interface ProtectionPolicyRuleFileStage {
+  order: number
+  path: string
+  description: string
+}
+
+/** 防护策略实际生效内容响应（GET /protection-policies/{id}/content） */
+export interface ProtectionPolicyContent {
+  policy_id: string
+  policy_code: string
+  policy_name: string
+  protection_mode: string
+  sec_rule_engine: string
+  paranoia_level: number
+  inbound_anomaly_threshold: number
+  outbound_anomaly_threshold: number
+  generated_directives: string
+  loaded_rule_files: ProtectionPolicyRuleFileStage[]
+  summary: ProtectionPolicyContentSummary
+  overrides: ProtectionPolicyOverrideItem[]
+  custom_rules: ProtectionPolicyCustomRuleItem[]
+  global_exceptions: ProtectionPolicyExceptionItem[]
+  rules: ProtectionPolicyEffectiveRuleItem[]
+  rules_total: number
+  page: number
+  page_size: number
+}
+
 /** WAF 规则功能类别 */
 export type WafRuleType =
   | 'DETECTION'
@@ -736,6 +821,8 @@ export interface WafRuleItem {
   description?: string
   /** 结构化中文规则详细说明（详情接口返回） */
   detail?: WafRuleDetailInfo
+  /** 底层原始 SecLang 规则原文（含正则表达式与链式子规则，详情接口返回） */
+  raw_rule?: string
   severity: string
   phase: number
   tags: string[] | string | null
@@ -918,10 +1005,16 @@ export interface ExceptionItem {
   unsupported_reasons?: string[] | null
 }
 
-/** 例外策略详情（含宽泛判定） */
+/** 例外策略详情（含宽泛判定与编译后的实际下发内容） */
 export interface ExceptionDetail {
   exception: ExceptionItem
   is_broad: boolean
+  /** WAF 引擎生成的两规则标记法 SecLang 原文 */
+  generated_seclang?: string
+  /** API 引擎下发网关 api_exceptions 段的 JSON 对象 */
+  compiled_api_exception?: Record<string, unknown> | null
+  /** 尚不可编译时的明确原因说明 */
+  compile_error?: string
 }
 
 /* ---------- P0-04：例外预览（POST /api/v1/exceptions/{id}/preview，契约 S4 §8，已冻结逐字字段） ---------- */
@@ -977,6 +1070,12 @@ export interface ExceptionPreviewResult {
   unsupported: ExceptionPreviewUnsupported[]
   protected_modules_unchanged: string[]
   compiled_fingerprint: string
+  /** WAF 引擎预览生成的两规则标记法 SecLang 原文 */
+  generated_seclang?: string
+  /** API 引擎预览生成的 api_exceptions 下发 JSON */
+  compiled_api_exception?: Record<string, unknown> | null
+  /** 尚不可编译时的明确原因说明 */
+  compile_error?: string
   required_publish_targets: string[]
   historical_sample_coverage?: number | null
   estimated_match_count: number | null

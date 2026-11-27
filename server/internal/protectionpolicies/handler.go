@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/audits"
@@ -14,13 +15,28 @@ import (
 
 // Handler 是防护策略处理器。
 type Handler struct {
-	store  *Store
-	audits *audits.Service
+	store          *Store
+	audits         *audits.Service
+	crsDir         string
+	rawCacheMu     sync.RWMutex
+	rawCacheLoaded bool
+	rawCacheByKey  map[string]string
+	rawCacheByID   map[int]string
 }
 
 // NewHandler 创建处理器。
 func NewHandler(store *Store, au *audits.Service) *Handler {
 	return &Handler{store: store, audits: au}
+}
+
+// SetCRSDir 设置规则集目录（用于在数据库尚未同步 raw_rule 时按需回源读取规则原文）。
+func (h *Handler) SetCRSDir(dir string) {
+	h.rawCacheMu.Lock()
+	h.crsDir = dir
+	h.rawCacheLoaded = false
+	h.rawCacheByKey = nil
+	h.rawCacheByID = nil
+	h.rawCacheMu.Unlock()
 }
 
 // List 策略列表。

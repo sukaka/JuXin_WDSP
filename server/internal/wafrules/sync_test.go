@@ -259,3 +259,56 @@ SecRule ARGS "@rx generic" "id:934100,phase:2,block,msg:'Node.js Injection',tag:
 		}
 	}
 }
+
+func TestParseRawRulePreservesMultilineAndChainedSubrules(t *testing.T) {
+	content := `
+SecRule REQUEST_METHOD "@rx ^(?:GET|HEAD)$" \
+    "id:920170,\
+    phase:1,\
+    block,\
+    t:none,\
+    msg:'GET or HEAD Request with Body Content',\
+    tag:'attack-protocol',\
+    severity:'CRITICAL',\
+    chain"
+    SecRule REQUEST_HEADERS:Content-Length "!@rx ^0?$" \
+        "t:none,\
+        setvar:'tx.inbound_anomaly_score_pl1=+%{tx.critical_anomaly_score}'"
+
+SecRule ARGS "@rx <script" "id:941100,phase:2,block,msg:'XSS',tag:'attack-xss'"
+`
+	rules, failed, err := ParseCRSRules(content, "REQUEST-920-PROTOCOL-ENFORCEMENT.conf", SourceCRS)
+	if err != nil || len(failed) > 0 {
+		t.Fatalf("ParseCRSRules err=%v failed=%v", err, failed)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("parsed %d rules, want 2", len(rules))
+	}
+	if !strings.Contains(rules[0].RawRule, `SecRule REQUEST_METHOD "@rx ^(?:GET|HEAD)$"`) {
+		t.Errorf("raw_rule missing head: %q", rules[0].RawRule)
+	}
+	if !strings.Contains(rules[0].RawRule, `SecRule REQUEST_HEADERS:Content-Length "!@rx ^0?$"`) {
+		t.Errorf("raw_rule missing chained sub-rule: %q", rules[0].RawRule)
+	}
+	if !strings.Contains(rules[0].RawRule, "\n") {
+		t.Errorf("raw_rule should preserve multiline formatting: %q", rules[0].RawRule)
+	}
+	if rules[1].RawRule != `SecRule ARGS "@rx <script" "id:941100,phase:2,block,msg:'XSS',tag:'attack-xss'"` {
+		t.Errorf("single-line raw_rule = %q", rules[1].RawRule)
+	}
+}
+
+func TestLoadRawRuleIndexFromRealCRS(t *testing.T) {
+	sources := BuildSyncSources("../../../gateway/rules/crs/rules")
+	byKey, byID := LoadRawRuleIndex(sources)
+	if len(byID) == 0 {
+		t.Fatal("expected non-empty raw rule index from gateway/rules")
+	}
+	raw920170 := byID[920170]
+	if !strings.Contains(raw920170, "id:920170") || !strings.Contains(raw920170, "Content-Length") {
+		t.Errorf("expected real chained rule 920170 raw text, got: %q", raw920170)
+	}
+	if _, ok := byKey[rawRuleCacheKey(SourceCRS, "REQUEST-920-PROTOCOL-ENFORCEMENT.conf", 920170)]; !ok {
+		t.Errorf("expected exact source|file|id cache key for 920170")
+	}
+}

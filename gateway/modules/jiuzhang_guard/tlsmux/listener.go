@@ -83,8 +83,10 @@ type ListenerMux struct {
 	compiledSites    []*compiledSite
 	exactIndex       map[string]*compiledSite
 	wildcardSites    []wildcardEntry
-	sessionLog       *sessionLogWriter
-	gatewayNode      string
+	sessionLog  *sessionLogWriter
+	gatewayNode string
+	listenersMu sync.Mutex
+	listeners   []*muxListener
 }
 
 type wildcardEntry struct {
@@ -186,8 +188,17 @@ func (m *ListenerMux) Provision(ctx caddy.Context) error {
 	return nil
 }
 
-// Cleanup 关闭会话事件日志文件。
+// Cleanup 先关闭并等待所有已包装监听器的在途握手协程退出，再排空并关闭会话事件日志文件，
+// 防止配置重载期间在途 handleConn 并发写已关闭的 sessionLog 或泄漏就绪连接 fd。
 func (m *ListenerMux) Cleanup() error {
+	m.listenersMu.Lock()
+	ls := append([]*muxListener(nil), m.listeners...)
+	m.listeners = nil
+	m.listenersMu.Unlock()
+	for _, ml := range ls {
+		_ = ml.Close()
+		ml.waitAll()
+	}
 	if m.sessionLog != nil {
 		return m.sessionLog.close()
 	}
@@ -418,6 +429,7 @@ func (m *ListenerMux) matchSite(sni string, wantGM bool) *compiledSite {
 
 // WrapListener 实现 caddy.ListenerWrapper：包装底层 TCP 监听器提供双协议异步握手与协议分流。
 func (m *ListenerMux) WrapListener(ln net.Listener) net.Listener {
+	ctx, cancel := context.WithCancel(context.Background())
 	ml := &muxListener{
 		Listener: ln,
 		mux:      m,
@@ -425,8 +437,18 @@ func (m *ListenerMux) WrapListener(ln net.Listener) net.Listener {
 		errCh:    make(chan error, 1),
 		sem:      make(chan struct{}, maxConcurrentHandshakes),
 		doneCh:   make(chan struct{}),
+		ctx:      ctx,
+		cancel:   cancel,
+		inFlight: make(map[net.Conn]struct{}),
 	}
-	go ml.acceptLoop()
+	m.listenersMu.Lock()
+	m.listeners = append(m.listeners, ml)
+	m.listenersMu.Unlock()
+	ml.acceptWg.Add(1)
+	go func() {
+		defer ml.acceptWg.Done()
+		ml.acceptLoop()
+	}()
 	return ml
 }
 
@@ -437,7 +459,14 @@ type muxListener struct {
 	errCh     chan error
 	sem       chan struct{}
 	doneCh    chan struct{}
+	ctx       context.Context
+	cancel    context.CancelFunc
 	closeOnce sync.Once
+	mu        sync.Mutex
+	closed    bool
+	inFlight  map[net.Conn]struct{}
+	acceptWg  sync.WaitGroup
+	wg        sync.WaitGroup
 }
 
 func (l *muxListener) Accept() (net.Conn, error) {
@@ -454,19 +483,37 @@ func (l *muxListener) Accept() (net.Conn, error) {
 func (l *muxListener) Close() error {
 	var err error
 	l.closeOnce.Do(func() {
+		l.mu.Lock()
+		l.closed = true
 		close(l.doneCh)
-		err = l.Listener.Close()
-		// 排空尚未被上层取走的连接，防止 fd 泄漏
-		for {
-			select {
-			case c := <-l.readyCh:
-				_ = c.Close()
-			default:
-				return
-			}
+		if l.cancel != nil {
+			l.cancel()
 		}
+		for c := range l.inFlight {
+			_ = c.SetDeadline(time.Now())
+		}
+		l.mu.Unlock()
+		err = l.Listener.Close()
+		l.drainReady()
 	})
 	return err
+}
+
+func (l *muxListener) waitAll() {
+	l.acceptWg.Wait()
+	l.wg.Wait()
+	l.drainReady()
+}
+
+func (l *muxListener) drainReady() {
+	for {
+		select {
+		case c := <-l.readyCh:
+			_ = c.Close()
+		default:
+			return
+		}
+	}
 }
 
 func (l *muxListener) acceptLoop() {
@@ -491,8 +538,24 @@ func (l *muxListener) acceptLoop() {
 		}
 		select {
 		case l.sem <- struct{}{}:
+			l.mu.Lock()
+			if l.closed {
+				l.mu.Unlock()
+				<-l.sem
+				_ = rawConn.Close()
+				return
+			}
+			l.inFlight[rawConn] = struct{}{}
+			l.wg.Add(1)
+			l.mu.Unlock()
 			go func(c net.Conn) {
-				defer func() { <-l.sem }()
+				defer func() {
+					l.mu.Lock()
+					delete(l.inFlight, c)
+					l.mu.Unlock()
+					l.wg.Done()
+					<-l.sem
+				}()
 				l.handleConn(c)
 			}(rawConn)
 		case <-l.doneCh:
@@ -601,7 +664,11 @@ func (l *muxListener) handleConn(rawConn net.Conn) {
 		return
 	}
 
-	hsCtx, cancel := context.WithTimeout(context.Background(), l.mux.handshakeTimeout)
+	parentCtx := l.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	hsCtx, cancel := context.WithTimeout(parentCtx, l.mux.handshakeTimeout)
 	defer cancel()
 
 	// 3. 国密 TLCP 1.1 分支
@@ -799,8 +866,27 @@ func (l *muxListener) handleConn(rawConn net.Conn) {
 }
 
 func (l *muxListener) deliverReady(conn net.Conn) {
+	// 与 Close() 通过同一互斥锁协调，避免 Close() 排空 readyCh 后 deliverReady 仍把连接塞入导致 fd 泄漏。
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
 	select {
 	case l.readyCh <- conn:
+		l.mu.Unlock()
+		return
+	default:
+		l.mu.Unlock()
+	}
+	select {
+	case l.readyCh <- conn:
+		l.mu.Lock()
+		if l.closed {
+			l.drainReady()
+		}
+		l.mu.Unlock()
 	case <-l.doneCh:
 		_ = conn.Close()
 	}

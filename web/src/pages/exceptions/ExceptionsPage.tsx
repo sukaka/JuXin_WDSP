@@ -1228,6 +1228,83 @@ export default function ExceptionsPage() {
                 {exc.reason || '-'}
               </Descriptions.Item>
             </Descriptions>
+            <Card
+              size="small"
+              title={
+                exc.target_engine === 'API'
+                  ? '编译后的 API 例外配置（api_exceptions JSON）'
+                  : '生成的 SecLang 规则（两规则标记法）'
+              }
+              extra={
+                detail?.generated_seclang ? (
+                  <Typography.Text
+                    copyable={{ text: detail.generated_seclang, tooltips: ['复制 SecLang', '已复制'] }}
+                  >
+                    复制规则
+                  </Typography.Text>
+                ) : detail?.compiled_api_exception ? (
+                  <Typography.Text
+                    copyable={{
+                      text: JSON.stringify(detail.compiled_api_exception, null, 2),
+                      tooltips: ['复制 JSON', '已复制'],
+                    }}
+                  >
+                    复制配置
+                  </Typography.Text>
+                ) : null
+              }
+              style={{ marginBottom: 16 }}
+            >
+              {detail?.generated_seclang ? (
+                <>
+                  <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+                    发布时将在 before-CRS 段按顺序分配实际规则 ID（8000001 起成对分配 marker/effect），此处展示完整编译指令：
+                  </Typography.Paragraph>
+                  <pre
+                    style={{
+                      margin: 0,
+                      maxHeight: 260,
+                      overflow: 'auto',
+                      background: '#f5f5f5',
+                      padding: 12,
+                      borderRadius: 6,
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-all',
+                    }}
+                  >
+                    {detail.generated_seclang}
+                  </pre>
+                </>
+              ) : detail?.compiled_api_exception ? (
+                <pre
+                  style={{
+                    margin: 0,
+                    maxHeight: 260,
+                    overflow: 'auto',
+                    background: '#f5f5f5',
+                    padding: 12,
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-all',
+                  }}
+                >
+                  {JSON.stringify(detail.compiled_api_exception, null, 2)}
+                </pre>
+              ) : detail?.compile_error ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="当前草稿尚无法编译为网关规则"
+                  description={detail.compile_error}
+                />
+              ) : (
+                <Typography.Text type="secondary">暂无编译内容</Typography.Text>
+              )}
+            </Card>
             <Typography.Title level={5}>影响预览</Typography.Title>
             <div style={{ marginBottom: 16 }}>
               <ExceptionPreviewPanel exceptionId={exc.id} version={exc.version} />

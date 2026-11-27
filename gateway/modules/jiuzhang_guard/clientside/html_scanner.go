@@ -8,7 +8,6 @@ import (
 	"container/list"
 	"crypto/sha256"
 	"encoding/base64"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -822,25 +821,38 @@ func (w *HTMLResponseWrapper) Finish(skip bool) {
 }
 
 func (w *HTMLResponseWrapper) Flush() {
+	if w.hijacked {
+		return
+	}
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
 	}
 	w.switchPassthrough()
 	if f, ok := w.base.(http.Flusher); ok {
 		f.Flush()
+		return
 	}
+	_ = http.NewResponseController(w.base).Flush()
 }
 
 func (w *HTMLResponseWrapper) Unwrap() http.ResponseWriter { return w.base }
 
 func (w *HTMLResponseWrapper) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	w.hijacked = true
-	w.passthrough = true
-	h, ok := w.base.(http.Hijacker)
-	if !ok {
-		return nil, nil, fmt.Errorf("underlying writer does not support hijacking")
+	var (
+		conn net.Conn
+		rw   *bufio.ReadWriter
+		err  error
+	)
+	if h, ok := w.base.(http.Hijacker); ok {
+		conn, rw, err = h.Hijack()
+	} else {
+		conn, rw, err = http.NewResponseController(w.base).Hijack()
 	}
-	return h.Hijack()
+	if err == nil {
+		w.hijacked = true
+		w.passthrough = true
+	}
+	return conn, rw, err
 }
 
 func isHTMLContentType(ct string) bool {

@@ -104,9 +104,14 @@ func (h *Handler) collectNodeFacts(ctx context.Context, now time.Time) (nodeFact
 	if err != nil {
 		return f, err
 	}
-	skewMax := int64(60)
+	skewMax := int64(apiauthzacks.DefaultClockSkewMaxSeconds)
 	if h.settings != nil {
-		skewMax = int64(h.settings.GetInt(ctx, "gateway_runtime", "authz_clock_skew_max_seconds", 60))
+		skewMax = apiauthzacks.ClampClockSkewMax(h.settings.GetInt(
+			ctx,
+			apiauthzacks.ClockSkewSettingGroup,
+			apiauthzacks.ClockSkewSettingKey,
+			apiauthzacks.DefaultClockSkewMaxSeconds,
+		))
 	}
 	view := apiauthzacks.BuildView(rows, mgmt, now, skewMax)
 	if len(view.Items) == 0 {

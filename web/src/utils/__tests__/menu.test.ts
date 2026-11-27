@@ -180,6 +180,7 @@ describe('filterMenusByRoles', () => {
       '/custom-rules',
       '/waf/vuln-refs',
       '/exceptions',
+      '/block-pages',
       '/trusted-proxies',
       '/access-rules',
       '/whitelists',
@@ -821,5 +822,32 @@ describe('filterMenusByRoles', () => {
       webWafEnabled: true,
     })
     expect(auditHidden.map((m) => m.key)).not.toContain('/xdp-acceleration')
+  })
+
+  it('自定义拦截页面菜单按 SECURITY_ADMIN 或 block_pages.read 权限门控并归属应用防护策略分组', () => {
+    const visible = filterMenusByRoles(['SECURITY_ADMIN'], ['block_pages.read'], {
+      apiDynamicProtection: false,
+      webWafEnabled: true,
+    })
+    const entry = visible.find((m) => m.key === '/block-pages')
+    expect(entry).toMatchObject({
+      key: '/block-pages',
+      label: '拦截页面',
+      group: '应用防护策略',
+    })
+
+    // 审计管理员持有 block_pages.read 时可见
+    const auditVisible = filterMenusByRoles(['AUDIT_ADMIN'], ['block_pages.read'], {
+      apiDynamicProtection: false,
+      webWafEnabled: false,
+    })
+    expect(auditVisible.map((m) => m.key)).toContain('/block-pages')
+
+    // 系统管理员无 block_pages.read 时不可见（遵循三权边界）
+    const sysHidden = filterMenusByRoles(['SYSTEM_ADMIN'], [], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    expect(sysHidden.map((m) => m.key)).not.toContain('/block-pages')
   })
 })

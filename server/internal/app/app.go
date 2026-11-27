@@ -70,6 +70,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/backups"
 	"github.com/jiuzhang-waf/server/internal/behaviorpolicy"
+	"github.com/jiuzhang-waf/server/internal/blockpages"
 	"github.com/jiuzhang-waf/server/internal/botpolicy"
 	"github.com/jiuzhang-waf/server/internal/cache"
 	"github.com/jiuzhang-waf/server/internal/certificates"
@@ -360,6 +361,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	customRuleStore := customrules.NewStore(db)
 	ruleOverrideStore := ruleoverrides.NewStore(db)
 	policyHandler := protectionpolicies.NewHandler(policyStore, auditSvc)
+	policyHandler.SetCRSDir(cfg.WAF.CRSDir)
 	customRuleHandler := customrules.NewHandler(customRuleStore, auditSvc)
 	// CNNVD 兼容性 P1：漏洞档案（vuln_refs）管理面与交叉查询（迁移 000167）
 	vulnRefHandler := vulnrefs.NewHandler(vulnrefs.NewStore(db), auditSvc)
@@ -408,6 +410,8 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	semanticGuardStore := semanticguard.NewStore(db)
 	// Wasm 热插拔自定义检测插件沙箱（Phase 9D-1；迁移 000249）
 	wasmPluginStore := wasmplugins.NewStore(db)
+	// 自定义拦截页面与多版本管理（迁移 000251）
+	blockPageStore := blockpages.NewStore(db)
 	// 安全回归证据登记与发布门禁（WDSP P1-04 R3；表见迁移 000134，权限种子见 000135）。
 	// 受控证据存储为双方共用的受控本地存储适配器（S0 协调表：P0-01 服务端存储不存在，
 	// 由本任务提供）；装配失败 fail-closed（证据根目录不可写时不带病启动）。
@@ -520,6 +524,8 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	semanticGuardHandler := semanticguard.NewHandler(semanticGuardStore, appStore, auditSvc)
 	// Wasm 热插拔自定义检测插件处理器（Phase 9D-1）
 	wasmPluginHandler := wasmplugins.NewHandler(wasmPluginStore, appStore, auditSvc)
+	// 自定义拦截页面与多版本管理处理器（迁移 000251）
+	blockPageHandler := blockpages.NewHandler(blockPageStore, appStore, auditSvc)
 	// 攻击活动会话处理器
 	attackSessionHandler := attacksessions.NewHandler(attackSessionStore)
 
@@ -1306,6 +1312,18 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	mux.Handle("GET /api/v1/xdp-acceleration/status", authz(middleware.RequirePermission("xdp_accel.read")(http.HandlerFunc(xdpHandler.GetStatus))))
 	mux.Handle("POST /api/v1/xdp-acceleration/sync", authz(middleware.RequirePermission("xdp_accel.manage")(http.HandlerFunc(xdpHandler.PostSync))))
 
+	// ---- 自定义拦截页面与多版本管理（迁移 000251；全产品形态可用） ----
+	mux.Handle("GET /api/v1/block-pages", authz(middleware.RequirePermission("block_pages.read")(http.HandlerFunc(blockPageHandler.List))))
+	mux.Handle("POST /api/v1/block-pages", authz(middleware.RequirePermission("block_pages.manage")(http.HandlerFunc(blockPageHandler.Create))))
+	mux.Handle("POST /api/v1/block-pages/preview", authz(middleware.RequirePermission("block_pages.read")(http.HandlerFunc(blockPageHandler.Preview))))
+	mux.Handle("GET /api/v1/block-pages/bindings", authz(middleware.RequirePermission("block_pages.read")(http.HandlerFunc(blockPageHandler.ListBindings))))
+	mux.Handle("PUT /api/v1/block-pages/bindings", authz(middleware.RequirePermission("block_pages.manage")(http.HandlerFunc(blockPageHandler.UpsertBinding))))
+	mux.Handle("DELETE /api/v1/block-pages/bindings/{id}", authz(middleware.RequirePermission("block_pages.manage")(http.HandlerFunc(blockPageHandler.DeleteBinding))))
+	mux.Handle("GET /api/v1/block-pages/{id}", authz(middleware.RequirePermission("block_pages.read")(http.HandlerFunc(blockPageHandler.Get))))
+	mux.Handle("PUT /api/v1/block-pages/{id}", authz(middleware.RequirePermission("block_pages.manage")(http.HandlerFunc(blockPageHandler.Update))))
+	mux.Handle("POST /api/v1/block-pages/{id}/rollback", authz(middleware.RequirePermission("block_pages.manage")(http.HandlerFunc(blockPageHandler.Rollback))))
+	mux.Handle("DELETE /api/v1/block-pages/{id}", authz(middleware.RequirePermission("block_pages.manage")(http.HandlerFunc(blockPageHandler.Delete))))
+
 	// ---- 阶段3：Web应用/域名/源站/证书/配置发布/版本/网关状态 ----
 	if encSvc != nil {
 		// Web应用
@@ -1440,6 +1458,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	mux.Handle("GET /api/v1/protection-policies", authz(middleware.RequirePermission("protection_policies.read")(http.HandlerFunc(policyHandler.List))))
 	mux.Handle("POST /api/v1/protection-policies", authz(middleware.RequirePermission("protection_policies.create")(http.HandlerFunc(policyHandler.Create))))
 	mux.Handle("GET /api/v1/protection-policies/{id}", authz(middleware.RequirePermission("protection_policies.read")(http.HandlerFunc(policyHandler.Get))))
+	mux.Handle("GET /api/v1/protection-policies/{id}/content", authz(middleware.RequirePermission("protection_policies.read")(http.HandlerFunc(policyHandler.Content))))
 	mux.Handle("PUT /api/v1/protection-policies/{id}", authz(middleware.RequirePermission("protection_policies.update")(http.HandlerFunc(policyHandler.Update))))
 	mux.Handle("DELETE /api/v1/protection-policies/{id}", authz(middleware.RequirePermission("protection_policies.delete")(http.HandlerFunc(policyHandler.Delete))))
 	mux.Handle("POST /api/v1/protection-policies/{id}/copy", authz(middleware.RequirePermission("protection_policies.create")(http.HandlerFunc(policyHandler.Copy))))

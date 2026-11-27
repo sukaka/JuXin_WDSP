@@ -53,6 +53,7 @@ type Rule struct {
 	CRSVersion   string          `json:"crs_version"`
 	ContentHash  string          `json:"content_hash"`
 	ParsedSpec   json.RawMessage `json:"parsed_spec,omitempty"`
+	RawRule      string          `json:"raw_rule,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`
 }
@@ -129,11 +130,15 @@ func ParseCRSRules(content, fileName, source string) ([]*Rule, []string, error) 
 	var failed []string
 
 	// 按行扫描，拼接续行（以 \ 结尾）；同时记录每条 SecRule 正上方紧邻的
-	// 注释块（跳过分隔线与版权/许可证行），供无 msg 的规则兜底命名
+	// 注释块（跳过分隔线与版权/许可证行），供无 msg 的规则兜底命名；
+	// 另保留原始多行文本（含链式 chain 子规则），供管理端查看实际 SecRule 源码。
 	lines := strings.Split(content, "\n")
 	var current strings.Builder
+	var rawLines []string
 	var currentComments []string
 	var pendingComments []string
+	var lastRule *Rule
+	lastExpectsChain := false
 	inRule := false
 
 	flush := func() {
@@ -141,28 +146,50 @@ func ParseCRSRules(content, fileName, source string) ([]*Rule, []string, error) 
 			return
 		}
 		ruleText := current.String()
+		rawText := strings.TrimSpace(strings.Join(rawLines, "\n"))
 		current.Reset()
+		rawLines = nil
 		inRule = false
 		rule, err := parseOneRule(ruleText, fileName, source, currentComments)
 		currentComments = nil
 		if err != nil {
 			failed = append(failed, truncate(ruleText, 80)+": "+err.Error())
+			lastRule = nil
+			lastExpectsChain = false
 			return
 		}
 		if rule != nil {
+			rule.RawRule = rawText
 			rules = append(rules, rule)
+			lastRule = rule
+			lastExpectsChain = wordChainPattern.MatchString(ruleText)
+			return
 		}
+		// 无 id 的 SecRule 若紧跟在带 chain 动作的主规则之后，归并为同一规则的链式子规则原文
+		if lastRule != nil && lastExpectsChain && rawText != "" {
+			if lastRule.RawRule != "" {
+				lastRule.RawRule += "\n" + rawText
+			} else {
+				lastRule.RawRule = rawText
+			}
+			lastExpectsChain = wordChainPattern.MatchString(ruleText)
+			return
+		}
+		lastRule = nil
+		lastExpectsChain = false
 	}
 
 	for _, line := range lines {
-		trimmed := strings.TrimRight(line, " \t\r")
+		cleanLine := strings.TrimRight(line, "\r")
+		trimmed := strings.TrimRight(cleanLine, " \t")
 		isContinuation := strings.HasSuffix(trimmed, "\\")
-		if secRuleStartPattern.MatchString(line) {
+		if secRuleStartPattern.MatchString(cleanLine) {
 			flush()
 			inRule = true
 			currentComments = pendingComments
 			pendingComments = nil
-			current.WriteString(strings.TrimSpace(line))
+			current.WriteString(strings.TrimSpace(cleanLine))
+			rawLines = []string{trimmed}
 			if !isContinuation {
 				flush()
 			}
@@ -171,13 +198,14 @@ func ParseCRSRules(content, fileName, source string) ([]*Rule, []string, error) 
 		if inRule {
 			current.WriteString(" ")
 			current.WriteString(strings.TrimSpace(strings.TrimSuffix(trimmed, "\\")))
+			rawLines = append(rawLines, trimmed)
 			if !isContinuation {
 				flush()
 			}
 			continue
 		}
 		// 规则之外的行：收集紧邻下一条 SecRule 上方的注释块
-		text := strings.TrimSpace(line)
+		text := strings.TrimSpace(cleanLine)
 		if strings.HasPrefix(text, "#") {
 			c := strings.TrimSpace(strings.TrimPrefix(text, "#"))
 			if c == "" || isNoiseComment(c) {
@@ -186,6 +214,10 @@ func ParseCRSRules(content, fileName, source string) ([]*Rule, []string, error) 
 			pendingComments = append(pendingComments, c)
 		} else {
 			pendingComments = nil // 空行或其他指令行打断相邻注释块
+			if text != "" {
+				lastRule = nil
+				lastExpectsChain = false
+			}
 		}
 	}
 	flush()
@@ -433,6 +465,45 @@ func BuildSyncSources(crsDir string) []SourceDir {
 	return sources
 }
 
+// LoadRawRuleIndex 扫描全部同步来源目录中的规则文件，建立原始 SecRule 索引。
+// 返回：byKey（source|file_name|rule_id -> raw_rule）与 byID（rule_id -> raw_rule，兜底用）。
+func LoadRawRuleIndex(sources []SourceDir) (map[string]string, map[int]string) {
+	byKey := map[string]string{}
+	byID := map[int]string{}
+	for _, sd := range sources {
+		files, err := filepath.Glob(filepath.Join(sd.Dir, "*.conf"))
+		if err != nil {
+			continue
+		}
+		sort.Strings(files)
+		for _, f := range files {
+			base := filepath.Base(f)
+			if strings.HasSuffix(base, ".example") || strings.Contains(base, "EXCLUSION") {
+				continue
+			}
+			rules, _, err := ParseCRSFile(f, sd.Source)
+			if err != nil {
+				continue
+			}
+			for _, r := range rules {
+				if r.RawRule == "" {
+					continue
+				}
+				key := rawRuleCacheKey(sd.Source, base, r.RuleID)
+				byKey[key] = r.RawRule
+				if _, exists := byID[r.RuleID]; !exists {
+					byID[r.RuleID] = r.RawRule
+				}
+			}
+		}
+	}
+	return byKey, byID
+}
+
+func rawRuleCacheKey(source, fileName string, ruleID int) string {
+	return source + "|" + fileName + "|" + strconv.Itoa(ruleID)
+}
+
 // SyncService 是 CRS 规则同步服务。
 type SyncService struct {
 	db *pgxpool.Pool
@@ -528,8 +599,9 @@ func (s *SyncService) syncSourceFiles(ctx context.Context, files []string, sourc
 			} else if existingRule.ContentHash != rule.ContentHash ||
 				existingRule.Name != rule.Name || existingRule.Message != rule.Message ||
 				existingRule.AttackType != rule.AttackType ||
+				existingRule.RawRule != rule.RawRule ||
 				!parsedSpecEqual(existingRule.ParsedSpec, rule.ParsedSpec) {
-				// 更新（规则原文变化，或解析器升级导致名称/消息/攻击类型/结构化详述修正）
+				// 更新（规则原文变化，或解析器升级导致名称/消息/攻击类型/结构化详述/原文补充修正）
 				if err := s.updateRule(ctx, rule); err != nil {
 					report.Conflicts++
 					report.FailedRules = append(report.FailedRules, fmt.Sprintf("rule %d update: %v", rule.RuleID, err))
@@ -569,7 +641,7 @@ func parsedSpecEqual(a, b json.RawMessage) bool {
 
 func (s *SyncService) existingRules(ctx context.Context, source, crsVersion string) (map[int]*Rule, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT rule_id, content_hash, name, message, attack_type, parsed_spec FROM waf_rules WHERE rule_source = $1 AND crs_version = $2`, source, crsVersion)
+		`SELECT rule_id, content_hash, name, message, attack_type, parsed_spec, COALESCE(raw_rule, '') FROM waf_rules WHERE rule_source = $1 AND crs_version = $2`, source, crsVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -577,9 +649,9 @@ func (s *SyncService) existingRules(ctx context.Context, source, crsVersion stri
 	out := map[int]*Rule{}
 	for rows.Next() {
 		var id int
-		var hash, name, message, attackType string
+		var hash, name, message, attackType, rawRule string
 		var parsedSpec []byte
-		if err := rows.Scan(&id, &hash, &name, &message, &attackType, &parsedSpec); err != nil {
+		if err := rows.Scan(&id, &hash, &name, &message, &attackType, &parsedSpec, &rawRule); err != nil {
 			return nil, err
 		}
 		out[id] = &Rule{
@@ -589,6 +661,7 @@ func (s *SyncService) existingRules(ctx context.Context, source, crsVersion stri
 			Message:     message,
 			AttackType:  attackType,
 			ParsedSpec:  json.RawMessage(parsedSpec),
+			RawRule:     rawRule,
 		}
 	}
 	return out, rows.Err()
@@ -601,15 +674,15 @@ func (s *SyncService) insertRule(ctx context.Context, r *Rule) error {
 	}
 	_, err := s.db.Exec(ctx, `
 INSERT INTO waf_rules (rule_id, rule_source, file_name, name, message, severity, phase, tags,
-  attack_type, default_state, crs_version, content_hash, parsed_spec)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+  attack_type, default_state, crs_version, content_hash, parsed_spec, raw_rule)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 ON CONFLICT (rule_id, rule_source, crs_version) DO UPDATE SET
   file_name=EXCLUDED.file_name, name=EXCLUDED.name, message=EXCLUDED.message,
   severity=EXCLUDED.severity, phase=EXCLUDED.phase, tags=EXCLUDED.tags,
   attack_type=EXCLUDED.attack_type, content_hash=EXCLUDED.content_hash,
-  parsed_spec=EXCLUDED.parsed_spec, updated_at=now()`,
+  parsed_spec=EXCLUDED.parsed_spec, raw_rule=EXCLUDED.raw_rule, updated_at=now()`,
 		r.RuleID, r.RuleSource, r.FileName, r.Name, r.Message, r.Severity, r.Phase, r.Tags,
-		r.AttackType, r.DefaultState, r.CRSVersion, r.ContentHash, spec)
+		r.AttackType, r.DefaultState, r.CRSVersion, r.ContentHash, spec, r.RawRule)
 	return err
 }
 
@@ -620,9 +693,9 @@ func (s *SyncService) updateRule(ctx context.Context, r *Rule) error {
 	}
 	_, err := s.db.Exec(ctx, `
 UPDATE waf_rules SET file_name=$1, name=$2, message=$3, severity=$4, phase=$5, tags=$6,
-  attack_type=$7, content_hash=$8, parsed_spec=$9, updated_at=now()
-WHERE rule_id=$10 AND rule_source=$11 AND crs_version=$12`,
-		r.FileName, r.Name, r.Message, r.Severity, r.Phase, r.Tags, r.AttackType, r.ContentHash, spec,
+  attack_type=$7, content_hash=$8, parsed_spec=$9, raw_rule=$10, updated_at=now()
+WHERE rule_id=$11 AND rule_source=$12 AND crs_version=$13`,
+		r.FileName, r.Name, r.Message, r.Severity, r.Phase, r.Tags, r.AttackType, r.ContentHash, spec, r.RawRule,
 		r.RuleID, r.RuleSource, r.CRSVersion)
 	return err
 }

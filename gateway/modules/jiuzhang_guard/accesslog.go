@@ -230,6 +230,7 @@ type captureResponseWriter struct {
 	bodyTruncated bool
 	captureBody   bool
 	decided       bool
+	hijacked      bool
 	tracker       *ttfbTracker // TTFB 计量（nil = 不计量）
 }
 
@@ -256,9 +257,10 @@ func (w *captureResponseWriter) decide() {
 }
 
 func (w *captureResponseWriter) WriteHeader(code int) {
-	// 仅首个最终状态码落定：1xx 信息响应（如 103 Early Hints）不结算状态/采体决策/TTFB，
-	// 全部透传下游（与 identitybehavior statusWriter 同一纪律）
-	if w.status == 0 && (code < 100 || code >= 200) {
+	// 仅首个最终状态码落定：101 Switching Protocols 为终态，其余 1xx 信息响应
+	// （如 100/102/103 Early Hints）不结算状态/采体决策/TTFB，全部透传下游
+	// （与 software_bypass / apiresponse / identitybehavior 同一纪律）。
+	if w.status == 0 && (code == http.StatusSwitchingProtocols || code < 100 || code >= 200) {
 		w.status = code
 		w.decide()
 		if w.tracker != nil {
@@ -296,6 +298,9 @@ func (w *captureResponseWriter) Write(p []byte) (int, error) {
 
 // Flush 透传底层 Flusher（SSE/流式响应依赖；无底层能力时退化为 no-op 状态提交）。
 func (w *captureResponseWriter) Flush() {
+	if w.hijacked {
+		return
+	}
 	if w.status == 0 {
 		w.status = http.StatusOK
 		w.decide()
@@ -305,19 +310,34 @@ func (w *captureResponseWriter) Flush() {
 	}
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
+		return
 	}
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 // Unwrap 返回底层 writer（http.ResponseController 依赖，用于透传 Hijack 等可选能力）。
 func (w *captureResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// Hijack 透传连接劫持（WebSocket 升级需要；底层不支持时如实报错）。
+// Hijack 透传连接劫持（WebSocket 升级需要；支持底层直接 Hijacker 与 Unwrap 链）。
 func (w *captureResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	h, ok := w.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, fmt.Errorf("underlying writer does not support hijacking")
+	var (
+		conn net.Conn
+		rw   *bufio.ReadWriter
+		err  error
+	)
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		conn, rw, err = h.Hijack()
+	} else {
+		conn, rw, err = http.NewResponseController(w.ResponseWriter).Hijack()
 	}
-	return h.Hijack()
+	if err == nil {
+		w.hijacked = true
+		w.decided = true
+		if w.tracker != nil {
+			w.tracker.markFirstByte()
+		}
+	}
+	return conn, rw, err
 }
 
 // isTextualContentType 判定响应体是否文本类（SSE 明确排除，防止无限流撑爆内存）。
@@ -456,8 +476,9 @@ func (g *Guard) captureAccessLog(w http.ResponseWriter, r *http.Request, handler
 		}
 		if err == nil {
 			// 处理器未显式写状态码且正常返回：归一为 200，
-			// 与 API 捕获侧 outcome()（apiresponse.go）同一归一规则
-			if rec.ResponseStatus == 0 {
+			// 与 API 捕获侧 outcome()（apiresponse.go）同一归一规则；
+			// 连接被直接劫持且未显式写状态码时保持 0，不编造 200（与 software_bypass 一致）。
+			if rec.ResponseStatus == 0 && !cw.hijacked {
 				rec.ResponseStatus = http.StatusOK
 			}
 		} else {

@@ -20,16 +20,19 @@ import (
 )
 
 // 时钟漂移上限（D8）：默认 60 秒（与租约缺省同量级——漂移达到租约尺度时任何时效
-// 判定都不可信）；系统设置 authz.clock_skew_max_seconds 覆盖，夹紧 10~300s
+// 判定都不可信）；系统设置 gateway_runtime.authz_clock_skew_max_seconds 覆盖，夹紧 10~300s
 // （下限防止操作员压到心跳间隔以下造成系统性误报，上限防止放宽到失去约束意义）。
 const (
+	ClockSkewSettingGroup      = "gateway_runtime"
+	ClockSkewSettingKey        = "authz_clock_skew_max_seconds"
 	DefaultClockSkewMaxSeconds = 60
 	minClockSkewMaxSeconds     = 10
 	maxClockSkewMaxSeconds     = 300
 )
 
-// clampClockSkewMax 漂移上限夹紧到 [10, 300]。
-func clampClockSkewMax(v int) int64 {
+// ClampClockSkewMax 漂移上限夹紧到 [10, 300]（与 gateway_runtime 设置校验同口径，
+// 供 apiauthzacks 与 apiauthzwizard 共享唯一事实源）。
+func ClampClockSkewMax(v int) int64 {
 	if v < minClockSkewMaxSeconds {
 		return minClockSkewMaxSeconds
 	}
@@ -37,6 +40,10 @@ func clampClockSkewMax(v int) int64 {
 		return maxClockSkewMaxSeconds
 	}
 	return int64(v)
+}
+
+func clampClockSkewMax(v int) int64 {
+	return ClampClockSkewMax(v)
 }
 
 // deriveNodeAck 单节点 ack_state 派生（规则见文件头注释；staleness 在任何

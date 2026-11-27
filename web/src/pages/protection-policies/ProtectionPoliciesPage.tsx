@@ -5,6 +5,7 @@ import {
   App as AntdApp,
   Button,
   Card,
+  Col,
   Descriptions,
   Drawer,
   Form,
@@ -12,9 +13,13 @@ import {
   InputNumber,
   List,
   Modal,
+  Row,
   Select,
   Space,
+  Statistic,
   Switch,
+  Table,
+  Tabs,
   Tag,
   Tooltip,
   Typography,
@@ -30,11 +35,13 @@ import type {
 } from '../../api/protectionPolicies'
 import ProtectionModeTag from '../../components/ProtectionModeTag'
 import SmartTable from '../../components/SmartTable'
+import StatusTag from '../../components/StatusTag'
 import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
-import type { ProtectionPolicyItem } from '../../types'
+import { ATTACK_TYPE_META, RULE_SEVERITY_META, RULE_SOURCE_META } from '../../utils/stage4'
+import type { ProtectionPolicyEffectiveRuleItem, ProtectionPolicyItem } from '../../types'
 
 interface Filters {
   keyword?: string
@@ -52,6 +59,20 @@ const MODE_OPTIONS = [
 ]
 
 const PL_OPTIONS = [1, 2, 3, 4].map((n) => ({ value: n, label: `PL${n}` }))
+
+const EFFECTIVE_RULE_STATUS_META: Record<string, { color: string; label: string }> = {
+  ACTIVE: { color: 'green', label: '生效' },
+  DISABLED_BY_OVERRIDE: { color: 'red', label: '覆盖停用' },
+  SKIPPED_BY_PL: { color: 'default', label: '高于当前PL' },
+  MODE_OFF: { color: 'orange', label: '策略关闭' },
+}
+
+const EFFECTIVE_STATUS_OPTIONS = [
+  { value: 'ACTIVE', label: '生效' },
+  { value: 'DISABLED_BY_OVERRIDE', label: '覆盖停用' },
+  { value: 'SKIPPED_BY_PL', label: '高于当前PL' },
+  { value: 'MODE_OFF', label: '策略关闭' },
+]
 
 /** 策略表单（新建含编码，编辑不含编码） */
 function PolicyFormFields({ isCreate }: { isCreate: boolean }) {
@@ -164,8 +185,26 @@ export default function ProtectionPoliciesPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState<ProtectionPolicyItem | null>(null)
   const [detailId, setDetailId] = useState<string | null>(null)
+  const [detailTab, setDetailTab] = useState<'basic' | 'directives' | 'rules'>('basic')
+  const [ruleKeyword, setRuleKeyword] = useState<string | undefined>(undefined)
+  const [ruleStatus, setRuleStatus] = useState<string | undefined>(undefined)
+  const [rulePage, setRulePage] = useState(1)
+  const [rulePageSize, setRulePageSize] = useState(20)
   const [createForm] = Form.useForm<PolicyFormValues>()
   const [editForm] = Form.useForm<PolicyFormValues>()
+
+  const openDetail = (id: string) => {
+    setDetailTab('basic')
+    setRuleKeyword(undefined)
+    setRuleStatus(undefined)
+    setRulePage(1)
+    setDetailId(id)
+  }
+
+  const closeDetail = () => {
+    setDetailId(null)
+    setDetailTab('basic')
+  }
 
   const listQuery = useQuery({
     queryKey: ['protection-policies', filters, page, pageSize],
@@ -183,6 +222,25 @@ export default function ProtectionPoliciesPage() {
     queryKey: ['protection-policy', detailId],
     queryFn: () => protectionPoliciesApi.get(detailId as string),
     enabled: detailId !== null,
+  })
+
+  const contentQuery = useQuery({
+    queryKey: [
+      'protection-policy-content',
+      detailId,
+      ruleKeyword,
+      ruleStatus,
+      rulePage,
+      rulePageSize,
+    ],
+    queryFn: () =>
+      protectionPoliciesApi.content(detailId as string, {
+        keyword: ruleKeyword,
+        effective_status: ruleStatus,
+        page: rulePage,
+        page_size: rulePageSize,
+      }),
+    enabled: detailId !== null && detailTab !== 'basic',
   })
 
   // 详情抽屉中的应用绑定列表：取应用全量做 id → 名称映射
@@ -285,7 +343,7 @@ export default function ProtectionPoliciesPage() {
           type="link"
           size="small"
           style={{ padding: 0, height: 'auto' }}
-          onClick={() => setDetailId(record.id)}
+          onClick={() => openDetail(record.id)}
         >
           {v}
         </Button>
@@ -331,7 +389,7 @@ export default function ProtectionPoliciesPage() {
       fixed: 'right',
       render: (_, record) => (
         <Space>
-          <Button type="link" size="small" onClick={() => setDetailId(record.id)}>
+          <Button type="link" size="small" onClick={() => openDetail(record.id)}>
             详情
           </Button>
           {hasPermission(permissions, 'protection_policies.update') && (
@@ -421,7 +479,7 @@ export default function ProtectionPoliciesPage() {
           columns={columns}
           dataSource={listQuery.data?.items}
           onRow={(record) => ({
-            onDoubleClick: () => setDetailId(record.id),
+            onDoubleClick: () => openDetail(record.id),
             style: { cursor: 'pointer' },
           })}
           scroll={{ x: 1250 }}
@@ -510,10 +568,10 @@ export default function ProtectionPoliciesPage() {
       </Modal>
 
       <Drawer
-        title="策略详情"
+        title={detail ? `策略详情：${detail.name}` : '策略详情'}
         open={detailId !== null}
-        onClose={() => setDetailId(null)}
-        width={640}
+        onClose={closeDetail}
+        width={860}
       >
         {detailQuery.isLoading ? (
           <Typography.Text type="secondary">加载中...</Typography.Text>
@@ -525,141 +583,487 @@ export default function ProtectionPoliciesPage() {
             description={detailQuery.error instanceof ApiError ? detailQuery.error.message : undefined}
           />
         ) : detail ? (
-          <>
-            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
-              <Descriptions.Item label="策略编码">{detail.code}</Descriptions.Item>
-              <Descriptions.Item label="名称">{detail.name}</Descriptions.Item>
-              <Descriptions.Item label="描述" span={2}>
-                {detail.description || '-'}
-              </Descriptions.Item>
-              <Descriptions.Item label="防护模式">
-                <ProtectionModeTag mode={detail.protection_mode} />
-              </Descriptions.Item>
-              <Descriptions.Item label="执行等级">{`PL${detail.paranoia_level}`}</Descriptions.Item>
-              <Descriptions.Item label="入站异常阈值">
-                {detail.inbound_anomaly_threshold}
-              </Descriptions.Item>
-              <Descriptions.Item label="出站异常阈值">
-                {detail.outbound_anomaly_threshold}
-              </Descriptions.Item>
-              <Descriptions.Item label="请求体检查">
-                {detail.request_body_access ? <Tag color="green">开启</Tag> : <Tag>关闭</Tag>}
-              </Descriptions.Item>
-              <Descriptions.Item label="响应体检查">
-                {detail.response_body_access ? <Tag color="green">开启</Tag> : <Tag>关闭</Tag>}
-              </Descriptions.Item>
-              <Descriptions.Item label="阻断状态码">{detail.blocking_status_code}</Descriptions.Item>
-              <Descriptions.Item label="是否内置">
-                {detail.is_builtin ? <Tag color="purple">内置</Tag> : <Tag>自定义</Tag>}
-              </Descriptions.Item>
-              <Descriptions.Item label="创建时间">{formatDateTime(detail.created_at)}</Descriptions.Item>
-              <Descriptions.Item label="更新时间">{formatDateTime(detail.updated_at)}</Descriptions.Item>
-            </Descriptions>
-            <Typography.Title level={5}>
-              绑定应用（{detail.application_ids?.length ?? 0}）
-            </Typography.Title>
-            <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-              绑定后需在「配置发布」中发布，网关才会应用本策略的 PL/阈值等参数。
-            </Typography.Paragraph>
-            {hasPermission(permissions, 'protection_policies.update') && (
-              <Space style={{ marginBottom: 12 }} wrap>
-                <Select
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder="选择应用绑定本策略"
-                  style={{ minWidth: 260 }}
-                  options={(appsQuery.data?.items ?? []).map((a) => ({
-                    value: a.id,
-                    label: `${a.name} (${a.code})`,
-                  }))}
-                  onSelect={(appId: string) => {
-                    protectionPoliciesApi
-                      .bindApplication(detail.id, appId)
-                      .then(() => {
-                        message.success('已绑定，请发布配置后生效')
-                        void queryClient.invalidateQueries({ queryKey: ['protection-policy', detail.id] })
-                        void queryClient.invalidateQueries({ queryKey: ['protection-policies'] })
-                      })
-                      .catch((e: unknown) => {
-                        message.error(e instanceof ApiError ? e.message : '绑定失败')
-                      })
-                  }}
-                />
-              </Space>
-            )}
-            {appsQuery.isLoading ? (
-              <Typography.Text type="secondary">加载应用列表...</Typography.Text>
-            ) : (detail.application_ids ?? []).length === 0 ? (
-              <Typography.Text type="secondary">暂无应用绑定该策略</Typography.Text>
-            ) : (
-              <List
-                size="small"
-                bordered
-                dataSource={detail.application_ids ?? []}
-                renderItem={(appId) => (
-                  <List.Item
-                    actions={
-                      hasPermission(permissions, 'protection_policies.update')
-                        ? [
-                            <Button
-                              key="unbind"
-                              type="link"
-                              size="small"
-                              danger
-                              onClick={() => {
-                                protectionPoliciesApi
-                                  .unbindApplication(detail.id, appId)
-                                  .then(() => {
-                                    message.success('已解绑，请发布配置后生效')
-                                    void queryClient.invalidateQueries({
-                                      queryKey: ['protection-policy', detail.id],
-                                    })
-                                    void queryClient.invalidateQueries({
-                                      queryKey: ['protection-policies'],
-                                    })
-                                  })
-                                  .catch((e: unknown) => {
-                                    message.error(e instanceof ApiError ? e.message : '解绑失败')
-                                  })
+          <Tabs
+            activeKey={detailTab}
+            onChange={(key) => setDetailTab(key as 'basic' | 'directives' | 'rules')}
+            items={[
+              {
+                key: 'basic',
+                label: '基本配置与绑定',
+                children: (
+                  <>
+                    <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+                      <Descriptions.Item label="策略编码">{detail.code}</Descriptions.Item>
+                      <Descriptions.Item label="名称">{detail.name}</Descriptions.Item>
+                      <Descriptions.Item label="描述" span={2}>
+                        {detail.description || '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="防护模式">
+                        <ProtectionModeTag mode={detail.protection_mode} />
+                      </Descriptions.Item>
+                      <Descriptions.Item label="执行等级">{`PL${detail.paranoia_level}`}</Descriptions.Item>
+                      <Descriptions.Item label="入站异常阈值">
+                        {detail.inbound_anomaly_threshold}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="出站异常阈值">
+                        {detail.outbound_anomaly_threshold}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="请求体检查">
+                        {detail.request_body_access ? <Tag color="green">开启</Tag> : <Tag>关闭</Tag>}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="响应体检查">
+                        {detail.response_body_access ? <Tag color="green">开启</Tag> : <Tag>关闭</Tag>}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="阻断状态码">{detail.blocking_status_code}</Descriptions.Item>
+                      <Descriptions.Item label="是否内置">
+                        {detail.is_builtin ? <Tag color="purple">内置</Tag> : <Tag>自定义</Tag>}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="创建时间">{formatDateTime(detail.created_at)}</Descriptions.Item>
+                      <Descriptions.Item label="更新时间">{formatDateTime(detail.updated_at)}</Descriptions.Item>
+                    </Descriptions>
+                    <Typography.Title level={5}>
+                      绑定应用（{detail.application_ids?.length ?? 0}）
+                    </Typography.Title>
+                    <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+                      绑定后需在「配置发布」中发布，网关才会应用本策略的 PL/阈值等参数。
+                    </Typography.Paragraph>
+                    {hasPermission(permissions, 'protection_policies.update') && (
+                      <Space style={{ marginBottom: 12 }} wrap>
+                        <Select
+                          showSearch
+                          optionFilterProp="label"
+                          placeholder="选择应用绑定本策略"
+                          style={{ minWidth: 260 }}
+                          options={(appsQuery.data?.items ?? []).map((a) => ({
+                            value: a.id,
+                            label: `${a.name} (${a.code})`,
+                          }))}
+                          onSelect={(appId: string) => {
+                            protectionPoliciesApi
+                              .bindApplication(detail.id, appId)
+                              .then(() => {
+                                message.success('已绑定，请发布配置后生效')
+                                void queryClient.invalidateQueries({ queryKey: ['protection-policy', detail.id] })
+                                void queryClient.invalidateQueries({ queryKey: ['protection-policies'] })
+                              })
+                              .catch((e: unknown) => {
+                                message.error(e instanceof ApiError ? e.message : '绑定失败')
+                              })
+                          }}
+                        />
+                      </Space>
+                    )}
+                    {appsQuery.isLoading ? (
+                      <Typography.Text type="secondary">加载应用列表...</Typography.Text>
+                    ) : (detail.application_ids ?? []).length === 0 ? (
+                      <Typography.Text type="secondary">暂无应用绑定该策略</Typography.Text>
+                    ) : (
+                      <List
+                        size="small"
+                        bordered
+                        dataSource={detail.application_ids ?? []}
+                        renderItem={(appId) => (
+                          <List.Item
+                            actions={
+                              hasPermission(permissions, 'protection_policies.update')
+                                ? [
+                                    <Button
+                                      key="unbind"
+                                      type="link"
+                                      size="small"
+                                      danger
+                                      onClick={() => {
+                                        protectionPoliciesApi
+                                          .unbindApplication(detail.id, appId)
+                                          .then(() => {
+                                            message.success('已解绑，请发布配置后生效')
+                                            void queryClient.invalidateQueries({
+                                              queryKey: ['protection-policy', detail.id],
+                                            })
+                                            void queryClient.invalidateQueries({
+                                              queryKey: ['protection-policies'],
+                                            })
+                                          })
+                                          .catch((e: unknown) => {
+                                            message.error(e instanceof ApiError ? e.message : '解绑失败')
+                                          })
+                                      }}
+                                    >
+                                      解绑
+                                    </Button>,
+                                  ]
+                                : undefined
+                            }
+                          >
+                            <Typography.Text>{appNameById.get(appId) ?? appId}</Typography.Text>
+                          </List.Item>
+                        )}
+                      />
+                    )}
+                    <Typography.Title level={5} style={{ marginTop: 20 }}>
+                      绑定域名（{detail.domains?.length ?? 0}）
+                    </Typography.Title>
+                    <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+                      可在「网站应用 → 域名管理」中为单个域名选择或调整防护策略；域名级策略优先于所属应用默认策略。
+                    </Typography.Paragraph>
+                    {(detail.domains ?? []).length === 0 ? (
+                      <Typography.Text type="secondary">暂无域名单独绑定该策略</Typography.Text>
+                    ) : (
+                      <List
+                        size="small"
+                        bordered
+                        dataSource={detail.domains ?? []}
+                        renderItem={(dom) => (
+                          <List.Item>
+                            <Space wrap>
+                              <Typography.Text code>{dom.hostname}</Typography.Text>
+                              <Typography.Text type="secondary">
+                                {dom.application_name} ({dom.application_code})
+                              </Typography.Text>
+                            </Space>
+                          </List.Item>
+                        )}
+                      />
+                    )}
+                  </>
+                ),
+              },
+              {
+                key: 'directives',
+                label: '生效指令（SecLang）',
+                children: contentQuery.isLoading ? (
+                  <Typography.Text type="secondary">正在生成策略指令...</Typography.Text>
+                ) : contentQuery.isError ? (
+                  <Alert
+                    type="error"
+                    showIcon
+                    message="加载策略生效指令失败"
+                    description={contentQuery.error instanceof ApiError ? contentQuery.error.message : undefined}
+                  />
+                ) : contentQuery.data ? (
+                  <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                    <Alert
+                      type="info"
+                      showIcon
+                      message={`网关实际执行引擎：SecRuleEngine ${contentQuery.data.sec_rule_engine}（PL${contentQuery.data.paranoia_level}，入站阈值 ${contentQuery.data.inbound_anomaly_threshold}，出站阈值 ${contentQuery.data.outbound_anomaly_threshold}）`}
+                      description="以下为与配置发布完全同源生成的 Coraza SecLang 指令（包含本策略参数、全局及策略级规则覆盖、已启用自定义规则、全局 WAF 例外与按序 Include 的规则文件）。单个应用专属的例外或规则覆盖会在对应应用路由发布时额外追加。"
+                    />
+                    <Card
+                      size="small"
+                      title="完整 Coraza SecLang 指令"
+                      extra={
+                        <Typography.Text
+                          copyable={{
+                            text: contentQuery.data.generated_directives,
+                            tooltips: ['复制全部指令', '已复制'],
+                          }}
+                        >
+                          复制指令
+                        </Typography.Text>
+                      }
+                    >
+                      <pre
+                        style={{
+                          margin: 0,
+                          maxHeight: 340,
+                          overflow: 'auto',
+                          background: '#f5f5f5',
+                          padding: 12,
+                          borderRadius: 6,
+                          fontSize: 12,
+                          fontFamily: 'monospace',
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-all',
+                        }}
+                      >
+                        {contentQuery.data.generated_directives}
+                      </pre>
+                    </Card>
+
+                    <Card
+                      size="small"
+                      title={`生效规则覆盖（${contentQuery.data.overrides.length}）`}
+                    >
+                      {contentQuery.data.overrides.length === 0 ? (
+                        <Typography.Text type="secondary">当前无全局或本策略级规则覆盖</Typography.Text>
+                      ) : (
+                        <List
+                          size="small"
+                          dataSource={contentQuery.data.overrides}
+                          renderItem={(ov) => (
+                            <List.Item>
+                              <Space wrap>
+                                <Typography.Text code>{ov.rule_id}</Typography.Text>
+                                <Tag color={ov.action === 'DISABLE' ? 'red' : 'green'}>
+                                  {ov.action === 'DISABLE' ? '停用规则' : '启用规则'}
+                                </Tag>
+                                <Tag>{ov.scope_type === 'GLOBAL' ? '全局' : '策略级'}</Tag>
+                                {!ov.effective_active && <Tag color="default">已被更高优先级覆盖</Tag>}
+                                {ov.reason && <Typography.Text type="secondary">{ov.reason}</Typography.Text>}
+                              </Space>
+                            </List.Item>
+                          )}
+                        />
+                      )}
+                    </Card>
+
+                    <Card
+                      size="small"
+                      title={`已启用自定义规则（${contentQuery.data.custom_rules.length}）`}
+                    >
+                      {contentQuery.data.custom_rules.length === 0 ? (
+                        <Typography.Text type="secondary">当前无已启用的自定义规则</Typography.Text>
+                      ) : (
+                        <List
+                          size="small"
+                          dataSource={contentQuery.data.custom_rules}
+                          renderItem={(cr) => (
+                            <List.Item>
+                              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                                <Space wrap>
+                                  <Typography.Text code>{cr.rule_id}</Typography.Text>
+                                  <Typography.Text strong>{cr.name}</Typography.Text>
+                                  <StatusTag value={cr.severity} map={RULE_SEVERITY_META} />
+                                </Space>
+                                <pre
+                                  style={{
+                                    margin: 0,
+                                    background: '#f5f5f5',
+                                    padding: 8,
+                                    borderRadius: 4,
+                                    fontSize: 12,
+                                    fontFamily: 'monospace',
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-all',
+                                  }}
+                                >
+                                  {cr.generated_rule}
+                                </pre>
+                              </Space>
+                            </List.Item>
+                          )}
+                        />
+                      )}
+                    </Card>
+
+                    <Card
+                      size="small"
+                      title={`已启用全局 WAF 例外（${contentQuery.data.global_exceptions.length}）`}
+                    >
+                      {contentQuery.data.global_exceptions.length === 0 ? (
+                        <Typography.Text type="secondary">当前无已启用的全局 WAF 例外</Typography.Text>
+                      ) : (
+                        <List
+                          size="small"
+                          dataSource={contentQuery.data.global_exceptions}
+                          renderItem={(ex) => (
+                            <List.Item>
+                              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                                <Space wrap>
+                                  <Tag color="blue">{ex.scope_type || 'GLOBAL'}</Tag>
+                                  <Typography.Text type="secondary">
+                                    v{ex.exception_version} · 效果规则 ID {ex.rule_id}
+                                  </Typography.Text>
+                                </Space>
+                                <pre
+                                  style={{
+                                    margin: 0,
+                                    background: '#f5f5f5',
+                                    padding: 8,
+                                    borderRadius: 4,
+                                    fontSize: 12,
+                                    fontFamily: 'monospace',
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-all',
+                                  }}
+                                >
+                                  {ex.seclang}
+                                </pre>
+                              </Space>
+                            </List.Item>
+                          )}
+                        />
+                      )}
+                    </Card>
+
+                    <Card size="small" title="按顺序加载的规则文件阶段">
+                      <List
+                        size="small"
+                        dataSource={contentQuery.data.loaded_rule_files}
+                        renderItem={(st) => (
+                          <List.Item>
+                            <Space direction="vertical" size={0}>
+                              <Typography.Text code>
+                                {st.order}. {st.path}
+                              </Typography.Text>
+                              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                {st.description}
+                              </Typography.Text>
+                            </Space>
+                          </List.Item>
+                        )}
+                      />
+                    </Card>
+                  </Space>
+                ) : null,
+              },
+              {
+                key: 'rules',
+                label: '生效规则清单',
+                children: contentQuery.isError ? (
+                  <Alert
+                    type="error"
+                    showIcon
+                    message="加载策略生效规则清单失败"
+                    description={contentQuery.error instanceof ApiError ? contentQuery.error.message : undefined}
+                  />
+                ) : (
+                  <Space direction="vertical" size={14} style={{ width: '100%' }}>
+                    {contentQuery.data && (
+                      <Row gutter={12}>
+                        <Col span={6}>
+                          <Card size="small">
+                            <Statistic title="规则库总数" value={contentQuery.data.summary.total_rules} />
+                          </Card>
+                        </Col>
+                        <Col span={6}>
+                          <Card size="small">
+                            <Statistic
+                              title="本策略生效"
+                              value={contentQuery.data.summary.active_rules}
+                              valueStyle={{ color: '#389e0d' }}
+                            />
+                          </Card>
+                        </Col>
+                        <Col span={6}>
+                          <Card size="small">
+                            <Statistic
+                              title="规则覆盖停用"
+                              value={contentQuery.data.summary.disabled_by_override}
+                              valueStyle={{ color: '#cf1322' }}
+                            />
+                          </Card>
+                        </Col>
+                        <Col span={6}>
+                          <Card size="small">
+                            <Statistic
+                              title={`高于 PL${contentQuery.data.paranoia_level} 未启用`}
+                              value={contentQuery.data.summary.skipped_by_pl}
+                            />
+                          </Card>
+                        </Col>
+                      </Row>
+                    )}
+
+                    <Space wrap>
+                      <Input.Search
+                        placeholder="按规则ID、名称或文件名搜索"
+                        allowClear
+                        style={{ width: 260 }}
+                        onSearch={(v) => {
+                          setRuleKeyword(v || undefined)
+                          setRulePage(1)
+                        }}
+                      />
+                      <Select
+                        placeholder="生效状态"
+                        allowClear
+                        style={{ width: 150 }}
+                        value={ruleStatus}
+                        options={EFFECTIVE_STATUS_OPTIONS}
+                        onChange={(v) => {
+                          setRuleStatus(v)
+                          setRulePage(1)
+                        }}
+                      />
+                    </Space>
+
+                    <Table<ProtectionPolicyEffectiveRuleItem>
+                      rowKey="rule_id"
+                      size="small"
+                      loading={contentQuery.isLoading}
+                      dataSource={contentQuery.data?.rules ?? []}
+                      expandable={{
+                        expandedRowRender: (rec) =>
+                          rec.raw_rule ? (
+                            <pre
+                              style={{
+                                margin: 0,
+                                maxHeight: 240,
+                                overflow: 'auto',
+                                background: '#f5f5f5',
+                                padding: 10,
+                                borderRadius: 6,
+                                fontSize: 12,
+                                fontFamily: 'monospace',
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-all',
                               }}
                             >
-                              解绑
-                            </Button>,
-                          ]
-                        : undefined
-                    }
-                  >
-                    <Typography.Text>{appNameById.get(appId) ?? appId}</Typography.Text>
-                  </List.Item>
-                )}
-              />
-            )}
-            <Typography.Title level={5} style={{ marginTop: 20 }}>
-              绑定域名（{detail.domains?.length ?? 0}）
-            </Typography.Title>
-            <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-              可在「网站应用 → 域名管理」中为单个域名选择或调整防护策略；域名级策略优先于所属应用默认策略。
-            </Typography.Paragraph>
-            {(detail.domains ?? []).length === 0 ? (
-              <Typography.Text type="secondary">暂无域名单独绑定该策略</Typography.Text>
-            ) : (
-              <List
-                size="small"
-                bordered
-                dataSource={detail.domains ?? []}
-                renderItem={(dom) => (
-                  <List.Item>
-                    <Space wrap>
-                      <Typography.Text code>{dom.hostname}</Typography.Text>
-                      <Typography.Text type="secondary">
-                        {dom.application_name} ({dom.application_code})
-                      </Typography.Text>
-                    </Space>
-                  </List.Item>
-                )}
-              />
-            )}
-          </>
+                              {rec.raw_rule}
+                            </pre>
+                          ) : (
+                            <Typography.Text type="secondary">
+                              暂未读取到原始 SecRule 原文，请先在「防护规则库」同步 CRS 规则。
+                            </Typography.Text>
+                          ),
+                      }}
+                      columns={[
+                        {
+                          title: '规则ID',
+                          dataIndex: 'rule_id',
+                          width: 96,
+                          render: (v: number) => <Typography.Text code>{v}</Typography.Text>,
+                        },
+                        {
+                          title: '名称',
+                          dataIndex: 'name',
+                          ellipsis: true,
+                        },
+                        {
+                          title: '攻击类型',
+                          dataIndex: 'attack_type',
+                          width: 125,
+                          render: (v: string) => <StatusTag value={v} map={ATTACK_TYPE_META} />,
+                        },
+                        {
+                          title: '等级',
+                          dataIndex: 'paranoia_level',
+                          width: 72,
+                          render: (v: number) => (v > 0 ? <Tag>{`PL${v}`}</Tag> : <Tag>通用</Tag>),
+                        },
+                        {
+                          title: '来源',
+                          dataIndex: 'rule_source',
+                          width: 110,
+                          render: (v: string) => <StatusTag value={v} map={RULE_SOURCE_META} />,
+                        },
+                        {
+                          title: '状态',
+                          dataIndex: 'effective_status',
+                          width: 100,
+                          render: (v: string) => (
+                            <StatusTag value={v} map={EFFECTIVE_RULE_STATUS_META} />
+                          ),
+                        },
+                      ]}
+                      pagination={{
+                        current: rulePage,
+                        pageSize: rulePageSize,
+                        total: contentQuery.data?.rules_total ?? 0,
+                        showSizeChanger: true,
+                        showTotal: (t) => `共 ${t} 条（点击行首 + 展开原始 SecRule）`,
+                        onChange: (p, ps) => {
+                          setRulePage(p)
+                          setRulePageSize(ps)
+                        },
+                      }}
+                    />
+                  </Space>
+                ),
+              },
+            ]}
+          />
         ) : null}
       </Drawer>
     </Card>

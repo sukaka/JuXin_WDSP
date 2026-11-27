@@ -102,6 +102,9 @@ const ClientSideSecurityPage = lazy(
 const WasmPluginsPage = lazy(
   () => import('../pages/wasm-plugins/WasmPluginsPage'),
 )
+const BlockPagesPage = lazy(
+  () => import('../pages/block-pages/BlockPagesPage'),
+)
 const ApiEndpointsPage = lazy(
   () => import('../pages/api-endpoints/ApiEndpointsPage'),
 )
@@ -853,6 +856,15 @@ export default function AppRoutes() {
             element={
               <RequirePermission permission="wasm_plugins.read">
                 <WasmPluginsPage />
+              </RequirePermission>
+            }
+          />
+          {/* 自定义拦截页面与多版本管理（迁移 000251；全产品形态可用） */}
+          <Route
+            path="block-pages"
+            element={
+              <RequirePermission permission="block_pages.read">
+                <BlockPagesPage />
               </RequirePermission>
             }
           />

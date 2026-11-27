@@ -40,7 +40,7 @@ func (f *fakeAckStore) ManagementWatermark(context.Context) (apiruntime.VectorWa
 type fakeSettings struct{ v int }
 
 func (f fakeSettings) GetInt(_ context.Context, group, key string, def int) int {
-	if group == "authz" && key == "clock_skew_max_seconds" {
+	if group == ClockSkewSettingGroup && key == ClockSkewSettingKey {
 		return f.v
 	}
 	return def

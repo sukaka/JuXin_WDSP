@@ -26,32 +26,45 @@ type RiskPolicyOverrideLister interface {
 // SetRiskPolicyLister 注入风险策略读取（nil 时不下发 risk_policy 段）。
 func (p *Provider) SetRiskPolicyLister(l RiskPolicyLister) { p.riskPolicy = l }
 
-// loadRiskPolicy 读取风险策略并填充 risk_policy 段；
-// 查询失败（如迁移 000101 尚未应用）Warn 并跳过，不阻断发布主流程。
-// enabled=false 时同样下发（网关按 enabled:false 风险处置零行为）。
+// loadRiskPolicy 读取风险策略并填充 risk_policy 段（兼容旧调用方；BuildGuardConfig 走 Strict）。
 func (p *Provider) loadRiskPolicy(ctx context.Context, cfg *gatewayconfig.GuardConfig) {
+	if err := p.loadRiskPolicyStrict(ctx, cfg); err != nil {
+		slog.Warn("load security risk policy failed, skip risk_policy or overrides", "error", err)
+	}
+}
+
+// loadRiskPolicyStrict 仅容忍旧库未建表（42P01）；真实数据库错误中止候选发布（fail-hard），
+// 防止已启用的身份风险 PROTECT 策略或应用级覆盖在瞬时 DB 故障时被静默清零。
+func (p *Provider) loadRiskPolicyStrict(ctx context.Context, cfg *gatewayconfig.GuardConfig) error {
 	if p.riskPolicy == nil {
-		return
+		return nil
 	}
 	pol, err := p.riskPolicy.GetGuardRiskPolicy(ctx)
 	if err != nil {
-		slog.Warn("get security risk policy failed, skip risk_policy", "error", err)
-		return
+		if isMissingLegacyTableError(err, "security_risk_policy") {
+			slog.Warn("optional legacy table security_risk_policy is unavailable", "error", err)
+			return nil
+		}
+		return wrapLegacyLoaderError("security_risk_policy", err)
 	}
 	if pol == nil {
-		return
+		return nil
 	}
 	cfg.RiskPolicy = pol
 	lister, ok := p.riskPolicy.(RiskPolicyOverrideLister)
 	if !ok {
-		return
+		return nil
 	}
 	overrides, err := lister.ListGuardRiskPolicyOverrides(ctx)
 	if err != nil {
-		slog.Warn("list application risk policy overrides failed, keep global policy", "error", err)
-		return
+		if isMissingLegacyTableError(err, "security_risk_policy_overrides") {
+			slog.Warn("optional legacy table security_risk_policy_overrides is unavailable, keep global policy", "error", err)
+			return nil
+		}
+		return wrapLegacyLoaderError("security_risk_policy_overrides", err)
 	}
 	if len(overrides) > 0 {
 		cfg.RiskPolicyOverrides = overrides
 	}
+	return nil
 }

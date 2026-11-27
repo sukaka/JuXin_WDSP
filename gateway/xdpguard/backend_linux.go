@@ -435,26 +435,20 @@ func (b *LinuxBackend) syncMapV4Locked(prefixes []netip.Prefix) error {
 		}
 		desired[k] = struct{}{}
 	}
-	// Add new entries FIRST so live XDP lookups never experience a gap.
-	for k := range desired {
-		if _, exists := b.currentV4[k]; exists {
-			continue
-		}
-		if err := b.mapV4.Put(k, uint32(1)); err != nil {
-			return fmt.Errorf("put IPv4 LPM key: %w", err)
-		}
-	}
-	// Delete stale entries SECOND.
-	for k := range b.currentV4 {
-		if _, keep := desired[k]; keep {
-			continue
-		}
-		if err := b.mapV4.Delete(k); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-			return fmt.Errorf("delete stale IPv4 LPM key: %w", err)
-		}
-	}
-	b.currentV4 = desired
-	return nil
+	return syncMapDiff(b.currentV4, desired, MaxBlockedV4Entries,
+		func(k LPMKeyV4) error {
+			if err := b.mapV4.Put(k, uint32(1)); err != nil {
+				return fmt.Errorf("put IPv4 LPM key: %w", err)
+			}
+			return nil
+		},
+		func(k LPMKeyV4) error {
+			if err := b.mapV4.Delete(k); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+				return fmt.Errorf("delete stale IPv4 LPM key: %w", err)
+			}
+			return nil
+		},
+	)
 }
 
 func (b *LinuxBackend) syncMapV6Locked(prefixes []netip.Prefix) error {
@@ -466,24 +460,20 @@ func (b *LinuxBackend) syncMapV6Locked(prefixes []netip.Prefix) error {
 		}
 		desired[k] = struct{}{}
 	}
-	for k := range desired {
-		if _, exists := b.currentV6[k]; exists {
-			continue
-		}
-		if err := b.mapV6.Put(k, uint32(1)); err != nil {
-			return fmt.Errorf("put IPv6 LPM key: %w", err)
-		}
-	}
-	for k := range b.currentV6 {
-		if _, keep := desired[k]; keep {
-			continue
-		}
-		if err := b.mapV6.Delete(k); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-			return fmt.Errorf("delete stale IPv6 LPM key: %w", err)
-		}
-	}
-	b.currentV6 = desired
-	return nil
+	return syncMapDiff(b.currentV6, desired, MaxBlockedV6Entries,
+		func(k LPMKeyV6) error {
+			if err := b.mapV6.Put(k, uint32(1)); err != nil {
+				return fmt.Errorf("put IPv6 LPM key: %w", err)
+			}
+			return nil
+		},
+		func(k LPMKeyV6) error {
+			if err := b.mapV6.Delete(k); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+				return fmt.Errorf("delete stale IPv6 LPM key: %w", err)
+			}
+			return nil
+		},
+	)
 }
 
 func (b *LinuxBackend) readDropStatsLocked() (droppedV4, droppedV6, passed uint64) {

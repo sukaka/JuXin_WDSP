@@ -268,6 +268,14 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 	}
 	g.blockResponse = blockResponse
 
+	// 自定义多版本拦截页面（block_pages 段，迁移 000251）：装配期校验 + 富 HTML/CSS 净化；
+	// 非法配置 fail-closed 拒绝加载，nil = 保持既有默认行为
+	blockPages, err := compileBlockPageMap(g.BlockPages)
+	if err != nil {
+		return err
+	}
+	g.blockPages = blockPages
+
 	// L7 访问控制规则（编译失败的规则整条拒绝并告警，不影响其余规则加载；
 	// 配置重载即整体原子替换，与黑白名单同一热更新路径）
 	if g.L7Rules != nil {
@@ -614,6 +622,9 @@ func (g *Guard) Validate() error {
 	if err := validateBlockResponse(g.BlockResponse); err != nil {
 		return err
 	}
+	if err := validateBlockPageMap(g.BlockPages); err != nil {
+		return err
+	}
 	for _, p := range g.RateLimits {
 		if p.RequestsLimit <= 0 || p.WindowSeconds <= 0 {
 			return fmt.Errorf("rate limit %q: limit/window must be positive", p.ID)
@@ -905,9 +916,14 @@ func (g *Guard) cleanup() error {
 	if g.ibh != nil {
 		_ = g.ibh.Close()
 	}
-	// 身份风险引擎（关闭其存储；Valkey 共享连接归引擎不在此关）
+	// 身份风险引擎（关闭其存储；Valkey 共享连接归引擎不在此关；应用级覆盖引擎一并关闭防后台清理协程泄漏）
 	if g.risk != nil {
 		_ = g.risk.Close()
+	}
+	for _, ov := range g.riskOverrides {
+		if ov != nil {
+			_ = ov.Close()
+		}
 	}
 	if g.accessLog != nil {
 		_ = g.accessLog.close()
@@ -1173,6 +1189,7 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 			if status < 400 || status > 599 {
 				status = http.StatusForbidden
 			}
+			setBlockPageScene(r, blockSceneWAF)
 			dispo.RecordTerminal(ExecutorWAF, DisActionBlock, status, false, []string{"WAF_INTERCEPT"}, nil)
 			if txID != "" {
 				dispo.AddEvidenceRef(txID)
@@ -1227,6 +1244,8 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 	// 其 PrepareRequest 返回值被丢弃，不跟随上方 RemoteAddr 改写）；同步该变量，
 	// 保证 WAF 审计事件 client_ip 与真实 IP 识别结果一致
 	caddyhttp.SetVar(r.Context(), caddyhttp.ClientIPVarKey, clientIP.String())
+	// 将真实客户端 IP、应用标识与 Request ID 写入 Caddy 请求变量，供错误链 jiuzhang_block_page 渲染占位符
+	setBlockPageContext(r, g.AppCode, g.AppID, clientIP.String(), requestID)
 
 	// 1.6 调试保留命名空间 /_wdsp/debug/v1/（debug_cc_counter 启用时；阶段5 §十七
 	// CC 精确计数探针）：真实 IP 识别之后、CC 限速之前挂接——回显请求本身不进入
@@ -1284,6 +1303,7 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 				g.emit(ev, events.IdentityManualBlock, "BLOCK", http.StatusForbidden)
 				accessLogAnnotate(r.Context(), wafActionBlock)
 				DefaultCovCounters.Inc(StageManualBan)
+				setBlockPageScene(r, blockSceneAccessControl)
 				return caddyhttp.Error(http.StatusForbidden, fmt.Errorf("identity blocked"))
 			}
 		}
@@ -1314,6 +1334,7 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 			g.emit(ev, events.CCRequestRejected, "TEMP_BLOCK", http.StatusForbidden)
 			accessLogAnnotate(r.Context(), wafActionBlock)
 			DefaultCovCounters.Inc(StageManualBan)
+			setBlockPageScene(r, blockSceneAccessControl)
 			return caddyhttp.Error(http.StatusForbidden, fmt.Errorf("temporarily blocked"))
 		}
 		b := blk
@@ -1354,6 +1375,7 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 		g.emit(ev, events.IPDenyMatch, "DENY", http.StatusForbidden)
 		accessLogAnnotate(r.Context(), wafActionBlock)
 		DefaultCovCounters.Inc(StageIPBlacklist)
+		setBlockPageScene(r, blockSceneAccessControl)
 		return caddyhttp.Error(http.StatusForbidden, fmt.Errorf("access denied"))
 	}
 
@@ -1384,6 +1406,7 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 		g.emit(ev, events.CCRequestRejected, "TEMP_BLOCK", http.StatusForbidden)
 		accessLogAnnotate(r.Context(), wafActionBlock)
 		DefaultCovCounters.Inc(StageAutoBan)
+		setBlockPageScene(r, blockSceneAccessControl)
 		return caddyhttp.Error(http.StatusForbidden, fmt.Errorf("temporarily blocked"))
 	}
 
@@ -1486,6 +1509,18 @@ func (g *Guard) executeL7(w http.ResponseWriter, r *http.Request, next caddyhttp
 // writeL7Block L7 阻止响应：可配状态码与文案（默认 403），JSON/HTML 按 Accept 选择；
 // 文案经 HTML 转义（防存储型 XSS 反射给管理面配置的文案读者），Request ID 为服务端生成 UUID 仍转义。
 func (g *Guard) writeL7Block(w http.ResponseWriter, r *http.Request, requestID string, status int, message string) {
+	if bp := g.resolveBlockPage(blockSceneAccessControl); bp != nil {
+		writeCompiledBlockPage(w, r, bp, blockPageRenderMeta{
+			StatusCode: status,
+			Scene:      blockSceneAccessControl,
+			RequestID:  requestID,
+			ClientIP:   resolvedClientIPString(r),
+			AppCode:    g.AppCode,
+			RetryAfter: "-",
+			Message:    message,
+		})
+		return
+	}
 	w.Header().Set("X-Jiuzhang-Request-ID", requestID)
 	accept := r.Header.Get("Accept")
 	if strings.Contains(accept, "application/json") {
@@ -1663,6 +1698,17 @@ func (g *Guard) writeTooMany(w http.ResponseWriter, r *http.Request, requestID s
 	}
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSec))
 	w.Header().Set("X-Jiuzhang-Request-ID", requestID)
+	if bp := g.resolveBlockPage(blockSceneRateLimit); bp != nil {
+		writeCompiledBlockPage(w, r, bp, blockPageRenderMeta{
+			StatusCode: http.StatusTooManyRequests,
+			Scene:      blockSceneRateLimit,
+			RequestID:  requestID,
+			ClientIP:   resolvedClientIPString(r),
+			AppCode:    g.AppCode,
+			RetryAfter: strconv.Itoa(retryAfterSec),
+		})
+		return
+	}
 	accept := r.Header.Get("Accept")
 	if strings.Contains(accept, "application/json") {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")

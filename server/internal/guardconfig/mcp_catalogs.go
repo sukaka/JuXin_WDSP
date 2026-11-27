@@ -169,30 +169,60 @@ func (p *Provider) SetMCPToolCatalogLister(l MCPToolCatalogLister) { p.mcpCatalo
 // SetMCPBindingLister 注入 MCP 绑定读取（nil 时不下发 api_mcp_bindings 段）。
 func (p *Provider) SetMCPBindingLister(l MCPBindingLister) { p.mcpBindings = l }
 
-// loadAPIMCPToolCatalogs 读取 ENABLED MCP 目录（仅 APPROVED 工具行）；未注入/缺表/
-// 查询失败 Warn 跳过不下发（NG-T-C01：无目录时段省略，零行为，与历史版本一致）。
+// loadAPIMCPToolCatalogs 读取 ENABLED MCP 目录（兼容旧调用方；BuildGuardConfig 走 loadAPIMCPToolCatalogsStrict）。
 func (p *Provider) loadAPIMCPToolCatalogs(ctx context.Context) []gatewayconfig.GuardMCPToolCatalog {
-	if p.mcpCatalogs == nil {
-		return nil
-	}
-	cats, err := p.mcpCatalogs.ListEnabledMCPCatalogs(ctx)
+	cats, err := p.loadAPIMCPToolCatalogsStrict(ctx)
 	if err != nil {
 		slog.Warn("api_mcp_tool_catalogs load failed, skipping section", "error", err)
-		return nil
 	}
 	return cats
 }
 
-// loadAPIMCPBindings 读取全部 MCP 绑定；未注入/缺表/查询失败 Warn 跳过不下发
-// （空绑定=零行为现状语义，与历史版本一致）。
+// loadAPIMCPToolCatalogsStrict 仅容忍旧库未建表（42P01）；真实数据库错误中止候选发布（fail-hard）。
+func (p *Provider) loadAPIMCPToolCatalogsStrict(ctx context.Context) ([]gatewayconfig.GuardMCPToolCatalog, error) {
+	if p.mcpCatalogs == nil {
+		return nil, nil
+	}
+	cats, err := p.mcpCatalogs.ListEnabledMCPCatalogs(ctx)
+	if err != nil {
+		if isMissingLegacyTableError(err, "mcp_tool_catalogs") ||
+			isMissingLegacyTableError(err, "mcp_catalog_tools") {
+			slog.Warn("optional legacy table mcp_tool_catalogs is unavailable", "error", err)
+			return nil, nil
+		}
+		return nil, wrapLegacyLoaderError("mcp_tool_catalogs", err)
+	}
+	if len(cats) == 0 {
+		return nil, nil
+	}
+	return cats, nil
+}
+
+// loadAPIMCPBindings 读取全部 MCP 绑定（兼容旧调用方；BuildGuardConfig 走 loadAPIMCPBindingsStrict）。
 func (p *Provider) loadAPIMCPBindings(ctx context.Context) []gatewayconfig.GuardMCPBinding {
+	bindings, err := p.loadAPIMCPBindingsStrict(ctx)
+	if err != nil {
+		slog.Warn("api_mcp_bindings load failed, skipping section", "error", err)
+	}
+	return bindings
+}
+
+// loadAPIMCPBindingsStrict 仅容忍旧库未建表（42P01）；真实数据库错误中止候选发布（fail-hard）。
+func (p *Provider) loadAPIMCPBindingsStrict(ctx context.Context) ([]gatewayconfig.GuardMCPBinding, error) {
 	if p.mcpBindings == nil {
-		return nil
+		return nil, nil
 	}
 	bindings, err := p.mcpBindings.ListAllMCPBindings(ctx)
 	if err != nil {
-		slog.Warn("api_mcp_bindings load failed, skipping section", "error", err)
-		return nil
+		if isMissingLegacyTableError(err, "mcp_catalog_bindings") ||
+			isMissingLegacyTableError(err, "mcp_tool_catalogs") {
+			slog.Warn("optional legacy table mcp_catalog_bindings is unavailable", "error", err)
+			return nil, nil
+		}
+		return nil, wrapLegacyLoaderError("mcp_catalog_bindings", err)
 	}
-	return bindings
+	if len(bindings) == 0 {
+		return nil, nil
+	}
+	return bindings, nil
 }

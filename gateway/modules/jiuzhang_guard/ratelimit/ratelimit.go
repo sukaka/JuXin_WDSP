@@ -210,13 +210,15 @@ func (m *MemoryLimiter) slidingWindow(key string, limit int64, window time.Durat
 
 // ---------- Valkey 后端 ----------
 
-// tokenBucketLua 原子令牌桶：HASH{tokens, ts}，返回 {allowed, floor(tokens), retry_ms}。
+// tokenBucketLua 原子令牌桶：HASH{tokens, ts}，返回 {allowed, used, retry_ms}；
+// used = burst - floor(tokens)（与 MemoryLimiter / peekTokenBucketLua 同口径，拒绝时至少为 limit）。
 const tokenBucketLua = `
 local data = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
 local burst = tonumber(ARGV[1])
 local rate = tonumber(ARGV[2])  -- 令牌/毫秒
 local now = tonumber(ARGV[3])
 local ttl = tonumber(ARGV[4])
+local limit = tonumber(ARGV[5])
 local tokens = tonumber(data[1])
 local ts = tonumber(data[2])
 if tokens == nil then tokens = burst end
@@ -231,7 +233,10 @@ redis.call('HMSET', KEYS[1], 'tokens', tokens, 'ts', now)
 redis.call('PEXPIRE', KEYS[1], ttl)
 local retry = 0
 if allowed == 0 then retry = math.ceil((1 - tokens) / rate) end
-return {allowed, math.floor(tokens), retry}
+local used = burst - math.floor(tokens)
+if used < 0 then used = 0 end
+if allowed == 0 and limit ~= nil and used < limit then used = limit end
+return {allowed, used, retry}
 `
 
 // slidingWindowLua 精确滑动窗口（ZSET 时间戳），返回 {allowed, count, retry_ms}。
@@ -332,9 +337,13 @@ func (v *ValkeyLimiter) Allow(ctx context.Context, key string, algo Algorithm, l
 			strconv.FormatFloat(ratePerMs, 'f', -1, 64),
 			strconv.FormatInt(nowMs, 10),
 			strconv.FormatInt(ttlMs, 10),
+			strconv.FormatInt(limit, 10),
 		})
 		if err != nil {
 			return Result{}, err
+		}
+		if len(out) < 3 {
+			return Result{}, fmt.Errorf("unexpected valkey token_bucket reply length: %d", len(out))
 		}
 		return Result{
 			Allowed:    toInt64(out[0]) == 1,
@@ -352,6 +361,9 @@ func (v *ValkeyLimiter) Allow(ctx context.Context, key string, algo Algorithm, l
 		})
 		if err != nil {
 			return Result{}, err
+		}
+		if len(out) < 3 {
+			return Result{}, fmt.Errorf("unexpected valkey sliding_window reply length: %d", len(out))
 		}
 		return Result{
 			Allowed:    toInt64(out[0]) == 1,
@@ -384,6 +396,9 @@ func (v *ValkeyLimiter) Peek(ctx context.Context, key string, algo Algorithm, li
 		if err != nil {
 			return 0, false, err
 		}
+		if len(out) < 2 {
+			return 0, false, fmt.Errorf("unexpected valkey peek token_bucket reply length: %d", len(out))
+		}
 		return toInt64(out[1]), toInt64(out[0]) == 1, nil
 	case SlidingWindow:
 		out, err := v.cli.Eval(ctx, peekSlidingWindowLua, []string{fullKey}, []string{
@@ -392,6 +407,9 @@ func (v *ValkeyLimiter) Peek(ctx context.Context, key string, algo Algorithm, li
 		})
 		if err != nil {
 			return 0, false, err
+		}
+		if len(out) < 2 {
+			return 0, false, fmt.Errorf("unexpected valkey peek sliding_window reply length: %d", len(out))
 		}
 		return toInt64(out[1]), toInt64(out[0]) == 1, nil
 	default:

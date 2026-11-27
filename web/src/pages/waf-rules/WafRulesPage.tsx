@@ -747,6 +747,42 @@ export default function WafRulesPage() {
               )}
             </Card>
 
+            <Card
+              size="small"
+              title="原始 SecLang 规则（SecRule 原文）"
+              extra={
+                detail.raw_rule ? (
+                  <Typography.Text copyable={{ text: detail.raw_rule, tooltips: ['复制规则原文', '已复制'] }}>
+                    复制原文
+                  </Typography.Text>
+                ) : null
+              }
+              style={{ marginBottom: 16 }}
+            >
+              {detail.raw_rule ? (
+                <pre
+                  style={{
+                    margin: 0,
+                    maxHeight: 280,
+                    overflow: 'auto',
+                    background: '#f5f5f5',
+                    padding: 12,
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-all',
+                  }}
+                >
+                  {detail.raw_rule}
+                </pre>
+              ) : (
+                <Typography.Text type="secondary">
+                  暂未读取到原始 SecRule 文本（可点击右上角「同步CRS规则」重新同步规则文件）。
+                </Typography.Text>
+              )}
+            </Card>
+
             <Typography.Title level={5}>标签（{detailTags.length}）</Typography.Title>
             <Space wrap>
               {detailTags.length === 0 ? (

@@ -23,10 +23,12 @@
 package jiuzhang_guard
 
 import (
+	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -303,11 +305,12 @@ func botNamespaceActive(bp *botPolicyJSON) bool {
 // 由包装 writer 采集真实状态码记入终止事实；仅记状态，其余全部透传）。
 type botStatusCapture struct {
 	http.ResponseWriter
-	status int
+	status   int
+	hijacked bool
 }
 
 func (w *botStatusCapture) WriteHeader(code int) {
-	if w.status == 0 {
+	if w.status == 0 && (code == http.StatusSwitchingProtocols || code < 100 || code >= 200) {
 		w.status = code
 	}
 	w.ResponseWriter.WriteHeader(code)
@@ -325,12 +328,34 @@ func (w *botStatusCapture) Unwrap() http.ResponseWriter { return w.ResponseWrite
 
 // Flush/Hijack 透传（与本模块 statusWriter 同一透传纪律）。
 func (w *botStatusCapture) Flush() {
+	if w.hijacked {
+		return
+	}
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
+		return
 	}
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *botStatusCapture) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	var (
+		conn net.Conn
+		rw   *bufio.ReadWriter
+		err  error
+	)
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		conn, rw, err = h.Hijack()
+	} else {
+		conn, rw, err = http.NewResponseController(w.ResponseWriter).Hijack()
+	}
+	if err == nil {
+		w.hijacked = true
+	}
+	return conn, rw, err
 }
 
 // serveBotNamespace 保留命名空间本地处理（verify 端点 / 墓碑 / 降级；

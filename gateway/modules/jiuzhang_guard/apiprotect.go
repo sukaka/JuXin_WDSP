@@ -454,6 +454,9 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 			Message:  "response suppressed: cannot process safely under fail-closed policy",
 			Evidence: map[string]string{"endpoint_key": res.EndpointKey},
 		})
+		res.Context.SetFinalAction(dsctx.ActionBlock)
+		res.FinalAction = dsctx.ActionBlock
+		accessLogAnnotate(r.Context(), wafActionBlock)
 		g.writeFailClosedResponse(w, res.Context.RequestID)
 		tail.status = http.StatusInternalServerError
 		dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusInternalServerError, true,
@@ -508,6 +511,7 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 		MCPGuard:            g.apiMCPGuard,
 		SensitiveValueRules: g.APISensitiveValueRules,
 		LLMSecurityPolicy:   g.llmSecurityPolicyForApp(),
+		Exceptions:          g.filterRequestAPIExceptions(r, start),
 	})
 	if err != nil {
 		// 响应相位故障 fail-open：记录并放行原响应（不脱敏）
@@ -531,27 +535,31 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 	// 响应侧阻断（文件合规 / MCP 结果 / LLM 输出保护）：仅完整缓冲且未外发一字节时才能
 	// 干净抑制；已直通/溢出的响应无法撤回，必须按实记录降级，不冒充已阻断。
 	if err == nil && act == dsctx.ActionBlock {
+		matches := res.Context.CopyMatches()
 		if kind == outcomeBuffered {
 			// MCP 结果检查实断（NG-MCP §1.7/D11）：mcpguard BLOCK 明细 → -32014
 			// JSON-RPC 错误对象（响应未外发一字节，干净阻断零泄漏；id 回显；
 			// 固定短语不泄露策略/工具细节，真实原因只落事件）
-			if mcpCode, mcpHTTP, ok := mcpguardBlockInfo(res.Context.CopyMatches()); ok {
+			if mcpCode, mcpHTTP, ok := mcpguardBlockInfo(matches); ok {
+				accessLogAnnotate(r.Context(), wafActionBlock)
 				dispo.RecordTerminal(ExecutorAPI, DisActionBlock, mcpHTTP, true,
-					[]string{"MCP_ERROR_" + strconv.Itoa(mcpCode)}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
+					[]string{"MCP_ERROR_" + strconv.Itoa(mcpCode)}, apiEnforcementRuleRefs(matches))
 				tail.status = mcpHTTP
 				g.setMCPOAuthChallenge(w, r, res.Context, mcpHTTP)
 				g.writeMCPErrorResponse(w, res.Context.RequestID, mcpCode, mcpHTTP, mcpRequestIDRaw(res.Context))
 				g.emitAPIEvent(r, res, tail)
 				return
 			}
-			if hasLLMOutputBlock(res.Context.CopyMatches()) {
+			if hasLLMOutputBlock(matches) {
+				accessLogAnnotate(r.Context(), wafActionBlock)
 				g.writeLLMOutputBlockedResponse(w, res.Context.RequestID)
 				tail.status = http.StatusForbidden
 				dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, true,
-					[]string{"LLM_OUTPUT_BLOCK"}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
+					[]string{"LLM_OUTPUT_BLOCK"}, apiEnforcementRuleRefs(matches))
 				g.emitAPIEvent(r, res, tail)
 				return
 			}
+			accessLogAnnotate(r.Context(), wafActionBlock)
 			g.writeFileComplianceBlockedResponse(w, res.Context.RequestID)
 			tail.status = http.StatusForbidden
 			dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, true,
@@ -559,16 +567,23 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 			g.emitAPIEvent(r, res, tail)
 			return
 		}
+		det, ruleID, msg := "file", "file.download_block_unavailable", "file compliance download block not enforced: response already streamed (fail-open)"
+		if _, _, ok := mcpguardBlockInfo(matches); ok {
+			det, ruleID, msg = "mcpguard", "mcp.response_block_unavailable", "mcp result block not enforced: response already streamed (fail-open)"
+		} else if hasLLMOutputBlock(matches) {
+			det, ruleID, msg = "llm", "llm.output_block_unavailable", "llm output block not enforced: response already streamed (fail-open)"
+		}
 		res.Context.AddMatch(dsctx.DetectorMatch{
-			Detector:   "file",
-			RuleID:     "file.download_block_unavailable",
+			Detector:   det,
+			RuleID:     ruleID,
 			Category:   "OBSERVE",
 			Severity:   "HIGH",
-			Message:    "file compliance download block not enforced: response already streamed (fail-open)",
+			Message:    msg,
 			Confidence: 1.0,
 			Evidence:   map[string]string{"endpoint_key": res.EndpointKey},
 		})
-		g.logger.Warn("api file compliance download block not enforced, response already streamed (fail-open)",
+		g.logger.Warn(msg,
+			zap.String("detector", det), zap.String("rule_id", ruleID),
 			zap.String("endpoint_key", res.EndpointKey), zap.String("request_id", res.Context.RequestID))
 		res.Context.SetFinalAction(dsctx.ActionObserve)
 		res.FinalAction = dsctx.ActionObserve
@@ -591,6 +606,9 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 		})
 		g.logger.Warn("api partial content (206/Content-Range) suppressed under fail-closed policy",
 			zap.String("endpoint_key", res.EndpointKey), zap.String("request_id", res.Context.RequestID))
+		res.Context.SetFinalAction(dsctx.ActionBlock)
+		res.FinalAction = dsctx.ActionBlock
+		accessLogAnnotate(r.Context(), wafActionBlock)
 		g.writeFailClosedResponse(w, res.Context.RequestID)
 		tail.status = http.StatusInternalServerError
 		dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusInternalServerError, true,
@@ -638,6 +656,9 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 				})
 				g.logger.Warn("api response mask failed, suppressed by fail-closed policy", zap.Error(terr),
 					zap.String("endpoint_key", res.EndpointKey), zap.String("request_id", res.Context.RequestID))
+				res.Context.SetFinalAction(dsctx.ActionBlock)
+				res.FinalAction = dsctx.ActionBlock
+				accessLogAnnotate(r.Context(), wafActionBlock)
 				g.writeFailClosedResponse(w, res.Context.RequestID)
 				tail.status = http.StatusInternalServerError
 				dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusInternalServerError, true,
@@ -709,6 +730,9 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 							Message:  "response suppressed: cannot process safely under fail-closed policy",
 							Evidence: map[string]string{"endpoint_key": res.EndpointKey},
 						})
+						res.Context.SetFinalAction(dsctx.ActionBlock)
+						res.FinalAction = dsctx.ActionBlock
+						accessLogAnnotate(r.Context(), wafActionBlock)
 						g.writeFailClosedResponse(w, res.Context.RequestID)
 						tail.status = http.StatusInternalServerError
 						dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusInternalServerError, true,
@@ -1223,6 +1247,21 @@ func (w *mcpOAuthChallengeWriter) WriteHeader(code int) {
 
 func (w *mcpOAuthChallengeWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
+func (w *mcpOAuthChallengeWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+		return
+	}
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *mcpOAuthChallengeWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return http.NewResponseController(w.ResponseWriter).Hijack()
+}
+
 // writeFileComplianceBlockedResponse 文件合规下载阻断抑制响应：403 + 空明细 JSON 体// （不含上游任何内容）。仅在不曾外发字节（缓冲模式扣留状态行）时调用。
 func (g *Guard) writeFileComplianceBlockedResponse(w http.ResponseWriter, requestID string) {
 	h := w.Header()
@@ -1345,20 +1384,9 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 	// API 受限例外（WDSP P0-04；契约 S4_DESIGN_BASELINE §6/§10）：按请求事实范围筛选
 	// （domain/path/method/可信 IP/当前 UTC 秒；clientIP 为可信代理处理后值），结果传入
 	// 决策引擎 Finding 级豁免重算；适用例外版本记入 disposition effective_config。
-	var apiExcRefs []decision.ExceptionRef
-	var apiExcList []APIException
-	if len(g.apiExceptions) > 0 {
-		apiExcList = g.apiExceptions[g.AppCode]
-		if len(apiExcList) > 0 {
-			clientIP := ""
-			if cres, ok := clientIPResultFrom(r.Context()); ok {
-				clientIP = cres.ClientIP.String()
-			}
-			apiExcRefs = FilterAPIExceptions(apiExcList, r.Host, r.URL.Path, r.Method, clientIP, start.Unix())
-			for _, ref := range apiExcRefs {
-				dispo.NoteExceptionVersion(ref.ExceptionID, ref.Version)
-			}
-		}
+	apiExcRefs := g.filterRequestAPIExceptions(r, start)
+	for _, ref := range apiExcRefs {
+		dispo.NoteExceptionVersion(ref.ExceptionID, ref.Version)
 	}
 	var jwtVerification *jwtverify.VerificationResult
 	if jwtRes, ok := jwtResultFrom(r.Context()); ok {
@@ -1502,6 +1530,7 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 	// P0-04：例外命中的 Finding（决策侧已打标 Excepted）写 disposition.matched_exceptions
 	// 与 EXCEPTED 步骤——例外命中可审计是契约要求（证据保留于事件 matches 不变）
 	if len(apiExcRefs) > 0 {
+		apiExcList := g.apiExceptions[g.AppCode]
 		matches := res.Context.CopyMatches()
 		excepted := 0
 		for _, m := range matches {
@@ -1636,6 +1665,7 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 		dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, false,
 			[]string{"API_POLICY_BLOCK"}, apiEnforcementRuleRefs(matches))
 		emitBlocked(http.StatusForbidden)
+		setBlockPageScene(r, blockSceneWAF)
 		return res, true, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("request blocked by api protection"))
 	case dsctx.ActionRateLimit:
 		// MCP 调用预算实断（NG-MCP §1.4-5/-32013=429 语义）：mcpguard RATE_LIMIT
@@ -1652,12 +1682,14 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 		dispo.RecordTerminal(ExecutorAPI, DisActionRateLimit, http.StatusTooManyRequests, false,
 			[]string{"API_RATE_LIMIT"}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
 		emitBlocked(http.StatusTooManyRequests)
+		setBlockPageScene(r, blockSceneRateLimit)
 		return res, true, caddyhttp.Error(http.StatusTooManyRequests, fmt.Errorf("api request rate limited"))
 	case dsctx.ActionTempBlock:
 		dispo.RecordTerminal(ExecutorAPI, DisActionTempBlock, http.StatusForbidden, false,
 			[]string{"API_TEMP_BLOCK"}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
 		g.createAPIRateLimitTempBlock(r, res.Context.RequestID, dispo.JSON())
 		emitBlocked(http.StatusForbidden)
+		setBlockPageScene(r, blockSceneAccessControl)
 		return res, true, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("api client temporarily blocked"))
 	default:
 		// Phase 9C-1：Streamable HTTP GET 请求的 Mcp-Session-Id 会话绑定检查（幂等；POST 已在 mcpguard.Evaluate 内执行）。
@@ -1843,12 +1875,27 @@ type apiEventTail struct {
 	latencyMS int64
 }
 
+// filterRequestAPIExceptions 按当前请求范围筛选适用的 API 受限例外（请求相位与响应相位同口径复用）。
+func (g *Guard) filterRequestAPIExceptions(r *http.Request, start time.Time) []decision.ExceptionRef {
+	if r == nil || r.URL == nil || len(g.apiExceptions) == 0 {
+		return nil
+	}
+	apiExcList := g.apiExceptions[g.AppCode]
+	if len(apiExcList) == 0 {
+		return nil
+	}
+	clientIP := ""
+	if cres, ok := clientIPResultFrom(r.Context()); ok {
+		clientIP = cres.ClientIP.String()
+	}
+	return FilterAPIExceptions(apiExcList, r.Host, r.URL.Path, r.Method, clientIP, start.Unix())
+}
+
 // emitAPIEvent 构建并输出统一运行时主事件（含端点发现信息）；输出失败仅告警，不影响请求。
 func (g *Guard) emitAPIEvent(r *http.Request, res *pipeline.Result, tail *apiEventTail) {
 	// 阶段3 Risk Engine：统一管线 DetectorMatch（ScoreDelta>0）汇入身份风险累加器——
-	// emitAPIEvent 为每请求唯一事件出口，此时明细已完整（含响应相位与 Coraza 归因补记的
-	// waf SQLi +50）；identitybehavior 信号非 DetectorMatch，不经此路径（无双计）
-	if g.risk != nil && res != nil && res.Context != nil {
+	// 须经 riskEngineForApp() 解析（支持仅配置应用级 risk_policy_overrides 而未启用全局策略的场景）
+	if g.riskEngineForApp() != nil && res != nil && res.Context != nil {
 		g.feedRiskSignals(r, res.Context.CopyMatches())
 	}
 	if g.apiEvents == nil || res == nil || res.Context == nil {
@@ -2183,14 +2230,16 @@ func (p *apiResponseHeaderPeek) captureHeaders() {
 func (p *apiResponseHeaderPeek) Flush() {
 	if f, ok := p.base.(http.Flusher); ok {
 		f.Flush()
+		return
 	}
+	_ = http.NewResponseController(p.base).Flush()
 }
 
 func (p *apiResponseHeaderPeek) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if h, ok := p.base.(http.Hijacker); ok {
 		return h.Hijack()
 	}
-	return nil, nil, fmt.Errorf("response writer does not support hijack")
+	return http.NewResponseController(p.base).Hijack()
 }
 
 func (p *apiResponseHeaderPeek) Unwrap() http.ResponseWriter { return p.base }

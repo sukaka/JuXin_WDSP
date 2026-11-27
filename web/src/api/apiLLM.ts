@@ -115,6 +115,34 @@ export interface ApiLLMSecurityPolicyVersion {
   created_at: string
 }
 
+export interface ApiLLMBuiltinRuleItem {
+  id: string
+  name: string
+  description: string
+  pattern: string
+  engine_rule_id: string
+  observe_action: string
+  protect_action: string
+}
+
+export interface ApiLLMBuiltinRuleCategory {
+  key: 'prompt_injection' | 'content_filter' | 'pii_detection' | string
+  title: string
+  scope: string
+  policy_switches: string[]
+  inspected_paths: string[]
+  notes: string
+  rules: ApiLLMBuiltinRuleItem[]
+}
+
+export interface ApiLLMBuiltinRulesCatalog {
+  prompt_paths: string[]
+  output_paths: string[]
+  max_output_texts: number
+  max_output_text_bytes: number
+  categories: ApiLLMBuiltinRuleCategory[]
+}
+
 export const apiLLMApi = {
   /** 明细分页（model/endpoint_key 精确过滤，findings_only=true 仅命中观测；days 默认 7 上限 30） */
   listObservations: async (params: {
@@ -163,5 +191,16 @@ export const apiLLMApi = {
       total: number
     }>(`/api-security/llm/security-policies/${id}/versions`)
     return { ...data, items: data.items ?? [] }
+  },
+  getBuiltinRules: async () => {
+    const data = await request<ApiLLMBuiltinRulesCatalog>(
+      `/api-security/llm/security-policies/builtin-rules`,
+    )
+    return {
+      ...data,
+      prompt_paths: data.prompt_paths ?? [],
+      output_paths: data.output_paths ?? [],
+      categories: data.categories ?? [],
+    }
   },
 }

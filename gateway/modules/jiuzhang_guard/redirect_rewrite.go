@@ -8,7 +8,6 @@ package jiuzhang_guard
 
 import (
 	"bufio"
-	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,6 +21,7 @@ type redirectLocationWriter struct {
 	http.ResponseWriter
 	port        int
 	wroteHeader bool
+	hijacked    bool
 }
 
 func newRedirectLocationWriter(w http.ResponseWriter, port int) *redirectLocationWriter {
@@ -44,8 +44,11 @@ func (w *redirectLocationWriter) commit() {
 }
 
 func (w *redirectLocationWriter) WriteHeader(code int) {
-	// 1xx 信息响应不提交最终头部（后续还有正式 WriteHeader）
-	if code < 100 || code >= 200 {
+	// 101 Switching Protocols 为终态升级响应（不改写 Location，但锁定状态）；
+	// 其余 1xx 信息响应（100/102/103）不提交最终头部（后续还有正式 WriteHeader）。
+	if code == http.StatusSwitchingProtocols {
+		w.wroteHeader = true
+	} else if code < 100 || code >= 200 {
 		w.commit()
 	}
 	w.ResponseWriter.WriteHeader(code)
@@ -58,22 +61,37 @@ func (w *redirectLocationWriter) Write(p []byte) (int, error) {
 
 // Flush 透传底层 Flusher；Flush 会提交头部，先执行改写。
 func (w *redirectLocationWriter) Flush() {
+	if w.hijacked {
+		return
+	}
 	w.commit()
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
+		return
 	}
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 // Unwrap 返回底层 writer（http.ResponseController 依赖，用于透传 Hijack 等可选能力）。
 func (w *redirectLocationWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// Hijack 透传连接劫持（WebSocket 升级需要；底层不支持时如实报错）。
+// Hijack 透传连接劫持（WebSocket 升级需要；支持底层直接 Hijacker 与 Unwrap 链）。
 func (w *redirectLocationWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	h, ok := w.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, fmt.Errorf("underlying writer does not support hijacking")
+	var (
+		conn net.Conn
+		rw   *bufio.ReadWriter
+		err  error
+	)
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		conn, rw, err = h.Hijack()
+	} else {
+		conn, rw, err = http.NewResponseController(w.ResponseWriter).Hijack()
 	}
-	return h.Hijack()
+	if err == nil {
+		w.hijacked = true
+		w.wroteHeader = true
+	}
+	return conn, rw, err
 }
 
 // rewriteLocationPort 把绝对 Location 的显式端口改写为 port（port==80 时剥离端口），

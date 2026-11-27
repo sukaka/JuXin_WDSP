@@ -407,6 +407,23 @@ func loadDBConfig(dialect string) DBConfig {
 	return cfg
 }
 
+// LoadDBConfig 仅从环境变量加载并校验主数据库配置，供独立运维 CLI（如 crssync）复用，
+// 避免强依赖无关的 Valkey/HTTP/安全配置，同时禁止硬编码口令。
+func LoadDBConfig() (DBConfig, error) {
+	dialect := strings.ToLower(strings.TrimSpace(getEnv("DB_DIALECT", DBDialectPostgres)))
+	cfg := loadDBConfig(dialect)
+	if err := cfg.Validate(); err != nil {
+		return DBConfig{}, err
+	}
+	if cfg.Password == "" {
+		if cfg.DialectName() == DBDialectPostgres {
+			return DBConfig{}, fmt.Errorf("POSTGRES_PASSWORD is required")
+		}
+		return DBConfig{}, fmt.Errorf("DB_PASSWORD is required")
+	}
+	return cfg, nil
+}
+
 // NormalizeEnv 归一化并校验 APP_ENV：去空白转小写，映射 "production" -> "prod"，
 // 空值回落 "dev"；仅允许 dev / test / prod，未识别值一律 fail-closed 返回错误。
 func NormalizeEnv(raw string) (string, error) {

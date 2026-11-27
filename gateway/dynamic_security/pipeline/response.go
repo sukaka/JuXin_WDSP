@@ -75,6 +75,9 @@ type ResponseConfig struct {
 	SensitiveValueRules []detectors.SensitiveValueRule
 	// LLMSecurityPolicy 当前应用的输出保护策略（nil = LLM 输出内容检测零行为变化）
 	LLMSecurityPolicy *detectors.LLMSecurityPolicy
+	// Exceptions 本请求适用的 API 受限例外（WDSP P0-04；与请求相位 decision.Decide 保持同口径，
+	// 避免响应相位重复决策遗漏例外打标导致已豁免规则仍触发阻断/脱敏）
+	Exceptions []decision.ExceptionRef
 }
 
 // 响应侧单事件敏感字段命中上限（与请求侧 maxSensitiveMatches 对齐，防超大报文撑爆事件）。
@@ -413,8 +416,8 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 		detectors.CheckResponseFieldPermissions(ctx, cfg.RequestRoles, cfg.EndpointKey, cfg.FieldPermissions, rc.ParsedBody, rc.TransformPlan, rc.SensitiveFields)
 	}
 
-	// 6. 响应相位统一决策（请求侧阻断类请求不会到达本相位，优先级语义不变）
-	return decision.Decide(ctx, decision.Input{Mode: mode}), nil
+	// 6. 响应相位统一决策（请求侧阻断类请求不会到达本相位，优先级语义不变；透传适用例外）
+	return decision.Decide(ctx, decision.Input{Mode: mode, Exceptions: cfg.Exceptions}), nil
 }
 
 // compileMCPResultValueRules MCP 结果检查值级规则编译（detectors 并发安全缓存——

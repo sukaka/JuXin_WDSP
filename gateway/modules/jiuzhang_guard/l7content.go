@@ -3,6 +3,7 @@ package jiuzhang_guard
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -18,6 +19,8 @@ import (
 )
 
 const maxL7BodyInspectionBytes = 1 << 20
+
+var errL7ResponseDiscarded = errors.New("l7 response discarded")
 
 func (g *Guard) readL7RequestBody(r *http.Request) ([]byte, bool) {
 	if r.Body == nil || r.Body == http.NoBody {
@@ -136,6 +139,9 @@ func (w *l7ResponseCapture) commit() {
 }
 
 func (w *l7ResponseCapture) Flush() {
+	if w.hijacked {
+		return
+	}
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
 	}
@@ -145,19 +151,32 @@ func (w *l7ResponseCapture) Flush() {
 	}
 	if f, ok := w.base.(http.Flusher); ok {
 		f.Flush()
+		return
 	}
+	_ = http.NewResponseController(w.base).Flush()
 }
 
 func (w *l7ResponseCapture) Unwrap() http.ResponseWriter { return w.base }
 
 func (w *l7ResponseCapture) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	w.hijacked = true
-	w.passthrough = true
-	h, ok := w.base.(http.Hijacker)
-	if !ok {
-		return nil, nil, fmt.Errorf("underlying writer does not support hijacking")
+	if w.discarded {
+		return nil, nil, errL7ResponseDiscarded
 	}
-	return h.Hijack()
+	var (
+		conn net.Conn
+		rw   *bufio.ReadWriter
+		err  error
+	)
+	if h, ok := w.base.(http.Hijacker); ok {
+		conn, rw, err = h.Hijack()
+	} else {
+		conn, rw, err = http.NewResponseController(w.base).Hijack()
+	}
+	if err == nil {
+		w.hijacked = true
+		w.passthrough = true
+	}
+	return conn, rw, err
 }
 
 func (g *Guard) serveNextWithL7Response(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler,
@@ -176,6 +195,9 @@ func (g *Guard) serveNextWithL7Response(w http.ResponseWriter, r *http.Request, 
 	}
 	capture := newL7ResponseCapture(w, evalHeaders)
 	if err := g.serveNextViaBot(capture, r, next, base, res); err != nil {
+		if capture.discarded && capture.headerDecision != nil && errors.Is(err, errL7ResponseDiscarded) {
+			return g.executeL7Response(w, r, base, *capture.headerDecision, capture.status, capture.commit)
+		}
 		return err
 	}
 	if capture.hijacked {

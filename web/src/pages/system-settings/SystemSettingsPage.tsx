@@ -634,7 +634,7 @@ function SettingGroupPanel({ group }: { group: string }) {
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="自定义 CC 限速（429）/阻断时的响应页面与 JSON 错误文案，全部留空时使用内置默认。保存后需在「配置发布」执行发布才下发网关生效；HTML 正文仅保留基础排版标签（自动过滤脚本与属性），请求编号与 Retry-After 行为不变。"
+          message="自定义 CC 限速（429）/阻断时的响应页面与 JSON 错误文案，全部留空时使用内置默认。保存后需在「配置发布」执行发布才下发网关生效；HTML 正文仅保留基础排版标签（自动过滤脚本与属性），请求编号与 Retry-After 行为不变。如需维护多套自定义样式、多历史版本、覆盖 403 拦截页或按应用/场景分别绑定，请前往「应用防护策略 → 拦截页面」。"
         />
       )}
       {group === 'software_bypass' && (

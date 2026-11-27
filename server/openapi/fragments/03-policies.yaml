@@ -206,6 +206,76 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /protection-policies/{id}/content:
+    get:
+      operationId: policyContent
+      tags: [protection-policies]
+      summary: 防护策略实际生效内容（SecLang 指令与生效规则清单）
+      description: |
+        返回与配置发布同源生成的 Coraza SecLang 指令、按序加载的规则文件清单、
+        生效的规则覆盖/自定义规则/全局 WAF 例外，以及防护规则库在该策略模式与 PL 下的生效规则清单（分页，附带原始 SecRule 原文）。
+        权限：`protection_policies.read`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 策略 ID
+        - name: keyword
+          in: query
+          schema: { type: string }
+          description: 按规则 ID、名称或文件名筛选
+        - name: attack_type
+          in: query
+          schema: { type: string }
+          description: 按攻击类型筛选
+        - name: effective_status
+          in: query
+          schema: { type: string, enum: [ACTIVE, DISABLED_BY_OVERRIDE, SKIPPED_BY_PL, MODE_OFF] }
+          description: 按策略生效状态筛选
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+      responses:
+        '200':
+          description: 防护策略实际生效内容与规则清单
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy_id: { type: string, format: uuid }
+                  policy_code: { type: string }
+                  policy_name: { type: string }
+                  protection_mode: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+                  sec_rule_engine: { type: string, enum: [Off, DetectionOnly, On] }
+                  paranoia_level: { type: integer }
+                  inbound_anomaly_threshold: { type: integer }
+                  outbound_anomaly_threshold: { type: integer }
+                  generated_directives: { type: string, description: 完整 Coraza SecLang 指令正文 }
+                  loaded_rule_files: { type: array, items: { type: object } }
+                  summary: { type: object }
+                  overrides: { type: array, items: { type: object } }
+                  custom_rules: { type: array, items: { type: object } }
+                  global_exceptions: { type: array, items: { type: object } }
+                  rules: { type: array, items: { type: object } }
+                  rules_total: { type: integer }
+                  page: { type: integer }
+                  page_size: { type: integer }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /protection-policies/{id}/copy:
     post:
       operationId: policyCopy
@@ -1714,6 +1784,9 @@ components:
         detail:
           $ref: '#/components/schemas/WafRuleDetailInfo'
           description: 结构化中文规则详细说明（详情接口返回）
+        raw_rule:
+          type: string
+          description: 底层原始 SecLang 规则原文（含正则表达式与链式子规则，详情接口返回）
         severity:
           type: string
           enum: [CRITICAL, ERROR, WARNING, NOTICE]
@@ -2320,6 +2393,16 @@ components:
         is_broad:
           type: boolean
           description: 是否宽泛例外（高风险）：无具体限定条件且命中全部 SQLi/XSS/命令注入类型、全局范围，或无应用限定且规则标签含 SQLI/XSS
+        generated_seclang:
+          type: string
+          description: WAF 引擎编译生成的两规则标记法 SecLang 原文（详情接口返回）
+        compiled_api_exception:
+          type: object
+          nullable: true
+          description: API 引擎下发网关 api_exceptions 段的规范 JSON 对象（详情接口返回）
+        compile_error:
+          type: string
+          description: 草稿尚不可编译时的明确原因说明
 
     ExceptionListResponse:
       type: object
@@ -2402,6 +2485,9 @@ components:
           items: { type: string }
           description: 不受例外影响持续有效的保护模块（JWT/ACCESS_CONTROL/CC/RATE_LIMIT_QUOTA/MANUAL_BAN/PROTOCOL_LIMITS/RISK_POLICY）
         compiled_fingerprint: { type: string, description: 编译摘要（sha256 hex；预览后草稿被改则指纹变化） }
+        generated_seclang: { type: string, description: WAF 引擎预览生成的两规则标记法 SecLang 原文 }
+        compiled_api_exception: { type: object, nullable: true, description: API 引擎预览生成的 api_exceptions 下发 JSON }
+        compile_error: { type: string, description: 草稿尚不可编译时的明确原因说明 }
         required_publish_targets:
           type: array
           items: { type: string }

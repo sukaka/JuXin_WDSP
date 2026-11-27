@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/middleware"
@@ -23,10 +24,16 @@ func NewSecurityPolicyHandler(store SecurityPolicyRepository, audit *audits.Serv
 
 func RegisterSecurityPolicyRoutes(mux *http.ServeMux, authzFn func(http.Handler) http.Handler, h *SecurityPolicyHandler) {
 	mux.Handle("GET /api/v1/api-security/llm/security-policies", authzFn(middleware.RequirePermission(PermSecurityRead)(http.HandlerFunc(h.List))))
+	mux.Handle("GET /api/v1/api-security/llm/security-policies/builtin-rules", authzFn(middleware.RequirePermission(PermSecurityRead)(http.HandlerFunc(h.BuiltinRules))))
 	mux.Handle("POST /api/v1/api-security/llm/security-policies", authzFn(middleware.RequirePermission(PermSecurityManage)(http.HandlerFunc(h.Create))))
 	mux.Handle("PATCH /api/v1/api-security/llm/security-policies/{id}", authzFn(middleware.RequirePermission(PermSecurityManage)(http.HandlerFunc(h.Update))))
 	mux.Handle("DELETE /api/v1/api-security/llm/security-policies/{id}", authzFn(middleware.RequirePermission(PermSecurityManage)(http.HandlerFunc(h.Delete))))
 	mux.Handle("GET /api/v1/api-security/llm/security-policies/{id}/versions", authzFn(middleware.RequirePermission(PermSecurityRead)(http.HandlerFunc(h.Versions))))
+}
+
+// BuiltinRules 返回网关内置 LLM 安全检测规则全集（提示词注入、恶意/有害内容、PII 真实正则与检查字段）。
+func (h *SecurityPolicyHandler) BuiltinRules(w http.ResponseWriter, r *http.Request) {
+	response.JSON(w, r, http.StatusOK, detectors.BuiltinLLMSecurityRulesCatalog())
 }
 
 type securityPolicyRequest struct {

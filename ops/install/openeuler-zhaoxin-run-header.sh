@@ -330,17 +330,17 @@ elif [[ -d "$WORK_DIR/rpms" ]]; then
   shopt -u nullglob
   if [[ ${#rpms[@]} -gt 0 ]]; then
     check_bundled_rpm_platform /etc/os-release
-    if [[ -f "$WORK_DIR/rpms/rpms.sha256" ]]; then
-      verify_package_signature "$WORK_DIR/rpms/rpms.sha256"
-      (
-        cd "$WORK_DIR"
-        export LC_ALL=C
-        shopt -s nullglob
-        local_rpms=(rpms/*.rpm)
-        computed="$(sha256sum "${local_rpms[@]}")"
-        [[ "$computed" == "$(< rpms/rpms.sha256)" ]]
-      ) || die '随包依赖 RPM 校验和验证失败，拒绝安装'
-    fi
+    [[ -f "$WORK_DIR/rpms/rpms.sha256" ]] \
+      || die '随包依赖 RPM 缺少清单 rpms/rpms.sha256，拒绝安装'
+    verify_package_signature "$WORK_DIR/rpms/rpms.sha256"
+    (
+      cd "$WORK_DIR"
+      export LC_ALL=C
+      shopt -s nullglob
+      local_rpms=(rpms/*.rpm)
+      computed="$(sha256sum "${local_rpms[@]}")"
+      [[ "$computed" == "$(< rpms/rpms.sha256)" ]]
+    ) || die '随包依赖 RPM 校验和验证失败，拒绝安装'
     log "安装 ${#rpms[@]} 个随包依赖 RPM"
     if command -v dnf >/dev/null 2>&1; then
       dnf -y install "${rpms[@]}"

@@ -387,8 +387,8 @@ PY
         auto_pcapd+=("$_p"); auto_tproxyd+=("$_p") ;;
       .dockerignore) auto_api+=("$_p"); auto_containerops+=("$_p") ;;
       gateway/*) auto_gateway+=("$_p") ;;
-      deployment/*|docker-compose*.yml|ops/upgrade/upgrade-executor.sh|ops/upgrade/install-executor.sh|ops/upgrade/image-delta.py|wdsp-agent/*|packaging/*) auto_host+=("$_p") ;;
-      ops/*|docs/*|test/*|tools/*|scripts/*|licenses/*|diagram/*|output/*|dist/*|.github/*|.agent/*|*.md|.gitignore) auto_ignored+=("$_p") ;;
+      ops/*/tests/*|ops/healthcheck/*_test.py|docs/*|test/*|tools/*|scripts/*|licenses/*|diagram/*|output/*|dist/*|.github/*|.agent/*|*.md|.gitignore) auto_ignored+=("$_p") ;;
+      deployment/*|docker-compose*.yml|ops/*|wdsp-agent/*|packaging/*) auto_host+=("$_p") ;;
       *) auto_unmatched+=("$_p") ;;
     esac
   done

@@ -20,7 +20,7 @@
 	# POC 使用自签名证书显式配置，禁用自动 HTTPS（不签发、不改写端口）
 	auto_https off
 
-	# 中间件顺序与 stage5 静态配置一致：headers -> waf -> 业务 handler
+	# 中间件顺序与 stage5 静态配置一致：request_header -> coraza_waf -> header(deferred) -> reverse_proxy
 	order coraza_waf after request_header
 
 	# 网关自身运行日志（非访问日志）
@@ -60,39 +60,41 @@
 		level INFO
 	}
 
-	# 生成唯一 Request ID 并强制覆盖客户端传入值，不信任客户端自带标识
-	request_header X-Request-Id {http.request.uuid}
+	route {
+		# 生成唯一 Request ID 并强制覆盖客户端传入值，不信任客户端自带标识
+		request_header X-Request-Id {http.request.uuid}
 
-	# 默认安全响应头
-	header {
-		X-Content-Type-Options nosniff
-		X-Frame-Options DENY
-		Referrer-Policy no-referrer
-		-Server
+		coraza_waf {
+			# 加载顺序与配置发布生成器（gatewayconfig）保持一致：
+			# 插件 config/before → before-crs → crs/rules → contrib → 插件 after
+			# → after-crs → jiuzhang-custom → post-contrib-blocking（必须最后）。
+			directives `
+				SecRuleEngine {$SEC_RULE_ENGINE:On}
+				Include /etc/caddy/rules/coraza.conf
+				Include /etc/caddy/rules/crs/crs-setup.conf
+				Include /etc/caddy/rules/crs/plugins/*/plugins/*-config.conf
+				Include /etc/caddy/rules/crs/plugins/*/plugins/*-before.conf
+				Include /etc/caddy/rules/exclusions/before-crs.conf
+				Include /etc/caddy/rules/crs/rules/*.conf
+				Include /etc/caddy/rules/contrib/*/*.conf
+				Include /etc/caddy/rules/crs/plugins/*/plugins/*-after.conf
+				Include /etc/caddy/rules/exclusions/after-crs.conf
+				Include /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf
+				Include /etc/caddy/rules/jiuzhang/post-contrib-blocking.conf
+			`
+		}
+
+		# 默认安全响应头（置于 coraza_waf 之后、reverse_proxy 之前，与生产链序一致）
+		header {
+			X-Content-Type-Options nosniff
+			X-Frame-Options DENY
+			Referrer-Policy no-referrer
+			-Server
+		}
+
+		# 实验拓扑 origin（独立网络命名空间，经 br0 桥地址回源）
+		reverse_proxy http://192.168.50.20:8081
 	}
-
-	coraza_waf {
-		# 加载顺序与配置发布生成器（gatewayconfig）保持一致：
-		# 插件 config/before → before-crs → crs/rules → contrib → 插件 after
-		# → after-crs → jiuzhang-custom → post-contrib-blocking（必须最后）。
-		directives `
-			SecRuleEngine {$SEC_RULE_ENGINE:On}
-			Include /etc/caddy/rules/coraza.conf
-			Include /etc/caddy/rules/crs/crs-setup.conf
-			Include /etc/caddy/rules/crs/plugins/*/plugins/*-config.conf
-			Include /etc/caddy/rules/crs/plugins/*/plugins/*-before.conf
-			Include /etc/caddy/rules/exclusions/before-crs.conf
-			Include /etc/caddy/rules/crs/rules/*.conf
-			Include /etc/caddy/rules/contrib/*/*.conf
-			Include /etc/caddy/rules/crs/plugins/*/plugins/*-after.conf
-			Include /etc/caddy/rules/exclusions/after-crs.conf
-			Include /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf
-			Include /etc/caddy/rules/jiuzhang/post-contrib-blocking.conf
-		`
-	}
-
-	# 实验拓扑 origin（独立网络命名空间，经 br0 桥地址回源）
-	reverse_proxy http://192.168.50.20:8081
 
 	# Coraza 阻断时返回 caddyhttp.HandlerError，由 handle_errors 统一接管，
 	# 返回九章自定义阻断页面，不向客户端暴露规则细节（与 stage5 一致）。

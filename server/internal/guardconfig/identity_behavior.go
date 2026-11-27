@@ -20,22 +20,30 @@ type BehaviorPolicyLister interface {
 // SetBehaviorPolicyLister 注入行为策略读取（nil 时不下发 identity_behavior 段）。
 func (p *Provider) SetBehaviorPolicyLister(l BehaviorPolicyLister) { p.behaviorPolicy = l }
 
-// loadIdentityBehavior 读取行为策略并填充 identity_behavior 段与身份事件日志路径；
-// 查询失败（如迁移 000098 尚未应用）Warn 并跳过，不阻断发布主流程。
-// enabled=false 时同样下发（网关按 enabled:false 行为检测零行为），
-// identity_events_log 随策略段一并下发（网关事件落点，跨分片契约）。
+// loadIdentityBehavior 读取行为策略并填充 identity_behavior 段（兼容旧调用方；BuildGuardConfig 走 Strict）。
 func (p *Provider) loadIdentityBehavior(ctx context.Context, cfg *gatewayconfig.GuardConfig) {
+	if err := p.loadIdentityBehaviorStrict(ctx, cfg); err != nil {
+		slog.Warn("get security behavior policy failed, skip identity_behavior", "error", err)
+	}
+}
+
+// loadIdentityBehaviorStrict 仅容忍旧库未建表（42P01）；真实数据库错误中止候选发布（fail-hard）。
+func (p *Provider) loadIdentityBehaviorStrict(ctx context.Context, cfg *gatewayconfig.GuardConfig) error {
 	if p.behaviorPolicy == nil {
-		return
+		return nil
 	}
 	pol, err := p.behaviorPolicy.GetGuardBehaviorPolicy(ctx)
 	if err != nil {
-		slog.Warn("get security behavior policy failed, skip identity_behavior", "error", err)
-		return
+		if isMissingLegacyTableError(err, "security_behavior_policy") {
+			slog.Warn("optional legacy table security_behavior_policy is unavailable", "error", err)
+			return nil
+		}
+		return wrapLegacyLoaderError("security_behavior_policy", err)
 	}
 	if pol == nil {
-		return
+		return nil
 	}
 	cfg.IdentityBehavior = pol
 	cfg.IdentityEventsLog = p.identityEventsLog
+	return nil
 }

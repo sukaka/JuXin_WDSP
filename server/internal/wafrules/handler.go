@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -31,11 +32,15 @@ var ErrRuleNotFound = errors.New("规则不存在")
 
 // Handler 是WAF规则处理器。
 type Handler struct {
-	db         *pgxpool.Pool
-	syncSvc    *SyncService
-	audits     *audits.Service
-	crsDir     string
-	crsVersion string
+	db             *pgxpool.Pool
+	syncSvc        *SyncService
+	audits         *audits.Service
+	crsDir         string
+	crsVersion     string
+	rawCacheMu     sync.RWMutex
+	rawCacheLoaded bool
+	rawCacheByKey  map[string]string
+	rawCacheByID   map[int]string
 }
 
 // NewHandler 创建规则处理器。
@@ -142,7 +147,7 @@ WHERE ` + where + " ORDER BY r.rule_id LIMIT $" + itoa(argIdx) + " OFFSET $" + i
 	defer rows.Close()
 	var items []map[string]interface{}
 	for rows.Next() {
-		item, _, err := scanRuleRow(rows, false)
+		item, _, err := h.scanRuleRow(rows, false)
 		if err != nil {
 			response.InternalError(w, r, err)
 			return
@@ -288,7 +293,8 @@ func (h *Handler) fetchRuleDetail(ctx context.Context, ruleID int) (map[string]i
 SELECT r.id, r.rule_id, r.rule_source, r.file_name, r.name, r.message, r.severity, r.phase,
        r.tags, r.attack_type, r.default_state, r.crs_version, r.parsed_spec,
        COALESCE(d.summary, ''), COALESCE(d.detection_logic, ''), COALESCE(d.risk_impact, ''),
-       COALESCE(d.tuning_advice, ''), COALESCE(d.updated_by_name, ''), d.updated_at
+       COALESCE(d.tuning_advice, ''), COALESCE(d.updated_by_name, ''), d.updated_at,
+       COALESCE(r.raw_rule, '')
 FROM waf_rules r
 LEFT JOIN waf_rule_descriptions d ON d.rule_id = r.rule_id
 WHERE r.rule_id = $1
@@ -304,10 +310,43 @@ LIMIT 1`, ruleID)
 		}
 		return nil, "", ErrRuleNotFound
 	}
-	return scanRuleRow(rows, true)
+	return h.scanRuleRow(rows, true)
 }
 
-func scanRuleRow(rows pgx.Rows, includeDetail bool) (map[string]interface{}, string, error) {
+func (h *Handler) lookupRawRule(ruleID int, source, fileName string) string {
+	h.rawCacheMu.RLock()
+	if h.rawCacheLoaded {
+		raw := h.rawCacheByKey[rawRuleCacheKey(source, fileName, ruleID)]
+		if raw == "" {
+			raw = h.rawCacheByID[ruleID]
+		}
+		h.rawCacheMu.RUnlock()
+		return raw
+	}
+	h.rawCacheMu.RUnlock()
+
+	h.rawCacheMu.Lock()
+	defer h.rawCacheMu.Unlock()
+	if !h.rawCacheLoaded {
+		h.rawCacheByKey, h.rawCacheByID = LoadRawRuleIndex(h.syncSources())
+		h.rawCacheLoaded = true
+	}
+	raw := h.rawCacheByKey[rawRuleCacheKey(source, fileName, ruleID)]
+	if raw == "" {
+		raw = h.rawCacheByID[ruleID]
+	}
+	return raw
+}
+
+func (h *Handler) invalidateRawCache() {
+	h.rawCacheMu.Lock()
+	h.rawCacheLoaded = false
+	h.rawCacheByKey = nil
+	h.rawCacheByID = nil
+	h.rawCacheMu.Unlock()
+}
+
+func (h *Handler) scanRuleRow(rows pgx.Rows, includeDetail bool) (map[string]interface{}, string, error) {
 	var (
 		id            uuid.UUID
 		ruleID        int
@@ -326,12 +365,24 @@ func scanRuleRow(rows pgx.Rows, includeDetail bool) (map[string]interface{}, str
 		ovTuning      string
 		ovUpdatedBy   string
 		ovUpdatedAt   *time.Time
+		rawRule       string
 	)
-	if err := rows.Scan(
-		&id, &ruleID, &source, &file, &name, &message, &severity, &phase,
-		&tags, &attackType, &defaultState, &crsVersion, &parsedSpec,
-		&ovSummary, &ovLogic, &ovRisk, &ovTuning, &ovUpdatedBy, &ovUpdatedAt,
-	); err != nil {
+	var err error
+	if includeDetail {
+		err = rows.Scan(
+			&id, &ruleID, &source, &file, &name, &message, &severity, &phase,
+			&tags, &attackType, &defaultState, &crsVersion, &parsedSpec,
+			&ovSummary, &ovLogic, &ovRisk, &ovTuning, &ovUpdatedBy, &ovUpdatedAt,
+			&rawRule,
+		)
+	} else {
+		err = rows.Scan(
+			&id, &ruleID, &source, &file, &name, &message, &severity, &phase,
+			&tags, &attackType, &defaultState, &crsVersion, &parsedSpec,
+			&ovSummary, &ovLogic, &ovRisk, &ovTuning, &ovUpdatedBy, &ovUpdatedAt,
+		)
+	}
+	if err != nil {
 		return nil, "", err
 	}
 	name = LocalizeRule(ruleID, file, name)
@@ -373,7 +424,11 @@ func scanRuleRow(rows pgx.Rows, includeDetail bool) (map[string]interface{}, str
 		"tags": tags, "attack_type": attackType, "default_state": defaultState, "crs_version": crsVersion,
 	}
 	if includeDetail {
+		if strings.TrimSpace(rawRule) == "" {
+			rawRule = h.lookupRawRule(ruleID, source, file)
+		}
 		item["detail"] = detail
+		item["raw_rule"] = rawRule
 	}
 	return item, name, nil
 }
@@ -445,6 +500,7 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
+	h.invalidateRawCache()
 	h.recordAudit(r, p, "waf_rules", "sync", "crs", h.crsVersion, h.crsVersion,
 		"added="+itoa(report.Added)+",updated="+itoa(report.Updated)+",total="+itoa(report.TotalInDB), audits.ResultSuccess, audits.RiskMedium)
 	response.JSON(w, r, http.StatusOK, report)

@@ -570,4 +570,36 @@ describe('WafRulesPage 规则效果', () => {
     expect(await screen.findByText('规则文件自动解析')).toBeInTheDocument()
     expect(screen.getByText('默认调优建议。')).toBeInTheDocument()
   })
+
+  it('规则详情展示底层原始 SecRule 指令与正则表达式原文', async () => {
+    const rawSecRule = `SecRule ARGS "@rx (?i)union\\s+select" \\\n    "id:942100,phase:2,block,tag:'attack-sqli'"`
+    const ruleWithRaw = { ...RULE, raw_rule: rawSecRule }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/waf-rules/effect-statistics')) {
+          return Promise.resolve(jsonResponse({ items: [], page: 1, page_size: 30, total: 0 }))
+        }
+        if (url.includes('/waf-rules/categories')) {
+          return Promise.resolve(jsonResponse({ items: [{ attack_type: 'SQL_INJECTION', count: 1 }] }))
+        }
+        if (url.includes('/waf-rules/versions')) {
+          return Promise.resolve(jsonResponse({ versions: ['4.28.0'] }))
+        }
+        if (url.includes('/waf-rules/942100')) {
+          return Promise.resolve(jsonResponse(ruleWithRaw))
+        }
+        if (url.includes('/waf-rules')) {
+          return Promise.resolve(jsonResponse({ items: [RULE], page: 1, page_size: 20, total: 1 }))
+        }
+        return Promise.reject(new Error(`unexpected url: ${url}`))
+      }),
+    )
+
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '详情' }))
+    expect(await screen.findByText('原始 SecLang 规则（SecRule 原文）')).toBeInTheDocument()
+    expect(screen.getByText(/SecRule ARGS "@rx \(\?i\)union\\s\+select"/)).toBeInTheDocument()
+  })
 })

@@ -771,6 +771,12 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 			return
 		}
 		guardCfg.BlockResponse = blockResponse
+		blockPages, bpErr := LoadBlockPages(ctx, p.db)
+		if bpErr != nil {
+			p.finishTask(ctx, taskID, TaskFailed, "BLOCK_PAGES_SNAPSHOT_FAILED", bpErr.Error(), nil)
+			return
+		}
+		guardCfg.BlockPages = blockPages
 		softwareBypass, sbErr := LoadSoftwareBypass(ctx, p.db)
 		if sbErr != nil {
 			p.finishTask(ctx, taskID, TaskFailed, "SOFTWARE_BYPASS_SNAPSHOT_FAILED", sbErr.Error(), nil)
@@ -1556,8 +1562,8 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 			appList = append(appList, *a)
 		}
 	} else {
-		// 全部活动应用
-		list, _, err := p.apps.List(ctx, applications.ListFilter{Status: applications.StatusActive, PageSize: 1000})
+		// 全部活动应用（专用无分页全量查询，避免分页 20 条截断静默丢站点）
+		list, err := p.apps.ListAllActive(ctx)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1604,14 +1610,14 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 			}
 			ad.PathRoutes = prs
 		}
-		// 阶段4：读取应用绑定的策略参数（策略模式优先于应用字段）
+		// 阶段4：读取应用绑定的策略参数（策略模式优先于应用字段；查库失败 fail-hard，禁止静默降级）
 		var boundPolicyID *uuid.UUID
 		if p.policies != nil {
 			pp, err := p.policies.GetApplicationPolicyParams(ctx, app.ID)
 			if err != nil {
-				slog.Warn("get application policy params failed", "app", app.Code, "error", err)
+				return nil, nil, fmt.Errorf("load application policy params for %s: %w", app.Code, err)
 			}
-			if err == nil && pp != nil {
+			if pp != nil {
 				// BYPASS（数据透传）为排障/应急直通，必须绝对生效，不允许被绑定策略的模式覆盖
 				if pp.ProtectionMode != "" && ad.ProtectionMode != applications.ModeBypass {
 					ad.ProtectionMode = pp.ProtectionMode
@@ -2093,6 +2099,8 @@ func stripAPIGuardSections(g *GuardConfig) *GuardConfig {
 	cp.APIAuthzRelations = nil
 	cp.APIAuthzRoleBaselines = nil
 	cp.APIAuthzObjectHMACKeyHex = ""
+	cp.APIAuthzSnapshotStale = false
+	cp.APIAuthzSnapshotExpiresAt = nil
 	cp.APIAuthzPreviousValid = nil
 	cp.APIFieldPermissions = nil
 	cp.APIScanVerification = nil
@@ -2100,6 +2108,8 @@ func stripAPIGuardSections(g *GuardConfig) *GuardConfig {
 	cp.APIParameterRelations = nil
 	// 阶段8 §44：流程基线随 API 动态防护门控下发，一并剥除
 	cp.APIFlowBaselines = nil
+	// NG-FLOW-01：强流程定义随 API 动态防护门控下发，一并剥除
+	cp.APIStrongFlows = nil
 	// 阶段8 §35：已吊销凭据清单随 API 动态防护门控下发，一并剥除
 	cp.APIRevokedCredentials = nil
 	// NG-GQL-03：GraphQL 成本预算策略随 API 动态防护门控下发，一并剥除
@@ -2123,6 +2133,12 @@ func stripAPIGuardSections(g *GuardConfig) *GuardConfig {
 	cp.APIGRPCMaxFrameBytes = 0
 	cp.APIGRPCAllowCompression = false
 	cp.APIGRPCDescriptors = nil
+	cp.APIGRPCBindings = nil
+	cp.APIMCPToolCatalogs = nil
+	cp.APIMCPBindings = nil
+	cp.APIMachineIdentities = nil
+	cp.APIMachineIdentityBindings = nil
+	cp.APIMachineIdentityMeta = nil
 	cp.JWTTrust = nil
 	cp.BotPolicy = nil
 	// P1-02 B3 预备：Bot 签名密钥随 bot_policy 段同一门控剥除（秘密材料不得

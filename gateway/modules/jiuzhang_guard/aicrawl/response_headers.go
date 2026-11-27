@@ -20,6 +20,7 @@ type ContentSignalWriter struct {
 	base          http.ResponseWriter
 	contentSignal string
 	wroteHeader   bool
+	hijacked      bool
 }
 
 // NewContentSignalWriter 构造 Content-Signal 响应头包装器。
@@ -34,6 +35,10 @@ func NewContentSignalWriter(base http.ResponseWriter, contentSignal string) *Con
 func (w *ContentSignalWriter) Header() http.Header { return w.base.Header() }
 
 func (w *ContentSignalWriter) WriteHeader(code int) {
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		w.base.WriteHeader(code)
+		return
+	}
 	if !w.wroteHeader {
 		w.wroteHeader = true
 		if w.contentSignal != "" {
@@ -51,22 +56,37 @@ func (w *ContentSignalWriter) Write(p []byte) (int, error) {
 }
 
 func (w *ContentSignalWriter) Flush() {
+	if w.hijacked {
+		return
+	}
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
 	}
 	if f, ok := w.base.(http.Flusher); ok {
 		f.Flush()
+		return
 	}
+	_ = http.NewResponseController(w.base).Flush()
 }
 
 func (w *ContentSignalWriter) Unwrap() http.ResponseWriter { return w.base }
 
 func (w *ContentSignalWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	h, ok := w.base.(http.Hijacker)
-	if !ok {
-		return nil, nil, fmt.Errorf("underlying writer does not support hijacking")
+	var (
+		conn net.Conn
+		rw   *bufio.ReadWriter
+		err  error
+	)
+	if h, ok := w.base.(http.Hijacker); ok {
+		conn, rw, err = h.Hijack()
+	} else {
+		conn, rw, err = http.NewResponseController(w.base).Hijack()
 	}
-	return h.Hijack()
+	if err == nil {
+		w.hijacked = true
+		w.wroteHeader = true
+	}
+	return conn, rw, err
 }
 
 type http402Payload struct {

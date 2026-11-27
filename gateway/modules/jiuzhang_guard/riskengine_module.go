@@ -164,6 +164,7 @@ func (g *Guard) enforceRiskPolicy(w http.ResponseWriter, r *http.Request, res cl
 			[]string{"IDENTITY_RISK_POLICY"}, nil)
 		g.emitRiskEvent(eng, r, res, base, dec, events.RiskPolicyBlock, "blocked", http.StatusForbidden)
 		accessLogAnnotate(r.Context(), wafActionBlock)
+		setBlockPageScene(r, blockSceneAccessControl)
 		return true, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("blocked by identity risk policy"))
 	case riskengine.ActionChallenge:
 		if cfg.Mode != riskengine.ModeProtect {

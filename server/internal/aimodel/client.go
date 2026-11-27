@@ -277,13 +277,13 @@ func (c *OpenAIClient) ChatStreamProvider(ctx context.Context, p *Provider, apiK
 			}
 			buf = append(buf, tmp[:n]...)
 			for {
-				idx := bytes.Index(buf, []byte("\n\n"))
-				if idx < 0 {
+				event, rest, ok := nextSSEEvent(buf)
+				if !ok {
 					break
 				}
-				event := buf[:idx]
-				buf = buf[idx+2:]
+				buf = rest
 				for _, line := range bytes.Split(event, []byte("\n")) {
+					line = bytes.TrimSuffix(line, []byte("\r"))
 					if !bytes.HasPrefix(line, []byte("data:")) {
 						continue
 					}
@@ -332,7 +332,10 @@ func (c *OpenAIClient) ChatStreamProvider(ctx context.Context, p *Provider, apiK
 			}
 		}
 		if rerr != nil {
-			break
+			if errors.Is(rerr, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("%w: SSE stream read failed: %v", ErrModelDown, rerr)
 		}
 	}
 	// Token 估算（流式无 usage 时按字符近似，ollama 兼容端点通常返回 usage）
@@ -355,6 +358,20 @@ func (c *OpenAIClient) ChatStreamProvider(ctx context.Context, p *Provider, apiK
 		return nil, err
 	}
 	return res, nil
+}
+
+// nextSSEEvent 从 SSE 缓冲中切分下一条完整事件，兼容 LF（\n\n）与 CRLF（\r\n\r\n）分隔符。
+func nextSSEEvent(buf []byte) (event, rest []byte, ok bool) {
+	idxLF := bytes.Index(buf, []byte("\n\n"))
+	idxCRLF := bytes.Index(buf, []byte("\r\n\r\n"))
+	switch {
+	case idxLF < 0 && idxCRLF < 0:
+		return nil, buf, false
+	case idxLF >= 0 && (idxCRLF < 0 || idxLF < idxCRLF):
+		return buf[:idxLF], buf[idxLF+2:], true
+	default:
+		return buf[:idxCRLF], buf[idxCRLF+4:], true
+	}
 }
 
 // HealthCheck 模型健康检查（列模型或短对话）。

@@ -20,7 +20,7 @@ set -euo pipefail
 # ---------- 版本锁定（与 server/Dockerfile、gateway/Dockerfile、docs/DEPENDENCIES.md 保持一致） ----------
 CADDY_VERSION=v2.11.4
 XCADDY_VERSION=v0.4.5
-CORAZA_CADDY_VERSION=v2.5.0
+CORAZA_CADDY_VERSION=v2.6.0
 
 # ---------- 交叉编译参数（目标 linux/amd64，GOAMD64=v1 锁定 x86-64 v1 基线） ----------
 export CGO_ENABLED=0

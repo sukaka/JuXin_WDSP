@@ -336,8 +336,8 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 	}
 	sort.Strings(cfg.ProtectedAddresses)
 
-	// 黑白名单（ACTIVE）
-	rules, _, err := p.rules.List(ctx, accessrules.ListFilter{Status: "ACTIVE", Page: 1, PageSize: 100000})
+	// 黑白名单（ACTIVE，专用无分页全量查询，避免分页 20 条截断静默丢失规则）
+	rules, err := p.rules.ListAllActive(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list access rules: %w", err)
 	}
@@ -370,7 +370,13 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		case r.ScopeType == "GLOBAL":
 			cfg.GlobalDeny = append(cfg.GlobalDeny, gr)
 		default: // APPLICATION
+			if r.ApplicationID == nil {
+				continue
+			}
 			code := appCodes[*r.ApplicationID]
+			if code == "" {
+				continue
+			}
 			ar := appRules[code]
 			if ar == nil {
 				ar = &gatewayconfig.GuardAppRules{
@@ -386,8 +392,8 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		}
 	}
 
-	// CC 策略（ACTIVE）
-	policies, _, err := p.policies.List(ctx, ratelimitpolicies.ListFilter{Status: "ACTIVE", Page: 1, PageSize: 10000})
+	// CC 策略（ACTIVE，专用无分页全量查询，避免分页 20 条截断静默丢失策略）
+	policies, err := p.policies.ListAllActive(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list rate limit policies: %w", err)
 	}
@@ -427,7 +433,13 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 			cfg.GlobalPolicies = append(cfg.GlobalPolicies, gp)
 			continue
 		}
+		if pl.ApplicationID == nil {
+			continue
+		}
 		code := polAppCodes[*pl.ApplicationID]
+		if code == "" {
+			continue
+		}
 		ar := appRules[code]
 		if ar == nil {
 			ar = &gatewayconfig.GuardAppRules{
@@ -626,9 +638,11 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 			return nil, loaderErr
 		}
 		// NG-FLOW-01：强流程定义（ACTIVE 行+步骤）随发布下发 api_strong_flows 段
-		// （表由迁移 000176 建立；缺表/未注入 Warn 跳过——NG-T-C01 缺省零变化，
-		// 与既有流程观察段物理隔离互不消费）
-		cfg.APIStrongFlows = p.loadAPIStrongFlows(ctx)
+		// （表由迁移 000176 建立；缺表容忍 Warn 跳过，真实查询错误中止候选发布 fail-hard）
+		cfg.APIStrongFlows, loaderErr = p.loadAPIStrongFlowsStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
 		// 阶段8 §35 凭据异常「已吊销凭据使用」数据源：当前生效吊销指纹清单随发布下发
 		// （表由迁移 000156 建立；缺表容忍 Warn 跳过，真实查询错误中止候选发布——
 		// 纪律同流程基线；指纹级载荷，无凭据明文）
@@ -697,8 +711,11 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 			return nil, err
 		}
 		cfg.APIScanVerification = scanVerification
-		// W9-GW：响应结构基线随发布下发（表由迁移 000018/000051 建立；缺失/失败 Warn 跳过）
-		cfg.APIResponseBaselines = p.loadAPIResponseBaselines(ctx)
+		// W9-GW：响应结构基线随发布下发（表由迁移 000018/000051 建立；缺表容忍，真实查询错误中止发布 fail-hard）
+		cfg.APIResponseBaselines, loaderErr = p.loadAPIResponseBaselinesStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
 		// W13-GW / P2-03：旧格式缺表可兼容，真实查询错误中止候选发布。
 		cfg.APIFileComplianceRules, loaderErr = p.loadAPIFileComplianceRulesStrict(ctx)
 		if loaderErr != nil {
@@ -712,23 +729,32 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 			return nil, err
 		}
 		cfg.APIFileSignature = fileSignature
-		// W14-DESC / P2-05 深化：gRPC 描述符集随发布下发（表由迁移 000076 建立；
-		// 缺失/失败 Warn 跳过；无描述符下发时网关退化为 v1 帧结构校验）
-		cfg.APIGRPCDescriptors = p.loadAPIGRPCDescriptors(ctx)
-		// NG-GRPC G1 批次 B1：per-app 绑定随发布下发（表由迁移 000179 建立；
-		// 缺失/失败 Warn 跳过——空绑定=全局可见现状语义零变化）
-		cfg.APIGRPCBindings = p.loadAPIGRPCBindings(ctx)
-		// NG-MCP G1 批次 B1：MCP 工具目录（仅 ENABLED 目录 + APPROVED 工具行，迁移
-		// 000181）与 per-app 绑定（迁移 000182）随发布下发；缺失/失败 Warn 跳过——
-		// 空段=网关 MCP 管控零行为变化
-		cfg.APIMCPToolCatalogs = p.loadAPIMCPToolCatalogs(ctx)
-		cfg.APIMCPBindings = p.loadAPIMCPBindings(ctx)
-		// NG-ID g1 批次 B1：机器身份登记册（machine_identities ENABLED 行+全状态键行，
-		// 迁移 000183）与 per-app 绑定及撤销水位元数据（迁移 000184）随发布下发；
-		// 缺失/失败 Warn 跳过——空段=网关机器身份验证零行为变化（NG-T-C01）；
-		// meta 读取失败三段整体不下发（登记册不带水位不单独下发）
-		cfg.APIMachineIdentities, cfg.APIMachineIdentityBindings, cfg.APIMachineIdentityMeta =
-			p.loadAPIMachineIdentitySections(ctx)
+		// W14-DESC / P2-05 深化：gRPC 描述符集随发布下发（表由迁移 000076 建立；缺表容忍，真实查询错误 fail-hard）
+		cfg.APIGRPCDescriptors, loaderErr = p.loadAPIGRPCDescriptorsStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
+		// NG-GRPC G1 批次 B1：per-app 绑定随发布下发（表由迁移 000179 建立；缺表容忍，真实查询错误 fail-hard）
+		cfg.APIGRPCBindings, loaderErr = p.loadAPIGRPCBindingsStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
+		// NG-MCP G1 批次 B1：MCP 工具目录与 per-app 绑定随发布下发；缺表容忍，真实查询错误 fail-hard
+		cfg.APIMCPToolCatalogs, loaderErr = p.loadAPIMCPToolCatalogsStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
+		cfg.APIMCPBindings, loaderErr = p.loadAPIMCPBindingsStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
+		// NG-ID g1 批次 B1：机器身份登记册、per-app 绑定及撤销水位元数据随发布下发；
+		// 缺表容忍，真实查询错误中止候选发布 fail-hard
+		cfg.APIMachineIdentities, cfg.APIMachineIdentityBindings, cfg.APIMachineIdentityMeta, loaderErr =
+			p.loadAPIMachineIdentitySectionsStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
 		// S7 批次 C 裁决 3（跨轨指纹域对齐，S6 偏差 1 先例）：principal_binding 发布前
 		// 换算到网关比对域（HMAC(identity_salt, "jwt-principal:"+录入值)——网关运行期
 		// 按同域指纹与 JWT VerifiedPrincipalID 比对；B1 原文透传会致合法请求
@@ -821,14 +847,14 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 			LogPath:                p.accessLogPath,
 		}
 	}
-	// 侦察/枚举行为检测策略（WDSP AI 自动化渗透防护增强 阶段1）：security_behavior_policy
-	// 表 GLOBAL 行随发布下发 identity_behavior 段（表由迁移 000098 建立；读取失败 Warn 跳过，
-	// 不阻断发布主流程；不受 API 动态防护门控——client_identity 体系为全产品形态能力）
-	p.loadIdentityBehavior(ctx, cfg)
-	// 身份风险处置策略（WDSP AI 自动化渗透防护增强 阶段3）：security_risk_policy 表
-	// GLOBAL 行随发布下发 risk_policy 段（表由迁移 000101 建立；读取失败 Warn 跳过，
-	// 不阻断发布主流程；同样不受 API 动态防护门控）
-	p.loadRiskPolicy(ctx, cfg)
+	// 侦察/枚举行为检测策略（WDSP AI 自动化渗透防护增强 阶段1）：缺表容忍，真实数据库错误中止发布 fail-hard
+	if err := p.loadIdentityBehaviorStrict(ctx, cfg); err != nil {
+		return nil, err
+	}
+	// 身份风险处置策略（WDSP AI 自动化渗透防护增强 阶段3）：缺表容忍，真实数据库错误中止发布 fail-hard
+	if err := p.loadRiskPolicyStrict(ctx, cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 func RedactGuardConfig(cfg *gatewayconfig.GuardConfig) *gatewayconfig.GuardConfig {
@@ -971,6 +997,86 @@ func (p *Provider) InjectRuntimeSecrets(cfg *gatewayconfig.GuardConfig) {
 	}
 }
 
+// LoadCurrentSecrets 仅读取当前运行时密钥与 Valkey 连接配置（专供历史配置回滚时的
+// reinjectConfigSecrets 使用），不扫描业务策略表、不执行 PROTECT 发布门禁，避免当前策略或
+// 非密钥配置异常阻塞应急回滚。
+func (p *Provider) LoadCurrentSecrets(ctx context.Context) (*gatewayconfig.GuardConfig, error) {
+	cfg := &gatewayconfig.GuardConfig{}
+	p.InjectRuntimeSecrets(cfg)
+	if p.runtimeSettingsLoader != nil {
+		kv, err := p.runtimeSettingsLoader(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("read gateway runtime settings: %w", err)
+		}
+		if rawSalt := strings.TrimSpace(kv["identity_salt"]); rawSalt != "" && rawSalt != redactPlaceholder {
+			cfg.IdentitySalt = rawSalt
+		}
+		if rawTicket := strings.TrimSpace(kv["tls_session_ticket_key"]); rawTicket != "" && rawTicket != redactPlaceholder {
+			keys, err := parseTLSSessionTicketKeys(rawTicket)
+			if err != nil {
+				return nil, err
+			}
+			if len(keys) > 0 {
+				cfg.TLSSessionTicketKeys = keys
+				cfg.TLSSessionTicketKey = keys[0]
+			}
+		}
+	}
+	if p.scanVerification != nil {
+		sv, err := p.loadAPIScanVerification(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cfg.APIScanVerification = sv
+	}
+	if p.fileSignature != nil {
+		fs, err := p.loadAPIFileSignature(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cfg.APIFileSignature = fs
+	}
+	if p.maskCrypto != nil {
+		kid, keyHex, err := p.maskCrypto(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("load api mask crypto: %w", err)
+		}
+		if kid != "" && keyHex != "" {
+			key, err := hex.DecodeString(keyHex)
+			if err != nil || len(key) != maskCryptoKeyBytes {
+				return nil, fmt.Errorf("api mask crypto loader 返回非 32 字节 hex 密钥")
+			}
+			cfg.APIMaskCrypto = &gatewayconfig.GuardMaskCrypto{KID: kid, KeyHex: hex.EncodeToString(key)}
+		}
+	}
+	if p.authzObjectHMACKey != nil {
+		keyHex, err := p.authzObjectHMACKey(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("load authz object hmac key: %w", err)
+		}
+		if keyHex != "" && keyHex != redactPlaceholder {
+			cfg.APIAuthzObjectHMACKeyHex = keyHex
+		}
+	}
+	if p.botSigningKeys != nil {
+		botKeys, err := p.loadBotSigningKeys(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cfg.BotSigningKeys = botKeys
+	}
+	if p.aiCrawlLabyrinthKey != nil {
+		keyHex, err := p.aiCrawlLabyrinthKey(ctx, false)
+		if err != nil {
+			return nil, fmt.Errorf("load ai crawl labyrinth key: %w", err)
+		}
+		if keyHex != "" && keyHex != redactPlaceholder {
+			cfg.AICrawlLabyrinthKeyHex = keyHex
+		}
+	}
+	return cfg, nil
+}
+
 // SaveVersionSnapshot 保存访问控制配置版本快照（PENDING，发布结果由 MarkVersionResult 回填）。
 // 快照中的 Valkey 密码已脱敏，回滚时由 InjectRuntimeSecrets 重新注入。
 func (p *Provider) SaveVersionSnapshot(ctx context.Context, cfg *gatewayconfig.GuardConfig, taskID, createdBy uuid.UUID) (uuid.UUID, error) {
@@ -1075,6 +1181,9 @@ func (p *Provider) replayRuntimeSecrets(ctx context.Context, cfg *gatewayconfig.
 		cfg.APIFileWatermark = nil
 		cfg.APIGRPCMaxFrameBytes = 0
 		cfg.APIGRPCAllowCompression = false
+		cfg.DebugCCCounter = false
+		cfg.APINodeHeartbeatSeconds = 0
+		cfg.APIAuthzClockSkewMaxSeconds = 0
 		if err := p.applyGatewayRuntime(ctx, cfg); err != nil {
 			return err
 		}
@@ -1145,12 +1254,13 @@ func (p *Provider) replayRuntimeSecrets(ctx context.Context, cfg *gatewayconfig.
 			cfg.AICrawlLabyrinthKeyHex = keyHex
 		}
 	}
-	// AUTHZ-01 对象引用 HMAC 密钥快照已脱敏，按当前加密设置重新注入。
-	keyHex, err := p.ensureAuthzSnapshotKey(ctx, "", len(cfg.APIAuthzModels) > 0, cfg.APIAuthzPreviousValid)
+	// AUTHZ-01 / NG-FLOW-02 对象引用 HMAC 密钥快照已脱敏，授权模型或强流程任一存在时均按当前加密设置重新注入。
+	needsAuthzKey := len(cfg.APIAuthzModels) > 0 || len(cfg.APIStrongFlows) > 0
+	keyHex, err := p.ensureAuthzSnapshotKey(ctx, "", needsAuthzKey, cfg.APIAuthzPreviousValid)
 	if err != nil {
 		return err
 	}
-	if len(cfg.APIAuthzModels) > 0 || keyHex != "" {
+	if needsAuthzKey || keyHex != "" {
 		cfg.APIAuthzObjectHMACKeyHex = keyHex
 	}
 	// P0-03 回滚门禁：快照含 PROTECT JWT 信任策略而当前身份指纹密钥未配置时，

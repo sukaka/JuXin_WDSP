@@ -39,6 +39,79 @@ func fmtKV(k string, v interface{}) string {
 	return fmt.Sprintf("- %s：%v\n", k, v)
 }
 
+func safeMap(v interface{}) map[string]interface{} {
+	if m, ok := v.(map[string]interface{}); ok {
+		return m
+	}
+	return nil
+}
+
+func safeMapSlice(m map[string]interface{}, key string) []map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	switch s := m[key].(type) {
+	case []map[string]interface{}:
+		return s
+	case []interface{}:
+		out := make([]map[string]interface{}, 0, len(s))
+		for _, item := range s {
+			if em, ok := item.(map[string]interface{}); ok {
+				out = append(out, em)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func safeAnySlice(m map[string]interface{}, key string) []interface{} {
+	if m == nil {
+		return nil
+	}
+	switch s := m[key].(type) {
+	case []interface{}:
+		return s
+	case []map[string]interface{}:
+		out := make([]interface{}, len(s))
+		for i, item := range s {
+			out[i] = item
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func safeBool(m map[string]interface{}, key string) bool {
+	if m == nil {
+		return false
+	}
+	b, _ := m[key].(bool)
+	return b
+}
+
+func safeInt64(v interface{}) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case float64:
+		return int64(n)
+	default:
+		return 0
+	}
+}
+
+func shortIDPrefix(id string, n int) string {
+	if len(id) <= n {
+		return id
+	}
+	return id[:n] + "..."
+}
+
 func attackTypeDisplayName(value interface{}) string {
 	return reports.AttackTypeName(fmt.Sprint(value))
 }
@@ -99,7 +172,11 @@ func (a *SecurityEventAgent) analyzeEvent(ctx context.Context, in *aiorchestrato
 				b.WriteString(fmt.Sprintf("\n事件 %s 查询失败（%v）：当前数据不足，无法确认该事件详情，不做推测。\n", eid, err))
 				continue
 			}
-			e := res.(map[string]interface{})
+			e := safeMap(res)
+			if e == nil {
+				b.WriteString(fmt.Sprintf("\n事件 %s 返回格式异常：当前数据不足，无法确认该事件详情。\n", eid))
+				continue
+			}
 			b.WriteString(fmt.Sprintf("\n事件 %s\n", eid))
 			b.WriteString(fmtKV("攻击类型", e["attack_type"]))
 			b.WriteString(fmtKV("严重级别", e["severity"]))
@@ -110,7 +187,7 @@ func (a *SecurityEventAgent) analyzeEvent(ctx context.Context, in *aiorchestrato
 			b.WriteString(fmtKV("响应状态", e["response_status"]))
 			b.WriteString(fmtKV("Request ID", e["request_id"]))
 			b.WriteString(fmtKV("处置状态", e["disposition_status"]))
-			if matches, ok := e["matches"].([]map[string]interface{}); ok && len(matches) > 0 {
+			if matches := safeMapSlice(e, "matches"); len(matches) > 0 {
 				var rules []string
 				for _, m := range matches {
 					rules = append(rules, fmt.Sprintf("%v(%v)", m["rule_id"], m["rule_name"]))
@@ -123,7 +200,7 @@ func (a *SecurityEventAgent) analyzeEvent(ctx context.Context, in *aiorchestrato
 			// 关联事件
 			if rel, ref2, err2 := callTool(ctx, in, in.Principal, "security_event.related",
 				map[string]interface{}{"event_id": eid}, "关联事件 %s", eid); err2 == nil {
-				items := rel.(map[string]interface{})["items"].([]map[string]interface{})
+				items := safeMapSlice(safeMap(rel), "items")
 				if len(items) > 0 {
 					b.WriteString(fmtKV("关联事件数", len(items)))
 					b.WriteString(fmt.Sprintf("- 关联证据：[%s]\n", ref2))
@@ -139,7 +216,7 @@ func (a *SecurityEventAgent) analyzeEvent(ctx context.Context, in *aiorchestrato
 			return nil, err
 		}
 		b.WriteString(fmt.Sprintf("\n%s攻击类型分布：\n", rangeValue.Label))
-		for _, it := range res.(map[string]interface{})["items"].([]map[string]interface{}) {
+		for _, it := range safeMapSlice(safeMap(res), "items") {
 			b.WriteString(fmt.Sprintf("- %s：%v 次\n", it["key"], it["count"]))
 		}
 		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
@@ -148,7 +225,7 @@ func (a *SecurityEventAgent) analyzeEvent(ctx context.Context, in *aiorchestrato
 			topIPInput, "攻击源IP TOP5（%s）", rangeValue.Label)
 		if err == nil {
 			b.WriteString("\n攻击源 IP TOP5：\n")
-			for _, it := range res2.(map[string]interface{})["items"].([]map[string]interface{}) {
+			for _, it := range safeMapSlice(safeMap(res2), "items") {
 				b.WriteString(fmt.Sprintf("- %s：%v 次（阻断 %v）\n", it["ip"], it["events"], it["blocks"]))
 			}
 			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref2))
@@ -191,10 +268,10 @@ func (a *SecurityEventAgent) analyzeProfile(ctx context.Context, in *aiorchestra
 		if err != nil {
 			return nil, err
 		}
-		data := res.(map[string]interface{})
+		data := safeMap(res)
 		b.WriteString(fmtKV("画像对象", "IP "+ip))
 		b.WriteString(fmtKV("事件总数（"+rangeValue.Label+"）", data["total"]))
-		eventTotal, _ := data["total"].(int64)
+		eventTotal := safeInt64(data["total"])
 		// 首次/最近出现
 		var firstAt, lastAt time.Time
 		_ = a.db.QueryRow(ctx, `SELECT COALESCE(min(occurred_at), 'epoch'::timestamptz), COALESCE(max(occurred_at), 'epoch'::timestamptz) FROM security_events
@@ -215,10 +292,13 @@ GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, ip, rangeValue.Start, rangeValue.End)
 			for rows.Next() {
 				var t string
 				var c int64
-				_ = rows.Scan(&t, &c)
-				parts = append(parts, fmt.Sprintf("%s(%d)", t, c))
+				if rows.Scan(&t, &c) == nil {
+					parts = append(parts, fmt.Sprintf("%s(%d)", t, c))
+				}
 			}
-			types = strings.Join(parts, "、")
+			if rows.Err() == nil {
+				types = strings.Join(parts, "、")
+			}
 		}
 		if types != "" {
 			b.WriteString(fmtKV("攻击类型", types))
@@ -227,7 +307,7 @@ GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, ip, rangeValue.Start, rangeValue.End)
 		res2, ref2, err := callTool(ctx, in, in.Principal, "temporary_block.search",
 			map[string]interface{}{"client_ip": ip}, "IP %s 封禁记录", ip)
 		if err == nil {
-			items := res2.(map[string]interface{})["items"].([]map[string]interface{})
+			items := safeMapSlice(safeMap(res2), "items")
 			b.WriteString(fmtKV("封禁记录", fmt.Sprintf("%d 条", len(items))))
 			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref2))
 		}
@@ -278,7 +358,7 @@ WHERE request_path = $1 AND occurred_at >= $2 AND occurred_at < $3`, uri, rangeV
 			return nil, err
 		}
 		b.WriteString(fmt.Sprintf("\n攻击源 IP TOP10（%s）：\n", rangeValue.Label))
-		for _, it := range res.(map[string]interface{})["items"].([]map[string]interface{}) {
+		for _, it := range safeMapSlice(safeMap(res), "items") {
 			b.WriteString(fmt.Sprintf("- %s：%v 次（阻断 %v）\n", it["ip"], it["events"], it["blocks"]))
 		}
 		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
@@ -353,6 +433,9 @@ ORDER BY occurred_at LIMIT 20`, ip)
 		s.at = at.Format("01-02 15:04:05")
 		steps = append(steps, s)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	if len(steps) == 0 {
 		b.WriteString(fmt.Sprintf("\n未找到 IP %s 的攻击事件，无法构成攻击链。", ip))
 		return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
@@ -399,11 +482,10 @@ func (a *SecurityEventAgent) analyzeStats(ctx context.Context, in *aiorchestrato
 		b.WriteString(fmt.Sprintf("统计区间：%s（%s 至 %s）\n", rangeValue.Label,
 			formatChineseDateTime(rangeValue.Start),
 			formatChineseDateTime(rangeValue.End)))
-		items := res.(map[string]interface{})["items"].([]map[string]interface{})
+		items := safeMapSlice(safeMap(res), "items")
 		var total int64
 		for _, item := range items {
-			count, _ := item["count"].(int64)
-			total += count
+			total += safeInt64(item["count"])
 			b.WriteString(fmt.Sprintf("- %s：%v 次\n", attackTypeDisplayName(item["key"]), item["count"]))
 		}
 		b.WriteString(fmtKV("安全事件合计", total))
@@ -413,7 +495,7 @@ func (a *SecurityEventAgent) analyzeStats(ctx context.Context, in *aiorchestrato
 		if topIPs, topRef, topErr := callTool(ctx, in, in.Principal, "statistics.top_source_ips",
 			topIPInput, "攻击源 IP TOP5（%s）", rangeValue.Label); topErr == nil {
 			b.WriteString("\n攻击源 IP TOP5：\n")
-			for _, item := range topIPs.(map[string]interface{})["items"].([]map[string]interface{}) {
+			for _, item := range safeMapSlice(safeMap(topIPs), "items") {
 				b.WriteString(fmt.Sprintf("- %v：%v 次（阻断 %v）\n", item["ip"], item["events"], item["blocks"]))
 			}
 			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", topRef))
@@ -425,7 +507,7 @@ func (a *SecurityEventAgent) analyzeStats(ctx context.Context, in *aiorchestrato
 	if err != nil {
 		return nil, err
 	}
-	d := res.(map[string]interface{})
+	d := safeMap(res)
 	b.WriteString(fmt.Sprintf("日期：%v（UTC）\n", d["date"]))
 	b.WriteString(fmtKV("今日请求总数", d["requests_total"]))
 	b.WriteString(fmtKV("今日安全事件", d["waf_events"]))
@@ -479,6 +561,9 @@ func (a *SecurityEventAgent) topGroup(ctx context.Context, query string, args ..
 		if rows.Scan(&v, &c) == nil {
 			parts = append(parts, fmt.Sprintf("%s(%d)", v, c))
 		}
+	}
+	if rows.Err() != nil {
+		return ""
 	}
 	return strings.Join(parts, "、")
 }

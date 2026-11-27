@@ -52,16 +52,30 @@ func (s *GRPCBindingStore) ListAllGRPCBindings(ctx context.Context) ([]gatewayco
 // SetGRPCBindingLister 注入 gRPC 绑定读取（nil 时不下发 api_grpc_bindings 段）。
 func (p *Provider) SetGRPCBindingLister(l GRPCBindingLister) { p.grpcBindings = l }
 
-// loadAPIGRPCBindings 读取全部 gRPC 绑定；未注入或查询失败（如迁移 000179 表尚未建立）
-// Warn 跳过不下发（空绑定=全局可见的现状语义，与历史版本一致）。
+// loadAPIGRPCBindings 读取全部 gRPC 绑定（兼容旧调用方；BuildGuardConfig 走 loadAPIGRPCBindingsStrict）。
 func (p *Provider) loadAPIGRPCBindings(ctx context.Context) []gatewayconfig.GuardGRPCBinding {
+	bindings, err := p.loadAPIGRPCBindingsStrict(ctx)
+	if err != nil {
+		slog.Warn("api_grpc_bindings load failed, skipping section", "error", err)
+	}
+	return bindings
+}
+
+// loadAPIGRPCBindingsStrict 仅容忍旧库未建表（42P01）；真实数据库错误中止候选发布（fail-hard）。
+func (p *Provider) loadAPIGRPCBindingsStrict(ctx context.Context) ([]gatewayconfig.GuardGRPCBinding, error) {
 	if p.grpcBindings == nil {
-		return nil
+		return nil, nil
 	}
 	bindings, err := p.grpcBindings.ListAllGRPCBindings(ctx)
 	if err != nil {
-		slog.Warn("api_grpc_bindings load failed, skipping section", "error", err)
-		return nil
+		if isMissingLegacyTableError(err, "api_grpc_bindings") {
+			slog.Warn("optional legacy table api_grpc_bindings is unavailable", "error", err)
+			return nil, nil
+		}
+		return nil, wrapLegacyLoaderError("api_grpc_bindings", err)
 	}
-	return bindings
+	if len(bindings) == 0 {
+		return nil, nil
+	}
+	return bindings, nil
 }

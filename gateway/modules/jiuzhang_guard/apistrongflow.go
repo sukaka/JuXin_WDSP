@@ -14,7 +14,6 @@ package jiuzhang_guard
 import (
 	"bufio"
 	"bytes"
-	"fmt"
 	"net"
 	"net/http"
 	"time"
@@ -116,12 +115,17 @@ func (r *strongFlowResponseRecorder) Write(p []byte) (int, error) {
 
 // Flush 透传底层 Flusher。
 func (r *strongFlowResponseRecorder) Flush() {
+	if r.hijacked {
+		return
+	}
 	if r.status == 0 {
 		r.WriteHeader(http.StatusOK)
 	}
 	if f, ok := r.base.(http.Flusher); ok {
 		f.Flush()
+		return
 	}
+	_ = http.NewResponseController(r.base).Flush()
 }
 
 // Unwrap 返回底层 writer（http.ResponseController 依赖）。
@@ -130,10 +134,18 @@ func (r *strongFlowResponseRecorder) Unwrap() http.ResponseWriter { return r.bas
 // Hijack 透传连接劫持（升级后响应脱离记录——收口按 downstreamErr 处理，
 // 网关未获得源站执行证据，F04 UNKNOWN 如实）。
 func (r *strongFlowResponseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	r.hijacked = true
-	h, ok := r.base.(http.Hijacker)
-	if !ok {
-		return nil, nil, fmt.Errorf("underlying writer does not support hijacking")
+	var (
+		conn net.Conn
+		rw   *bufio.ReadWriter
+		err  error
+	)
+	if h, ok := r.base.(http.Hijacker); ok {
+		conn, rw, err = h.Hijack()
+	} else {
+		conn, rw, err = http.NewResponseController(r.base).Hijack()
 	}
-	return h.Hijack()
+	if err == nil {
+		r.hijacked = true
+	}
+	return conn, rw, err
 }

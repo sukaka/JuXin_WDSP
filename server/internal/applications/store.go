@@ -367,6 +367,25 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Application, int64, e
 	return out, total, rows.Err()
 }
 
+// ListAllActive 返回全部未删除的 ACTIVE 应用（不经 20 条分页截断，专供网关配置发布使用）。
+func (s *Store) ListAllActive(ctx context.Context) ([]Application, error) {
+	query := `SELECT ` + appColumns + ` FROM applications WHERE deleted_at IS NULL AND status = $1 ORDER BY created_at DESC, id ASC`
+	rows, err := s.db.Query(ctx, query, StatusActive)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Application
+	for rows.Next() {
+		a, err := s.scanApp(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
 // Update 更新应用（乐观锁）。
 func (s *Store) Update(ctx context.Context, a *Application) error {
 	if a.Name == "" || len(a.Name) > 128 {

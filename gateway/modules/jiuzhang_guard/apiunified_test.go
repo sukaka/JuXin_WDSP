@@ -4,7 +4,7 @@
 //
 // 覆盖边界（如实声明）：
 //   - 本测试为 jiuzhang_guard 模块级全链模拟：统一管线真实执行（parser→检测器→decision），
-//     WAF 腿以 coraza-caddy v2.5.0 中断哨兵错误的真实返回形态模拟（见 apicoraza.go 调查结论）；
+//     WAF 腿以 coraza-caddy v2.6.0 中断哨兵错误的真实返回形态模拟（见 apicoraza.go 调查结论）；
 //   - 行为突增用脚本化滑窗存储确定性触发（真实 1 分钟窗口基线由 detectors/behavior_test.go 覆盖）；
 //   - 真网关 + 真 Coraza + 管理面入库的端到端形态见 test/waf/scripts/stage8-unified-decision-tests.sh。
 package jiuzhang_guard

@@ -147,10 +147,14 @@ func ParseRequest(r *http.Request, ctx *dsctx.RequestContext) (*Parsed, error) {
 	if ctx != nil {
 		limits = ctx.Limits
 	}
+	rawPath := ""
+	if r.URL != nil {
+		rawPath = r.URL.Path
+	}
 	p := &Parsed{
 		Method:         strings.ToUpper(r.Method),
-		RawPath:        r.URL.Path,
-		NormalizedPath: normalizer.NormalizePath(r.URL.Path),
+		RawPath:        rawPath,
+		NormalizedPath: normalizer.NormalizePath(rawPath),
 		Query:          map[string]string{},
 		Headers:        map[string]string{},
 		JSONFields:     map[string]string{},
@@ -166,18 +170,20 @@ func ParseRequest(r *http.Request, ctx *dsctx.RequestContext) (*Parsed, error) {
 	// ≥MaxFieldCount 个 distinct query 键（约 12KB URL）曾把 JSON 字段解析整体排空，
 	// 体侧检测被静默跳过；两向各自封顶互不挤占）
 	queryCount := 0
-	for k, vs := range r.URL.Query() {
-		if queryCount >= limits.MaxFieldCount {
-			p.QueryCapped = true
-			break
-		}
-		if len(vs) > 1 {
-			// 多值参数（HPP 信号）：保留首值语义（仍取 vs[0]），登记歧义（只记名+次数，不落值）
-			p.addAmbiguity(ParamAmbiguity{Location: AmbLocationQuery, ParameterName: k, ValueCount: len(vs)})
-		}
-		if len(vs) > 0 {
-			p.Query[k] = vs[0]
-			queryCount++
+	if r.URL != nil {
+		for k, vs := range r.URL.Query() {
+			if queryCount >= limits.MaxFieldCount {
+				p.QueryCapped = true
+				break
+			}
+			if len(vs) > 1 {
+				// 多值参数（HPP 信号）：保留首值语义（仍取 vs[0]），登记歧义（只记名+次数，不落值）
+				p.addAmbiguity(ParamAmbiguity{Location: AmbLocationQuery, ParameterName: k, ValueCount: len(vs)})
+			}
+			if len(vs) > 0 {
+				p.Query[k] = vs[0]
+				queryCount++
+			}
 		}
 	}
 	// Headers (minimize secrets)
@@ -467,63 +473,102 @@ func joinJSONPath(parent, key string) string {
 // maxScalarValueLen 标量值留存截断长度（字符数；值只在请求内存活）。
 const maxScalarValueLen = 256
 
+// maxArrayWalkElements walkJSON 单数组有界展开元素上限（覆盖多轮对话 messages[1..N]、
+// 批量请求数组项等安全检测，避免仅走首元素导致 messages[1] 注入/PII/话题绕过）。
+const maxArrayWalkElements = 64
+
+// maxJSONWalkOps 单请求 JSON 递归遍历总步数硬上限（防嵌套数组乘性扇出 CPU/内存 DoS）。
+const maxJSONWalkOps = 4096
+
 func walkJSON(v any, path string, depth int, p *Parsed, limits dsctx.ParseLimits) {
-	if depth > limits.MaxJSONDepth {
-		return
+	ops := maxJSONWalkOps
+	walkJSONWithBudget(v, path, path, depth, &ops, p, limits)
+}
+
+func recordJSONField(p *Parsed, fieldPath, typ string, limits dsctx.ParseLimits) bool {
+	if _, exists := p.JSONFields[fieldPath]; exists {
+		return true
 	}
 	if p.FieldCount >= limits.MaxFieldCount {
 		p.FieldCapped = true
+		return false
+	}
+	p.JSONFields[fieldPath] = typ
+	p.FieldCount++
+	return true
+}
+
+func walkJSONWithBudget(v any, fieldPath, valuePath string, depth int, ops *int, p *Parsed, limits dsctx.ParseLimits) {
+	if depth > limits.MaxJSONDepth {
 		return
 	}
+	if *ops <= 0 {
+		return
+	}
+	*ops--
 	switch t := v.(type) {
 	case map[string]any:
-		if path != "" {
-			p.JSONFields[path] = "object"
-			p.FieldCount++
-		}
-		for k, child := range t {
-			if p.FieldCount >= limits.MaxFieldCount {
-				p.FieldCapped = true
+		if fieldPath != "" {
+			if !recordJSONField(p, fieldPath, "object", limits) {
 				return
 			}
-			np := k
-			if path != "" {
-				np = path + "." + k
+		}
+		for k, child := range t {
+			if *ops <= 0 {
+				return
 			}
-			walkJSON(child, np, depth+1, p, limits)
+			nfp := joinJSONPath(fieldPath, k)
+			nvp := joinJSONPath(valuePath, k)
+			walkJSONWithBudget(child, nfp, nvp, depth+1, ops, p, limits)
 		}
 	case []any:
-		p.JSONFields[path] = "array"
-		p.FieldCount++
+		if !recordJSONField(p, fieldPath, "array", limits) {
+			return
+		}
 		// 数组长度登记：每数组 O(1) 一次 map 写（数量一致关系 COUNT_MATCHES 判定原料）
-		p.JSONArrayLen[path] = len(t)
-		if len(t) > 0 {
-			walkJSON(t[0], path+"[]", depth+1, p, limits)
+		if _, exists := p.JSONArrayLen[fieldPath]; !exists {
+			p.JSONArrayLen[fieldPath] = len(t)
+		}
+		n := len(t)
+		if n > maxArrayWalkElements {
+			n = maxArrayWalkElements
+		}
+		elemFieldPath := fieldPath + "[]"
+		for i := 0; i < n; i++ {
+			if *ops <= 0 {
+				return
+			}
+			elemValuePath := valuePath + "[]"
+			if i > 0 {
+				elemValuePath = valuePath + "[" + strconv.Itoa(i) + "]"
+			}
+			walkJSONWithBudget(t[i], elemFieldPath, elemValuePath, depth+1, ops, p, limits)
 		}
 	case string:
-		p.JSONFields[path] = "string"
-		p.FieldCount++
+		if !recordJSONField(p, fieldPath, "string", limits) {
+			return
+		}
 		if limits.RetainJSONScalarValues {
-			p.JSONValues[path] = truncateScalarValue(t)
+			p.JSONValues[valuePath] = truncateScalarValue(t)
 		}
 	case float64:
-		p.JSONFields[path] = "number"
-		p.FieldCount++
+		if !recordJSONField(p, fieldPath, "number", limits) {
+			return
+		}
 		if limits.RetainJSONScalarValues {
-			p.JSONValues[path] = strconv.FormatFloat(t, 'g', -1, 64)
+			p.JSONValues[valuePath] = strconv.FormatFloat(t, 'g', -1, 64)
 		}
 	case bool:
-		p.JSONFields[path] = "bool"
-		p.FieldCount++
+		if !recordJSONField(p, fieldPath, "bool", limits) {
+			return
+		}
 		if limits.RetainJSONScalarValues {
-			p.JSONValues[path] = strconv.FormatBool(t)
+			p.JSONValues[valuePath] = strconv.FormatBool(t)
 		}
 	case nil:
-		p.JSONFields[path] = "null"
-		p.FieldCount++
+		recordJSONField(p, fieldPath, "null", limits)
 	default:
-		p.JSONFields[path] = "unknown"
-		p.FieldCount++
+		recordJSONField(p, fieldPath, "unknown", limits)
 	}
 }
 

@@ -1,6 +1,7 @@
 // Coraza 合流（WDSP / 阶段8，P0-08）：不 fork coraza-caddy 前提下的最诚实归因方案。
 //
-// 调查结论（coraza-caddy v2.5.0 源码，xcaddy 构建期经 Dockerfile CORAZA_CADDY_VERSION 锁定）：
+// 调查结论（coraza-caddy v2.6.0 源码，xcaddy 构建期经 Dockerfile CORAZA_CADDY_VERSION 锁定；
+// 自 v2.5.0 升级已逐行复核哨兵错误与中断返回形态保持不变）：
 //   - coraza-caddy 不导出任何阻断回调/指令 hook：唯一中断信号是未导出哨兵错误
 //     errInterruptionTriggered（"interruption triggered"），包装为 caddyhttp.HandlerError
 //     {StatusCode: 中断码（deny 缺省 403）, ID: Coraza 事务 ID} 沿中间件链返回；
@@ -20,7 +21,7 @@
 // 原始值留证据 coraza_raw_status（drop 的连接语义是直接断开，记 200 会把 BLOCK 误标为成功响应）。
 //
 // 局限（如实声明）：
-//   - 归因依赖未导出哨兵消息串，与 coraza-caddy v2.5.0 耦合；升级 CORAZA_CADDY_VERSION 必须复核；
+//   - 归因依赖未导出哨兵消息串，与 coraza-caddy v2.6.0 耦合；升级 CORAZA_CADDY_VERSION 必须复核；
 //   - 无法取得命中规则明细（规则 ID/分值仍在 Coraza 审计日志，经 request_id 事后关联不变）；
 //   - 非 deny 中断动作（drop 等）的真实中断码不可得（错误链只带 coraza-caddy 回退默认码），按 403 口径记录；
 //   - phase 3（响应头相位）中断不归因：无错误返回，特征与源站 403 不可区分；
@@ -36,7 +37,7 @@ import (
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 )
 
-// corazaInterruptionMessage coraza-caddy v2.5.0 未导出哨兵错误 errInterruptionTriggered 的消息串
+// corazaInterruptionMessage coraza-caddy v2.6.0 未导出哨兵错误 errInterruptionTriggered 的消息串
 // （coraza.go / interceptor.go 两处中断返回点的唯一可识别特征；升级 coraza-caddy 必须复核）。
 const corazaInterruptionMessage = "interruption triggered"
 
@@ -72,7 +73,7 @@ func attributeWAFIntercept(resCtx *dsctx.RequestContext, finalAction dsctx.Final
 	if resCtx == nil {
 		return finalAction, 0, false
 	}
-	// 中断码口径修正（coraza-caddy v2.5.0 obtainStatusCodeFromInterruptionOrDefault）：
+	// 中断码口径修正（coraza-caddy v2.6.0 obtainStatusCodeFromInterruptionOrDefault）：
 	// 仅 deny 动作携带真实中断码（缺省 403）；drop 等其他中断动作回退默认码——
 	// 请求相位为 200、响应相位为上游状态码——均非真实拒绝码（drop 的连接语义是直接断开，
 	// 记 200 会把 BLOCK 事件误标为成功响应）。非 4xx/5xx 一律按 403 记录，原始值留证据。

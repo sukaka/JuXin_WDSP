@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
@@ -313,16 +312,17 @@ func stripPort(host string) string {
 	return strings.ToLower(host)
 }
 
-// statusWriter ResponseWriter 包装：仅记首个最终状态码（1xx 信息响应不算），
-// 其余全部透传；Unwrap/Flush/Hijack 保证 ResponseController 与 WebSocket 升级可用
-// （与 accesslog captureResponseWriter 同一透传纪律）。
+// statusWriter ResponseWriter 包装：仅记首个最终状态码（101 Switching Protocols 视为终态，
+// 其余 1xx 信息响应不算），其余全部透传；Unwrap/Flush/Hijack 保证 ResponseController
+// 与 WebSocket 升级可用（与 accesslog captureResponseWriter 同一透传纪律）。
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status   int
+	hijacked bool
 }
 
 func (w *statusWriter) WriteHeader(code int) {
-	if w.status == 0 && (code < 100 || code >= 200) {
+	if w.status == 0 && (code == http.StatusSwitchingProtocols || code < 100 || code >= 200) {
 		w.status = code
 	}
 	w.ResponseWriter.WriteHeader(code)
@@ -337,22 +337,36 @@ func (w *statusWriter) Write(p []byte) (int, error) {
 
 // Flush 透传底层 Flusher（SSE/流式响应依赖；Flush 隐式提交 200）。
 func (w *statusWriter) Flush() {
+	if w.hijacked {
+		return
+	}
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
+		return
 	}
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 // Unwrap 返回底层 writer（http.ResponseController 依赖）。
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// Hijack 透传连接劫持（WebSocket 升级需要；底层不支持时如实报错）。
+// Hijack 透传连接劫持（WebSocket 升级需要；支持底层直接 Hijacker 与 Unwrap 链）。
 func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	h, ok := w.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, fmt.Errorf("underlying writer does not support hijacking")
+	var (
+		conn net.Conn
+		rw   *bufio.ReadWriter
+		err  error
+	)
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		conn, rw, err = h.Hijack()
+	} else {
+		conn, rw, err = http.NewResponseController(w.ResponseWriter).Hijack()
 	}
-	return h.Hijack()
+	if err == nil {
+		w.hijacked = true
+	}
+	return conn, rw, err
 }

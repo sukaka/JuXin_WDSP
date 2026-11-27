@@ -3,6 +3,7 @@ package exceptions
 import (
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -56,9 +57,29 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "例外不存在")
 		return
 	}
+	var resolvedOverride []int
+	if e.normalizedEngine() == EngineWAF && e.ExceptionAction == ActionRemoveRuleTag &&
+		len(e.ResolvedRuleIDs) == 0 && len(e.RuleTags) > 0 && h.hooks.ResolveRuleTags != nil {
+		if byTag, rerr := h.hooks.ResolveRuleTags(r.Context(), e.RuleTags); rerr == nil && len(byTag) > 0 {
+			seen := map[int]bool{}
+			for _, ids := range byTag {
+				for _, rid := range ids {
+					if !seen[rid] {
+						seen[rid] = true
+						resolvedOverride = append(resolvedOverride, rid)
+					}
+				}
+			}
+			sort.Ints(resolvedOverride)
+		}
+	}
+	secLang, apiPayload, compileErr := CompilePreviewContent(e, resolvedOverride)
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
-		"exception": e,
-		"is_broad":  e.IsBroad(),
+		"exception":              e,
+		"is_broad":               e.IsBroad(),
+		"generated_seclang":      secLang,
+		"compiled_api_exception": apiPayload,
+		"compile_error":          compileErr,
 	})
 }
 
@@ -391,6 +412,12 @@ func (h *Handler) Preview(w http.ResponseWriter, r *http.Request) {
 		publishTargets = append(publishTargets, code)
 	}
 
+	var previewResolved []int
+	if plan != nil {
+		previewResolved = plan.ResolvedRuleIDs
+	}
+	secLang, apiPayload, compileErr := CompilePreviewContent(e, previewResolved)
+
 	h.recordAudit(r, p, "preview", id.String(), e.Name, audits.ResultSuccess, audits.RiskLow)
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
 		"validation_status":   validationStatus,
@@ -402,8 +429,11 @@ func (h *Handler) Preview(w http.ResponseWriter, r *http.Request) {
 		"protected_modules_unchanged": []string{
 			"JWT", "ACCESS_CONTROL", "CC", "RATE_LIMIT_QUOTA", "MANUAL_BAN", "PROTOCOL_LIMITS", "RISK_POLICY",
 		},
-		"compiled_fingerprint":      fingerprint,
-		"required_publish_targets":  publishTargets,
+		"compiled_fingerprint":       fingerprint,
+		"generated_seclang":          secLang,
+		"compiled_api_exception":     apiPayload,
+		"compile_error":              compileErr,
+		"required_publish_targets":   publishTargets,
 		"historical_sample_coverage": nil,
 		"estimated_match_count":      nil,
 	})

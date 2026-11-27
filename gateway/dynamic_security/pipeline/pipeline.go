@@ -556,7 +556,7 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		// category=BLOCK 明细走统一决策，apiprotect 按 mcp_error_code 分流 JSON-RPC
 		// 错误对象；UNKNOWN 恒不阻断（目录缺失/解析失败/Schema 降级/jwt 未覆盖全
 		// SKIPPED 五态如实）。绑定缺失 = 零行为 NG-T-C01，现状 llm.mcp_* 观测并行不动）
-		if cfg.MCPGuard != nil && parsed != nil {
+		if cfg.MCPGuard != nil && parsed != nil && r != nil && r.URL != nil {
 			if scoped := cfg.MCPGuard.ForEndpoint(cfg.ApplicationID, normalizer.CanonicalPath(r.URL.Path)); scoped != nil {
 				engineProtect := mode == decision.ModeProtect
 				if candidate, cov := mcpguard.EvaluateCandidate(ctx, parsed, r, scoped, cfg.ApplicationID); cov != nil {

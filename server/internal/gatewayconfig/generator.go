@@ -639,48 +639,70 @@ func buildErrorRoutes(in GenerateInput) mapT {
 	// 阻断页文件名与根目录来自 BlockPagePath（Generate 已兜底默认值）
 	blockPageURI := "/" + filepath.Base(in.BlockPagePath)
 	blockPageRoot := filepath.Dir(in.BlockPagePath)
-	return mapT{
-		"routes": []interface{}{
-			mapT{
-				"handle": []interface{}{mapT{
-					"handler": "subroute",
-					"routes": []interface{}{
-						mapT{"handle": []interface{}{mapT{
-							"handler": "headers",
-							"response": mapT{"set": mapT{
-								"Content-Type":          []string{"text/html; charset=utf-8"},
-								"X-Jiuzhang-Request-ID": []string{"{http.request.header.X-Request-Id}"},
-							}},
-						}}},
-						mapT{"handle": []interface{}{mapT{
-							"handler": "rewrite",
-							"uri":     blockPageURI,
-						}}},
-						mapT{"handle": []interface{}{
-							mapT{"handler": "templates"},
-							mapT{"handler": "file_server", "root": blockPageRoot},
+	routes := make([]interface{}, 0, 3)
+	// 自定义多版本拦截页面（迁移 000251）：仅在存在生效绑定时置于错误路由链首；
+	// 命中 (app_code, scene) 映射时直接渲染净化后的自定义页面并终止，未命中则透传回退至
+	// 下方既有静态 /blockpage.html（403）或通用状态响应，零配置时生成结果与历史版本逐字节一致。
+	if in.Guard != nil && in.Guard.BlockPages != nil && !in.Guard.BlockPages.IsEmpty() {
+		bpHandler := mapT{
+			"handler": "jiuzhang_block_page",
+		}
+		if len(in.Guard.BlockPages.Global) > 0 {
+			bpHandler["global"] = in.Guard.BlockPages.Global
+		}
+		if len(in.Guard.BlockPages.Apps) > 0 {
+			bpHandler["apps"] = in.Guard.BlockPages.Apps
+		}
+		if hostMap := buildHostToAppCode(in.Apps); len(hostMap) > 0 {
+			bpHandler["host_to_app_code"] = hostMap
+		}
+		routes = append(routes, mapT{
+			"handle": []interface{}{bpHandler},
+		})
+	}
+	routes = append(routes,
+		mapT{
+			"handle": []interface{}{mapT{
+				"handler": "subroute",
+				"routes": []interface{}{
+					mapT{"handle": []interface{}{mapT{
+						"handler": "headers",
+						"response": mapT{"set": mapT{
+							"Content-Type":          []string{"text/html; charset=utf-8"},
+							"X-Jiuzhang-Request-ID": []string{"{http.request.header.X-Request-Id}"},
 						}},
-					},
-				}},
-				"match": []interface{}{mapT{
-					// CEL 匹配器 UnmarshalJSON 强制要求 expr 与 name 同时存在（缺 name 会 panic）
-					"expression": mapT{"expr": "{http.error.status_code} == 403", "name": "blocked"},
-				}},
-			},
-			// 其他错误返回通用状态响应，不暴露内部细节
-			mapT{
-				"handle": []interface{}{mapT{
-					"handler": "subroute",
-					"routes": []interface{}{
-						mapT{"handle": []interface{}{mapT{
-							"handler":     "static_response",
-							"body":        "{http.error.status_code} {http.error.status_text}",
-							"status_code": "{http.error.status_code}",
-						}}},
-					},
-				}},
-			},
+					}}},
+					mapT{"handle": []interface{}{mapT{
+						"handler": "rewrite",
+						"uri":     blockPageURI,
+					}}},
+					mapT{"handle": []interface{}{
+						mapT{"handler": "templates"},
+						mapT{"handler": "file_server", "root": blockPageRoot},
+					}},
+				},
+			}},
+			"match": []interface{}{mapT{
+				// CEL 匹配器 UnmarshalJSON 强制要求 expr 与 name 同时存在（缺 name 会 panic）
+				"expression": mapT{"expr": "{http.error.status_code} == 403", "name": "blocked"},
+			}},
 		},
+		// 其他错误返回通用状态响应，不暴露内部细节
+		mapT{
+			"handle": []interface{}{mapT{
+				"handler": "subroute",
+				"routes": []interface{}{
+					mapT{"handle": []interface{}{mapT{
+						"handler":     "static_response",
+						"body":        "{http.error.status_code} {http.error.status_text}",
+						"status_code": "{http.error.status_code}",
+					}}},
+				},
+			}},
+		},
+	)
+	return mapT{
+		"routes": routes,
 	}
 }
 
@@ -1195,6 +1217,20 @@ func buildHandles(in GenerateInput, app AppData, d applications.Domain, publicPo
 // buildWAFDirectives 构建 WAF SecLang 指令（固定加载顺序）。
 func buildWAFDirectives(ruleEngine string) string {
 	return buildWAFDirectivesWithPolicy(ruleEngine, AppData{}, nil, nil, nil)
+}
+
+// BuildPolicyDirectives 生成单个防护策略对应的完整 Coraza SecLang 指令文本
+// （与真实发布管线 buildWAFDirectivesWithPolicy 共享同一套指令顺序与语法）。
+func BuildPolicyDirectives(protectionMode string, paranoiaLevel, inboundThreshold, outboundThreshold int, exceptions []ExceptionRule, customRules, ruleOverrides []string) string {
+	ruleEngine := modeToRuleEngine[protectionMode]
+	if ruleEngine == "" {
+		ruleEngine = "DetectionOnly"
+	}
+	return buildWAFDirectivesWithPolicy(ruleEngine, AppData{
+		ParanoiaLevel:     paranoiaLevel,
+		InboundThreshold:  inboundThreshold,
+		OutboundThreshold: outboundThreshold,
+	}, exceptions, customRules, ruleOverrides)
 }
 
 // exceptionAppliesToApp 判断例外是否应下发到指定应用的 WAF 指令段：

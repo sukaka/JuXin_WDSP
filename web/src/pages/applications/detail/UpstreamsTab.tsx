@@ -693,6 +693,11 @@ export default function UpstreamsTab({
               <InputNumber min={0} max={100} style={{ width: '100%' }} />
             </Form.Item>
           </Space>
+          <div style={{ marginTop: -8, marginBottom: 16 }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              WebSocket 业务请使用 HTTP（承载 ws://）或 HTTPS（承载 wss://）回源；H2C 及 HTTP/1.0 源站不支持 WebSocket 升级。
+            </Typography.Text>
+          </div>
 
           <Form.Item name="health_check_enabled" valuePropName="checked">
             <Checkbox>启用主动健康检查</Checkbox>

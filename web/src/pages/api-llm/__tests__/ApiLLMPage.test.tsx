@@ -172,6 +172,60 @@ describe('ApiLLMPage', () => {
             }),
           )
         }
+        if (url.includes('/api-security/llm/security-policies/builtin-rules')) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: {
+                prompt_paths: ['messages[].content', 'prompt'],
+                output_paths: ['choices[].message.content'],
+                max_output_texts: 32,
+                max_output_text_bytes: 65536,
+                categories: [
+                  {
+                    key: 'prompt_injection',
+                    title: '提示词注入攻击防护规则',
+                    scope: 'input',
+                    policy_switches: ['prompt_injection_enabled'],
+                    inspected_paths: ['messages[].content', 'prompt'],
+                    notes: 'RE2 线性时间匹配',
+                    rules: [
+                      {
+                        id: 'ignore_previous_instructions',
+                        name: '英文忽略前序指令',
+                        description: '检测忽略先前指令注入',
+                        pattern: '(?i)ignore\\s+previous\\s+instructions',
+                        engine_rule_id: 'llm.prompt_injection',
+                        observe_action: 'OBSERVE / LOW (+5)',
+                        protect_action: 'BLOCK / HIGH (+50)',
+                      },
+                    ],
+                  },
+                  {
+                    key: 'pii_detection',
+                    title: '敏感个人信息（PII）识别规则',
+                    scope: 'input_and_output',
+                    policy_switches: ['pii_detection_enabled', 'output_pii_enabled'],
+                    inspected_paths: ['messages[].content'],
+                    notes: '不留存原文',
+                    rules: [
+                      {
+                        id: 'PHONE',
+                        name: '中国大陆 11 位手机号',
+                        description: '匹配手机号',
+                        pattern: '(?:^|[^0-9])1[3-9][0-9]{9}(?:$|[^0-9])',
+                        engine_rule_id: 'llm.pii_detected',
+                        observe_action: 'OBSERVE / MEDIUM',
+                        protect_action: '输入 OBSERVE；输出 BLOCK',
+                      },
+                    ],
+                  },
+                ],
+              },
+            }),
+          )
+        }
         if (url.includes('/api-security/llm/security-policies')) {
           const policy = {
             id: 'policy-1',
@@ -345,5 +399,26 @@ describe('ApiLLMPage', () => {
         max_output_tokens: 4096,
       })
     })
+  })
+
+  it('AI 安全策略页签支持查看网关内置检测正则与单条策略生效内容', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_runtime.read', 'api_llm_security.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    fireEvent.click(screen.getByRole('tab', { name: '安全策略' }))
+    await screen.findByText('客服助手输入保护')
+
+    fireEvent.click(screen.getByRole('button', { name: '查看内置检测规则' }))
+    expect(await screen.findByText('网关内置 AI 安全检测规则（真实正则）')).toBeInTheDocument()
+    expect(await screen.findByText('ignore_previous_instructions')).toBeInTheDocument()
+    expect(screen.getByText('(?i)ignore\\s+previous\\s+instructions')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '策略内容' }))
+    expect(await screen.findByText('AI 安全策略实际内容：客服助手输入保护')).toBeInTheDocument()
+    expect(screen.getByText('网关实际下发配置（api_llm_security JSON）')).toBeInTheDocument()
+    expect(screen.getByText(/"prompt_injection_enabled": true/)).toBeInTheDocument()
   })
 })

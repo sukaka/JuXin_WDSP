@@ -137,21 +137,22 @@ func newIfaceStreamFactory(consumer IfaceConsumer, ports *atomic.Pointer[map[uin
 	}
 }
 
+// noopTCPStream 零 goroutine 空流：并发连接达上限或无消费者时直接吞弃重组分片，
+// 避免为每条被拒连接启动 tcpreader.DiscardBytesToEOF goroutine 引发洪泛 OOM。
+type noopTCPStream struct{}
+
+func (noopTCPStream) Reassembled([]tcpassembly.Reassembly) {}
+func (noopTCPStream) ReassemblyComplete()                  {}
+
 // New 实现 tcpassembly.StreamFactory：按角色分流为流启动消费 goroutine。
 func (f *streamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stream {
-	rs := tcpreader.NewReaderStream()
-	rs.LossErrors = true // 镜像丢包 → 显式错误终止解析，不无限等待缺失字节
 	if f.active.Add(1) > f.maxConn {
-		// 超上限：丢弃本流内容（仍需排空，否则重组器阻塞）
+		// 超上限：返回零开销空流直接丢弃分片，不启动丢弃 goroutine
 		f.active.Add(-1)
 		if f.stats != nil {
 			f.stats.StreamsRejected.Add(1)
 		}
-		go tcpreader.DiscardBytesToEOF(&rs)
-		return &rs
-	}
-	if f.stats != nil {
-		f.stats.StreamsOpened.Add(1)
+		return noopTCPStream{}
 	}
 	meta := flowMetaFrom(netFlow, tcpFlow)
 	if f.sniff != nil {
@@ -159,18 +160,24 @@ func (f *streamFactory) New(netFlow, tcpFlow gopacket.Flow) tcpassembly.Stream {
 	} else {
 		meta.SniffDisabled = true
 	}
-	switch {
-	case f.detect != nil && f.isDetectPort(meta.DstPort):
-		go f.serve(&rs, meta)
-	case f.sniff != nil:
-		go f.serveSniff(&rs, meta)
-	default:
-		// 无消费者（端口热更新竞态等防御场景）：排空不积压，绝不让重组器阻塞
+	useDetect := f.detect != nil && f.isDetectPort(meta.DstPort)
+	if !useDetect && f.sniff == nil {
+		// 无消费者（端口热更新竞态等防御场景）：返回零开销空流，不启动 goroutine
 		f.active.Add(-1)
 		if f.stats != nil {
 			f.stats.StreamsClosed.Add(1)
 		}
-		go tcpreader.DiscardBytesToEOF(&rs)
+		return noopTCPStream{}
+	}
+	if f.stats != nil {
+		f.stats.StreamsOpened.Add(1)
+	}
+	rs := tcpreader.NewReaderStream()
+	rs.LossErrors = true // 镜像丢包 → 显式错误终止解析，不无限等待缺失字节
+	if useDetect {
+		go f.serve(&rs, meta)
+	} else {
+		go f.serveSniff(&rs, meta)
 	}
 	return &rs
 }

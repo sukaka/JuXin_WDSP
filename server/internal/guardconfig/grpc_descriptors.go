@@ -57,20 +57,30 @@ ORDER BY name`)
 // SetGRPCDescriptorLister 注入 gRPC 描述符集读取（nil 时不下发 api_grpc_descriptors 段）。
 func (p *Provider) SetGRPCDescriptorLister(l GRPCDescriptorLister) { p.grpcDescriptors = l }
 
-// loadAPIGRPCDescriptors 读取 ENABLED gRPC 描述符集；未注入或查询失败（如迁移 000076 表尚未建立）
-// Warn 并跳过，不阻断发布主流程（与脱敏/值级敏感规则同一纪律：描述符解析为增量观测能力，
-// 缺失时网关退化为 v1 帧结构校验，行为与历史版本一致）。
+// loadAPIGRPCDescriptors 读取 ENABLED gRPC 描述符集（兼容旧调用方；BuildGuardConfig 走 loadAPIGRPCDescriptorsStrict）。
 func (p *Provider) loadAPIGRPCDescriptors(ctx context.Context) []gatewayconfig.GuardGRPCDescriptor {
+	sets, err := p.loadAPIGRPCDescriptorsStrict(ctx)
+	if err != nil {
+		slog.Warn("list api grpc descriptors failed, skip api_grpc_descriptors", "error", err)
+	}
+	return sets
+}
+
+// loadAPIGRPCDescriptorsStrict 仅容忍旧库未建表（42P01）；真实数据库错误中止候选发布（fail-hard）。
+func (p *Provider) loadAPIGRPCDescriptorsStrict(ctx context.Context) ([]gatewayconfig.GuardGRPCDescriptor, error) {
 	if p.grpcDescriptors == nil {
-		return nil
+		return nil, nil
 	}
 	sets, err := p.grpcDescriptors.ListEnabledGRPCDescriptors(ctx)
 	if err != nil {
-		slog.Warn("list api grpc descriptors failed, skip api_grpc_descriptors", "error", err)
-		return nil
+		if isMissingLegacyTableError(err, "api_grpc_descriptors") {
+			slog.Warn("optional legacy table api_grpc_descriptors is unavailable", "error", err)
+			return nil, nil
+		}
+		return nil, wrapLegacyLoaderError("api_grpc_descriptors", err)
 	}
 	if len(sets) == 0 {
-		return nil
+		return nil, nil
 	}
-	return sets
+	return sets, nil
 }

@@ -913,23 +913,7 @@ func compileCtlActions(e *Exception) ([]string, error) {
 func CompiledFingerprint(e *Exception) (string, error) {
 	var raw []byte
 	if e.normalizedEngine() == EngineAPI {
-		payload := map[string]interface{}{
-			"schema_version": 1,
-			"exception_id":   e.ID.String(),
-			"version":        e.Version,
-			"domain":         validation.NormalizeHostname(e.Domain),
-			"uri_exact":      e.URIExact,
-			"uri_prefix":     e.URIPrefix,
-			"methods":        normalizedMethods(e.Methods),
-			"source_ips":     e.SourceIPs,
-			"rule_refs":      sortedAPIRuleRefs(e.APIRuleRefs),
-		}
-		if e.EffectiveFrom != nil {
-			payload["effective_from"] = e.EffectiveFrom.UTC().Unix()
-		}
-		if e.EffectiveUntil != nil {
-			payload["effective_until"] = e.EffectiveUntil.UTC().Unix()
-		}
+		payload := buildCompiledAPIException(e)
 		data, err := json.Marshal(payload)
 		if err != nil {
 			return "", err
@@ -944,6 +928,53 @@ func CompiledFingerprint(e *Exception) (string, error) {
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func buildCompiledAPIException(e *Exception) map[string]interface{} {
+	payload := map[string]interface{}{
+		"schema_version": 1,
+		"exception_id":   e.ID.String(),
+		"version":        e.Version,
+		"domain":         validation.NormalizeHostname(e.Domain),
+		"uri_exact":      e.URIExact,
+		"uri_prefix":     e.URIPrefix,
+		"methods":        normalizedMethods(e.Methods),
+		"source_ips":     e.SourceIPs,
+		"rule_refs":      sortedAPIRuleRefs(e.APIRuleRefs),
+	}
+	if e.EffectiveFrom != nil {
+		payload["effective_from"] = e.EffectiveFrom.UTC().Unix()
+	}
+	if e.EffectiveUntil != nil {
+		payload["effective_until"] = e.EffectiveUntil.UTC().Unix()
+	}
+	return payload
+}
+
+// CompilePreviewContent 生成例外策略的实际编译内容供管理端详情与预览展示：
+//   - WAF 引擎：调用真实 GenerateSecLang（两规则标记法，示例起点 marker=8000001）；
+//     若为 REMOVE_RULE_TAG 且草稿尚未冻结 resolved_rule_ids，使用 resolvedOverride 兜底展开；
+//   - API 引擎：返回下发网关 api_exceptions 段的规范 JSON 对象；
+//   - 尚不可编译（如缺少条件或不支持动作）时返回明确 compileErr 原因。
+func CompilePreviewContent(e *Exception, resolvedOverride []int) (secLang string, apiPayload map[string]interface{}, compileErr string) {
+	if e == nil {
+		return "", nil, "例外对象为空"
+	}
+	if e.normalizedEngine() == EngineAPI {
+		if len(e.APIRuleRefs) == 0 {
+			return "", nil, "API 引擎例外缺少目标 api_rule_refs，尚无法下发"
+		}
+		return "", buildCompiledAPIException(e), ""
+	}
+	clone := *e
+	if len(clone.ResolvedRuleIDs) == 0 && len(resolvedOverride) > 0 {
+		clone.ResolvedRuleIDs = append([]int(nil), resolvedOverride...)
+	}
+	gen, err := GenerateSecLang(&clone, publishMarkerBase)
+	if err != nil {
+		return "", nil, err.Error()
+	}
+	return gen, nil, ""
 }
 
 func normalizedMethods(methods []string) []string {

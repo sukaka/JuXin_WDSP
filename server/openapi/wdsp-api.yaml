@@ -2949,6 +2949,9 @@ components:
         detail:
           $ref: '#/components/schemas/WafRuleDetailInfo'
           description: 结构化中文规则详细说明（详情接口返回）
+        raw_rule:
+          type: string
+          description: 底层原始 SecLang 规则原文（含正则表达式与链式子规则，详情接口返回）
         severity:
           type: string
           enum:
@@ -4077,6 +4080,16 @@ components:
         is_broad:
           type: boolean
           description: 是否宽泛例外（高风险）：无具体限定条件且命中全部 SQLi/XSS/命令注入类型、全局范围，或无应用限定且规则标签含 SQLI/XSS
+        generated_seclang:
+          type: string
+          description: WAF 引擎编译生成的两规则标记法 SecLang 原文（详情接口返回）
+        compiled_api_exception:
+          type: object
+          nullable: true
+          description: API 引擎下发网关 api_exceptions 段的规范 JSON 对象（详情接口返回）
+        compile_error:
+          type: string
+          description: 草稿尚不可编译时的明确原因说明
     ExceptionListResponse:
       type: object
       properties:
@@ -4220,6 +4233,16 @@ components:
         compiled_fingerprint:
           type: string
           description: 编译摘要（sha256 hex；预览后草稿被改则指纹变化）
+        generated_seclang:
+          type: string
+          description: WAF 引擎预览生成的两规则标记法 SecLang 原文
+        compiled_api_exception:
+          type: object
+          nullable: true
+          description: API 引擎预览生成的 api_exceptions 下发 JSON
+        compile_error:
+          type: string
+          description: 草稿尚不可编译时的明确原因说明
         required_publish_targets:
           type: array
           items:
@@ -37973,6 +37996,135 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 03-policies.yaml
+  /protection-policies/{id}/content:
+    get:
+      operationId: policyContent
+      tags:
+      - protection-policies
+      summary: 防护策略实际生效内容（SecLang 指令与生效规则清单）
+      description: '返回与配置发布同源生成的 Coraza SecLang 指令、按序加载的规则文件清单、
+
+        生效的规则覆盖/自定义规则/全局 WAF 例外，以及防护规则库在该策略模式与 PL 下的生效规则清单（分页，附带原始 SecRule 原文）。
+
+        权限：`protection_policies.read`
+
+        '
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 策略 ID
+      - name: keyword
+        in: query
+        schema:
+          type: string
+        description: 按规则 ID、名称或文件名筛选
+      - name: attack_type
+        in: query
+        schema:
+          type: string
+        description: 按攻击类型筛选
+      - name: effective_status
+        in: query
+        schema:
+          type: string
+          enum:
+          - ACTIVE
+          - DISABLED_BY_OVERRIDE
+          - SKIPPED_BY_PL
+          - MODE_OFF
+        description: 按策略生效状态筛选
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+          minimum: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+          minimum: 1
+          maximum: 100
+      responses:
+        '200':
+          description: 防护策略实际生效内容与规则清单
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy_id:
+                    type: string
+                    format: uuid
+                  policy_code:
+                    type: string
+                  policy_name:
+                    type: string
+                  protection_mode:
+                    type: string
+                    enum:
+                    - false
+                    - OBSERVE
+                    - PROTECT
+                  sec_rule_engine:
+                    type: string
+                    enum:
+                    - false
+                    - DetectionOnly
+                    - true
+                  paranoia_level:
+                    type: integer
+                  inbound_anomaly_threshold:
+                    type: integer
+                  outbound_anomaly_threshold:
+                    type: integer
+                  generated_directives:
+                    type: string
+                    description: 完整 Coraza SecLang 指令正文
+                  loaded_rule_files:
+                    type: array
+                    items:
+                      type: object
+                  summary:
+                    type: object
+                  overrides:
+                    type: array
+                    items:
+                      type: object
+                  custom_rules:
+                    type: array
+                    items:
+                      type: object
+                  global_exceptions:
+                    type: array
+                    items:
+                      type: object
+                  rules:
+                    type: array
+                    items:
+                      type: object
+                  rules_total:
+                    type: integer
+                  page:
+                    type: integer
+                  page_size:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 03-policies.yaml
   /protection-policies/{id}/copy:
     post:
       operationId: policyCopy
@@ -56021,6 +56173,80 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 07-api-security.yaml
+  /api-security/llm/security-policies/builtin-rules:
+    get:
+      operationId: apiSecLLMSecurityPolicyBuiltinRules
+      tags:
+      - api-security
+      summary: 网关内置 AI 安全检测规则目录
+      description: 直接从网关运行期检测引擎读取提示词注入、输入/输出恶意有害内容与 PII 识别的全部内置 RE2 正则表达式及检查字段。权限：api_llm_security.read。
+      responses:
+        '200':
+          description: 内置检测规则目录
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prompt_paths:
+                    type: array
+                    items:
+                      type: string
+                  output_paths:
+                    type: array
+                    items:
+                      type: string
+                  max_output_texts:
+                    type: integer
+                  max_output_text_bytes:
+                    type: integer
+                  categories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key:
+                          type: string
+                        title:
+                          type: string
+                        scope:
+                          type: string
+                        policy_switches:
+                          type: array
+                          items:
+                            type: string
+                        inspected_paths:
+                          type: array
+                          items:
+                            type: string
+                        notes:
+                          type: string
+                        rules:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              id:
+                                type: string
+                              name:
+                                type: string
+                              description:
+                                type: string
+                              pattern:
+                                type: string
+                              engine_rule_id:
+                                type: string
+                              observe_action:
+                                type: string
+                              protect_action:
+                                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 07-api-security.yaml
   /api-security/llm/security-policies/{id}:
     patch:
       operationId: apiSecLLMSecurityPolicyUpdate
@@ -69750,6 +69976,176 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 31-xdp-acceleration.yaml
+  /block-pages:
+    get:
+      operationId: listBlockPages
+      tags:
+      - block-pages
+      summary: 查询自定义拦截页模板列表
+      description: 分页返回拦截页模板及内置主题、占位变量和拦截场景元数据。权限：`block_pages.read`
+      parameters:
+      - name: keyword
+        in: query
+        schema:
+          type: string
+      - name: editor_mode
+        in: query
+        schema:
+          type: string
+          enum:
+          - VISUAL
+          - HTML
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+      responses:
+        '200':
+          description: 模板分页列表与元数据
+    post:
+      operationId: createBlockPage
+      tags:
+      - block-pages
+      summary: 新建自定义拦截页模板（v1）
+      description: 创建可视化配置或自定义 HTML/CSS 模板（或从现有模板/历史版本复制），HTML 经白名单净化并保存不可变 v1 版本。权限：`block_pages.manage`
+      responses:
+        '201':
+          description: 创建成功
+        '400':
+          description: 参数校验失败
+        '409':
+          description: 模板名称冲突
+    x-source: 32-block-pages.yaml
+  /block-pages/preview:
+    post:
+      operationId: previewBlockPage
+      tags:
+      - block-pages
+      summary: 实时预览自定义拦截页
+      description: 无状态执行与生产网关一致的可视化渲染、HTML/CSS 安全净化与示例变量替换，返回可直接放进沙箱 iframe 渲染的 HTML 及安全过滤告警。权限：`block_pages.read`
+      responses:
+        '200':
+          description: 预览渲染结果
+    x-source: 32-block-pages.yaml
+  /block-pages/bindings:
+    get:
+      operationId: listBlockPageBindings
+      tags:
+      - block-pages
+      summary: 查询拦截页生效绑定列表
+      description: 查询全局默认及应用级 × 拦截场景（DEFAULT/WAF/ACCESS_CONTROL/RATE_LIMIT）的生效绑定。权限：`block_pages.read`
+      responses:
+        '200':
+          description: 生效绑定清单
+    put:
+      operationId: upsertBlockPageBinding
+      tags:
+      - block-pages
+      summary: 创建或更新拦截页生效绑定
+      description: 将全局或指定应用的某个拦截场景绑定到指定拦截页模板（可跟随最新版或锁定历史版本），需在配置发布后同步至网关生效。权限：`block_pages.manage`
+      responses:
+        '200':
+          description: 绑定保存成功
+    x-source: 32-block-pages.yaml
+  /block-pages/bindings/{id}:
+    delete:
+      operationId: deleteBlockPageBinding
+      tags:
+      - block-pages
+      summary: 解除拦截页生效绑定
+      description: 移除指定作用域与场景的绑定，使其恢复按优先级继承上级或系统内置默认页。权限：`block_pages.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: 解除成功
+    x-source: 32-block-pages.yaml
+  /block-pages/{id}:
+    get:
+      operationId: getBlockPage
+      tags:
+      - block-pages
+      summary: 查询拦截页模板详情与版本历史
+      description: 返回当前模板配置、按版本号倒序的不可变修订版本历史及引用该模板的绑定列表。权限：`block_pages.read`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: 模板详情与版本历史
+    put:
+      operationId: updateBlockPage
+      tags:
+      - block-pages
+      summary: 更新拦截页模板并生成新修订版本
+      description: 校验 optimistic lock（expected_version），更新模板内容并追加不可变历史版本 version+1。权限：`block_pages.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: 更新成功
+        '409':
+          description: 乐观锁版本冲突或重名
+    delete:
+      operationId: deleteBlockPage
+      tags:
+      - block-pages
+      summary: 删除自定义拦截页模板
+      description: 删除未被绑定引用的非内置拦截页模板及其历史版本。权限：`block_pages.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: 删除成功
+        '409':
+          description: 内置模板不可删除或仍存在生效绑定
+    x-source: 32-block-pages.yaml
+  /block-pages/{id}/rollback:
+    post:
+      operationId: rollbackBlockPage
+      tags:
+      - block-pages
+      summary: 回滚拦截页模板到历史版本
+      description: 将目标历史版本快照克隆为新的不可变修订版本（version+1），保留完整审计轨迹。权限：`block_pages.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: 回滚成功
+        '409':
+          description: 乐观锁版本冲突
+    x-source: 32-block-pages.yaml
 tags:
 - name: auth
   description: 身份认证
@@ -69837,6 +70233,8 @@ tags:
   description: Wasm 热插拔自定义检测插件沙箱（Phase 9D-1）
 - name: xdp-acceleration
   description: 内核级 eBPF/XDP 快速丢包加速（Phase 9D-2）
+- name: block-pages
+  description: 自定义拦截页面（模板、多版本与作用域绑定）
 - name: security-regression
   description: 安全回归证据与发布门禁（WDSP P1-04）
 - name: attack-sessions

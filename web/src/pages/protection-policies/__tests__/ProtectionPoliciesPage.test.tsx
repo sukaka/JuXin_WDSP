@@ -101,6 +101,69 @@ describe('ProtectionPoliciesPage 防护策略', () => {
             }),
           )
         }
+        if (method === 'GET' && url.includes('/protection-policies/pol-1/content')) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: {
+                policy_id: 'pol-1',
+                policy_code: 'default-observe',
+                policy_name: '默认观察策略',
+                protection_mode: 'OBSERVE',
+                sec_rule_engine: 'DetectionOnly',
+                paranoia_level: 1,
+                inbound_anomaly_threshold: 5,
+                outbound_anomaly_threshold: 4,
+                generated_directives:
+                  'SecRuleEngine DetectionOnly\nInclude /etc/caddy/rules/coraza.conf\nSecAction "id:900001,phase:1,pass,nolog,setvar:tx.blocking_paranoia_level=1,setvar:tx.inbound_anomaly_score_threshold=5,setvar:tx.outbound_anomaly_score_threshold=4"',
+                loaded_rule_files: [
+                  { order: 1, path: '/etc/caddy/rules/coraza.conf', description: 'Coraza 基础配置' },
+                ],
+                summary: {
+                  total_rules: 2,
+                  active_rules: 1,
+                  disabled_by_override: 0,
+                  skipped_by_pl: 1,
+                  mode_off_rules: 0,
+                  custom_rules_count: 1,
+                  global_exceptions_count: 0,
+                  overrides_count: 0,
+                },
+                overrides: [],
+                custom_rules: [
+                  {
+                    rule_id: 7100001,
+                    name: '阻断测试特征',
+                    attack_type: 'OTHER',
+                    severity: 'WARNING',
+                    phase: 2,
+                    action: 'BLOCK',
+                    generated_rule: 'SecRule ARGS "@rx bad" "id:7100001,phase:2,deny"',
+                  },
+                ],
+                global_exceptions: [],
+                rules: [
+                  {
+                    rule_id: 942100,
+                    name: 'SQL 注入检测',
+                    attack_type: 'SQL_INJECTION',
+                    severity: 'CRITICAL',
+                    phase: 2,
+                    rule_source: 'OWASP_CRS',
+                    file_name: 'REQUEST-942-APPLICATION-ATTACK-SQLI.conf',
+                    paranoia_level: 1,
+                    effective_status: 'ACTIVE',
+                    raw_rule: 'SecRule ARGS "@detectSQLi" "id:942100,phase:2,block"',
+                  },
+                ],
+                rules_total: 1,
+                page: 1,
+                page_size: 20,
+              },
+            }),
+          )
+        }
         if (method === 'GET' && url.includes('/protection-policies/pol-1')) {
           return Promise.resolve(
             jsonResponse(200, {
@@ -258,5 +321,21 @@ describe('ProtectionPoliciesPage 防护策略', () => {
     expect(await screen.findByText('商城主站')).toBeInTheDocument()
     expect(screen.getByText('绑定域名（1）')).toBeInTheDocument()
     expect(screen.getByText('jxdr.cn')).toBeInTheDocument()
+  })
+
+  it('策略详情抽屉可切换查看生效 SecLang 指令与生效规则清单', async () => {
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: /详\s*情/ }))
+    await screen.findByText('绑定应用（0）')
+
+    fireEvent.click(screen.getByRole('tab', { name: '生效指令（SecLang）' }))
+    expect((await screen.findAllByText(/SecRuleEngine DetectionOnly/)).length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText(/Include \/etc\/caddy\/rules\/coraza\.conf/)).toBeInTheDocument()
+    expect(screen.getByText(/tx\.blocking_paranoia_level=1/)).toBeInTheDocument()
+    expect(screen.getByText('阻断测试特征')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: '生效规则清单' }))
+    expect(await screen.findByText('SQL 注入检测')).toBeInTheDocument()
+    expect(screen.getByText('942100')).toBeInTheDocument()
   })
 })

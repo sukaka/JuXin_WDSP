@@ -218,54 +218,91 @@ func (p *Provider) SetMachineIdentityBindingLister(l MachineIdentityBindingListe
 // SetMachineIdentityMetaLister 注入机器身份元数据读取（nil 时不下发 api_machine_identity_meta 段）。
 func (p *Provider) SetMachineIdentityMetaLister(l MachineIdentityMetaLister) { p.machineIDMeta = l }
 
-// loadAPIMachineIdentities 读取 ENABLED 机器身份+全状态键行；未注入/缺表/查询失败
-// Warn 跳过不下发（NG-T-C01：无登记册时段省略，零行为，与历史版本一致）。
+// loadAPIMachineIdentities 读取 ENABLED 机器身份+全状态键行（兼容旧调用方；BuildGuardConfig 走 Strict）。
 func (p *Provider) loadAPIMachineIdentities(ctx context.Context) []gatewayconfig.GuardMachineIdentity {
-	if p.machineIdentities == nil {
-		return nil
-	}
-	identities, err := p.machineIdentities.ListEnabledMachineIdentities(ctx)
+	identities, err := p.loadAPIMachineIdentitiesStrict(ctx)
 	if err != nil {
 		slog.Warn("api_machine_identities load failed, skipping section", "error", err)
-		return nil
 	}
 	return identities
 }
 
-// loadAPIMachineIdentityBindings 读取全部机器身份绑定；未注入/缺表/查询失败 Warn
-// 跳过不下发（空绑定=零行为现状语义，与历史版本一致）。
-func (p *Provider) loadAPIMachineIdentityBindings(ctx context.Context) []gatewayconfig.GuardMachineIdentityBinding {
-	if p.machineIDBindings == nil {
-		return nil
+func (p *Provider) loadAPIMachineIdentitiesStrict(ctx context.Context) ([]gatewayconfig.GuardMachineIdentity, error) {
+	if p.machineIdentities == nil {
+		return nil, nil
 	}
-	bindings, err := p.machineIDBindings.ListAllMachineIdentityBindings(ctx)
+	identities, err := p.machineIdentities.ListEnabledMachineIdentities(ctx)
+	if err != nil {
+		if isMissingLegacyTableError(err, "machine_identities") ||
+			isMissingLegacyTableError(err, "machine_identity_keys") {
+			slog.Warn("optional legacy table machine_identities is unavailable", "error", err)
+			return nil, nil
+		}
+		return nil, wrapLegacyLoaderError("machine_identities", err)
+	}
+	return identities, nil
+}
+
+// loadAPIMachineIdentityBindings 读取全部机器身份绑定（兼容旧调用方；BuildGuardConfig 走 Strict）。
+func (p *Provider) loadAPIMachineIdentityBindings(ctx context.Context) []gatewayconfig.GuardMachineIdentityBinding {
+	bindings, err := p.loadAPIMachineIdentityBindingsStrict(ctx)
 	if err != nil {
 		slog.Warn("api_machine_identity_bindings load failed, skipping section", "error", err)
-		return nil
 	}
 	return bindings
 }
 
-// loadAPIMachineIdentityMeta 读取撤销水位+登记册版本（身份或绑定任一非空才下发——
-// 两者皆空=三段全省略（NG-T-C01）；水位单调不下降由写入侧（revoke 只增 upsert）
-// 与网关装配侧（快照水位<applied_watermark 拒载）双端承载，本读取不改写）。
-// 读取失败 → Warn 且三段整体不下发（登记册不带水位单独下发会制造「有登记册无水位」
-// 模糊态——网关保留旧机器身份配置比部分下发更安全（既有 PROTECT 处置不降级），
-// 下次发布重试带最新状态；与身份/绑定加载器各自 Warn 跳过的组合语义：
-// 绑定在而登记册缺席（身份段 Warn 跳过）属设计 §1.8 COV_NO_REGISTRY 明示降级，保留）。
-func (p *Provider) loadAPIMachineIdentitySections(ctx context.Context) ([]gatewayconfig.GuardMachineIdentity, []gatewayconfig.GuardMachineIdentityBinding, *gatewayconfig.GuardMachineIdentityMeta) {
-	identities := p.loadAPIMachineIdentities(ctx)
-	bindings := p.loadAPIMachineIdentityBindings(ctx)
-	if len(identities) == 0 && len(bindings) == 0 {
-		return identities, bindings, nil
+func (p *Provider) loadAPIMachineIdentityBindingsStrict(ctx context.Context) ([]gatewayconfig.GuardMachineIdentityBinding, error) {
+	if p.machineIDBindings == nil {
+		return nil, nil
 	}
-	if p.machineIDMeta == nil {
-		return identities, bindings, nil
-	}
-	meta, err := p.machineIDMeta.LoadMachineIdentityMeta(ctx)
+	bindings, err := p.machineIDBindings.ListAllMachineIdentityBindings(ctx)
 	if err != nil {
-		slog.Warn("api_machine_identity_meta load failed, dropping all machine identity sections", "error", err)
+		if isMissingLegacyTableError(err, "machine_identity_bindings") {
+			slog.Warn("optional legacy table machine_identity_bindings is unavailable", "error", err)
+			return nil, nil
+		}
+		return nil, wrapLegacyLoaderError("machine_identity_bindings", err)
+	}
+	return bindings, nil
+}
+
+// loadAPIMachineIdentitySections 读取机器身份三段（兼容旧调用方；BuildGuardConfig 走 Strict）。
+func (p *Provider) loadAPIMachineIdentitySections(ctx context.Context) ([]gatewayconfig.GuardMachineIdentity, []gatewayconfig.GuardMachineIdentityBinding, *gatewayconfig.GuardMachineIdentityMeta) {
+	identities, bindings, meta, err := p.loadAPIMachineIdentitySectionsStrict(ctx)
+	if err != nil {
+		slog.Warn("api_machine_identity sections load failed, dropping all machine identity sections", "error", err)
 		return nil, nil, nil
 	}
 	return identities, bindings, meta
+}
+
+// loadAPIMachineIdentitySectionsStrict 仅容忍旧库未建表（42P01）；任一真实数据库错误中止候选发布（fail-hard），
+// 防止已启用的机器身份 PROTECT 策略在瞬时 DB 故障时被静默清零下发。
+func (p *Provider) loadAPIMachineIdentitySectionsStrict(ctx context.Context) ([]gatewayconfig.GuardMachineIdentity, []gatewayconfig.GuardMachineIdentityBinding, *gatewayconfig.GuardMachineIdentityMeta, error) {
+	identities, err := p.loadAPIMachineIdentitiesStrict(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	bindings, err := p.loadAPIMachineIdentityBindingsStrict(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if len(identities) == 0 && len(bindings) == 0 {
+		return identities, bindings, nil, nil
+	}
+	if p.machineIDMeta == nil {
+		return identities, bindings, nil, nil
+	}
+	meta, err := p.machineIDMeta.LoadMachineIdentityMeta(ctx)
+	if err != nil {
+		if isMissingLegacyTableError(err, "machine_identity_revocation_watermark") ||
+			isMissingLegacyTableError(err, "machine_identities") ||
+			isMissingLegacyTableError(err, "machine_identity_keys") {
+			slog.Warn("optional legacy table machine_identity_revocation_watermark is unavailable, dropping machine identity sections", "error", err)
+			return nil, nil, nil, nil
+		}
+		return nil, nil, nil, wrapLegacyLoaderError("machine_identity_revocation_watermark", err)
+	}
+	return identities, bindings, meta, nil
 }

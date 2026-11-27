@@ -448,4 +448,39 @@ describe('ExceptionsPage（P0-04）', () => {
       ),
     ).toBe(true)
   })
+
+  it('例外详情与影响预览展示生成的 SecLang 规则原文', async () => {
+    const sampleSecLang =
+      'SecRule REQUEST_FILENAME "@streq /api/orders/export" "id:8000001,phase:1,pass,nolog,setvar:tx.jz_exc_8000001=1"\nSecRule TX:jz_exc_8000001 "@eq 1" "id:8000002,phase:1,pass,log,tag:\'jiuzhang-exception\',ctl:ruleRemoveById=942100"'
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const ok = (data: unknown) =>
+          Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data }))
+        if (url.includes('/preview')) {
+          return ok({ ...PREVIEW_RESULT, generated_seclang: sampleSecLang })
+        }
+        if (url.includes('/applications') || url.includes('/protection-policies')) {
+          return ok({ items: [], total: 0, page: 1, page_size: 100 })
+        }
+        const method = init?.method ?? 'GET'
+        if (/\/exceptions\/[^/?]+/.test(url) && method === 'GET') {
+          return ok({ exception: makeException(), is_broad: false, generated_seclang: sampleSecLang })
+        }
+        if (url.includes('/exceptions')) {
+          return ok({ items: [makeException()], total: 1, page: 1, page_size: 20 })
+        }
+        return Promise.reject(new Error(`unexpected url: ${url}`))
+      }),
+    )
+
+    renderPage()
+    fireEvent.click(await screen.findByText('订单导出误报豁免'))
+    expect(await screen.findByText('生成的 SecLang 规则（两规则标记法）')).toBeInTheDocument()
+    expect(screen.getByText(/ctl:ruleRemoveById=942100/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '影响预览' }))
+    expect(await screen.findByText('预览生成的 SecLang')).toBeInTheDocument()
+  })
 })

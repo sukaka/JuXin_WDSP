@@ -61,6 +61,7 @@ func TestSecurityPolicyPermissionMatrix(t *testing.T) {
 		perm   string
 	}{
 		{http.MethodGet, "/api/v1/api-security/llm/security-policies", "", PermSecurityRead},
+		{http.MethodGet, "/api/v1/api-security/llm/security-policies/builtin-rules", "", PermSecurityRead},
 		{http.MethodPost, "/api/v1/api-security/llm/security-policies", body, PermSecurityManage},
 		{http.MethodPatch, "/api/v1/api-security/llm/security-policies/" + uuid.NewString(), `{"enabled":false}`, PermSecurityManage},
 		{http.MethodDelete, "/api/v1/api-security/llm/security-policies/" + uuid.NewString(), "", PermSecurityManage},
@@ -205,5 +206,19 @@ func TestCreateSecurityPolicyTxBindsAll14Placeholders(t *testing.T) {
 	}
 	if gotUpdated := tx.queryArgs[13].(*uuid.UUID); gotUpdated == nil || *gotUpdated != updatedBy {
 		t.Fatalf("arg[13] updated_by=%v, want %v", gotUpdated, updatedBy)
+	}
+}
+
+func TestSecurityPolicyBuiltinRulesEndpoint(t *testing.T) {
+	mux := newSecurityPolicyTestMux(NewMemSecurityPolicyStore(), injectPrincipal(PermSecurityRead))
+	rr := doSecurityPolicyJSON(t, mux, http.MethodGet, "/api/v1/api-security/llm/security-policies/builtin-rules", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, want := range []string{"ignore_previous_instructions", "cn_malware", "CN_ID", "prompt_injection"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("builtin-rules response missing %q: %s", want, body)
+		}
 	}
 }

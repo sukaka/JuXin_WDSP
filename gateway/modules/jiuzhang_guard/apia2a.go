@@ -14,7 +14,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -388,14 +387,16 @@ func (s *a2aAgentCardSniffer) captureHeaders() {
 func (s *a2aAgentCardSniffer) Flush() {
 	if f, ok := s.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
+		return
 	}
+	_ = http.NewResponseController(s.ResponseWriter).Flush()
 }
 
 func (s *a2aAgentCardSniffer) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if h, ok := s.ResponseWriter.(http.Hijacker); ok {
 		return h.Hijack()
 	}
-	return nil, nil, fmt.Errorf("response writer does not support hijack")
+	return http.NewResponseController(s.ResponseWriter).Hijack()
 }
 
 func (s *a2aAgentCardSniffer) Unwrap() http.ResponseWriter { return s.ResponseWriter }

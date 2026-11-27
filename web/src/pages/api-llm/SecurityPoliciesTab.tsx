@@ -4,6 +4,8 @@ import {
   Alert,
   App as AntdApp,
   Button,
+  Card,
+  Descriptions,
   Drawer,
   Form,
   Input,
@@ -14,6 +16,7 @@ import {
   Select,
   Space,
   Switch,
+  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -22,6 +25,8 @@ import { ApiError } from '../../api/client'
 import { applicationsApi } from '../../api/applications'
 import {
   apiLLMApi,
+  type ApiLLMBuiltinRuleCategory,
+  type ApiLLMBuiltinRuleItem,
   type ApiLLMSecurityPolicy,
   type ApiLLMSecurityPolicyInput,
 } from '../../api/apiLLM'
@@ -56,6 +61,10 @@ export default function SecurityPoliciesTab() {
   const [versionsFor, setVersionsFor] = useState<ApiLLMSecurityPolicy | null>(
     null,
   )
+  const [contentFor, setContentFor] = useState<ApiLLMSecurityPolicy | null>(
+    null,
+  )
+  const [builtinRulesOpen, setBuiltinRulesOpen] = useState(false)
 
   const policiesQuery = useQuery({
     queryKey: ['api-llm-security-policies'],
@@ -69,6 +78,11 @@ export default function SecurityPoliciesTab() {
     queryKey: ['api-llm-security-policy-versions', versionsFor?.id],
     queryFn: () => apiLLMApi.listSecurityPolicyVersions(versionsFor!.id),
     enabled: versionsFor !== null,
+  })
+  const builtinRulesQuery = useQuery({
+    queryKey: ['api-llm-security-builtin-rules'],
+    queryFn: () => apiLLMApi.getBuiltinRules(),
+    enabled: builtinRulesOpen || contentFor !== null,
   })
 
   const appOptions = (appsQuery.data?.items ?? []).map((app) => ({
@@ -269,9 +283,12 @@ export default function SecurityPoliciesTab() {
   columns.push({
     title: '操作',
     key: 'actions',
-    width: canManage ? 190 : 80,
+    width: canManage ? 240 : 140,
     render: (_, record) => (
       <Space size={4} wrap>
+        <Button type="link" size="small" onClick={() => setContentFor(record)}>
+          策略内容
+        </Button>
         {canManage && (
           <Button type="link" size="small" onClick={() => openEdit(record)}>
             编辑
@@ -300,6 +317,126 @@ export default function SecurityPoliciesTab() {
     ),
   })
 
+  const isCategoryActiveForPolicy = (
+    policy: ApiLLMSecurityPolicy,
+    cat: ApiLLMBuiltinRuleCategory,
+  ): { active: boolean; summary: string } => {
+    if (!policy.enabled) {
+      return { active: false, summary: '策略未启用（不下发网关）' }
+    }
+    if (cat.key === 'prompt_injection') {
+      if (!policy.prompt_injection_enabled) {
+        return { active: false, summary: '已关闭' }
+      }
+      return {
+        active: true,
+        summary:
+          policy.mode === 'PROTECT' ? '生效（命中阻断 403）' : '生效（仅观察记录）',
+      }
+    }
+    if (cat.key === 'content_filter') {
+      const parts: string[] = []
+      if (policy.input_content_enabled) parts.push('输入过滤开启')
+      if (policy.output_content_enabled) parts.push('输出过滤开启')
+      if (parts.length === 0) return { active: false, summary: '输入与输出均关闭' }
+      return {
+        active: true,
+        summary: `${parts.join(' / ')}（${policy.mode === 'PROTECT' ? '命中阻断 403' : '仅观察记录'}）`,
+      }
+    }
+    if (cat.key === 'pii_detection') {
+      const parts: string[] = []
+      if (policy.pii_detection_enabled) parts.push('输入仅观察')
+      if (policy.output_pii_enabled) {
+        parts.push(policy.mode === 'PROTECT' ? '输出阻断 403' : '输出仅观察')
+      }
+      if (parts.length === 0) return { active: false, summary: '输入与输出均关闭' }
+      return { active: true, summary: parts.join(' / ') }
+    }
+    return { active: true, summary: '生效' }
+  }
+
+  const renderBuiltinRuleTable = (
+    rules: ApiLLMBuiltinRuleItem[],
+    mode?: 'OBSERVE' | 'PROTECT',
+  ) => (
+    <Table<ApiLLMBuiltinRuleItem>
+      rowKey="id"
+      size="small"
+      pagination={false}
+      dataSource={rules}
+      columns={[
+        {
+          title: '规则标识',
+          dataIndex: 'id',
+          width: 190,
+          render: (v: string, rec) => (
+            <Space direction="vertical" size={0}>
+              <Typography.Text code>{v}</Typography.Text>
+              <Typography.Text style={{ fontSize: 12 }}>{rec.name}</Typography.Text>
+            </Space>
+          ),
+        },
+        {
+          title: '实际检测正则（RE2）',
+          dataIndex: 'pattern',
+          render: (pattern: string, rec) => (
+            <Space direction="vertical" size={2} style={{ width: '100%' }}>
+              <Typography.Text
+                code
+                copyable={{ text: pattern, tooltips: ['复制正则', '已复制'] }}
+                style={{ fontSize: 12, wordBreak: 'break-all' }}
+              >
+                {pattern}
+              </Typography.Text>
+              {rec.description && (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {rec.description}
+                </Typography.Text>
+              )}
+            </Space>
+          ),
+        },
+        {
+          title: mode ? '当前策略处置' : '观察 / 防护处置',
+          key: 'action',
+          width: 170,
+          render: (_, rec) =>
+            mode ? (
+              <Typography.Text style={{ fontSize: 12 }}>
+                {mode === 'PROTECT' ? rec.protect_action : rec.observe_action}
+              </Typography.Text>
+            ) : (
+              <Space direction="vertical" size={2}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  观察：{rec.observe_action}
+                </Typography.Text>
+                <Typography.Text style={{ fontSize: 12 }}>
+                  防护：{rec.protect_action}
+                </Typography.Text>
+              </Space>
+            ),
+        },
+      ]}
+    />
+  )
+
+  const buildGatewayPayload = (policy: ApiLLMSecurityPolicy) => ({
+    id: policy.id,
+    application_id: policy.application_id,
+    name: policy.name,
+    version: policy.version,
+    mode: policy.mode,
+    prompt_injection_enabled: policy.prompt_injection_enabled,
+    input_content_enabled: policy.input_content_enabled,
+    pii_detection_enabled: policy.pii_detection_enabled,
+    output_content_enabled: policy.output_content_enabled,
+    output_pii_enabled: policy.output_pii_enabled,
+    blocked_topics: policy.blocked_topics,
+    max_prompt_bytes: policy.max_prompt_bytes,
+    max_output_tokens: policy.max_output_tokens,
+  })
+
   return (
     <>
       <Alert
@@ -310,15 +447,16 @@ export default function SecurityPoliciesTab() {
       />
       <QueryErrorAlert error={policiesQuery.error} />
       <QueryErrorAlert error={appsQuery.error} message="加载应用列表失败" />
-      {canManage && (
-        <Button
-          type="primary"
-          onClick={openCreate}
-          style={{ marginBottom: 16 }}
-        >
-          新建策略
+      <Space style={{ marginBottom: 16 }} wrap>
+        {canManage && (
+          <Button type="primary" onClick={openCreate}>
+            新建策略
+          </Button>
+        )}
+        <Button onClick={() => setBuiltinRulesOpen(true)}>
+          查看内置检测规则
         </Button>
-      )}
+      </Space>
       <SmartTable<ApiLLMSecurityPolicy>
         storageKey="api-llm-security-policies"
         rowKey="id"
@@ -484,6 +622,151 @@ export default function SecurityPoliciesTab() {
             </List.Item>
           )}
         />
+      </Drawer>
+
+      <Drawer
+        title="网关内置 AI 安全检测规则（真实正则）"
+        open={builtinRulesOpen}
+        onClose={() => setBuiltinRulesOpen(false)}
+        width={880}
+      >
+        <QueryErrorAlert error={builtinRulesQuery.error} message="加载内置检测规则失败" />
+        {builtinRulesQuery.isLoading ? (
+          <Typography.Text type="secondary">加载中…</Typography.Text>
+        ) : builtinRulesQuery.data ? (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Alert
+              type="info"
+              showIcon
+              message="以下全部正则表达式直接读取自网关实时运行期检测引擎（RE2 线性时间），与线上实际拦截完全一致。"
+              description={`输入检查字段：${builtinRulesQuery.data.prompt_paths.join('、')}；输出检查上限：最多 ${builtinRulesQuery.data.max_output_texts} 段文本、单段 ${(builtinRulesQuery.data.max_output_text_bytes / 1024).toFixed(0)} KiB（仅完整非流式 JSON 响应）。`}
+            />
+            {builtinRulesQuery.data.categories.map((cat) => (
+              <Card
+                key={cat.key}
+                size="small"
+                title={`${cat.title}（${cat.rules.length} 条）`}
+              >
+                <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+                  {cat.notes}
+                </Typography.Paragraph>
+                {renderBuiltinRuleTable(cat.rules)}
+              </Card>
+            ))}
+          </Space>
+        ) : null}
+      </Drawer>
+
+      <Drawer
+        title={contentFor ? `AI 安全策略实际内容：${contentFor.name}` : 'AI 安全策略实际内容'}
+        open={contentFor !== null}
+        onClose={() => setContentFor(null)}
+        width={880}
+      >
+        {contentFor && (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            {!contentFor.enabled && (
+              <Alert
+                type="warning"
+                showIcon
+                message="该策略当前处于停用状态，不会随配置发布下发到网关生效。"
+              />
+            )}
+            <Descriptions column={2} size="small" bordered>
+              <Descriptions.Item label="策略名称">{contentFor.name}</Descriptions.Item>
+              <Descriptions.Item label="版本">{`v${contentFor.version}`}</Descriptions.Item>
+              <Descriptions.Item label="关联应用">
+                {appNames.get(contentFor.application_id) ?? contentFor.application_id}
+              </Descriptions.Item>
+              <Descriptions.Item label="运行模式">
+                <Tag color={contentFor.mode === 'PROTECT' ? 'red' : 'blue'}>
+                  {contentFor.mode === 'PROTECT' ? '防护（PROTECT）' : '观察（OBSERVE）'}
+                </Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="提示词体量上限">
+                {contentFor.max_prompt_bytes > 0
+                  ? `${contentFor.max_prompt_bytes.toLocaleString()} 字节（${contentFor.mode === 'PROTECT' ? '超限限流 429' : '超限仅观察'}）`
+                  : '不限制'}
+              </Descriptions.Item>
+              <Descriptions.Item label="单次输出 Token 上限">
+                {contentFor.max_output_tokens > 0
+                  ? `${contentFor.max_output_tokens.toLocaleString()} Token（${contentFor.mode === 'PROTECT' ? '超限限流 429' : '超限仅观察'}）`
+                  : '不限制'}
+              </Descriptions.Item>
+              <Descriptions.Item label="受限话题关键词" span={2}>
+                {contentFor.blocked_topics.length > 0 ? (
+                  <Space size={4} wrap>
+                    {contentFor.blocked_topics.map((topic) => (
+                      <Tag key={topic} color="volcano">
+                        {topic}
+                      </Tag>
+                    ))}
+                  </Space>
+                ) : (
+                  '未配置'
+                )}
+              </Descriptions.Item>
+            </Descriptions>
+
+            <QueryErrorAlert error={builtinRulesQuery.error} message="加载内置检测规则失败" />
+            {builtinRulesQuery.isLoading ? (
+              <Typography.Text type="secondary">正在加载网关内置检测规则…</Typography.Text>
+            ) : builtinRulesQuery.data ? (
+              builtinRulesQuery.data.categories.map((cat) => {
+                const st = isCategoryActiveForPolicy(contentFor, cat)
+                return (
+                  <Card
+                    key={cat.key}
+                    size="small"
+                    title={
+                      <Space wrap>
+                        <span>{`${cat.title}（${cat.rules.length} 条）`}</span>
+                        <Tag color={st.active ? 'green' : 'default'}>{st.summary}</Tag>
+                      </Space>
+                    }
+                  >
+                    <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+                      {cat.notes}
+                    </Typography.Paragraph>
+                    {renderBuiltinRuleTable(cat.rules, contentFor.mode)}
+                  </Card>
+                )
+              })
+            ) : null}
+
+            <Card
+              size="small"
+              title="网关实际下发配置（api_llm_security JSON）"
+              extra={
+                <Typography.Text
+                  copyable={{
+                    text: JSON.stringify(buildGatewayPayload(contentFor), null, 2),
+                    tooltips: ['复制下发 JSON', '已复制'],
+                  }}
+                >
+                  复制 JSON
+                </Typography.Text>
+              }
+            >
+              <pre
+                style={{
+                  margin: 0,
+                  maxHeight: 240,
+                  overflow: 'auto',
+                  background: '#f5f5f5',
+                  padding: 12,
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontFamily: 'monospace',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-all',
+                }}
+              >
+                {JSON.stringify(buildGatewayPayload(contentFor), null, 2)}
+              </pre>
+            </Card>
+          </Space>
+        )}
       </Drawer>
     </>
   )

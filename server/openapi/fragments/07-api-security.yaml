@@ -6611,6 +6611,51 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /api-security/llm/security-policies/builtin-rules:
+    get:
+      operationId: apiSecLLMSecurityPolicyBuiltinRules
+      tags: [api-security]
+      summary: 网关内置 AI 安全检测规则目录
+      description: 直接从网关运行期检测引擎读取提示词注入、输入/输出恶意有害内容与 PII 识别的全部内置 RE2 正则表达式及检查字段。权限：api_llm_security.read。
+      responses:
+        '200':
+          description: 内置检测规则目录
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prompt_paths: { type: array, items: { type: string } }
+                  output_paths: { type: array, items: { type: string } }
+                  max_output_texts: { type: integer }
+                  max_output_text_bytes: { type: integer }
+                  categories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key: { type: string }
+                        title: { type: string }
+                        scope: { type: string }
+                        policy_switches: { type: array, items: { type: string } }
+                        inspected_paths: { type: array, items: { type: string } }
+                        notes: { type: string }
+                        rules:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              id: { type: string }
+                              name: { type: string }
+                              description: { type: string }
+                              pattern: { type: string }
+                              engine_rule_id: { type: string }
+                              observe_action: { type: string }
+                              protect_action: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /api-security/llm/security-policies/{id}:
     patch:
       operationId: apiSecLLMSecurityPolicyUpdate

@@ -130,6 +130,7 @@ const MENU_ICONS: Record<string, ReactNode> = {
   '/waf/vuln-refs': <BugOutlined />,
   '/vuln-intel': <BugOutlined />,
   '/exceptions': <ExceptionOutlined />,
+  '/block-pages': <FileTextOutlined />,
   '/behavior-policy': <ControlOutlined />,
   '/risk-policy': <SlidersOutlined />,
   '/trusted-proxies': <GlobalOutlined />,

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -620,4 +621,155 @@ func TestMG1AccessLogMasksSensitiveResponseBody(t *testing.T) {
 	if !strings.Contains(body, `"ok":true`) {
 		t.Fatalf("non-sensitive field should remain visible: %s", body)
 	}
+}
+
+type hijackSeqRecorder struct {
+	header   http.Header
+	codes    []int
+	flushed  int
+	hijacked bool
+	writes   int
+}
+
+func (r *hijackSeqRecorder) Header() http.Header { return r.header }
+
+func (r *hijackSeqRecorder) WriteHeader(code int) { r.codes = append(r.codes, code) }
+
+func (r *hijackSeqRecorder) Write(p []byte) (int, error) {
+	r.writes++
+	return len(p), nil
+}
+
+func (r *hijackSeqRecorder) Flush() { r.flushed++ }
+
+func (r *hijackSeqRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	r.hijacked = true
+	c1, c2 := net.Pipe()
+	_ = c2.Close()
+	return c1, bufio.NewReadWriter(bufio.NewReader(c1), bufio.NewWriter(c1)), nil
+}
+
+func TestAccessLogRecords101SwitchingProtocolsAndHijack(t *testing.T) {
+	t.Run("103 provisional then 101 Switching Protocols + Hijack", func(t *testing.T) {
+		g, logPath := newAccessLogTestGuard(t, &accessLogJSON{
+			Enabled: true, CaptureResponseHeaders: true, CaptureResponseBody: true, BodyLimitKB: 64,
+		})
+		base := &hijackSeqRecorder{header: make(http.Header)}
+		// Wrap base in Caddy's ResponseWriterWrapper (which only implements Unwrap,
+		// not http.Hijacker/http.Flusher directly) to prove Hijack/Flush work through it.
+		outer := &caddyhttp.ResponseWriterWrapper{ResponseWriter: base}
+
+		next := caddyHTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+			w.Header().Set("Link", "</app.js>; rel=preload")
+			w.WriteHeader(http.StatusEarlyHints)
+			w.Header().Set("Upgrade", "websocket")
+			w.Header().Set("Connection", "Upgrade")
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusSwitchingProtocols)
+			h, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("captureResponseWriter must implement http.Hijacker directly")
+			}
+			conn, _, err := h.Hijack()
+			if err != nil {
+				t.Fatalf("Hijack failed: %v", err)
+			}
+			_ = conn.Close()
+			// Subsequent Flush/WriteHeader after hijack must not overwrite status 101.
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			return nil
+		})
+
+		r := httptest.NewRequest(http.MethodGet, "http://waf-test.local/ws", nil)
+		r.RemoteAddr = "203.0.113.50:4321"
+		r.Header.Set("Connection", "Upgrade")
+		r.Header.Set("Upgrade", "websocket")
+		if err := g.ServeHTTP(outer, r, next); err != nil {
+			t.Fatal(err)
+		}
+		if !base.hijacked {
+			t.Fatal("underlying writer was not hijacked")
+		}
+		if len(base.codes) != 2 || base.codes[0] != http.StatusEarlyHints || base.codes[1] != http.StatusSwitchingProtocols {
+			t.Fatalf("downstream codes = %v, want [103 101]", base.codes)
+		}
+		recs := readAccessLogRecords(t, logPath)
+		if len(recs) != 1 {
+			t.Fatalf("expected 1 access log record, got %d", len(recs))
+		}
+		if recs[0].ResponseStatus != http.StatusSwitchingProtocols {
+			t.Fatalf("response_status = %d, want 101", recs[0].ResponseStatus)
+		}
+		if recs[0].ResponseBody != "" {
+			t.Fatalf("101 response must not capture body, got %q", recs[0].ResponseBody)
+		}
+		if recs[0].WAFAction != "ALLOW" {
+			t.Fatalf("waf_action = %q, want ALLOW", recs[0].WAFAction)
+		}
+	})
+
+	t.Run("raw Hijack without WriteHeader keeps status 0", func(t *testing.T) {
+		g, logPath := newAccessLogTestGuard(t, &accessLogJSON{
+			Enabled: true, CaptureResponseBody: true, BodyLimitKB: 64,
+		})
+		base := &hijackSeqRecorder{header: make(http.Header)}
+		next := caddyHTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Fatalf("Hijack failed: %v", err)
+			}
+			_ = conn.Close()
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			return nil
+		})
+		r := httptest.NewRequest(http.MethodGet, "http://waf-test.local/raw-ws", nil)
+		r.RemoteAddr = "203.0.113.51:4321"
+		if err := g.ServeHTTP(base, r, next); err != nil {
+			t.Fatal(err)
+		}
+		if !base.hijacked {
+			t.Fatal("expected hijack")
+		}
+		if base.flushed != 0 {
+			t.Fatalf("Flush after Hijack must be a no-op, got flushed=%d", base.flushed)
+		}
+		recs := readAccessLogRecords(t, logPath)
+		if len(recs) != 1 {
+			t.Fatalf("expected 1 record, got %d", len(recs))
+		}
+		if recs[0].ResponseStatus != 0 {
+			t.Fatalf("raw hijacked request without WriteHeader must record status 0, got %d", recs[0].ResponseStatus)
+		}
+	})
+
+	t.Run("captureResponseWriter locks 101 and settles TTFB", func(t *testing.T) {
+		base := &hijackSeqRecorder{header: make(http.Header)}
+		tracker := &ttfbTracker{}
+		tracker.markDownstreamEntry()
+		cw := &captureResponseWriter{
+			ResponseWriter: base,
+			cfg:            &accessLogJSON{CaptureResponseBody: true},
+			bodyLimit:      64,
+			tracker:        tracker,
+		}
+		cw.Header().Set("Content-Type", "text/plain")
+		cw.WriteHeader(http.StatusSwitchingProtocols)
+		cw.WriteHeader(http.StatusOK) // duplicate WriteHeader must not overwrite 101
+		if cw.status != http.StatusSwitchingProtocols {
+			t.Fatalf("status = %d, want 101", cw.status)
+		}
+		if !cw.decided || cw.captureBody {
+			t.Fatalf("101 must decide captureBody=false, got decided=%v captureBody=%v", cw.decided, cw.captureBody)
+		}
+		if !tracker.settled {
+			t.Fatal("101 must settle TTFB tracker")
+		}
+		if cw.Unwrap() != base {
+			t.Fatal("Unwrap mismatch")
+		}
+	})
 }

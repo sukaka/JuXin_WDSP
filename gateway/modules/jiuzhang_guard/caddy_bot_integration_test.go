@@ -1,6 +1,6 @@
 // caddy_bot_integration_test.go 真实 Caddy 中间件顺序集成测试（WDSP P1-02 B3 验收，
 // 任务书 §3.2 末段「须经真实中间件顺序集成测试验证」）：
-// in-process caddy.Load（与生产同一 caddy v2.11.4 + coraza-caddy v2.5.0 模块注册链）
+// in-process caddy.Load（与生产同一 caddy v2.11.4 + coraza-caddy v2.6.0 模块注册链）
 // + 真实 CRS 规则集（../../rules）+ 真实 Valkey（docker，锁定镜像）+ httptest 源站。
 //
 // 覆盖：中间件顺序（挑战 403 不到源站）、BOT-014（clearance 不绕过 Coraza/WAF——

@@ -1334,6 +1334,10 @@ type GuardConfig struct {
 	// 与历史版本逐字节一致；全产品形态能力，不受 WDSP 门控、不参与 api_policy_version；
 	// 非秘密材料——快照不脱敏，回滚随历史版本内容恢复）
 	BlockResponse *GuardBlockResponse `json:"block_response,omitempty"`
+	// BlockPages 自定义多版本拦截页面（迁移 000251；支持全局/应用 × 场景 DEFAULT/WAF/ACCESS_CONTROL/RATE_LIMIT；
+	// nil = 未配置生效绑定，网关保持既有 403 blockpage.html 与 429 默认行为逐字节一致；
+	// 全产品形态能力，不受 WDSP 门控；非秘密材料，随快照保存与回滚）
+	BlockPages *GuardBlockPagesConfig `json:"block_pages,omitempty"`
 	// SoftwareBypass 节点级资源阈值旁路与流量监控配置；nil = 旧版零行为变化。
 	// 非秘密材料，随访问控制版本快照保存与回滚，不受 WDSP API 动态防护门控。
 	SoftwareBypass *GuardSoftwareBypass `json:"software_bypass,omitempty"`
@@ -1502,6 +1506,13 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 	// 全产品形态能力，不受 WDSP 门控；nil = 网关内置默认模板，与历史版本逐字节一致
 	if g.BlockResponse != nil {
 		h["block_response"] = g.BlockResponse
+	}
+	// 自定义多版本拦截页面（迁移 000251 block_pages 段）：按当前应用解析最终生效场景映射；
+	// 全产品形态能力，不受 WDSP 门控；未绑定时省略该段保持零行为变化
+	if g.BlockPages != nil && !g.BlockPages.IsEmpty() {
+		if resolved := g.BlockPages.ResolveForApp(app.Code); len(resolved) > 0 {
+			h["block_pages"] = resolved
+		}
 	}
 	// 阶段8：仅在 WDSP 开启时注入 API 动态防护配置（关闭时 JSON 与纯 WAF 一致）
 	if g.APIDynamicProtection {

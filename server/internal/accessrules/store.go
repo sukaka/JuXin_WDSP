@@ -235,6 +235,25 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Rule, int64, error) {
 	return out, total, rows.Err()
 }
 
+// ListAllActive 返回全部未删除的 ACTIVE 访问控制规则（不经 20 条分页截断，专供网关配置发布使用）。
+func (s *Store) ListAllActive(ctx context.Context) ([]Rule, error) {
+	query := `SELECT ` + ruleColumns + ` FROM ip_access_rules WHERE deleted_at IS NULL AND status = 'ACTIVE' ORDER BY priority ASC, created_at DESC, id ASC`
+	rows, err := s.db.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Rule
+	for rows.Next() {
+		r, err := scanRule(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *r)
+	}
+	return out, rows.Err()
+}
+
 // Update 更新规则（乐观锁：version 不匹配返回 ErrVersionConflict）。
 func (s *Store) Update(ctx context.Context, in UpdateInput, updatedBy uuid.UUID) (*Rule, error) {
 	if err := validateUpdateInput(&in, time.Now()); err != nil {

@@ -1,5 +1,19 @@
 import { request } from './client'
-import type { PageResult, ProtectionMode, ProtectionPolicyDetail, ProtectionPolicyItem } from '../types'
+import type {
+  PageResult,
+  ProtectionMode,
+  ProtectionPolicyContent,
+  ProtectionPolicyDetail,
+  ProtectionPolicyItem,
+} from '../types'
+
+export interface ProtectionPolicyContentParams {
+  keyword?: string
+  attack_type?: string
+  effective_status?: string
+  page?: number
+  page_size?: number
+}
 
 export interface ProtectionPolicyListParams {
   keyword?: string
@@ -34,6 +48,19 @@ export const protectionPoliciesApi = {
   get: async (id: string): Promise<ProtectionPolicyDetail & { application_ids: string[]; domains: NonNullable<ProtectionPolicyDetail['domains']> }> => {
     const data = await request<ProtectionPolicyDetail>(`/protection-policies/${id}`)
     return { ...data, application_ids: data.application_ids ?? [], domains: data.domains ?? [] }
+  },
+  content: async (id: string, params?: ProtectionPolicyContentParams) => {
+    const data = await request<ProtectionPolicyContent>(`/protection-policies/${id}/content`, {
+      query: { ...params },
+    })
+    return {
+      ...data,
+      loaded_rule_files: data.loaded_rule_files ?? [],
+      overrides: data.overrides ?? [],
+      custom_rules: data.custom_rules ?? [],
+      global_exceptions: data.global_exceptions ?? [],
+      rules: data.rules ?? [],
+    }
   },
   create: (body: CreateProtectionPolicyBody) =>
     request<ProtectionPolicyItem>('/protection-policies', { method: 'POST', body }),

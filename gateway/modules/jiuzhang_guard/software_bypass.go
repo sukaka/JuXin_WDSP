@@ -210,6 +210,9 @@ func (w *statusCountingResponseWriter) Write(p []byte) (int, error) {
 }
 
 func (w *statusCountingResponseWriter) Flush() {
+	if w.hijacked {
+		return
+	}
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}

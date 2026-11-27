@@ -27,7 +27,7 @@ type StoreAPI interface {
 }
 
 // SettingsReader 时钟漂移上限读取（*settings.Service 实现；nil = 常量默认 60s，
-// 见 derive.go 上限注释——系统设置机制存在时经 authz.clock_skew_max_seconds 覆盖）。
+// 见 derive.go 上限注释——系统设置机制存在时经 gateway_runtime.authz_clock_skew_max_seconds 覆盖）。
 type SettingsReader interface {
 	GetInt(ctx context.Context, group, key string, def int) int
 }
@@ -77,7 +77,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) clockSkewMaxSeconds(ctx context.Context) int64 {
 	v := DefaultClockSkewMaxSeconds
 	if h.settings != nil {
-		v = h.settings.GetInt(ctx, "authz", "clock_skew_max_seconds", DefaultClockSkewMaxSeconds)
+		v = h.settings.GetInt(ctx, ClockSkewSettingGroup, ClockSkewSettingKey, DefaultClockSkewMaxSeconds)
 	}
-	return clampClockSkewMax(v)
+	return ClampClockSkewMax(v)
 }

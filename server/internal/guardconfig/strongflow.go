@@ -79,25 +79,32 @@ ORDER BY d.application_id, d.name, d.version, s.sequence`)
 // SetStrongFlowLister 注入强流程定义读取（nil 时不下发 api_strong_flows 段）。
 func (p *Provider) SetStrongFlowLister(l StrongFlowLister) { p.strongFlows = l }
 
-// loadAPIStrongFlows 读取发布面强流程定义（ACTIVE ∪ 育龄窗 RETIRED）；未注入/缺表/
-// 查询失败 Warn 跳过不下发（NG-T-C01：无 ACTIVE 定义时段省略，网关强流程检测零行为，
-// 与历史版本一致）。
+// loadAPIStrongFlows 读取发布面强流程定义（兼容旧调用方；BuildGuardConfig 统一走 loadAPIStrongFlowsStrict）。
 func (p *Provider) loadAPIStrongFlows(ctx context.Context) []gatewayconfig.GuardStrongFlowDefinition {
+	flows, err := p.loadAPIStrongFlowsStrict(ctx)
+	if err != nil {
+		slog.Warn("list api strong flows failed, skip api_strong_flows", "error", err)
+	}
+	return flows
+}
+
+// loadAPIStrongFlowsStrict 仅容忍旧库未建表（42P01）；真实数据库错误中止候选发布（fail-hard）。
+func (p *Provider) loadAPIStrongFlowsStrict(ctx context.Context) ([]gatewayconfig.GuardStrongFlowDefinition, error) {
 	if p.strongFlows == nil {
-		return nil
+		return nil, nil
 	}
 	flows, err := p.strongFlows.ListPublishableStrongFlows(ctx)
 	if err != nil {
 		if isMissingLegacyTableError(err, "api_strong_flow_definitions") ||
-			isMissingLegacyTableError(err, "api_strong_flow_steps") {
+			isMissingLegacyTableError(err, "api_strong_flow_steps") ||
+			isMissingLegacyTableError(err, "api_strong_flow_instances") {
 			slog.Warn("optional table api_strong_flow_definitions is unavailable", "error", err)
-			return nil
+			return nil, nil
 		}
-		slog.Warn("list api strong flows failed, skip api_strong_flows", "error", err)
-		return nil
+		return nil, wrapLegacyLoaderError("api_strong_flow_definitions", err)
 	}
 	if len(flows) == 0 {
-		return nil
+		return nil, nil
 	}
-	return flows
+	return flows, nil
 }

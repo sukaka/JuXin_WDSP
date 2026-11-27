@@ -341,6 +341,10 @@ func (e *LoadError) Error() string {
 	return fmt.Sprintf("caddy load failed (status %d): %s", e.StatusCode, e.Message)
 }
 
+// maxCurrentConfigBytes 限制单次读取 Caddy /config/ 响应体的最大体积（32 MiB），
+// 超限时显式报错（fail-closed）而非静默截断为半截 JSON 破坏回滚基线。
+const maxCurrentConfigBytes = 32 << 20
+
 // GetCurrentConfig 获取当前生效配置（GET /config/）。
 func (c *CaddyClient) GetCurrentConfig(ctx context.Context) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/config/", nil)
@@ -352,12 +356,15 @@ func (c *CaddyClient) GetCurrentConfig(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("get config failed: %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20)) // 4MB 上限
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCurrentConfigBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("get config response body failed: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("get config returned %d", resp.StatusCode)
+	}
+	if len(body) > maxCurrentConfigBytes {
+		return "", fmt.Errorf("get config response body exceeds %d bytes limit", maxCurrentConfigBytes)
 	}
 	return string(body), nil
 }

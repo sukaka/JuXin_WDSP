@@ -115,6 +115,17 @@ class AutoPlanTest(unittest.TestCase):
         self.write('ops/upgrade/image-delta.py', 'new')
         self.assertIn('宿主机', self.plan(ok=False))
 
+    def test_ops_scripts_fail_closed_as_host_while_ops_tests_are_ignored(self):
+        self.write('ops/system/firewall-ensure.sh', '#!/usr/bin/env bash\n')
+        self.assertIn('宿主机', self.plan(ok=False))
+        self.git('clean', '-fdq')
+        self.write('ops/install/install-hostctl.sh', '#!/usr/bin/env bash\n')
+        self.assertIn('宿主机', self.plan(ok=False))
+        self.git('clean', '-fdq')
+        self.write('ops/system/tests/test_dummy.py', 'import unittest\n')
+        self.write('ops/healthcheck/extra_test.py', 'import unittest\n')
+        self.assertIn('未识别出需要构建的镜像组件', self.plan(ok=False))
+
     def test_rename_counts_source_and_destination(self):
         (self.repo / 'web').mkdir()
         self.git('mv', 'server/app.go', 'web/app.go')
