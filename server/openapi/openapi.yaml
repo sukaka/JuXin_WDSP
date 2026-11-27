@@ -1950,7 +1950,9 @@ components:
         response_buffering: { type: boolean, description: 响应缓冲（flush_interval=-1） }
         xff_overwrite: { type: boolean, description: X-Forwarded-For 上一跳覆盖 }
         host_strip_port: { type: boolean, description: Host 不包含端口 }
-        accept_encoding_off: { type: boolean, description: 关闭压缩协商 }
+        accept_encoding_off: { type: boolean, description: 禁止回源压缩（强制 Accept-Encoding: identity） }
+        response_compression_enabled: { type: boolean, description: 网关响应压缩开关（gzip / zstd） }
+        response_compression_encodings: { type: string, enum: [ "zstd,gzip", gzip, zstd ], description: 网关响应压缩算法（默认 zstd,gzip） }
         redirect_port_rewrite: { type: boolean, description: 302 Location 端口改写为接入端口 }
         custom_request_rules:
           type: array

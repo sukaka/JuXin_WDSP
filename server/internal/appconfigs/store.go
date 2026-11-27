@@ -94,13 +94,15 @@ type Repository interface {
 // 无配置记录时的 XFF 上一跳覆盖行为及迁移 000123 列默认值一致。
 func DefaultHeaderConfig() *gatewayconfig.AppHeaderConfig {
 	return &gatewayconfig.AppHeaderConfig{
-		ServerAction:     "keep",
-		XAuthorAction:    "keep",
-		XPoweredByAction: "keep",
-		XFrameOptions:    "default",
-		HstsMaxAge:       31536000,
-		CspMode:          "off",
-		XffOverwrite:     true,
+		ServerAction:                 "keep",
+		XAuthorAction:                "keep",
+		XPoweredByAction:             "keep",
+		XFrameOptions:                "default",
+		HstsMaxAge:                   31536000,
+		CspMode:                      "off",
+		XffOverwrite:                 true,
+		ResponseCompressionEnabled:   false,
+		ResponseCompressionEncodings: gatewayconfig.ResponseCompressionEncodingsDefault,
 	}
 }
 
@@ -124,7 +126,8 @@ const headerConfigColumns = `application_id, server_action, server_value, x_powe
   x_author_action, x_author_value,
   x_frame_options, x_frame_options_url, x_xss_protection, vary_user_agent,
   hsts_enabled, hsts_max_age, csp_mode, csp_value,
-  response_buffering, xff_overwrite, host_strip_port, accept_encoding_off, redirect_port_rewrite,
+  response_buffering, xff_overwrite, host_strip_port, accept_encoding_off,
+  response_compression_enabled, response_compression_encodings, redirect_port_rewrite,
   custom_request_rules, custom_response_rules, updated_by, created_at, updated_at, version`
 
 // GetHeaderConfig 查询应用头合规配置；无记录返回 (nil, nil)（默认静态头行为）。
@@ -175,14 +178,16 @@ UPDATE app_header_configs SET server_action=$2, server_value=$3, x_powered_by_ac
   x_author_action=$6, x_author_value=$7,
   x_frame_options=$8, x_frame_options_url=$9, x_xss_protection=$10, vary_user_agent=$11,
   hsts_enabled=$12, hsts_max_age=$13, csp_mode=$14, csp_value=$15,
-  response_buffering=$16, xff_overwrite=$17, host_strip_port=$18, accept_encoding_off=$19, redirect_port_rewrite=$20,
-  custom_request_rules=$21, custom_response_rules=$22, updated_by=$23, updated_at=now(), version=version+1
-WHERE application_id=$1 AND version=$24`,
+  response_buffering=$16, xff_overwrite=$17, host_strip_port=$18, accept_encoding_off=$19,
+  response_compression_enabled=$20, response_compression_encodings=$21, redirect_port_rewrite=$22,
+  custom_request_rules=$23, custom_response_rules=$24, updated_by=$25, updated_at=now(), version=version+1
+WHERE application_id=$1 AND version=$26`,
 			appID, cfg.ServerAction, cfg.ServerValue, cfg.XPoweredByAction, cfg.XPoweredByValue,
 			cfg.XAuthorAction, cfg.XAuthorValue,
 			cfg.XFrameOptions, cfg.XFrameOptionsURL, cfg.XXssProtection, cfg.VaryUserAgent,
 			cfg.HstsEnabled, cfg.HstsMaxAge, cfg.CspMode, cfg.CspValue,
-			cfg.ResponseBuffering, cfg.XffOverwrite, cfg.HostStripPort, cfg.AcceptEncodingOff, cfg.RedirectPortRewrite,
+			cfg.ResponseBuffering, cfg.XffOverwrite, cfg.HostStripPort, cfg.AcceptEncodingOff,
+			cfg.ResponseCompressionEnabled, cfg.ResponseCompressionEncodings, cfg.RedirectPortRewrite,
 			reqRules, respRules, ub, expectVersion)
 		if err != nil {
 			return 0, err
@@ -199,15 +204,17 @@ INSERT INTO app_header_configs (application_id, server_action, server_value, x_p
   x_author_action, x_author_value,
   x_frame_options, x_frame_options_url, x_xss_protection, vary_user_agent,
   hsts_enabled, hsts_max_age, csp_mode, csp_value,
-  response_buffering, xff_overwrite, host_strip_port, accept_encoding_off, redirect_port_rewrite,
+  response_buffering, xff_overwrite, host_strip_port, accept_encoding_off,
+  response_compression_enabled, response_compression_encodings, redirect_port_rewrite,
   custom_request_rules, custom_response_rules, updated_by)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
 RETURNING version`,
 		appID, cfg.ServerAction, cfg.ServerValue, cfg.XPoweredByAction, cfg.XPoweredByValue,
 		cfg.XAuthorAction, cfg.XAuthorValue,
 		cfg.XFrameOptions, cfg.XFrameOptionsURL, cfg.XXssProtection, cfg.VaryUserAgent,
 		cfg.HstsEnabled, cfg.HstsMaxAge, cfg.CspMode, cfg.CspValue,
-		cfg.ResponseBuffering, cfg.XffOverwrite, cfg.HostStripPort, cfg.AcceptEncodingOff, cfg.RedirectPortRewrite,
+		cfg.ResponseBuffering, cfg.XffOverwrite, cfg.HostStripPort, cfg.AcceptEncodingOff,
+		cfg.ResponseCompressionEnabled, cfg.ResponseCompressionEncodings, cfg.RedirectPortRewrite,
 		reqRules, respRules, ub).Scan(&newVersion)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -375,10 +382,16 @@ func scanHeaderConfig(row pgx.Row) (*HeaderConfigRecord, error) {
 		&c.XAuthorAction, &c.XAuthorValue,
 		&c.XFrameOptions, &c.XFrameOptionsURL, &c.XXssProtection, &c.VaryUserAgent,
 		&c.HstsEnabled, &c.HstsMaxAge, &c.CspMode, &c.CspValue,
-		&c.ResponseBuffering, &c.XffOverwrite, &c.HostStripPort, &c.AcceptEncodingOff, &c.RedirectPortRewrite,
+		&c.ResponseBuffering, &c.XffOverwrite, &c.HostStripPort, &c.AcceptEncodingOff,
+		&c.ResponseCompressionEnabled, &c.ResponseCompressionEncodings, &c.RedirectPortRewrite,
 		&reqRules, &respRules, &rec.UpdatedBy, &rec.CreatedAt, &rec.UpdatedAt, &rec.Version)
 	if err != nil {
 		return nil, err
+	}
+	if enc, ok := gatewayconfig.NormalizeResponseCompressionEncodings(c.ResponseCompressionEncodings); ok {
+		c.ResponseCompressionEncodings = enc
+	} else {
+		c.ResponseCompressionEncodings = gatewayconfig.ResponseCompressionEncodingsDefault
 	}
 	if len(reqRules) > 0 {
 		if err := json.Unmarshal(reqRules, &c.CustomRequestRules); err != nil {
@@ -463,6 +476,11 @@ func validateHeaderConfig(cfg *gatewayconfig.AppHeaderConfig) error {
 	if err := validateHeaderValue("csp_value", cfg.CspValue, 4096); err != nil {
 		return err
 	}
+	normalizedEncodings, ok := gatewayconfig.NormalizeResponseCompressionEncodings(cfg.ResponseCompressionEncodings)
+	if !ok {
+		return fmt.Errorf("%w: response_compression_encodings 取值无效（zstd,gzip/gzip/zstd）", ErrInvalid)
+	}
+	cfg.ResponseCompressionEncodings = normalizedEncodings
 	if err := validateHeaderRules("custom_request_rules", cfg.CustomRequestRules); err != nil {
 		return err
 	}

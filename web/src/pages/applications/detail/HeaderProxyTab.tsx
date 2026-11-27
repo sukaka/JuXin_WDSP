@@ -64,10 +64,18 @@ const DEFAULT_CONFIG: AppHeaderConfig = {
   xff_overwrite: true,
   host_strip_port: false,
   accept_encoding_off: false,
+  response_compression_enabled: false,
+  response_compression_encodings: 'zstd,gzip',
   redirect_port_rewrite: false,
   custom_request_rules: [],
   custom_response_rules: [],
 }
+
+const COMPRESSION_ENCODING_OPTIONS = [
+  { value: 'zstd,gzip', label: 'Zstd + Gzip（推荐，优先 Zstd）' },
+  { value: 'gzip', label: '仅 Gzip（最大兼容性）' },
+  { value: 'zstd', label: '仅 Zstd（高压缩比）' },
+]
 
 const HEADER_ACTION_OPTIONS = [
   { value: 'keep', label: '保持原样' },
@@ -169,8 +177,9 @@ const PROXY_SWITCH_ITEMS: {
   },
   {
     name: 'accept_encoding_off',
-    label: 'Accept-Encoding 关闭',
-    description: '向源站关闭压缩协商（identity）',
+    label: '禁止回源压缩（Accept-Encoding）',
+    description:
+      '开启后向源站发送 Accept-Encoding: identity 强制返回未压缩明文；关闭时透传客户端压缩协商',
   },
   {
     name: 'redirect_port_rewrite',
@@ -195,6 +204,10 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
   const xssEnabled = Form.useWatch('x_xss_protection', headerForm)
   const varyUaEnabled = Form.useWatch('vary_user_agent', headerForm)
   const cspMode = Form.useWatch('csp_mode', headerForm)
+  const responseCompressionEnabled = Form.useWatch(
+    'response_compression_enabled',
+    headerForm,
+  )
   const customReqRules = Form.useWatch('custom_request_rules', headerForm) ?? []
   const customRespRules =
     Form.useWatch('custom_response_rules', headerForm) ?? []
@@ -215,6 +228,9 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
         data.config?.hsts_max_age && data.config.hsts_max_age > 0
           ? data.config.hsts_max_age
           : DEFAULT_CONFIG.hsts_max_age,
+      response_compression_encodings:
+        data.config?.response_compression_encodings ||
+        DEFAULT_CONFIG.response_compression_encodings,
       // Go nil slice 会序列化为 null，统一归一化为空数组
       custom_request_rules: data.config?.custom_request_rules ?? [],
       custom_response_rules: data.config?.custom_response_rules ?? [],
@@ -259,6 +275,17 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
             ? loadedMaxAge
             : DEFAULT_CONFIG.hsts_max_age
 
+    const storedEncodings = headerForm.getFieldValue(
+      'response_compression_encodings',
+    ) as AppHeaderConfig['response_compression_encodings'] | undefined
+    const loadedEncodings =
+      configQuery.data?.config?.response_compression_encodings
+    const resolvedEncodings =
+      values.response_compression_encodings ||
+      storedEncodings ||
+      loadedEncodings ||
+      DEFAULT_CONFIG.response_compression_encodings
+
     saveConfigMutation.mutate({
       ...values,
       server_action: 'hide',
@@ -275,6 +302,10 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
           : '',
       hsts_max_age: resolvedMaxAge,
       csp_value: values.csp_mode === 'custom' ? (values.csp_value ?? '') : '',
+      response_compression_enabled: Boolean(
+        values.response_compression_enabled,
+      ),
+      response_compression_encodings: resolvedEncodings,
       custom_request_rules: (values.custom_request_rules ?? []).map((r) => ({
         ...r,
         value: r.method === 'delete' ? '' : (r.value ?? ''),
@@ -973,6 +1004,43 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
                   </div>
                 </Col>
               ))}
+              <Col xs={24} sm={12} lg={8}>
+                <div
+                  className={
+                    responseCompressionEnabled
+                      ? 'jz-detail-switch-tile jz-detail-switch-tile--active'
+                      : 'jz-detail-switch-tile'
+                  }
+                >
+                  <Form.Item
+                    name="response_compression_enabled"
+                    className="jz-detail-switch-form-item"
+                    label={
+                      <>
+                        <span>网关响应压缩（gzip / zstd）</span>
+                        <span className="jz-detail-switch-desc">
+                          开启后由网关主动压缩源站未压缩的文本/JSON/JS/CSS 响应（≥512B，自动跳过 SSE 与已压缩响应）
+                        </span>
+                      </>
+                    }
+                    valuePropName="checked"
+                  >
+                    <Switch />
+                  </Form.Item>
+                  {responseCompressionEnabled && (
+                    <div className="jz-detail-switch-subpanel">
+                      <Form.Item
+                        name="response_compression_encodings"
+                        label="压缩算法"
+                        style={{ marginBottom: 0 }}
+                        extra="在 WAF 与响应体检测完成后压缩下发，不影响明文检测"
+                      >
+                        <Select options={COMPRESSION_ENCODING_OPTIONS} />
+                      </Form.Item>
+                    </div>
+                  )}
+                </div>
+              </Col>
             </Row>
 
             {renderRuleList(

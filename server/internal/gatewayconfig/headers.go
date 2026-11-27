@@ -34,13 +34,139 @@ type AppHeaderConfig struct {
 	HstsMaxAge          int          `json:"hsts_max_age,omitempty"`
 	CspMode             string       `json:"csp_mode"` // off|preset|custom
 	CspValue            string       `json:"csp_value,omitempty"`
-	ResponseBuffering   bool         `json:"response_buffering"`
-	XffOverwrite        bool         `json:"xff_overwrite"`
-	HostStripPort       bool         `json:"host_strip_port"`
-	AcceptEncodingOff   bool         `json:"accept_encoding_off"`
-	RedirectPortRewrite bool         `json:"redirect_port_rewrite"`
-	CustomRequestRules  []HeaderRule `json:"custom_request_rules,omitempty"`
-	CustomResponseRules []HeaderRule `json:"custom_response_rules,omitempty"`
+	ResponseBuffering            bool         `json:"response_buffering"`
+	XffOverwrite                 bool         `json:"xff_overwrite"`
+	HostStripPort                bool         `json:"host_strip_port"`
+	AcceptEncodingOff            bool         `json:"accept_encoding_off"`
+	ResponseCompressionEnabled   bool         `json:"response_compression_enabled"`
+	ResponseCompressionEncodings string       `json:"response_compression_encodings,omitempty"`
+	RedirectPortRewrite          bool         `json:"redirect_port_rewrite"`
+	CustomRequestRules           []HeaderRule `json:"custom_request_rules,omitempty"`
+	CustomResponseRules          []HeaderRule `json:"custom_response_rules,omitempty"`
+}
+
+const (
+	// ResponseCompressionEncodingsDefault 默认同时启用 zstd 与 gzip（客户端同时支持时优先 zstd）。
+	ResponseCompressionEncodingsDefault = "zstd,gzip"
+	// ResponseCompressionEncodingsGzip 仅启用 gzip（最大客户端/中间件兼容性）。
+	ResponseCompressionEncodingsGzip = "gzip"
+	// ResponseCompressionEncodingsZstd 仅启用 zstd（更高压缩率与更低 CPU）。
+	ResponseCompressionEncodingsZstd = "zstd"
+	// ResponseCompressionMinLength 触发网关响应压缩的最小正文长度（字节，与 Caddy encode 默认值对齐）。
+	ResponseCompressionMinLength = 512
+)
+
+// NormalizeResponseCompressionEncodings 校验并规范化响应压缩算法配置。
+// 空字符串归一化为默认 "zstd,gzip"（兼容未传该字段的存量调用方）；其余仅接受白名单枚举。
+func NormalizeResponseCompressionEncodings(raw string) (string, bool) {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch v {
+	case "", ResponseCompressionEncodingsDefault:
+		return ResponseCompressionEncodingsDefault, true
+	case ResponseCompressionEncodingsGzip:
+		return ResponseCompressionEncodingsGzip, true
+	case ResponseCompressionEncodingsZstd:
+		return ResponseCompressionEncodingsZstd, true
+	default:
+		return "", false
+	}
+}
+
+// responseCompressionContentTypes 网关侧允许主动压缩的响应 Content-Type 白名单。
+// 对齐 Caddy encode 默认常见文本/API/前端类型，但显式列举 text/* 子类型以排除
+// text/event-stream（SSE / MCP SSE / AI 流式输出），避免流式推送被压缩缓冲。
+var responseCompressionContentTypes = []string{
+	"application/atom+xml*",
+	"application/eot*",
+	"application/font*",
+	"application/geo+json*",
+	"application/graphql+json*",
+	"application/graphql-response+json*",
+	"application/javascript*",
+	"application/json*",
+	"application/ld+json*",
+	"application/manifest+json*",
+	"application/opentype*",
+	"application/otf*",
+	"application/rss+xml*",
+	"application/truetype*",
+	"application/ttf*",
+	"application/vnd.api+json*",
+	"application/vnd.ms-fontobject*",
+	"application/wasm*",
+	"application/x-httpd-cgi*",
+	"application/x-javascript*",
+	"application/x-opentype*",
+	"application/x-otf*",
+	"application/x-perl*",
+	"application/x-protobuf*",
+	"application/x-ttf*",
+	"application/xhtml+xml*",
+	"application/xml*",
+	"font/ttf*",
+	"font/otf*",
+	"image/svg+xml*",
+	"image/vnd.microsoft.icon*",
+	"image/x-icon*",
+	"multipart/bag*",
+	"multipart/mixed*",
+	"text/cache-manifest*",
+	"text/calendar*",
+	"text/css*",
+	"text/csv*",
+	"text/html*",
+	"text/javascript*",
+	"text/markdown*",
+	"text/plain*",
+	"text/vcard*",
+	"text/vtt*",
+	"text/x-component*",
+	"text/x-cross-domain-policy*",
+	"text/xml*",
+}
+
+// buildEncodeHandler 构建 Caddy 原生 http.handlers.encode 响应压缩处理器。
+// 未开启时返回 nil，保持存量站点配置逐字节不变。
+// 安全与顺序语义：
+//   - 挂载于 requestID 之后、jiuzhang_guard / waf / headerHandler 之前（响应回程最后执行），
+//     保证 WAF 响应体检测、API 响应脱敏/加密、HTML 供应链扫描与 A2A 发现均处理明文；
+//   - 源站已带 Content-Encoding 或 Cache-Control: no-transform、WebSocket 握手及 <=512B 响应
+//     由 Caddy encode 自动跳过，不产生二次压缩；
+//   - 显式 MIME 匹配排除 text/event-stream，不干扰 SSE 流式传输。
+func buildEncodeHandler(cfg *AppHeaderConfig) mapT {
+	if cfg == nil || !cfg.ResponseCompressionEnabled {
+		return nil
+	}
+	mode, ok := NormalizeResponseCompressionEncodings(cfg.ResponseCompressionEncodings)
+	if !ok {
+		mode = ResponseCompressionEncodingsDefault
+	}
+	encodings := mapT{}
+	var prefer []string
+	switch mode {
+	case ResponseCompressionEncodingsGzip:
+		encodings["gzip"] = mapT{}
+		prefer = []string{"gzip"}
+	case ResponseCompressionEncodingsZstd:
+		encodings["zstd"] = mapT{}
+		prefer = []string{"zstd"}
+	default:
+		encodings["zstd"] = mapT{}
+		encodings["gzip"] = mapT{}
+		prefer = []string{"zstd", "gzip"}
+	}
+	contentTypes := append([]string(nil), responseCompressionContentTypes...)
+	return mapT{
+		"handler":        "encode",
+		"encodings":      encodings,
+		"prefer":         prefer,
+		"minimum_length": ResponseCompressionMinLength,
+		"match": mapT{
+			"headers": mapT{
+				"Content-Type": contentTypes,
+			},
+		},
+	}
 }
 
 // AppPathRoute 路径粒度转发（应用内路径前缀 → 指定源站）。
@@ -276,6 +402,10 @@ func buildChainHandlesWithPreProxy(in GenerateInput, app AppData, proxy mapT, pu
 	}
 	normal := []interface{}{requestID}
 	bypass := []interface{}{requestID}
+	if encodeHandler := buildEncodeHandler(app.HeaderConfig); encodeHandler != nil {
+		normal = append(normal, encodeHandler)
+		bypass = append(bypass, encodeHandler)
+	}
 	if app.ProtectionMode != applications.ModeBypass {
 		if in.Guard != nil {
 			gh := buildGuardHandler(in.Guard, app, publicPort)

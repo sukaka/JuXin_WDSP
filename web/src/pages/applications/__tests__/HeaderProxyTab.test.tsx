@@ -49,6 +49,8 @@ const headerConfigData = {
     xff_overwrite: false,
     host_strip_port: false,
     accept_encoding_off: false,
+    response_compression_enabled: false,
+    response_compression_encodings: 'zstd,gzip',
     redirect_port_rewrite: false,
     custom_request_rules: [],
     custom_response_rules: [],
@@ -118,6 +120,8 @@ const unconfiguredData = {
     xff_overwrite: true,
     host_strip_port: false,
     accept_encoding_off: false,
+    response_compression_enabled: false,
+    response_compression_encodings: 'zstd,gzip',
     redirect_port_rewrite: false,
     custom_request_rules: [],
     custom_response_rules: [],
@@ -202,6 +206,8 @@ describe('HeaderProxyTab', () => {
     expect(screen.getByText('下划线请求头')).toBeInTheDocument()
     expect(screen.getByText('始终拦截')).toBeInTheDocument()
     expect(screen.getByText('响应缓冲')).toBeInTheDocument()
+    expect(screen.getByText('禁止回源压缩（Accept-Encoding）')).toBeInTheDocument()
+    expect(screen.getByText('网关响应压缩（gzip / zstd）')).toBeInTheDocument()
     expect(screen.getByText('302重定向端口改写')).toBeInTheDocument()
     // 自定义头修改两个 Form.List
     expect(screen.getByText('自定义请求头修改')).toBeInTheDocument()
@@ -237,7 +243,44 @@ describe('HeaderProxyTab', () => {
       expect(body.x_powered_by_action).toBe('hide')
       expect(body.x_frame_options).toBe('sameorigin')
       expect(body.hsts_max_age).toBe(31536000)
+      expect(body.response_compression_enabled).toBe(false)
+      expect(body.response_compression_encodings).toBe('zstd,gzip')
       expect(body.custom_request_rules).toEqual([])
+    })
+  })
+
+  it('开启响应压缩开关可展开算法配置并在提交时携带开关与算法', async () => {
+    const loadedConfig = {
+      ...headerConfigData,
+      config: {
+        ...headerConfigData.config,
+        x_frame_options: 'sameorigin',
+        response_compression_enabled: false,
+        response_compression_encodings: 'gzip',
+      },
+    }
+    vi.stubGlobal('fetch', mockFetch(pathRoutesData, loadedConfig))
+    useAuthStore.setState({ user: makeUser(['applications.update']), csrfToken: null, initialized: true })
+    renderTab()
+    const saveBtn = await screen.findByRole('button', { name: /保\s*存\s*配\s*置/ })
+    await screen.findByText('SAMEORIGIN')
+    await act(async () => {})
+
+    const compItem = screen.getByText('网关响应压缩（gzip / zstd）').closest('.ant-form-item') as HTMLElement
+    const compSwitch = within(compItem).getByRole('switch')
+    expect(compSwitch).toHaveAttribute('aria-checked', 'false')
+    expect(screen.queryByText('压缩算法')).not.toBeInTheDocument()
+
+    fireEvent.click(compSwitch)
+    expect(await screen.findByText('压缩算法')).toBeInTheDocument()
+    expect(screen.getByText('仅 Gzip（最大兼容性）')).toBeInTheDocument()
+
+    fireEvent.click(saveBtn)
+    await waitFor(() => {
+      const body = lastConfigPut()
+      expect(body).toBeTruthy()
+      expect(body!.response_compression_enabled).toBe(true)
+      expect(body!.response_compression_encodings).toBe('gzip')
     })
   })
 

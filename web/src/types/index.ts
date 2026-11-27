@@ -2895,8 +2895,10 @@ export interface SystemAlertItem {
   last_seen_at?: string | null
   occurrence_count: number
   acknowledged_by?: string | null
+  acknowledged_by_username?: string | null
   acknowledged_at?: string | null
   resolved_by?: string | null
+  resolved_by_username?: string | null
   resolved_at?: string | null
   resolve_type?: string | null
   created_at: string
@@ -3238,6 +3240,8 @@ export interface AppHeaderConfig {
   xff_overwrite: boolean
   host_strip_port: boolean
   accept_encoding_off: boolean
+  response_compression_enabled: boolean
+  response_compression_encodings: 'zstd,gzip' | 'gzip' | 'zstd'
   redirect_port_rewrite: boolean
   custom_request_rules: CustomHeaderRule[]
   custom_response_rules: CustomHeaderRule[]

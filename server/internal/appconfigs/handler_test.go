@@ -136,7 +136,9 @@ func TestHeaderConfigHTTP(t *testing.T) {
 	cfg := data["config"].(map[string]any)
 	if cfg["server_action"] != "keep" || cfg["x_frame_options"] != "default" ||
 		cfg["csp_mode"] != "off" || cfg["hsts_max_age"].(float64) != 31536000 ||
-		cfg["xff_overwrite"] != true {
+		cfg["xff_overwrite"] != true ||
+		cfg["response_compression_enabled"] != false ||
+		cfg["response_compression_encodings"] != "zstd,gzip" {
 		t.Fatalf("default config: %v", cfg)
 	}
 
@@ -158,7 +160,9 @@ func TestHeaderConfigHTTP(t *testing.T) {
 	rr = doJSON(t, mux, http.MethodGet, base, nil)
 	data = decodeData(t, rr)
 	cfg = data["config"].(map[string]any)
-	if cfg["server_action"] != "hide" || cfg["x_powered_by_value"] != "jiuzhang" || data["version"].(float64) != 1 {
+	if cfg["server_action"] != "hide" || cfg["x_powered_by_value"] != "jiuzhang" ||
+		cfg["response_compression_enabled"] != false || cfg["response_compression_encodings"] != "zstd,gzip" ||
+		data["version"].(float64) != 1 {
 		t.Fatalf("stored config: %v", data)
 	}
 
@@ -168,13 +172,21 @@ func TestHeaderConfigHTTP(t *testing.T) {
 		t.Fatalf("re-create status=%d body=%s", rr.Code, rr.Body.String())
 	}
 
-	// ---- 正确版本更新 → version:2 ----
-	rr = doJSON(t, mux, http.MethodPut, base, validHeaderConfigBody(1))
+	// ---- 正确版本更新（开启响应压缩并切换算法）→ version:2 ----
+	updBody := validHeaderConfigBody(1)
+	updBody["response_compression_enabled"] = true
+	updBody["response_compression_encodings"] = "gzip"
+	rr = doJSON(t, mux, http.MethodPut, base, updBody)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("put update status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	if v := decodeData(t, rr)["version"].(float64); v != 2 {
+	updData := decodeData(t, rr)
+	if v := updData["version"].(float64); v != 2 {
 		t.Fatalf("updated version=%v", v)
+	}
+	updCfg := updData["config"].(map[string]any)
+	if updCfg["response_compression_enabled"] != true || updCfg["response_compression_encodings"] != "gzip" {
+		t.Fatalf("updated compression config: %v", updCfg)
 	}
 
 	// ---- 旧版本更新 → 409 ----
@@ -244,6 +256,14 @@ func TestHeaderConfigHTTP(t *testing.T) {
 		"csp_value too long": func(b map[string]any) {
 			b["csp_mode"] = "custom"
 			b["csp_value"] = strings.Repeat("a", 4097)
+		},
+		"bad response_compression_encodings": func(b map[string]any) {
+			b["response_compression_enabled"] = true
+			b["response_compression_encodings"] = "brotli"
+		},
+		"response_compression_encodings placeholder": func(b map[string]any) {
+			b["response_compression_enabled"] = true
+			b["response_compression_encodings"] = "{env.ENC}"
 		},
 	}
 	for name, mutate := range badCases {

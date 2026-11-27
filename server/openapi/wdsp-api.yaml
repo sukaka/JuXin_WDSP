@@ -1485,7 +1485,18 @@ components:
           description: 转发 Host 头时是否去除端口
         accept_encoding_off:
           type: boolean
-          description: '是否强制 Accept-Encoding: identity'
+          description: '禁止回源压缩：开启后强制向源站发送 Accept-Encoding: identity 返回明文；关闭时透传客户端压缩协商'
+        response_compression_enabled:
+          type: boolean
+          description: 网关响应压缩开关：开启后由网关主动压缩源站未压缩的文本/JSON/JS/CSS 响应（gzip / zstd，默认关闭）
+        response_compression_encodings:
+          type: string
+          enum:
+          - zstd,gzip
+          - gzip
+          - zstd
+          description: 网关侧响应压缩算法（默认 zstd
+          gzip，优先 zstd 并兼容 gzip）: null
         redirect_port_rewrite:
           type: boolean
           description: 重定向端口改写开关
