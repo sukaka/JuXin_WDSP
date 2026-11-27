@@ -4,6 +4,37 @@
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-11-27
+
+### 新增
+
+- **可定制 WAF 与动态防护拦截页（Block Pages）**：
+  - **数据库迁移与 OpenAPI**：新增迁移 `000251_block_pages`（建立拦截页模板表、应用/全局绑定与三权权限种子）及 OpenAPI 片段 `32-block-pages.yaml`。
+  - **后端、网关与前端**：新增 `server/internal/blockpages`（CRUD、HTML 净化防 XSS、占位符渲染与实时预览）与 `gatewayconfig/block_pages.go` 下发编译；网关新增 `jiuzhang_guard/blockpages_{handler,sanitize}.go`，在 WAF/访问控制/动态防护拦截分支支持按应用与全局模板安全渲染；前端新增独立管理页 `BlockPagesPage`（可视化编辑与即时预览）。
+- **WAF 原始规则源码落库、防护策略内容透视与例外预览**：
+  - 新增迁移 `000252_waf_rules_raw_rule`，扩展 `wafrules/sync.go` 与 `cmd/crssync` 采集完整 SecRule 原始定义；新增 `server/internal/protectionpolicies/content.go` 透视策略实际生效规则内容，强化 `exceptions` 生成校验与可视化预览组件 `ExceptionPreviewPanel`；前端增强 `WafRulesPage`、`ProtectionPoliciesPage` 与 `ExceptionsPage`。
+- **LLM 安全检测规则目录与可视化策略配置**：
+  - 新增 `gateway/dynamic_security/detectors/llm_rules_catalog.go` 与数组载荷深度检测，后端扩展 `apillm/policy_handler.go`，前端 `api-llm/SecurityPoliciesTab.tsx` 升级为结构化规则目录与策略配置视图。
+
+### 修复与安全加固
+
+- **升级 `coraza-caddy` 至 `v2.6.0` 并修复 WebSocket 代理兼容**：
+  - 升级 `gateway/Dockerfile` 与 `gateway/modules/jiuzhang_guard/go.mod` 中的 `coraza-caddy` 至 `v2.6.0`，同步更新 `AGENTS.md`、`THIRD_PARTY_NOTICES.md`、`docs/DEPENDENCIES.md`、`docs/DEPENDENCY_LICENSES.md`、`docs/SBOM.{cyclonedx,spdx}.json` 及 `scripts/generate-sbom.sh`；清理仓库历史误跟踪的 `.pyc` 与临时文件。
+  - 修复 `jiuzhang_guard` 多个 `ResponseWriter` 包装器（含 `clientside`、SSE、日志与观测包装层）透传 `http.Hijacker` 导致的 WebSocket 升级失败问题，新增 `caddy_websocket_integration_test.go`、`ws_wrappers_test.go` 与 `clientside/ws_wrapper_test.go` 回归测试。
+- **全链路安全加固（WS2–WS5）**：
+  - **WS2（配置编译与密钥边界）**：强化 `guardconfig`、`gatewayconfig`（回滚与响应大小限制、敏感配置脱敏）及多租户/规则查询边界；
+  - **WS3（网关与边车韧性）**：加固 `mirrorcap` 空流处理、`ratelimit` Valkey 异常保护、`tlsmux` 边界、`apiprotect` SSE 响应与 `xdpguard` 映射同步（`map_sync.go`）；
+  - **WS4（AI 代理与模型客户端安全）**：加固 `aiagents`、`aimodel` SSE 流处理与 `apiauthzacks` 时钟偏移密钥校验；
+  - **WS5（运维升级执行器与离线脚本安全）**：收紧 `ops/upgrade/upgrade-executor.sh` 禁止挂载宿主机前缀（补充 `/var/run`、`/run`、`/var`、`/opt`、`/home`）并在失败任务后清理 `$WORK_DIR/$CURRENT_JOB`；`ops/install/openeuler-zhaoxin-run-header.sh` 非统一 RPM 包缺失清单时 fail-closed；同步更新 `ops/upgrade/build-upgrade-pack.sh` 并新增 `ops/upgrade/tests/test_ws5_security_hardening.py`。
+
+### 验证与边界
+
+- **网关**：`cd gateway && go build ./...`、`xdpguard`、`mirrorcap`、`dynamic_security`（`detectors/...`、`parser/...`、`pipeline/...`）与 `modules/jiuzhang_guard`（`aicrawl`、`clientside`、`identitybehavior`、`ratelimit`、`tlsmux` 及 BlockPage/WebSocket/WS3/WSWrapper/Coraza/Bot 回归）全部通过。
+- **后端与 OpenAPI**：`cd server && go build ./...`、`go test -c ./tests` 及全部 17 个变更/新增包（`crssync`、`accessrules`、`aiagents`、`aimodel`、`apiauthzacks`、`apiauthzwizard`、`apillm`、`applications`、`blockpages`、`config`、`exceptions`、`gatewayconfig`、`guardconfig`、`protectionpolicies`、`ratelimitpolicies`、`upgrades`、`wafrules`）全部通过；`python3 tools/check-api-reconcile.py` 确认 1.18.0 新增路由 0 缺失（代码 889 条 / OpenAPI 871 条，仅余 18 条历史既有缺口）。
+- **运维加固**：全部变更 `.sh` `bash -n` 通过；`test_auto_plan.py` 16/16 与 `test_ws5_security_hardening.py` 4/4 用例全部通过。
+- **前端**：`cd web && npm run typecheck && npm run lint && npm run build` 0 报错通过（改动与新增文件 0 lint 警告）；6 个变更/新增 Vitest 测试文件（`ApiLLMPage`、`BlockPagesPage`、`ExceptionsPage`、`ProtectionPoliciesPage`、`WafRulesPage`、`menu`，共 65/65 用例）全部通过。
+- **未执行项（`NOT_RUN`）**：打标发布时的目标 Linux/amd64 实机迁移（`000251`–`000252`）、完整升级/回滚演练与 Playwright E2E 均为 `NOT_RUN`。
+
 ## [1.17.0] - 2026-11-26
 
 ### 新增
