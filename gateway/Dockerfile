@@ -27,7 +27,7 @@ ARG TARGETARCH
 
 ARG CADDY_VERSION=v2.11.4
 ARG XCADDY_VERSION=v0.4.5
-ARG CORAZA_CADDY_VERSION=v2.5.0
+ARG CORAZA_CADDY_VERSION=v2.6.0
 # Go 模块代理，默认使用 goproxy.cn 以保证国内可重复构建；可用 --build-arg 覆盖
 ARG GOPROXY=https://goproxy.cn,direct
 ENV GOPROXY=${GOPROXY}

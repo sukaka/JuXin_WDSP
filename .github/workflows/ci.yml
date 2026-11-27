@@ -32,10 +32,15 @@ jobs:
       - name: Run P1 regression tool tests
         run: python3 -m unittest discover -s test/regression/p1/tests
 
+      - name: Validate OpenAPI merged spec is up to date
+        run: |
+          python3 server/openapi/merge.py
+          git diff --exit-code server/openapi/wdsp-api.yaml
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25.6'
 
       # 证据签名小工具（tools/regsign）为发布门禁信任链的一部分，纳入 PR 层构建+测试
       - name: Build & vet regression sign tool
@@ -47,6 +52,28 @@ jobs:
       - name: Run regression evidence package unit tests
         working-directory: ./server
         run: go test -count=1 ./internal/regression/...
+
+  # ---- 宿主机运维/升级/离线交付 Python 回归套件（无路径过滤，PR 必跑）----
+  ops-python-tests:
+    name: Ops & Delivery Python Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ops upgrade tests
+        run: python3 -m unittest discover -s ops/upgrade/tests
+
+      - name: Run ops system tests
+        run: python3 -m unittest discover -s ops/system/tests
+
+      - name: Run ops healthcheck tests
+        run: python3 -m unittest discover -s ops/healthcheck -p '*_test.py'
+
+      - name: Run offline package tests
+        run: python3 -m unittest discover -s test/offline-package
+
+      - name: Run tools tests
+        run: python3 -m unittest discover -s tools/tests
 
   # ---- 嵌套 Go 模块（任务书限制 5：嵌套模块不得漏跑；清单与 S0 冻结一致，
   #      新增 go.mod 必须同步补入本 matrix）----
@@ -73,7 +100,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25.6'
 
       - name: Cache Go modules
         uses: actions/cache@v4
@@ -145,7 +172,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25.6'
 
       - name: Cache Go modules
         uses: actions/cache@v4
@@ -183,7 +210,9 @@ jobs:
 
       - name: Build
         working-directory: ./server
-        run: go build -o ../bin/jiuzhang-server ./cmd/server
+        run: |
+          go build -o ../bin/jiuzhang-api ./cmd/api
+          go build -o ../bin/jiuzhang-containeropsd ./cmd/containeropsd
 
       - name: Cross-compile check (linux/arm64)
         working-directory: ./server
@@ -198,7 +227,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25.6'
 
       - name: Cache Go modules
         uses: actions/cache@v4
@@ -224,7 +253,7 @@ jobs:
 
       - name: Build
         working-directory: ./gateway
-        run: go build -o ../bin/jiuzhang-gateway ./cmd/gateway
+        run: go build ./cmd/netmgrd ./cmd/hasyncd ./cmd/havipd ./cmd/mirrorcap ./cmd/tproxyd ./cmd/pcapd ./cmd/xdpguard ./cmd/wdsp-gateway-bind
 
       - name: Cross-compile check (linux/arm64)
         working-directory: ./gateway

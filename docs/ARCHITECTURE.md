@@ -60,7 +60,7 @@
 
 ### 防护网关（gateway/）
 
-- **技术栈**：Caddy 2.11.x、Coraza WAF 3.7.x、coraza-caddy 2.5.x、OWASP CRS 4.26.x
+- **技术栈**：Caddy 2.11.x、Coraza WAF 3.7.x、coraza-caddy 2.6.x、OWASP CRS 4.26.x
 - **自主模块**：jiuzhang_guard（IP 黑白名单、CC 防护、真实 IP 识别）
 - **职责**：流量接入、攻击检测、访问控制、反向代理
 - **管理接口**：仅通过 Unix Socket 暴露，不绑定 TCP 端口

@@ -16,7 +16,7 @@
 |---------|---------|---------|--------|---------|---------|---------------|
 | Caddy | https://github.com/caddyserver/caddy | v2.11.4 (e2eee6a7fce3) | Apache-2.0 | 否 | 反向代理网关 | [licenses/caddy/LICENSE](licenses/caddy/LICENSE) |
 | Coraza WAF | https://github.com/corazawaf/coraza | v3.7.0 (27069d06c896) | Apache-2.0 | 否 | WAF 检测引擎 | [licenses/coraza/LICENSE](licenses/coraza/LICENSE) |
-| coraza-caddy | https://github.com/corazawaf/coraza-caddy | v2.5.0 (55c03d45dc55) | Apache-2.0 | 否 | Caddy 集成模块 | [licenses/coraza-caddy/LICENSE](licenses/coraza-caddy/LICENSE) |
+| coraza-caddy | https://github.com/corazawaf/coraza-caddy | v2.6.0 (ca92a442d6da) | Apache-2.0 | 否 | Caddy 集成模块 | [licenses/coraza-caddy/LICENSE](licenses/coraza-caddy/LICENSE) |
 | OWASP CRS | https://github.com/coreruleset/coreruleset | v4.28.0 (55b09f5acfd1) | Apache-2.0 | 否 | 通用攻击规则集 | [licenses/owasp-crs/LICENSE](licenses/owasp-crs/LICENSE) |
 | CRS 应用排除插件（wordpress/nextcloud/phpmyadmin/drupal/dokuwiki/xenforo） | https://github.com/coreruleset/plugin-registry | 各插件 commit PINNED（见 licenses/crs-plugins/README.md） | Apache-2.0 | 否 | 应用专属误报排除 | [licenses/crs-plugins/LICENSE](licenses/crs-plugins/LICENSE) |
 | CRS auto-decoding-plugin | https://github.com/coreruleset/auto-decoding-plugin | 1.0.0 (6885a9728d3f) | Apache-2.0 | 是（剔除 sqlHexDecode 两条规则与 10 行 CRS4 已删规则引用，默认禁用；见 JIUZHANG-NOTES.md） | ARGS 多轮解码抗混淆（默认禁用，按站启用） | [licenses/crs-plugins/LICENSE](licenses/crs-plugins/LICENSE) |

@@ -6,14 +6,14 @@
 
 | 组件名称 | 版本号 | Git提交号 | 许可证 | 项目地址 | 发布日期 | 兼容性说明 | 是否修改 |
 |---------|--------|----------|--------|---------|---------|-----------|---------|
-| Caddy | v2.11.4 | e2eee6a7fce3 | Apache-2.0 | https://github.com/caddyserver/caddy | 2026-06-03 | 网关基础，coraza-caddy v2.5.0 声明兼容 caddy v2.11.x | 否 |
+| Caddy | v2.11.4 | e2eee6a7fce3 | Apache-2.0 | https://github.com/caddyserver/caddy | 2026-06-03 | 网关基础，coraza-caddy v2.6.0 声明依赖 caddy v2.11.4 | 否 |
 | Coraza WAF | v3.7.0 | 27069d06c896 | Apache-2.0 | https://github.com/corazawaf/coraza | 2026-04-06 | WAF 检测引擎，支持 SecLang 与 CRS 4.x | 否 |
-| coraza-caddy | v2.5.0 | 55c03d45dc55 | Apache-2.0 | https://github.com/corazawaf/coraza-caddy | 2026-04-12 | Caddy 集成模块，go.mod 声明依赖 caddy v2.11.2、coraza v3.7.0 | 否 |
+| coraza-caddy | v2.6.0 | ca92a442d6da | Apache-2.0 | https://github.com/corazawaf/coraza-caddy | 2026-08-24 | Caddy 集成模块，go.mod 声明依赖 go 1.25.1、caddy v2.11.4、coraza v3.7.0；原生修复 WebSocket 101 立即刷出与 hijackerTracker | 否 |
 | OWASP CRS | v4.28.0 | 55b09f5acfd1 | Apache-2.0 | https://github.com/coreruleset/coreruleset | 2026-07-02 | 通用攻击规则集，tarball sha256: d8acc96f25ad07c8e3a595a23c797324f6d77e59ddf9e26e90dd95ebd2e676ce | 否 |
 | xcaddy | v0.4.5 | 328cac711a1f | Apache-2.0 | https://github.com/caddyserver/xcaddy | 2025-07-29 | Caddy 自定义构建工具（仅构建期使用） | 否 |
 | go-ftw | v2.4.0 | 23db497e3a61 | Apache-2.0 | https://github.com/coreruleset/go-ftw | 2026-05-23 | CRS 回归测试框架（仅测试期使用） | 否 |
 
-> **coraza-caddy v2.5.0 哨兵耦合点（升级必读）**：Coraza 阻断归因依赖 coraza-caddy 未导出哨兵错误 `errInterruptionTriggered` 的消息串 `"interruption triggered"`（硬编码于 `gateway/modules/jiuzhang_guard/apicoraza.go` 的 `corazaInterruptionMessage`）。升级 `CORAZA_CADDY_VERSION` 前必须复核上游该哨兵是否变更，并重跑归因测试（`gateway/modules/jiuzhang_guard/apicoraza_test.go`）确认 `waf.downstream_intercept` 归因仍成立；归因局限性（取不到命中规则明细、phase 3 中断不归因等）见 docs/DEVELOPMENT_STATUS.md 阶段8 诚实遗留。
+> **coraza-caddy v2.6.0 哨兵耦合点（升级必读）**：Coraza 阻断归因依赖 coraza-caddy 未导出哨兵错误 `errInterruptionTriggered` 的消息串 `"interruption triggered"`（硬编码于 `gateway/modules/jiuzhang_guard/apicoraza.go` 的 `corazaInterruptionMessage`，升级至 v2.6.0 已复核源码 `coraza.go:173/243` 与 `interceptor.go:273` 保持不变）。后续升级 `CORAZA_CADDY_VERSION` 前必须继续复核上游该哨兵是否变更，并重跑归因测试（`gateway/modules/jiuzhang_guard/apicoraza_test.go`）确认 `waf.downstream_intercept` 归因仍成立；归因局限性（取不到命中规则明细、phase 3 中断不归因等）见 docs/DEVELOPMENT_STATUS.md 阶段8 诚实遗留。
 
 ## 阶段5新增组件
 
@@ -266,6 +266,8 @@ Java 构建镜像固定为 `maven:3.9.11-eclipse-temurin-21@sha256:6fdc855a6ed81
 | cilium/ebpf（复用） | v0.22.0 | MIT | https://github.com/cilium/ebpf | 阶段9D-2 `gateway/xdpguard`：eBPF/XDP 内核态全局 IP/CIDR 快速丢包守护进程（纯 Go `asm` 构造 CO-RE 字节码与 LPM Trie / PerCPUArray Map 管理，零 CGO；gateway/go.mod 复用 wdsp-agent 同一锁定版本，licenses/cilium-ebpf/ 已归档） | 否 |
 
 ## 更新记录
+
+- 2026-11-27：WebSocket（`ws://`/`wss://`）网关全链路支持将 `coraza-caddy` 由 `v2.5.0` 升级并锁定至 `v2.6.0`（commit `ca92a442d6da`，2026-08-24，Apache-2.0，`LICENSE` 原文未变更；`go.mod` 要求 `go 1.25.1`、`caddy v2.11.4`、`coraza v3.7.0`，与本仓工具链与依赖基线完全对齐），原生修复 `101 Switching Protocols` 立即刷出响应头与 `hijackerTracker` 跳过劫持后响应处理；已逐行复核 `errInterruptionTriggered`（`"interruption triggered"`）哨兵未变更。注：`v2.6.1`/`v2.6.2` 要求 `go >= 1.26.0`（其中 `v2.6.2` 另将 Coraza 升至 `v3.8.1`），留待后续 Go 1.26 工具链升级批次统筹评估。
 
 - 2026-11-26：阶段9D-2 在 `gateway/go.mod` 复用已锁定的 `github.com/cilium/ebpf v0.22.0`（MIT，纯 Go 零 CGO，与 `wdsp-agent/go.mod` 同版本，许可证已归档于 `licenses/cilium-ebpf/`），用于 `gateway/xdpguard` eBPF/XDP 网卡入口快速丢包守护进程；同步更新 `docs/DEPENDENCY_LICENSES.md`。
 

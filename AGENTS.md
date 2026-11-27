@@ -20,7 +20,7 @@
 |------|------|
 | 管理前端 | React 18 + TypeScript + Vite + Ant Design 5 + ECharts + TanStack Query + Zustand |
 | 管理后端 | Go 1.24+、PostgreSQL 16+、Valkey 8+、RESTful API、OpenAPI 3 |
-| 防护网关 | Caddy 2.11.x、Coraza WAF 3.7.x、coraza-caddy 2.5.x、OWASP CRS 4.26.x |
+| 防护网关 | Caddy 2.11.x、Coraza WAF 3.7.x、coraza-caddy 2.6.x、OWASP CRS 4.26.x |
 | 自主网关扩展 | jiuzhang_guard Caddy Module |
 | 部署 | Docker Compose |
 | 测试 | Go Test、Vitest、Playwright、go-ftw |

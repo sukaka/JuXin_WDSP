@@ -72,7 +72,7 @@ Caddy + Coraza/CRS + jiuzhang_guard
                               └── 配置编译、发布、审计、报表与 AI 运营
 ```
 
-防护网关以 Caddy 2.11.x、Coraza WAF 3.7.x、coraza-caddy 2.5.x 和 OWASP CRS 4.26.x 为基础，核心管理面、控制面和 `jiuzhang_guard` 网关扩展自主开发。真实执行顺序见 [AGENTS.md](AGENTS.md#请求处理顺序网关)，整体设计见 [架构文档](docs/ARCHITECTURE.md)。
+防护网关以 Caddy 2.11.x、Coraza WAF 3.7.x、coraza-caddy 2.6.x 和 OWASP CRS 4.26.x 为基础，核心管理面、控制面和 `jiuzhang_guard` 网关扩展自主开发。真实执行顺序见 [AGENTS.md](AGENTS.md#请求处理顺序网关)，整体设计见 [架构文档](docs/ARCHITECTURE.md)。
 
 ## 快速开始
 

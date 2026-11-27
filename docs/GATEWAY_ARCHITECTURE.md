@@ -6,7 +6,7 @@
 |------|------|------|
 | Caddy v2.11.4 | HTTP 服务器 / 反向代理 / 动态配置 | 上游二进制模块，xcaddy 编译 |
 | Coraza WAF v3.7.0 | SecLang 规则引擎 | coraza-caddy 引入 |
-| coraza-caddy v2.5.0 | Caddy 集成模块（`coraza_waf` 指令） | xcaddy `--with` 编译 |
+| coraza-caddy v2.6.0 | Caddy 集成模块（`coraza_waf` 指令） | xcaddy `--with` 编译 |
 | OWASP CRS v4.28.0 | 通用攻击规则集 | 官方 tarball，只读挂载 |
 | jiuzhang_guard | 自主访问控制/CC 防护模块 | 阶段5开发（当前占位） |
 | eventparser | 自主事件解析器 | 阶段1 POC |
@@ -16,7 +16,7 @@
 ```text
 golang:1.25-alpine (构建阶段)
   → go install xcaddy@v0.4.5
-  → xcaddy build v2.11.4 --with coraza-caddy/v2@v2.5.0
+  → xcaddy build v2.11.4 --with coraza-caddy/v2@v2.6.0
   → CGO_ENABLED=0 静态二进制
 alpine:3.24 (运行阶段)
   → 非 root 用户 caddy (uid 1000)
@@ -50,13 +50,17 @@ Include jiuzhang/jiuzhang-custom.conf  # 九章自定义规则（ID 9000000+ 段
 ```text
 headers (request_header 注入 X-Request-Id)
   → waf (coraza_waf)
+  → headers (deferred:true，设置默认安全响应头并移除 Server)
   → reverse_proxy / 业务 handler
   → handle_errors (403 → 阻断页面)
 ```
 
 Caddy `order` 指令限制：before/after 的参考指令必须是内置指令，
-第三方指令 `coraza_waf` 只能作为主语，故采用 `order coraza_waf after request_header`。
-该顺序满足：Request ID 先注入（审计日志可记录）、WAF 先于业务执行（官方 first 语义）。
+第三方指令 `coraza_waf` 只能作为主语，故保留 `order coraza_waf after request_header`；
+同时在站点内通过 `route` 块将 `header`（含 `-Server` 触发 `deferred:true`）显式置于
+`coraza_waf` 之后、`reverse_proxy` 之前，与生产配置生成器（`gatewayconfig/headers.go`）
+完全对齐，满足 Request ID 先注入（审计日志可记录）、WAF 先于业务执行，并避免 deferred
+`ResponseWriterWrapper` 位于 `coraza_waf` 前方阻塞 WebSocket 101 `Hijack`。
 
 ## Request ID 关联设计
 

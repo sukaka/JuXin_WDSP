@@ -25,7 +25,7 @@
 | 依赖 | 锁定版本 | 许可证 | 用途 | 归档 |
 |------|---------|--------|------|------|
 | github.com/caddyserver/caddy/v2 | v2.11.4 | Apache-2.0 | 反向代理网关基础 | [licenses/caddy/](../licenses/caddy/) |
-| github.com/corazawaf/coraza-caddy/v2 | v2.5.0 | Apache-2.0 | Coraza 的 Caddy 集成模块 | [licenses/coraza-caddy/](../licenses/coraza-caddy/) |
+| github.com/corazawaf/coraza-caddy/v2 | v2.6.0 | Apache-2.0 | Coraza 的 Caddy 集成模块 | [licenses/coraza-caddy/](../licenses/coraza-caddy/) |
 | github.com/valkey-io/valkey-go | v1.0.76 | Apache-2.0 | Valkey 客户端（CC 计数/临时封禁） | [licenses/valkey-go/](../licenses/valkey-go/) |
 | github.com/andybalholm/brotli | v1.3.0 | MIT | gzip/Brotli 压缩响应的安全解压与重编码 | [licenses/brotli/](../licenses/brotli/) |
 | github.com/tetratelabs/wazero | v1.12.0 | Apache-2.0 | Wasm 自定义检测插件沙箱运行时（纯 Go 零 CGO 解释器模式，无 WASI） | [licenses/wazero/](../licenses/wazero/) |

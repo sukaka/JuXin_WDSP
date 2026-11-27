@@ -1,4 +1,4 @@
-.PHONY: help build test lint fmt typecheck clean docker-up docker-down init-web init-server \
+.PHONY: help build build-server build-web test test-server test-web lint fmt typecheck clean docker-up docker-down init-web init-server \
 	gateway-build gateway-up gateway-down gateway-logs gateway-test waf-test ftw-test pcap-test pcap-test-live pcap-build \
 	server-build server-test server-test-integration web-install web-typecheck web-lint web-test web-build \
 	stage2-up stage2-down stage2-test stage2-status \
@@ -60,7 +60,7 @@ build: build-server build-web pcap-build
 
 build-server:
 	@echo "构建后端..."
-	cd server && go build -o ../bin/jiuzhang-server ./cmd/server
+	cd server && go build -o ../bin/jiuzhang-api ./cmd/api
 
 build-web:
 	@echo "构建前端..."

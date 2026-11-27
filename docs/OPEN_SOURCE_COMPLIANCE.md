@@ -73,7 +73,7 @@ Redis 替换为 Valkey（规避 RSALv2/SSPLv1 合规风险），npm 统一包管
 |------|------|--------|---------|
 | Caddy | v2.11.4 | Apache-2.0 | licenses/caddy/ |
 | Coraza WAF | v3.7.0 | Apache-2.0 | licenses/coraza/ |
-| coraza-caddy | v2.5.0 | Apache-2.0 | licenses/coraza-caddy/ |
+| coraza-caddy | v2.6.0 | Apache-2.0 | licenses/coraza-caddy/ |
 | OWASP CRS | v4.28.0 | Apache-2.0 | licenses/owasp-crs/（规则目录另附 LICENSE） |
 | xcaddy | v0.4.5 | Apache-2.0 | licenses/xcaddy/ |
 | go-ftw | v2.4.0 | Apache-2.0 | licenses/go-ftw/ |

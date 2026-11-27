@@ -112,7 +112,7 @@ fi
 cat >> "$work/components.tsv" <<'EOF'
 core://caddy	v2.11.4	core:gateway
 core://coraza	v3.7.0	core:gateway
-core://coraza-caddy	v2.5.0	core:gateway
+core://coraza-caddy	v2.6.0	core:gateway
 core://owasp-crs	v4.28.0	core:gateway
 core://xcaddy	v0.4.5	core:build
 core://go-ftw	v2.4.0	core:test
