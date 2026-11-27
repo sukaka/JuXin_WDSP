@@ -163,7 +163,15 @@ var blockedNetworks = []string{
 	"fd00:ec2::254/128",  // AWS IPv6 元数据
 }
 
-var parsedPrivate, parsedBlocked []netip.Prefix
+// 源站连通性测试私网白名单永远不允许重叠的保留网段（回环/链路本地/未指定/组播）
+var alwaysDeniedOverlapNetworks = []string{
+	"127.0.0.0/8", "::1/128",
+	"169.254.0.0/16", "fe80::/10",
+	"0.0.0.0/8", "::/128",
+	"224.0.0.0/4", "ff00::/8",
+}
+
+var parsedPrivate, parsedBlocked, parsedAlwaysDeniedOverlap []netip.Prefix
 
 func init() {
 	for _, cidr := range privateNetworks {
@@ -176,6 +184,58 @@ func init() {
 			parsedBlocked = append(parsedBlocked, p)
 		}
 	}
+	for _, cidr := range alwaysDeniedOverlapNetworks {
+		if p, err := netip.ParsePrefix(cidr); err == nil {
+			parsedAlwaysDeniedOverlap = append(parsedAlwaysDeniedOverlap, p)
+		}
+	}
+}
+
+// ValidateAllowedPrivateUpstreamPrefix 校验“允许测试的内网源站 CIDR 白名单”单条前缀：
+// 拒绝全网通配（0.0.0.0/0、::/0）、IPv4 映射 IPv6、回环/链路本地/未指定/组播网段重叠及显式云元数据地址。
+func ValidateAllowedPrivateUpstreamPrefix(p netip.Prefix) error {
+	if !p.IsValid() {
+		return fmt.Errorf("无效的 CIDR 前缀")
+	}
+	if p.Addr().Is4In6() || p.Addr().Zone() != "" {
+		return fmt.Errorf("不支持 IPv4 映射 IPv6 或带作用域的 CIDR: %s", p)
+	}
+	masked := p.Masked()
+	if masked.Bits() == 0 {
+		return fmt.Errorf("禁止配置全网通配 CIDR: %s", p)
+	}
+	if IsBlockedAddress(masked.Addr()) {
+		return fmt.Errorf("禁止配置云元数据地址: %s", p)
+	}
+	for _, denied := range parsedAlwaysDeniedOverlap {
+		if masked.Overlaps(denied) {
+			return fmt.Errorf("禁止包含回环/链路本地/未指定/组播保留网段: %s", p)
+		}
+	}
+	return nil
+}
+
+// ParseAllowedPrivateUpstreamCIDRs 解析并校验逗号分隔的源站测试私网白名单 CIDR 列表。
+func ParseAllowedPrivateUpstreamCIDRs(raw string, maxItems int) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, part := range strings.Split(raw, ",") {
+		item := strings.TrimSpace(part)
+		if item == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(item)
+		if err != nil {
+			return nil, fmt.Errorf("非法 CIDR %q", item)
+		}
+		if err := ValidateAllowedPrivateUpstreamPrefix(p); err != nil {
+			return nil, err
+		}
+		out = append(out, p.Masked())
+		if maxItems > 0 && len(out) > maxItems {
+			return nil, fmt.Errorf("CIDR 项数不能超过 %d", maxItems)
+		}
+	}
+	return out, nil
 }
 
 // IsBlockedAddress 判断是否为云元数据等绝对禁止地址。

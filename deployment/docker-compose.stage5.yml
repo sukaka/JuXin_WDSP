@@ -137,6 +137,8 @@ services:
       # 离线授权：验签公钥随正式构建内嵌；这里只配置宿主机指纹文件路径（卷挂载见下）
       LICENSE_HOST_FINGERPRINT_FILE: ${LICENSE_HOST_FINGERPRINT_FILE:-/app/runtime/license/host_fingerprint}
       MANAGEMENT_TRUSTED_PROXY_CIDRS: ${MANAGEMENT_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
+      UPSTREAM_TEST_ALLOW_PRIVATE: ${UPSTREAM_TEST_ALLOW_PRIVATE:-false}
+      UPSTREAM_TEST_ALLOWED_PRIVATE_CIDRS: ${UPSTREAM_TEST_ALLOWED_PRIVATE_CIDRS:-}
       CADDY_ADMIN_SOCKET: /var/run/caddy/admin.sock
       GATEWAY_DATA_DIR: /app/runtime
       MIGRATIONS_DIR: /app/migrations

@@ -38,8 +38,11 @@ type TestInput struct {
 	TLSVerify       bool
 	// Timeout 单次探测超时（<=0 时采用默认值 8s，合法范围夹紧至 1s~30s）
 	Timeout time.Duration
-	// AllowPrivate 是否允许私网/内网源站（受控允许列表，默认false）
+	// AllowPrivate 是否允许私网/内网源站（RFC1918/ULA，默认false）
 	AllowPrivate bool
+	// AllowedPrivateCIDRs 允许测试的私网 CIDR 白名单（当 AllowPrivate=false 时按网段精确放行；
+	// 回环/链路本地/云元数据/未指定/组播仍由 isAlwaysDeniedUpstreamAddr 无条件拦截）
+	AllowedPrivateCIDRs []netip.Prefix
 }
 
 // TestResult 是源站测试结果。
@@ -89,21 +92,24 @@ func TestConnectivity(ctx context.Context, in TestInput) *TestResult {
 	}
 
 	// 4. DNS解析 + IP校验（防DNS重绑定、SSRF）
-	addrs, err := validation.ResolveAndValidate(in.Host, in.AllowPrivate)
+	// 当启用了全量私网开关或配置了私网 CIDR 白名单时，先允许 ResolveAndValidate 返回私网解析结果，
+	// 随后对全部解析地址逐一执行永久高危黑名单 + 私网开关/CIDR 白名单校验。
+	addrs, err := validation.ResolveAndValidate(in.Host, in.AllowPrivate || len(in.AllowedPrivateCIDRs) > 0)
 	if err != nil {
 		result.DNSResult = "failed"
 		result.ErrorCode = "SSRF_BLOCKED"
-		result.ErrorMessage = err.Error()
+		result.ErrorMessage = enrichPrivateSSRFHint(err.Error())
 		return result
 	}
-	// 纵深防御：即使服务端显式允许测试内网（RFC1918/ULA），也绝不允许探测回环、链路本地、未指定、组播或云元数据地址。
+	// 纵深防御：即使服务端显式允许测试内网（RFC1918/ULA）或配置了 CIDR 白名单，
+	// 也绝不允许探测回环、链路本地、未指定、组播或云元数据地址；所有解析 IP 须全部满足策略。
 	for i, a := range addrs {
 		a = a.Unmap()
 		addrs[i] = a
-		if isAlwaysDeniedUpstreamAddr(a) {
+		if err := checkUpstreamAddrPolicy(a, in.AllowPrivate, in.AllowedPrivateCIDRs); err != nil {
 			result.DNSResult = "failed"
 			result.ErrorCode = "SSRF_BLOCKED"
-			result.ErrorMessage = "禁止访问回环/链路本地/云元数据等保留地址"
+			result.ErrorMessage = err.Error()
 			return result
 		}
 	}
@@ -199,6 +205,73 @@ func isAlwaysDeniedUpstreamAddr(a netip.Addr) bool {
 		a.IsMulticast()
 }
 
+// checkUpstreamAddrPolicy 按纵深防御策略校验单个已解析目标地址：
+//  1. 永久禁止回环/链路本地/云元数据/未指定/组播/带 Zone 地址（任何开关或白名单都不可绕过）；
+//  2. 公网单播地址放行；
+//  3. 私网/特殊地址需满足 allowPrivate=true 或命中 allowedCIDRs（且对应前缀非全网通配/非保留重叠）。
+func checkUpstreamAddrPolicy(a netip.Addr, allowPrivate bool, allowedCIDRs []netip.Prefix) error {
+	if isAlwaysDeniedUpstreamAddr(a) {
+		return fmt.Errorf("禁止访问回环/链路本地/云元数据等保留地址")
+	}
+	a = a.Unmap()
+	if !validation.IsPrivateOrSpecialAddress(a) {
+		return nil
+	}
+	if allowPrivate {
+		return nil
+	}
+	for _, p := range allowedCIDRs {
+		if validation.ValidateAllowedPrivateUpstreamPrefix(p) != nil {
+			continue
+		}
+		if p.Contains(a) {
+			return nil
+		}
+	}
+	if len(allowedCIDRs) > 0 {
+		return fmt.Errorf("私网地址 %s 不在允许测试的 CIDR 白名单内（可在「系统设置 → 网络」调整白名单或开启内网源站测试）", a)
+	}
+	return fmt.Errorf("默认禁止访问回环/私网/链路本地地址（如需测试内网源站，可在「系统设置 → 网络」开启内网源站测试或配置私网 CIDR 白名单）")
+}
+
+func enrichPrivateSSRFHint(msg string) string {
+	if strings.Contains(msg, "默认禁止访问回环/私网/链路本地地址") {
+		return msg + "（如需测试内网源站，可在「系统设置 → 网络」开启内网源站测试或配置私网 CIDR 白名单）"
+	}
+	return msg
+}
+
+// ParseAllowedPrivateCIDRsFromStrings 解析字符串切片形式的内网 CIDR 白名单，自动跳过非法或高危前缀。
+func ParseAllowedPrivateCIDRsFromStrings(rawList []string) []netip.Prefix {
+	if len(rawList) == 0 {
+		return nil
+	}
+	out := make([]netip.Prefix, 0, len(rawList))
+	for _, item := range rawList {
+		s := strings.TrimSpace(item)
+		if s == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			continue
+		}
+		if validation.ValidateAllowedPrivateUpstreamPrefix(p) != nil {
+			continue
+		}
+		out = append(out, p.Masked())
+	}
+	return out
+}
+
+// ParseAllowedPrivateCIDRs 解析逗号分隔的内网 CIDR 白名单，自动跳过非法或高危前缀。
+func ParseAllowedPrivateCIDRs(raw string) []netip.Prefix {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	return ParseAllowedPrivateCIDRsFromStrings(strings.Split(raw, ","))
+}
+
 // buildSafeClient 构建使用预校验 IP 的安全 HTTP 客户端（支持 http / https / tlcp）。
 func buildSafeClient(in TestInput, addrs []netip.Addr, onTLCPHandshake func(ok bool, verifyMsg string)) *http.Client {
 	reqTimeout := httpTimeout
@@ -231,7 +304,7 @@ func buildSafeClient(in TestInput, addrs []netip.Addr, onTLCPHandshake func(ok b
 		var lastErr error
 		for _, a := range addrs {
 			a = a.Unmap()
-			if isAlwaysDeniedUpstreamAddr(a) || (!in.AllowPrivate && validation.IsPrivateOrSpecialAddress(a)) {
+			if err := checkUpstreamAddrPolicy(a, in.AllowPrivate, in.AllowedPrivateCIDRs); err != nil {
 				return nil, fmt.Errorf("ssrf blocked: %s", a)
 			}
 			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(a.String(), port))

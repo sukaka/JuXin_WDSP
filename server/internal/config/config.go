@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jiuzhang-waf/server/internal/product"
+	"github.com/jiuzhang-waf/server/internal/validation"
 )
 
 // Config 是管理后端完整配置。
@@ -350,6 +351,12 @@ type SecurityConfig struct {
 	CORSAllowedOrigins []string
 	// TrustedProxyCIDRs 管理面可信反向代理网段；仅来自这些网段的转发头会被解析
 	TrustedProxyCIDRs []string
+	// UpstreamTestAllowPrivate 是否允许源站手动连通性测试访问内网私网地址（RFC1918/ULA）；
+	// 环境变量 UPSTREAM_TEST_ALLOW_PRIVATE，默认 false；回环/链路本地/云元数据始终硬拦截。
+	UpstreamTestAllowPrivate bool
+	// UpstreamTestAllowedPrivateCIDRs 允许源站手动连通性测试访问的私网 CIDR 白名单；
+	// 环境变量 UPSTREAM_TEST_ALLOWED_PRIVATE_CIDRS（逗号分隔 CIDR），启动期严格校验。
+	UpstreamTestAllowedPrivateCIDRs []string
 }
 
 // DSN 返回 PostgreSQL 连接串。
@@ -478,8 +485,10 @@ func Load() (*Config, error) {
 			InitialOperAdminUsername:  getEnv("INITIAL_OPER_ADMIN_USERNAME", "operadmin"),
 			InitialAuditAdminPassword: os.Getenv("INITIAL_AUDIT_ADMIN_PASSWORD"),
 			InitialAuditAdminUsername: getEnv("INITIAL_AUDIT_ADMIN_USERNAME", "auditor"),
-			CORSAllowedOrigins:        getEnvList("CORS_ALLOWED_ORIGINS"),
-			TrustedProxyCIDRs:         getEnvList("MANAGEMENT_TRUSTED_PROXY_CIDRS"),
+			CORSAllowedOrigins:              getEnvList("CORS_ALLOWED_ORIGINS"),
+			TrustedProxyCIDRs:               getEnvList("MANAGEMENT_TRUSTED_PROXY_CIDRS"),
+			UpstreamTestAllowPrivate:        getEnvBool("UPSTREAM_TEST_ALLOW_PRIVATE", false),
+			UpstreamTestAllowedPrivateCIDRs: getEnvList("UPSTREAM_TEST_ALLOWED_PRIVATE_CIDRS"),
 		},
 		Gateway: GatewayConfig{
 			AdminSocket:            getEnv("CADDY_ADMIN_SOCKET", "/var/run/caddy/admin.sock"),
@@ -602,6 +611,15 @@ func Load() (*Config, error) {
 	for _, cidr := range cfg.Security.TrustedProxyCIDRs {
 		if _, err := netip.ParsePrefix(cidr); err != nil {
 			return nil, fmt.Errorf("invalid MANAGEMENT_TRUSTED_PROXY_CIDRS entry %q: %w", cidr, err)
+		}
+	}
+	for _, cidr := range cfg.Security.UpstreamTestAllowedPrivateCIDRs {
+		p, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid UPSTREAM_TEST_ALLOWED_PRIVATE_CIDRS entry %q: %w", cidr, err)
+		}
+		if err := validation.ValidateAllowedPrivateUpstreamPrefix(p); err != nil {
+			return nil, fmt.Errorf("invalid UPSTREAM_TEST_ALLOWED_PRIVATE_CIDRS entry %q: %w", cidr, err)
 		}
 	}
 	// 生产默认 fail-closed：若未显式设置 GUARD_FAIL_OPEN，强制 false

@@ -523,3 +523,36 @@ func TestLoadDatabasePoolAndTimeoutEnvOverrides(t *testing.T) {
 		t.Fatalf("DB timeout override mismatch: %+v", cfg.DB)
 	}
 }
+
+func TestLoadUpstreamTestPrivateEnvPolicy(t *testing.T) {
+	t.Setenv("POSTGRES_PASSWORD", "test-postgres-password")
+	t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+	t.Setenv("UPSTREAM_TEST_ALLOW_PRIVATE", "")
+	t.Setenv("UPSTREAM_TEST_ALLOWED_PRIVATE_CIDRS", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() defaults error = %v", err)
+	}
+	if cfg.Security.UpstreamTestAllowPrivate || len(cfg.Security.UpstreamTestAllowedPrivateCIDRs) != 0 {
+		t.Fatalf("unexpected defaults: allow=%v cidrs=%v", cfg.Security.UpstreamTestAllowPrivate, cfg.Security.UpstreamTestAllowedPrivateCIDRs)
+	}
+
+	t.Setenv("UPSTREAM_TEST_ALLOW_PRIVATE", "true")
+	t.Setenv("UPSTREAM_TEST_ALLOWED_PRIVATE_CIDRS", "172.30.0.0/16, 10.0.0.0/8")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() valid override error = %v", err)
+	}
+	if !cfg.Security.UpstreamTestAllowPrivate ||
+		!reflect.DeepEqual(cfg.Security.UpstreamTestAllowedPrivateCIDRs, []string{"172.30.0.0/16", "10.0.0.0/8"}) {
+		t.Fatalf("override mismatch: allow=%v cidrs=%v", cfg.Security.UpstreamTestAllowPrivate, cfg.Security.UpstreamTestAllowedPrivateCIDRs)
+	}
+
+	for _, bad := range []string{"not-a-cidr", "0.0.0.0/0", "127.0.0.0/8", "169.254.169.254/32"} {
+		t.Setenv("UPSTREAM_TEST_ALLOWED_PRIVATE_CIDRS", bad)
+		if _, err := Load(); err == nil {
+			t.Errorf("UPSTREAM_TEST_ALLOWED_PRIVATE_CIDRS=%q should fail Load()", bad)
+		}
+	}
+}

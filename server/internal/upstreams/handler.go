@@ -1,7 +1,9 @@
 package upstreams
 
 import (
+	"context"
 	"net/http"
+	"net/netip"
 	"strconv"
 
 	"github.com/jiuzhang-waf/server/internal/audits"
@@ -10,10 +12,19 @@ import (
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
+// PrivatePolicy 描述源站手动连通性测试的私网放行策略（仅服务端来源可信，客户端请求体始终忽略）。
+// 回环/链路本地/云元数据/未指定/组播地址仍由 TestConnectivity 无条件硬拦截。
+type PrivatePolicy struct {
+	AllowPrivate        bool
+	AllowedPrivateCIDRs []netip.Prefix
+}
+
 // TestHandler 是源站测试处理器。
 type TestHandler struct {
 	audits       *audits.Service
-	allowPrivate bool // 仅由服务端配置决定是否允许测试 RFC1918/ULA 私网源站，默认 false，绝不信任请求体
+	allowPrivate bool           // 服务端静态配置（如环境变量），默认 false，绝不信任请求体
+	allowedCIDRs []netip.Prefix // 服务端静态私网 CIDR 白名单（如环境变量）
+	policyLookup func(ctx context.Context) PrivatePolicy
 }
 
 // NewTestHandler 创建源站测试处理器（默认禁止访问私网/回环/元数据地址）。
@@ -25,6 +36,41 @@ func NewTestHandler(au *audits.Service) *TestHandler {
 func (h *TestHandler) SetAllowPrivate(allow bool) *TestHandler {
 	h.allowPrivate = allow
 	return h
+}
+
+// SetAllowedPrivateCIDRs 服务端显式配置允许测试的私网 CIDR 白名单（不含回环/链路本地/云元数据）。
+func (h *TestHandler) SetAllowedPrivateCIDRs(prefixes []netip.Prefix) *TestHandler {
+	if len(prefixes) == 0 {
+		h.allowedCIDRs = nil
+		return h
+	}
+	h.allowedCIDRs = append([]netip.Prefix(nil), prefixes...)
+	return h
+}
+
+// SetPolicyLookup 注入动态策略查询（如读取 system_settings 的 network 组配置），每次测试实时生效。
+func (h *TestHandler) SetPolicyLookup(fn func(ctx context.Context) PrivatePolicy) *TestHandler {
+	h.policyLookup = fn
+	return h
+}
+
+func (h *TestHandler) resolvePrivatePolicy(ctx context.Context) PrivatePolicy {
+	out := PrivatePolicy{
+		AllowPrivate: h.allowPrivate,
+	}
+	if len(h.allowedCIDRs) > 0 {
+		out.AllowedPrivateCIDRs = append(out.AllowedPrivateCIDRs, h.allowedCIDRs...)
+	}
+	if h.policyLookup != nil {
+		dyn := h.policyLookup(ctx)
+		if dyn.AllowPrivate {
+			out.AllowPrivate = true
+		}
+		if len(dyn.AllowedPrivateCIDRs) > 0 {
+			out.AllowedPrivateCIDRs = append(out.AllowedPrivateCIDRs, dyn.AllowedPrivateCIDRs...)
+		}
+	}
+	return out
 }
 
 type testRequest struct {
@@ -47,14 +93,16 @@ func (h *TestHandler) Test(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
 		return
 	}
+	policy := h.resolvePrivatePolicy(r.Context())
 	result := TestConnectivity(r.Context(), TestInput{
-		Scheme:          req.Scheme,
-		Host:            req.Host,
-		Port:            req.Port,
-		HealthCheckPath: req.HealthCheckPath,
-		TLSServerName:   req.TLSServerName,
-		TLSVerify:       req.TLSVerify,
-		AllowPrivate:    h.allowPrivate,
+		Scheme:              req.Scheme,
+		Host:                req.Host,
+		Port:                req.Port,
+		HealthCheckPath:     req.HealthCheckPath,
+		TLSServerName:       req.TLSServerName,
+		TLSVerify:           req.TLSVerify,
+		AllowPrivate:        policy.AllowPrivate,
+		AllowedPrivateCIDRs: policy.AllowedPrivateCIDRs,
 	})
 
 	// 记录测试审计

@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/security"
 	"github.com/jiuzhang-waf/server/internal/sysconsole"
+	"github.com/jiuzhang-waf/server/internal/validation"
 )
 
 // ErrNotFound 设置不存在。
@@ -606,10 +607,11 @@ var settingStringMaxLen = map[string]int{
 	"block_response:html_body":    4096,
 	"block_response:json_code":    128,
 	"block_response:json_message": 512,
-	// network 组 DNS/NTP 服务器列表（逗号分隔原文总长上限）与透明模式 TLS SNI 透传白名单
-	"network:ntp_servers":                  255,
-	"network:dns_servers":                  255,
-	"network:tproxy_passthrough_allowlist": 4096,
+	// network 组 DNS/NTP 服务器列表（逗号分隔原文总长上限）、透明模式 TLS SNI 透传白名单与源站内网测试 CIDR 白名单
+	"network:ntp_servers":                         255,
+	"network:dns_servers":                         255,
+	"network:tproxy_passthrough_allowlist":        4096,
+	"network:upstream_test_allowed_private_cidrs": 2048,
 	// 暴露面引擎：公网 DNS 服务器列表同口径；合作方出口网段为逗号分隔 CIDR 列表
 	"exposure_engine:public_dns_servers":   255,
 	"exposure_engine:partner_egress_cidrs": 2048,
@@ -649,10 +651,11 @@ var serverListSettingKeys = map[string]bool{
 // 丢弃空项、每项须为合法 CIDR（netip.ParsePrefix），项数上限 maxCIDRListItems；
 // 总长上限登记于 settingStringMaxLen。空串合法（= 不配置）。
 var cidrListSettingKeys = map[string]bool{
-	"exposure_engine:partner_egress_cidrs": true,
+	"exposure_engine:partner_egress_cidrs":        true,
+	"network:upstream_test_allowed_private_cidrs": true,
 }
 
-// maxCIDRListItems CIDR 列表项数上限（合作方出口网段为低频维护配置，32 项充足）。
+// maxCIDRListItems CIDR 列表项数上限（合作方出口网段与源站内网测试白名单为低频维护配置，32 项充足）。
 const maxCIDRListItems = 32
 
 // validateCIDRList 校验逗号分隔 CIDR 列表（仅命中 cidrListSettingKeys 的字符串键；
@@ -672,8 +675,14 @@ func validateCIDRList(group, key, valueType string, value json.RawMessage) error
 			continue
 		}
 		items++
-		if _, err := netip.ParsePrefix(p); err != nil {
+		prefix, err := netip.ParsePrefix(p)
+		if err != nil {
 			return fmt.Errorf("value must be 逗号分隔的合法 CIDR 列表（%s:%s）: 第 %d 项 %q 非法", group, key, items, p)
+		}
+		if group == "network" && key == "upstream_test_allowed_private_cidrs" {
+			if err := validation.ValidateAllowedPrivateUpstreamPrefix(prefix); err != nil {
+				return fmt.Errorf("value must be 合法的内网源站 CIDR 白名单（%s:%s）: %v", group, key, err)
+			}
 		}
 	}
 	if items > maxCIDRListItems {
@@ -1002,7 +1011,9 @@ var AllowedSettingKeys = map[string]bool{
 	// 空串 = 继承宿主机现状不下发）及透明模式 TLS SNI 透传白名单（迁移 000234；
 	// 逗号/换行分隔或 JSON 字符串数组，支持 *.example.com 单级通配符）
 	"network:ntp_servers": true, "network:dns_servers": true,
-	"network:tproxy_passthrough_allowlist": true,
+	"network:tproxy_passthrough_allowlist":        true,
+	"network:upstream_test_allow_private":         true,
+	"network:upstream_test_allowed_private_cidrs": true,
 	// 阶段5 §十五：CC 自动封禁共享出口（NAT）风险检查（种子见迁移 000153；
 	// 消费侧 temporaryblocks/natguard.go 带默认值与区间回落）
 	"cc_auto_block:nat_guard_enabled": true, "cc_auto_block:nat_identity_threshold": true,

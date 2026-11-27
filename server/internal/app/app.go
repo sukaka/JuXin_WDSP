@@ -352,7 +352,15 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 			}, nil
 		})
 		acmeHandler = acme.NewHandler(acmeSvc, auditSvc)
-		upstreamTestHandler = upstreams.NewTestHandler(auditSvc)
+		upstreamTestHandler = upstreams.NewTestHandler(auditSvc).
+			SetAllowPrivate(cfg.Security.UpstreamTestAllowPrivate).
+			SetAllowedPrivateCIDRs(upstreams.ParseAllowedPrivateCIDRsFromStrings(cfg.Security.UpstreamTestAllowedPrivateCIDRs)).
+			SetPolicyLookup(func(ctx context.Context) upstreams.PrivatePolicy {
+				return upstreams.PrivatePolicy{
+					AllowPrivate:        settingsSvc.GetBool(ctx, "network", "upstream_test_allow_private", false),
+					AllowedPrivateCIDRs: upstreams.ParseAllowedPrivateCIDRs(settingsSvc.GetString(ctx, "network", "upstream_test_allowed_private_cidrs", "")),
+				}
+			})
 		gatewayHandler = gatewayconfig.NewHandler(publisher, appStore, auditSvc)
 	}
 

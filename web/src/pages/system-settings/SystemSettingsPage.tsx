@@ -248,6 +248,16 @@ const SETTING_META: Record<
     placeholder: '如 223.5.5.5,223.6.6.6',
     maxLength: 256,
   },
+  'network:upstream_test_allow_private': {
+    description:
+      '允许源站连通性测试访问内网私网地址（RFC 1918 / ULA）；回环、链路本地与云元数据始终禁止，保存后立即生效',
+  },
+  'network:upstream_test_allowed_private_cidrs': {
+    description:
+      '允许源站连通性测试访问的私网 CIDR 白名单（逗号分隔，最多 32 项）；留空且上方开关关闭时禁止全部私网，保存后立即生效',
+    placeholder: '如 172.30.0.0/16,10.0.0.0/8',
+    maxLength: 2048,
+  },
 }
 
 /**
@@ -635,6 +645,14 @@ function SettingGroupPanel({ group }: { group: string }) {
           showIcon
           style={{ marginBottom: 16 }}
           message="自定义 CC 限速（429）/阻断时的响应页面与 JSON 错误文案，全部留空时使用内置默认。保存后需在「配置发布」执行发布才下发网关生效；HTML 正文仅保留基础排版标签（自动过滤脚本与属性），请求编号与 Retry-After 行为不变。如需维护多套自定义样式、多历史版本、覆盖 403 拦截页或按应用/场景分别绑定，请前往「应用防护策略 → 拦截页面」。"
+        />
+      )}
+      {group === 'network' && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="源站连通性测试默认受 SSRF 防护禁止访问私网地址。如需在「网站应用 → 源站管理」中手动测试内网源站，可开启「允许测试内网私网源站」或仅在私网 CIDR 白名单中放行业务网段（如 172.30.0.0/16）；保存后立即生效，回环（127.0.0.1/::1）、链路本地与云元数据地址始终强制拦截。"
         />
       )}
       {group === 'software_bypass' && (

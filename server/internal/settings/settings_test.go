@@ -343,3 +343,40 @@ func TestAPILearningAutoStartOnConfirmSettingAllowed(t *testing.T) {
 		t.Fatal("string should be rejected for boolean setting")
 	}
 }
+
+func TestUpstreamTestPrivateSettingsValidation(t *testing.T) {
+	for _, key := range []string{"upstream_test_allow_private", "upstream_test_allowed_private_cidrs"} {
+		if !AllowedSettingKeys["network:"+key] {
+			t.Fatalf("network:%s must be in AllowedSettingKeys", key)
+		}
+		if isSensitiveSetting("network", key, false) {
+			t.Fatalf("network:%s must not be marked sensitive", key)
+		}
+	}
+	for _, valid := range []string{
+		`""`,
+		`"172.30.0.0/16"`,
+		`"10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7, 100.64.0.0/10"`,
+	} {
+		if err := validateCIDRList("network", "upstream_test_allowed_private_cidrs", "string", json.RawMessage(valid)); err != nil {
+			t.Errorf("valid CIDR list %s rejected: %v", valid, err)
+		}
+	}
+	for _, invalid := range []string{
+		`"0.0.0.0/0"`,
+		`"::/0"`,
+		`"127.0.0.0/8"`,
+		`"::1/128"`,
+		`"169.254.0.0/16"`,
+		`"169.254.169.254/32"`,
+		`"100.100.100.200/32"`,
+		`"fd00:ec2::254/128"`,
+		`"fe80::/10"`,
+		`"224.0.0.0/4"`,
+		`"172.30.128.202"`,
+	} {
+		if err := validateCIDRList("network", "upstream_test_allowed_private_cidrs", "string", json.RawMessage(invalid)); err == nil {
+			t.Errorf("unsafe/invalid CIDR %s should be rejected", invalid)
+		}
+	}
+}
