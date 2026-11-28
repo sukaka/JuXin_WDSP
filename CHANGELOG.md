@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [1.20.1] - 2026-11-28
+
+### 修复
+
+- **修复 `mirrorcap --healthcheck` 未降权导致 `gateway-rules`（`1000:1000 0750`）报 `permission denied` 阻塞全量升级**：
+  - 根因：`1.20.0` 引入 `gateway-rules` 命名卷（`1000:1000 0750`）后，`jiuzhang-mirrorcap` 容器以 `user: "0:0"`、`cap_drop: [ALL]`（无 `CAP_DAC_OVERRIDE`）运行，主进程会调用 `maybeDropPrivileges()` 降权至 `1000:1000`，但 `--healthcheck` 路径在降权前即执行 `os.Stat("/etc/caddy/rules/current")`，导致 Docker `HEALTHCHECK` 与 `apply.sh` 就绪检查持续报 `permission denied` 并触发升级自动回滚（`1.19.1 -> 1.20.0` 生产实机升级已现场捕获该缺陷并验证 29 秒自动回滚无损恢复）。
+  - 修复：`gateway/cmd/mirrorcap` 新增 `maybeDropHealthcheckPrivileges()`（`privs_common.go`、`privs_linux.go`、`privs_other.go`、`main.go`），在 `MIRROR_DROP_PRIVS=1` 且以 root 运行 `--healthcheck` 时先设 `PR_SET_NO_NEW_PRIVS`、清空附加组与 bounding/effective/permitted/inheritable capabilities 并降权至 `1000:1000`，使健康检查与主进程以一致的非 root 身份校验目录可达性（与 `wdsp-gateway-bind` 保持一致的最小权限原则）；新增 `gateway/cmd/mirrorcap/main_test.go` 覆盖降权顺序、Fail-Closed 失败处理及软链规则目录校验。
+
+### 验证与边界
+
+- **网关与真实容器复现验证**：`cd gateway && go test -v -race -count=1 ./cmd/mirrorcap/... ./mirrorcap/...` 全部通过；Linux amd64/arm64 交叉编译通过；使用生产完全一致容器参数（`--user 0:0 --read-only --cap-drop ALL --cap-add NET_RAW/NET_ADMIN/SETUID/SETGID/SETPCAP --security-opt no-new-privileges:true`）挂载 `1000:1000 0750` `gateway-rules` 卷实测：`MIRROR_DROP_PRIVS=0` 精确复现 `permission denied`，`MIRROR_DROP_PRIVS=1` 健康检查通过。
+- **后端**：`cd server && go test -count=1 ./internal/upgrades/...` 通过。
+- **实机升级验收**：`1.20.1` 打标后随即制作签名 `update-full-1.20.1-amd64` 并在目标生产环境 `47.93.143.94` 执行全量升级与外部访问验收；HA 双机 `hasyncd` 联调与离线签名规则包上传/热生效/回滚 E2E 仍为 `NOT_RUN`。
+
 ## [1.20.0] - 2026-11-28
 
 ### 新增
