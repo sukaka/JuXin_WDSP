@@ -4,6 +4,30 @@
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-11-28
+
+### 新增
+
+- **IP 库（GeoIP 归属地库 + 威胁情报 IP 黑名单库）离线/在线定时更新与热加载（零外网默认安全）**：
+  - **数据库迁移与三权分立**：新增迁移 `000256_ip_library_sync`（`geoip_slot_configs`、`geoip_sync_runs`、`threat_intel_feeds`、`threat_intel_sync_runs` 及 `system_settings` 的 `ip_library`/`geoip`/`threat_intel` 种子，所有在线定时开关默认关闭）；新增权限 `geoip.read`/`geoip.manage`/`threat_intel.read`/`threat_intel.manage`（按 `000232` 三权分立授予 `SECURITY_ADMIN` 全量读写、`AUDIT_ADMIN` 只读）；备份表清单同步纳入新表，敏感凭据（`maxmind_license_key_encrypted`、`proxy_auth_encrypted`）加密落库并登记脱敏白名单。
+  - **GeoIP 归属地库槽位管理与零重启热重载**：
+    - 新增 `server/internal/apigeo` 的 `ReloadableEngine`（`atomic.Pointer[Engine]` 无锁查询 + `.revision.json` 15 秒目录感知，向全量 7 处消费者注入非 nil 引擎，空库启动后上传或同步即刻激活）、`SlotManager`（5 个规范槽位 `ip2region_v4`/`ip2region_v6`/`dbip_city`/`city_ipv6`/`country`，支持 `.xdb`/`.mmdb`/`.gz`/`.tar.gz` 流式限流解压、格式/探针验真、`.staging/` 原子落盘与每槽位保留 3 份可逆回滚备份）、`Syncer`（支持 `ip2region`、`DB-IP Lite` 月度回退、`MaxMind GeoLite2` Basic Auth 下载与离线上传）、`Cron` 与管理接口；
+    - 联动 HA 备节点同步：`gateway/hasyncd` 新增 `GET /v1/geoip/status` 与 `PUT /v1/geoip/slots/{slot}`（HMAC 鉴权 + SHA-256/魔数校验 + 原子落盘 + `.revision.json` 刷新），`server/internal/nodesync`、`app/iplib_adapter.go`、`ops/offline-package/build.sh`、`ops/upgrade/build-upgrade-pack.sh`、`ops/baremetal/package/systemd/jiuzhang-hasyncd.service` 与 `deployment/docker-compose.stage5.yml` 同步支持 `HASYNC_GEOIP_DIR=/app/runtime/geoip`。
+  - **威胁情报 IP 黑名单多源订阅与安全出站层**：
+    - 新增 `server/internal/iplibhttp`（内置官方源白名单、内网镜像 Allowlist、可选正向代理与加密认证、拨号期 DNS 重绑定复检、跨 Host 重定向剥离敏感头、硬阻断云元数据网段）；
+    - 扩展 `server/internal/threatintel`（预置宽松许可 CC0 官方源 `feodo`/`sslbl` 与自定义订阅源，支持纯文本/CSV/CIDR、ETag/SHA-256 去重、空集保护、骤降比例熔断、连续失败自动熔断、定时调度与同步对账流水）；
+    - 新增 `GEOIP_SYNC_FAILED`、`GEOIP_NODE_DRIFT`、`THREAT_INTEL_SYNC_FAILED`、`THREAT_INTEL_CIRCUIT_OPEN` 四类系统告警与通知分类映射；新增 OpenAPI 片段 `server/openapi/fragments/34-ip-libraries.yaml` 并重编 `server/openapi/wdsp-api.yaml`。
+  - **Web 管理界面与设计文档**：
+    - 在「访问控制 → IP 库与威胁情报」（`/ip-libraries`）新增 `IpLibrariesPage`、`GeoIpTab`、`ThreatIntelTab`、`OutboundSettingsDrawer` 与 `web/src/api/ipLibraries.ts`，支持 GeoIP 槽位状态/离线上传/定时更新/MaxMind 凭据/版本回滚/HA 一致性与重同步、威胁情报订阅源管理/离线导入/手动同步/熔断重置及出站网络设置；同步新增设计文档 `docs/IP_LIBRARY_UPDATE_DESIGN.md`。
+
+### 验证与边界
+
+- **网关**：`cd gateway && go test -race -count=1 ./hasyncd/... ./cmd/hasyncd/... ./cmd/mirrorcap/... ./mirrorcap/...` 全部通过。
+- **后端与 OpenAPI**：`cd server && go build ./cmd/...`、`go test -race -count=1` 覆盖 `apigeo`、`threatintel`、`iplibhttp`、`nodesync`、`notify`、`systemalerts`、`app`、`rulepacks`、`backups`、`settings`、`reports`、`apisecurity` 共 12 个包全部通过；`python3 server/openapi/merge.py`（696 paths / 895 operations）与 `python3 tools/check-api-reconcile.py` 确认新增 IP 库与规则包路由 0 缺失。
+- **前端**：`cd web && npm run typecheck`、`eslint`（改动文件 0 报错）、`vitest`（6 个测试文件含 `IpLibrariesPage`、`ipLibraries`、`menu`、`stage6`、`WafRulesPage`、`RulePackFlow`）与 `npm run build` 全部通过。
+- **运维脚本与升级契约**：`bash -n ops/offline-package/build.sh ops/upgrade/build-upgrade-pack.sh` 通过；`python3 -m unittest discover -s ops/upgrade/tests -p 'test_*.py'` 104/104 通过。
+- **未执行项（`NOT_RUN`）**：按 `docs/tasks/UPGRADE_INCIDENT_2026-11-17.md`，目标生产环境增量升级后的真实在线拉取外网官方源（MaxMind/DB-IP/abuse.ch）、HA 双机 `hasyncd` GeoIP 推送联调与 Playwright E2E 均为 `NOT_RUN`。
+
 ## [1.20.1] - 2026-11-28
 
 ### 修复
