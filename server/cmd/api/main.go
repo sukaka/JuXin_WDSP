@@ -123,17 +123,32 @@ func run() error {
 	// 告警通知外发（一期）：后台发送循环 + 聚合摘要 + spool 重放
 	go application.NotifyDispatcher().Run(collectorCtx)
 
-	// 阶段4：启动时异步同步 WAF 规则元数据（首次安装自动入库，升级时自动更新中文名称，不阻塞启动）
+	// 阶段4/规则包 R1：启动时异步同步当前激活 WAF 规则元数据（优先读版本化规则存储，否则回退静态目录）
 	go func() {
 		syncCtx, cancel := context.WithTimeout(collectorCtx, 2*time.Minute)
 		defer cancel()
+		crsDir := cfg.WAF.CRSDir
+		crsVersion := cfg.WAF.CRSVersion
+		rulePackVer := ""
+		if rpSvc := application.RulePackService(); rpSvc != nil {
+			info := rpSvc.ActiveRulesInfo(syncCtx)
+			if info.CRSRulesDir != "" {
+				crsDir = info.CRSRulesDir
+			}
+			if info.CRSVersion != "" {
+				crsVersion = info.CRSVersion
+			}
+			rulePackVer = info.RulePackVersion
+		}
 		syncSvc := wafrules.NewSyncService(bgDB)
-		report, err := syncSvc.SyncFromSources(syncCtx, cfg.WAF.CRSVersion, wafrules.BuildSyncSources(cfg.WAF.CRSDir))
+		report, err := syncSvc.SyncFromSourcesWithPack(syncCtx, crsVersion, rulePackVer, wafrules.BuildSyncSources(crsDir))
 		if err != nil {
-			slog.Warn("startup waf rules sync failed", "crs_dir", cfg.WAF.CRSDir, "error", err)
+			slog.Warn("startup waf rules sync failed", "crs_dir", crsDir, "rulepack_version", rulePackVer, "error", err)
 			return
 		}
 		slog.Info("startup waf rules sync completed",
+			"rulepack_version", rulePackVer,
+			"crs_version", crsVersion,
 			"parsed", report.TotalParsed,
 			"total_in_db", report.TotalInDB,
 			"added", report.Added,

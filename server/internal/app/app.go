@@ -111,6 +111,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/riskpolicy"
 	"github.com/jiuzhang-waf/server/internal/roles"
 	"github.com/jiuzhang-waf/server/internal/ruleoverrides"
+	"github.com/jiuzhang-waf/server/internal/rulepacks"
 	"github.com/jiuzhang-waf/server/internal/runtimehealth"
 	"github.com/jiuzhang-waf/server/internal/security"
 	"github.com/jiuzhang-waf/server/internal/securityevents"
@@ -206,6 +207,8 @@ type App struct {
 	acmeWorker              *acme.Worker
 	// 内核级 eBPF/XDP 快速丢包加速同步器（Phase 9D-2；迁移 000250；StartStage6Workers 内启动 fail-open 周期同步）
 	xdpSyncer *xdpaccel.Syncer
+	// 纯离线 WAF 规则包热更新服务（阶段 R1；迁移 000255）
+	rulePackSvc *rulepacks.Service
 }
 
 func (a *App) StartRequestPCAP(ctx context.Context) {
@@ -929,6 +932,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		backupWorker = backups.NewWorker(backupStore, backupExporter, alertFn)
 		backupHandler = backups.NewHandler(backupStore, backupWorker, cfg.Gateway.DataDir, auditSvc)
 		restoreSvc = restores.NewService(db, restores.NewStore(db), backupStore, backupExporter, cfg.Gateway.DataDir, c, alertFn)
+		restoreSvc.SetRulesStoreDir(cfg.WAF.RulesStoreDir)
 		restoreHandler = restores.NewHandler(restores.NewStore(db), restoreSvc, auditSvc)
 	} else {
 		slog.Warn("encryption unavailable, backup/restore/upgrade features disabled")
@@ -1155,6 +1159,50 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	})
 	profileHandler := users.NewProfileHandler(userStore, logSvc)
 
+	// 纯离线 WAF 规则包热更新服务（阶段 R1；迁移 000255）：
+	// 当 WAF_RULES_STORE_DIR 配置时启用版本化存储并自动从种子目录初始化基线快照；
+	// 未配置时平滑兼容既有扁平规则目录，不改变默认开发/单测行为。
+	rulePackArchivesDir := filepath.Join(cfg.Gateway.DataDir, "rulepack-archives")
+	rulePackStore := rulepacks.NewStore(db)
+	rulePackSvc := rulepacks.NewService(rulepacks.Config{
+		StoreDir:             cfg.WAF.RulesStoreDir,
+		ArchivesDir:          rulePackArchivesDir,
+		SeedDir:              cfg.WAF.RulesSeedDir,
+		FallbackCRSDir:       cfg.WAF.CRSDir,
+		FallbackCRSVersion:   cfg.WAF.CRSVersion,
+		GatewayRulesRoot:     cfg.WAF.GatewayRulesRoot,
+		CurrentSystemVersion: upgrades.CurrentVersion,
+		LocalNodeName:        cfg.WAF.GatewayNodeName,
+		Retention:            cfg.WAF.RulePackRetention,
+	}, rulePackStore, c)
+	if cfg.WAF.RulesStoreDir != "" {
+		if initErr := rulePackSvc.EnsureInitialized(context.Background()); initErr != nil {
+			slog.Warn("initialize versioned waf rules store failed", "store_dir", cfg.WAF.RulesStoreDir, "error", initErr)
+		}
+	}
+	rulePackSvc.SetUpgradeChecker(upgradeStore)
+	rulePackSvc.SetMetaSyncer(wafrulesMetaSyncerAdapter{db: db, handler: ruleHandler})
+	rulePackSvc.SetAlertEmitter(func(ctx context.Context, alertType, _ string, component, title, message string) {
+		if _, err := alertEngine.NotifyFailure(ctx, alertType, component, title, message); err != nil {
+			slog.Warn("raise rulepack alert failed", "type", alertType, "error", err)
+		}
+	})
+	ruleHandler.SetActiveSourceProvider(func(ctx context.Context) (string, string, string) {
+		info := rulePackSvc.ActiveRulesInfo(ctx)
+		return info.CRSRulesDir, info.CRSVersion, info.RulePackVersion
+	})
+	if publisher != nil {
+		publisher.SetRulesVersionProvider(func(ctx context.Context) (string, string) {
+			info := rulePackSvc.ActiveRulesInfo(ctx)
+			return info.RulePackVersion, info.GatewayRulesBasePath
+		})
+		publisher.SetRulesReleaseChecker(func(ver string) bool {
+			return rulePackSvc.Storage().HasRelease(ver)
+		})
+		rulePackSvc.SetPublisher(gatewayRulePackPublisherAdapter{pub: publisher})
+	}
+	rulePackHandler := rulepacks.NewHandler(rulePackSvc, auditSvc)
+
 	a := &App{
 		cfg: cfg, db: db, cache: c,
 		users: userStore, sessions: sessSvc, settings: settingsSvc, authSvc: authSvc,
@@ -1166,6 +1214,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	a.attackSessionAgg = attackSessionAgg
 	a.vulnIntelSyncer = vulnIntelSyncer
 	a.xdpSyncer = xdpSyncer
+	a.rulePackSvc = rulePackSvc
 	// 离线授权配额用量（status/import 响应 usage 字段）：应用计数经 appStore（加密服务
 	// 缺失形态下为 nil 计 0），API 端点计数经 apiassets（表由阶段8迁移建立，waf 包恒 0）
 	licHandler.SetUsageProvider(func(ctx context.Context) (int64, int64, error) {
@@ -1483,6 +1532,16 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	mux.Handle("PUT /api/v1/waf-rules/{rule_id}/description", authz(middleware.RequirePermission("rule_overrides.manage")(http.HandlerFunc(ruleHandler.UpdateDescription))))
 	mux.Handle("DELETE /api/v1/waf-rules/{rule_id}/description", authz(middleware.RequirePermission("rule_overrides.manage")(http.HandlerFunc(ruleHandler.ResetDescription))))
 	mux.Handle("POST /api/v1/waf-rules/sync", authz(middleware.RequirePermission("waf_rules.sync")(http.HandlerFunc(ruleHandler.Sync))))
+
+	// 纯离线 WAF 规则包热更新（迁移 000255；读沿用 waf_rules.read，写使用 waf_rules.pack.manage）
+	mux.Handle("GET /api/v1/rule-packs/current", authz(middleware.RequirePermission("waf_rules.read")(http.HandlerFunc(rulePackHandler.Current))))
+	mux.Handle("GET /api/v1/rule-packs", authz(middleware.RequirePermission("waf_rules.read")(http.HandlerFunc(rulePackHandler.List))))
+	mux.Handle("GET /api/v1/rule-packs/{id}", authz(middleware.RequirePermission("waf_rules.read")(http.HandlerFunc(rulePackHandler.Get))))
+	mux.Handle("POST /api/v1/rule-packs/upload", authz(middleware.RequirePermission("waf_rules.pack.manage")(http.HandlerFunc(rulePackHandler.Upload))))
+	mux.Handle("POST /api/v1/rule-packs/{id}/apply", authz(middleware.RequirePermission("waf_rules.pack.manage")(http.HandlerFunc(rulePackHandler.Apply))))
+	mux.Handle("POST /api/v1/rule-packs/{id}/rollback", authz(middleware.RequirePermission("waf_rules.pack.manage")(http.HandlerFunc(rulePackHandler.Rollback))))
+	mux.Handle("GET /api/v1/rule-packs/jobs/{job_id}", authz(middleware.RequirePermission("waf_rules.read")(http.HandlerFunc(rulePackHandler.GetJob))))
+	mux.Handle("POST /api/v1/rule-packs/nodes/{node_id}/retry-sync", authz(middleware.RequirePermission("waf_rules.pack.manage")(http.HandlerFunc(rulePackHandler.RetryNodeSync))))
 
 	// 规则覆盖
 	mux.Handle("GET /api/v1/rule-overrides", authz(middleware.RequirePermission("rule_overrides.manage")(http.HandlerFunc(ruleOverrideHandler.List))))
@@ -1836,6 +1895,16 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 			nodeStore:  apiNodeStore,
 			alertStore: alertStore,
 			mgr:        nodeSyncMgr,
+		})
+	}
+	// HA 双机离线规则包协同（阶段 R2：先备后主验签落盘、脑裂门禁、降级后定向重同步）
+	if rulePackSvc != nil && nodeSyncMgr != nil {
+		rulePackSvc.SetClusterSyncer(rulePackClusterSyncAdapter{
+			nodeStore:     apiNodeStore,
+			alertStore:    alertStore,
+			mgr:           nodeSyncMgr,
+			pub:           publisher,
+			localNodeName: cfg.WAF.GatewayNodeName,
 		})
 	}
 
