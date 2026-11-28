@@ -329,27 +329,57 @@ type recordedAlert struct {
 	Message   string
 }
 
-func TestOfficialPresets_CC0OnlyNoGPL(t *testing.T) {
+func TestOfficialPresets_PermissiveOnlyNoGPL(t *testing.T) {
 	presets := OfficialPresets()
-	if len(presets) != 2 {
-		t.Fatalf("expected exactly 2 CC0 official presets, got %d: %+v", len(presets), presets)
+	wantOrder := []string{"ipsum_l5", "spamhaus_drop", "et_compromised", "feodo"}
+	if len(presets) != len(wantOrder) {
+		t.Fatalf("expected %d active official presets, got %d: %+v", len(wantOrder), len(presets), presets)
+	}
+	allowedLicenses := map[string]bool{
+		"Unlicense":                       true,
+		"Spamhaus DROP (Free/Permissive)": true,
+		"BSD-3-Clause":                    true,
+		"CC0-1.0":                         true,
 	}
 	keys := map[string]OfficialPreset{}
-	for _, p := range presets {
+	for i, p := range presets {
+		if p.Key != wantOrder[i] {
+			t.Errorf("preset[%d].Key=%q, want %q (high-volume presets must come first)", i, p.Key, wantOrder[i])
+		}
 		keys[p.Key] = p
-		if p.License != "CC0-1.0" {
-			t.Errorf("preset %s license=%q, want CC0-1.0", p.Key, p.License)
+		if !allowedLicenses[p.License] {
+			t.Errorf("preset %s license=%q not in permissive license allowlist", p.Key, p.License)
 		}
-		lower := strings.ToLower(p.Key + " " + p.Name + " " + p.URL)
-		if strings.Contains(lower, "firehol") || strings.Contains(lower, "gpl") {
-			t.Errorf("forbidden GPL/FireHOL preset detected: %+v", p)
+		if !strings.HasPrefix(p.URL, "https://") {
+			t.Errorf("preset %s URL=%q must use https://", p.Key, p.URL)
+		}
+		lower := strings.ToLower(p.Key + " " + p.Name + " " + p.URL + " " + p.License)
+		if strings.Contains(lower, "firehol") || strings.Contains(lower, "gpl") || strings.Contains(lower, "sslbl") {
+			t.Errorf("forbidden GPL/FireHOL or deprecated SSLBL preset detected: %+v", p)
+		}
+		if err := ValidateCron(p.DefaultCron); err != nil {
+			t.Errorf("preset %s invalid default cron %q: %v", p.Key, p.DefaultCron, err)
 		}
 	}
-	if keys["feodo"].URL != "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt" {
-		t.Errorf("unexpected feodo URL: %s", keys["feodo"].URL)
+	if _, ok := LookupOfficialPreset("sslbl"); ok {
+		t.Error("deprecated sslbl preset must not be registered")
 	}
-	if keys["sslbl"].URL != "https://sslbl.abuse.ch/blacklist/sslipblacklist.txt" {
-		t.Errorf("unexpected sslbl URL: %s", keys["sslbl"].URL)
+
+	if p := keys["ipsum_l5"]; p.URL != "https://raw.githubusercontent.com/stamparm/ipsum/master/levels/5.txt" ||
+		p.Format != "text" || p.License != "Unlicense" || p.AllowCIDR || p.DefaultTTLDays != 7 || p.DefaultCron != "0 4 * * *" {
+		t.Errorf("unexpected ipsum_l5 preset: %+v", p)
+	}
+	if p := keys["spamhaus_drop"]; p.URL != "https://www.spamhaus.org/drop/drop.txt" ||
+		p.Format != "text" || p.License != "Spamhaus DROP (Free/Permissive)" || !p.AllowCIDR || p.DefaultTTLDays != 30 || p.DefaultCron != "0 */12 * * *" {
+		t.Errorf("unexpected spamhaus_drop preset: %+v", p)
+	}
+	if p := keys["et_compromised"]; p.URL != "https://rules.emergingthreats.net/blockrules/compromised-ips.txt" ||
+		p.Format != "text" || p.License != "BSD-3-Clause" || p.AllowCIDR || p.DefaultTTLDays != 14 || p.DefaultCron != "0 */6 * * *" {
+		t.Errorf("unexpected et_compromised preset: %+v", p)
+	}
+	if p := keys["feodo"]; p.URL != "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt" ||
+		p.Format != "text" || p.License != "CC0-1.0" || p.AllowCIDR || p.DefaultTTLDays != 30 || p.DefaultCron != "0 */6 * * *" {
+		t.Errorf("unexpected feodo preset: %+v", p)
 	}
 }
 
@@ -496,14 +526,14 @@ func TestSyncer_MinEntriesGuardAbortsAndAlerts(t *testing.T) {
 func TestSyncer_MaxDropRatioGuardAndForceOverride(t *testing.T) {
 	feed := &Feed{
 		ID:              uuid.New(),
-		FeedKey:         "sslbl",
-		Name:            "SSLBL",
+		FeedKey:         "ipsum_l5",
+		Name:            "IPsum Level 5",
 		Enabled:         true,
 		SourceMode:      SourceModeOfficial,
-		OfficialPreset:  "sslbl",
+		OfficialPreset:  "ipsum_l5",
 		Format:          "text",
-		TTLDays:         30,
-		ScheduleCron:    "0 */6 * * *",
+		TTLDays:         7,
+		ScheduleCron:    "0 4 * * *",
 		MinEntriesGuard: true,
 		MaxDropRatio:    0.80,
 		ActiveRuleCount: 25, // >= 20 triggers drop ratio guard
@@ -511,9 +541,9 @@ func TestSyncer_MaxDropRatioGuardAndForceOverride(t *testing.T) {
 	repo := newMemFeedRepo(feed)
 	rec := newFakeReconciler(repo)
 	// Seed 25 existing rules in reconciler
-	rec.rules["sslbl"] = map[string]bool{}
+	rec.rules["ipsum_l5"] = map[string]bool{}
 	for i := 1; i <= 25; i++ {
-		rec.rules["sslbl"][fmt.Sprintf("198.51.100.%d", i)] = true
+		rec.rules["ipsum_l5"][fmt.Sprintf("198.51.100.%d", i)] = true
 	}
 
 	// Only 4 entries -> dropRatio = 21/25 = 0.84 > 0.80 -> GUARD_ABORTED
@@ -667,14 +697,14 @@ func TestSyncer_SweepOnce_BatchedSinglePublishAndOfflineZeroCalls(t *testing.T) 
 	}
 	f2 := &Feed{
 		ID:              uuid.New(),
-		FeedKey:         "sslbl",
-		Name:            "SSLBL",
+		FeedKey:         "et_compromised",
+		Name:            "Emerging Threats Compromised",
 		IsBuiltin:       true,
 		Enabled:         true,
 		SourceMode:      SourceModeOfficial,
-		OfficialPreset:  "sslbl",
+		OfficialPreset:  "et_compromised",
 		Format:          "text",
-		TTLDays:         30,
+		TTLDays:         14,
 		ScheduleCron:    "0 */6 * * *",
 		MinEntriesGuard: true,
 		MaxDropRatio:    0.80,
@@ -716,7 +746,7 @@ func TestSyncer_SweepOnce_BatchedSinglePublishAndOfflineZeroCalls(t *testing.T) 
 		t.Fatalf("disabled scheduler must make zero calls: stats=%+v reqs=%d pub=%d", stats, len(dl.requests), pubCount)
 	}
 
-	// 2. Enable auto_update -> both feodo & sslbl due, offline skipped, ONE batched publish!
+	// 2. Enable auto_update -> both feodo & et_compromised due, offline skipped, ONE batched publish!
 	st.autoUpdate = true
 	stats, err = syncer.SweepOnce(context.Background())
 	if err != nil {

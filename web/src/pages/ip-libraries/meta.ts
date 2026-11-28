@@ -140,19 +140,51 @@ export const DEFAULT_GEO_PRESETS: GeoIpPresetInfo[] = [
   },
 ]
 
-/** 威胁情报内置 CC0 官方预置源兜底清单（不含 GPL 源） */
+/** 威胁情报内置宽松许可官方预置源兜底清单（高体量源在前，不含 GPL 源） */
 export const DEFAULT_THREAT_PRESETS: ThreatIntelPresetInfo[] = [
   {
-    key: 'feodo',
-    name: 'abuse.ch Feodo C2 IP 清单（CC0-1.0）',
+    key: 'ipsum_l5',
+    name: 'IPsum 高置信恶意 IP 清单 (Level 5)',
+    description: '每日更新的高置信恶意 IPv4 清单，收录同时被至少 5 个公开黑名单标记的攻击源（约 3,000+ 条）',
+    url: 'https://raw.githubusercontent.com/stamparm/ipsum/master/levels/5.txt',
     format: 'text',
-    license: 'CC0-1.0',
+    license: 'Unlicense',
+    default_ttl_days: 7,
+    default_cron: '0 4 * * *',
+    allow_cidr: false,
   },
   {
-    key: 'sslbl',
-    name: 'abuse.ch SSLBL 恶意 C2 IP 清单（CC0-1.0）',
+    key: 'spamhaus_drop',
+    name: 'Spamhaus DROP 恶意网段清单',
+    description: 'Spamhaus 劫持与僵尸网络恶意网段清单（启用 CIDR 仅导入 /16–/32 公网网段，约 1,700+ 条）',
+    url: 'https://www.spamhaus.org/drop/drop.txt',
+    format: 'text',
+    license: 'Spamhaus DROP (Free/Permissive)',
+    default_ttl_days: 30,
+    default_cron: '0 */12 * * *',
+    allow_cidr: true,
+  },
+  {
+    key: 'et_compromised',
+    name: 'Emerging Threats 失陷攻击主机清单',
+    description: 'Emerging Threats 活跃失陷攻击主机 IPv4 列表（约 500+ 条）',
+    url: 'https://rules.emergingthreats.net/blockrules/compromised-ips.txt',
+    format: 'text',
+    license: 'BSD-3-Clause',
+    default_ttl_days: 14,
+    default_cron: '0 */6 * * *',
+    allow_cidr: false,
+  },
+  {
+    key: 'feodo',
+    name: 'abuse.ch Feodo C2 IP 清单',
+    description: 'abuse.ch 活跃僵尸网络控制端（C2）精选 IPv4 列表，聚焦高危活跃 C2 节点（通常 1–50 条）',
+    url: 'https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt',
     format: 'text',
     license: 'CC0-1.0',
+    default_ttl_days: 30,
+    default_cron: '0 */6 * * *',
+    allow_cidr: false,
   },
 ]
 

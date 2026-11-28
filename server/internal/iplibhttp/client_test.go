@@ -192,19 +192,55 @@ func TestDownloaderOfficialHostAndSchemeValidation(t *testing.T) {
 		"raw.githubusercontent.com": {net.ParseIP("93.184.216.34")},
 		"github.com":                {net.ParseIP("93.184.216.34")},
 		"feodotracker.abuse.ch":     {net.ParseIP("93.184.216.34")},
+		"www.spamhaus.org":          {net.ParseIP("93.184.216.34")},
+		"rules.emergingthreats.net": {net.ParseIP("93.184.216.34")},
 		"sslbl.abuse.ch":            {net.ParseIP("93.184.216.34")},
 		"evil.example.com":          {net.ParseIP("93.184.216.34")},
 	}
 	d := NewDownloader(newMemSettingsStore(), nil).SetResolver(resolver)
 
+	samplePaths := map[string]string{
+		"download.db-ip.com":        "/free/dbip-city-lite-2026-11.mmdb.gz",
+		"download.maxmind.com":      "/geoip/databases/GeoLite2-City/download",
+		"raw.githubusercontent.com": "/stamparm/ipsum/master/levels/5.txt",
+		"github.com":                "/lionsoul2014/ip2region/releases",
+		"feodotracker.abuse.ch":     "/downloads/ipblocklist_recommended.txt",
+		"www.spamhaus.org":          "/drop/drop.txt",
+		"rules.emergingthreats.net": "/blockrules/compromised-ips.txt",
+	}
 	for host := range OfficialHosts {
-		if err := d.ValidateTargetURL(context.Background(), SourceModeOfficial, "https://"+host+"/file"); err != nil {
-			t.Errorf("official host %s should pass: %v", host, err)
+		p := samplePaths[host]
+		if p == "" {
+			p = "/file"
 		}
-		if err := d.ValidateTargetURL(context.Background(), SourceModeOfficial, "http://"+host+"/file"); !errors.Is(err, outboundhttp.ErrDenied) {
-			t.Errorf("official host http://%s should be denied, got %v", host, err)
+		if err := d.ValidateTargetURL(context.Background(), SourceModeOfficial, "https://"+host+p); err != nil {
+			t.Errorf("official host %s%s should pass: %v", host, p, err)
+		}
+		if err := d.ValidateTargetURL(context.Background(), SourceModeOfficial, "http://"+host+p); !errors.Is(err, outboundhttp.ErrDenied) {
+			t.Errorf("official host http://%s%s should be denied, got %v", host, p, err)
 		}
 	}
+
+	// 受路径前缀限定的官方主机：越界路径与路径穿越必须拒绝
+	for _, badOfficialPath := range []string{
+		"https://www.spamhaus.org/file",
+		"https://www.spamhaus.org/drop/",
+		"https://www.spamhaus.org/dropout/list.txt",
+		"https://www.spamhaus.org/drop/../secret.txt",
+		"https://www.spamhaus.org/drop/%2e%2e/secret.txt",
+		"https://rules.emergingthreats.net/file",
+		"https://rules.emergingthreats.net/blockrules/",
+		"https://rules.emergingthreats.net/blockrules-extra/list.txt",
+		"https://rules.emergingthreats.net/blockrules/../secret.txt",
+		"https://rules.emergingthreats.net/blockrules/%2e%2e/secret.txt",
+		// 已停用的 sslbl.abuse.ch 不再允许作为官方源
+		"https://sslbl.abuse.ch/blacklist/sslipblacklist.txt",
+	} {
+		if err := d.ValidateTargetURL(context.Background(), SourceModeOfficial, badOfficialPath); !errors.Is(err, outboundhttp.ErrDenied) {
+			t.Errorf("disallowed official URL %s should be denied, got %v", badOfficialPath, err)
+		}
+	}
+
 	if err := d.ValidateTargetURL(context.Background(), SourceModeOfficial, "https://evil.example.com/file"); !errors.Is(err, outboundhttp.ErrDenied) {
 		t.Fatalf("non-official host should be denied, got %v", err)
 	}

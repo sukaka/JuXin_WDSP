@@ -140,6 +140,7 @@ export default function ThreatIntelTab({ canManage, canImport }: ThreatIntelTabP
     () => (data?.presets && data.presets.length > 0 ? data.presets : DEFAULT_THREAT_PRESETS),
     [data?.presets],
   )
+  const presetMap = useMemo(() => new Map(presets.map((p) => [p.key, p])), [presets])
   const circuitOpenFeeds = useMemo(() => feeds.filter((f) => f.circuit_open), [feeds])
 
   useEffect(() => {
@@ -326,10 +327,32 @@ export default function ThreatIntelTab({ canManage, canImport }: ThreatIntelTabP
     setFeedModalOpen(true)
   }
 
+  const applyPresetDefaults = (presetKey: string) => {
+    const preset = presetMap.get(presetKey)
+    if (!preset) return
+    const patch: Partial<FeedFormValues> = {
+      format: preset.format === 'csv' ? 'csv' : 'text',
+      allow_cidr: Boolean(preset.allow_cidr),
+      ttl_days: preset.default_ttl_days ?? 30,
+      schedule_cron: preset.default_cron || '0 */6 * * *',
+    }
+    if (!editingFeed) {
+      const currentName = (feedForm.getFieldValue('name') as string | undefined)?.trim()
+      const currentDesc = (feedForm.getFieldValue('description') as string | undefined)?.trim()
+      if (!currentName || presets.some((p) => p.name === currentName)) {
+        patch.name = preset.name
+      }
+      if (!currentDesc || presets.some((p) => (p.description ?? '') === currentDesc)) {
+        patch.description = preset.description ?? ''
+      }
+    }
+    feedForm.setFieldsValue(patch)
+  }
+
   const openImportDrawer = (defaultFeedKey?: string) => {
     setImportResult(null)
     importForm.setFieldsValue({
-      feed: defaultFeedKey || feeds[0]?.feed_key || 'feodo',
+      feed: defaultFeedKey || feeds[0]?.feed_key || 'ipsum_l5',
       format: 'text',
       ttl_days: 30,
       content: '',
@@ -342,28 +365,33 @@ export default function ThreatIntelTab({ canManage, canImport }: ThreatIntelTabP
       title: '订阅源名称',
       key: 'name',
       width: 240,
-      render: (_, record) => (
-        <Space direction="vertical" size={2}>
-          <Space size={6} wrap>
-            <Typography.Text strong>{record.name}</Typography.Text>
-            <Tag color={record.is_builtin ? 'blue' : 'purple'}>
-              {record.is_builtin ? '内置 CC0' : '自定义'}
-            </Tag>
+      render: (_, record) => {
+        const presetLicense =
+          record.source_mode === 'OFFICIAL' ? presetMap.get(record.official_preset)?.license : undefined
+        return (
+          <Space direction="vertical" size={2}>
+            <Space size={6} wrap>
+              <Typography.Text strong>{record.name}</Typography.Text>
+              <Tag color={record.is_builtin ? 'blue' : 'purple'}>
+                {record.is_builtin ? '内置' : '自定义'}
+              </Tag>
+              {presetLicense && <Tag color="geekblue">{presetLicense}</Tag>}
+            </Space>
+            <Space size={6}>
+              <Typography.Text code style={{ fontSize: 12 }}>
+                {record.feed_key}
+              </Typography.Text>
+              {record.description && (
+                <Tooltip title={record.description}>
+                  <Typography.Text type="secondary" ellipsis style={{ fontSize: 12, maxWidth: 160 }}>
+                    {record.description}
+                  </Typography.Text>
+                </Tooltip>
+              )}
+            </Space>
           </Space>
-          <Space size={6}>
-            <Typography.Text code style={{ fontSize: 12 }}>
-              {record.feed_key}
-            </Typography.Text>
-            {record.description && (
-              <Tooltip title={record.description}>
-                <Typography.Text type="secondary" ellipsis style={{ fontSize: 12, maxWidth: 160 }}>
-                  {record.description}
-                </Typography.Text>
-              </Tooltip>
-            )}
-          </Space>
-        </Space>
-      ),
+        )
+      },
     },
     {
       title: '来源与格式',
@@ -857,7 +885,21 @@ export default function ThreatIntelTab({ canManage, canImport }: ThreatIntelTabP
                 label="来源模式"
                 rules={[{ required: true, message: '请选择来源模式' }]}
               >
-                <Select options={SOURCE_MODE_OPTIONS} />
+                <Select
+                  options={SOURCE_MODE_OPTIONS}
+                  onChange={(mode: FeedFormValues['source_mode']) => {
+                    if (mode === 'OFFICIAL') {
+                      const currentPreset = feedForm.getFieldValue('official_preset') as
+                        | string
+                        | undefined
+                      const nextPreset = currentPreset || presets[0]?.key
+                      if (nextPreset) {
+                        feedForm.setFieldValue('official_preset', nextPreset)
+                        applyPresetDefaults(nextPreset)
+                      }
+                    }
+                  }}
+                />
               </Form.Item>
             </Col>
             <Form.Item
@@ -871,13 +913,15 @@ export default function ThreatIntelTab({ canManage, canImport }: ThreatIntelTabP
                     <Col xs={24} sm={14}>
                       <Form.Item
                         name="official_preset"
-                        label="官方预置源（CC0 宽松许可）"
+                        label="官方预置源（宽松许可）"
                         rules={[{ required: true, message: '请选择官方预置源' }]}
                       >
                         <Select
+                          placeholder="请选择官方预置源"
+                          onChange={(val: string) => applyPresetDefaults(val)}
                           options={presets.map((p) => ({
                             value: p.key,
-                            label: p.name,
+                            label: p.license ? `${p.name}（${p.license}）` : p.name,
                           }))}
                         />
                       </Form.Item>
@@ -1041,7 +1085,7 @@ export default function ThreatIntelTab({ canManage, canImport }: ThreatIntelTabP
                     },
                   ]}
                 >
-                  <Input placeholder="例如：feodo / sslbl / custom_feed" />
+                  <Input placeholder="例如：ipsum_l5 / spamhaus_drop / feodo / custom_feed" />
                 </Form.Item>
                 {feeds.length > 0 && (
                   <Space size={4} wrap style={{ marginTop: -12, marginBottom: 12 }}>

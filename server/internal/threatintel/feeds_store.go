@@ -183,9 +183,9 @@ func scanFeed(row pgx.Row) (*Feed, error) {
 	return &f, nil
 }
 
-// ListFeeds 返回全部订阅源（预置官方源在前，其余按 feed_key 字典序）。
+// ListFeeds 返回全部订阅源（预置高体量官方源在前，其余按 feed_key 字典序）。
 func (s *PGFeedStore) ListFeeds(ctx context.Context) ([]Feed, error) {
-	rows, err := s.db.Query(ctx, `SELECT `+feedColumns+` FROM threat_intel_feeds ORDER BY is_builtin DESC, feed_key ASC`)
+	rows, err := s.db.Query(ctx, `SELECT `+feedColumns+` FROM threat_intel_feeds ORDER BY is_builtin DESC, CASE feed_key WHEN 'ipsum_l5' THEN 1 WHEN 'spamhaus_drop' THEN 2 WHEN 'et_compromised' THEN 3 WHEN 'feodo' THEN 4 ELSE 50 END, feed_key ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list threat_intel_feeds: %w", err)
 	}

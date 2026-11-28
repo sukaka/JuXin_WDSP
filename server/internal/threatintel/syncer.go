@@ -1,6 +1,6 @@
 // syncer.go 威胁情报在线拉取、条件请求短路、空集/骤降护栏、连续失败熔断与后台定时调度器。
-// 仅内建 CC0 许可官方源（abuse.ch Feodo / SSLBL），严守 AGENTS.md 宽松许可证底线，
-// 明确排除 GPL-2.0 FireHOL；零编译依赖 iplibhttp，通过窄接口 FeedDownloader 与 URLValidator 注入。
+// 仅内建宽松许可活跃官方源（IPsum Level 5 / Spamhaus DROP / Emerging Threats Compromised / abuse.ch Feodo），
+// 严守 AGENTS.md 宽松许可证底线，明确排除 GPL-2.0 FireHOL；零编译依赖 iplibhttp，通过窄接口 FeedDownloader 与 URLValidator 注入。
 package threatintel
 
 import (
@@ -23,7 +23,7 @@ const (
 	AlertTypeCircuitOpen = "THREAT_INTEL_CIRCUIT_OPEN"
 )
 
-// OfficialPreset 是系统内置 CC0 官方威胁情报订阅源定义。
+// OfficialPreset 是系统内置宽松许可官方威胁情报订阅源定义。
 type OfficialPreset struct {
 	Key            string `json:"key"`
 	Name           string `json:"name"`
@@ -36,33 +36,55 @@ type OfficialPreset struct {
 	AllowCIDR      bool   `json:"allow_cidr"`
 }
 
-// builtinOfficialPresets 仅包含 CC0 许可的官方源（绝不包含 GPL/AGPL 源）。
+// builtinOfficialPresets 仅包含宽松许可且活跃维护的官方源（高体量源在前，绝不包含 GPL/AGPL 源）。
 var builtinOfficialPresets = []OfficialPreset{
 	{
-		Key:            "feodo",
-		Name:           "abuse.ch Feodo C2 IP 清单",
-		Description:    "僵尸网络控制端（C2）推荐封禁 IPv4 列表",
-		URL:            "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt",
+		Key:            "ipsum_l5",
+		Name:           "IPsum 高置信恶意 IP 清单 (Level 5)",
+		Description:    "每日更新的高置信恶意 IPv4 清单，收录同时被至少 5 个公开黑名单标记的攻击源（约 3,000+ 条，Unlicense 许可）",
+		URL:            "https://raw.githubusercontent.com/stamparm/ipsum/master/levels/5.txt",
 		Format:         "text",
-		License:        "CC0-1.0",
-		DefaultTTLDays: DefaultTTLDays,
-		DefaultCron:    DefaultScheduleCron,
+		License:        "Unlicense",
+		DefaultTTLDays: 7,
+		DefaultCron:    "0 4 * * *",
 		AllowCIDR:      false,
 	},
 	{
-		Key:            "sslbl",
-		Name:           "abuse.ch SSLBL 恶意 C2 IP 清单",
-		Description:    "恶意 SSL 证书关联僵尸网络 C2 IPv4 列表",
-		URL:            "https://sslbl.abuse.ch/blacklist/sslipblacklist.txt",
+		Key:            "spamhaus_drop",
+		Name:           "Spamhaus DROP 恶意网段清单",
+		Description:    "Spamhaus 劫持与僵尸网络恶意网段清单（启用 CIDR 仅导入 /16–/32 公网网段，/11–/15 宽网段自动拒绝，约 1,700+ 条）",
+		URL:            "https://www.spamhaus.org/drop/drop.txt",
+		Format:         "text",
+		License:        "Spamhaus DROP (Free/Permissive)",
+		DefaultTTLDays: 30,
+		DefaultCron:    "0 */12 * * *",
+		AllowCIDR:      true,
+	},
+	{
+		Key:            "et_compromised",
+		Name:           "Emerging Threats 失陷攻击主机清单",
+		Description:    "Emerging Threats 活跃失陷攻击主机 IPv4 列表（约 500+ 条，BSD-3-Clause 许可）",
+		URL:            "https://rules.emergingthreats.net/blockrules/compromised-ips.txt",
+		Format:         "text",
+		License:        "BSD-3-Clause",
+		DefaultTTLDays: 14,
+		DefaultCron:    "0 */6 * * *",
+		AllowCIDR:      false,
+	},
+	{
+		Key:            "feodo",
+		Name:           "abuse.ch Feodo C2 IP 清单",
+		Description:    "abuse.ch 活跃僵尸网络控制端（C2）精选 IPv4 列表，聚焦高危活跃 C2 节点（通常 1–50 条，CC0-1.0 许可）",
+		URL:            "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt",
 		Format:         "text",
 		License:        "CC0-1.0",
-		DefaultTTLDays: DefaultTTLDays,
-		DefaultCron:    DefaultScheduleCron,
+		DefaultTTLDays: 30,
+		DefaultCron:    "0 */6 * * *",
 		AllowCIDR:      false,
 	},
 }
 
-// OfficialPresets 返回内置 CC0 官方威胁情报源副本列表。
+// OfficialPresets 返回内置宽松许可官方威胁情报源副本列表。
 func OfficialPresets() []OfficialPreset {
 	out := make([]OfficialPreset, len(builtinOfficialPresets))
 	copy(out, builtinOfficialPresets)

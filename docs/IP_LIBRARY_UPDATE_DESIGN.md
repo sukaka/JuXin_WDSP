@@ -26,7 +26,7 @@
 |---|---|---|
 | 网络模式 | **离线优先 + 在线可选**（定时开关默认 `false`） | 纯离线/网闸客户零出站请求；有网或内网镜像客户按需开启定时更新 |
 | GeoIP 官方源范围 | **`ip2region` + `DB-IP Lite` + `MaxMind GeoLite2`（Account ID + License Key）** | 覆盖国内精准归属地与海外/IPv6 城市库；全部符合宽松许可/合规要求 |
-| 威胁情报官方源范围 | **`abuse.ch Feodo` + `abuse.ch SSLBL`（CC0）+ 自定义订阅源/内网镜像** | 严守 `AGENTS.md` 宽松许可证原则，明确排除 GPL-2.0 的 FireHOL |
+| 威胁情报官方源范围 | **`IPsum Level 5`（Unlicense）+ `Spamhaus DROP` + `Emerging Threats Compromised`（BSD-3-Clause）+ `abuse.ch Feodo`（CC0-1.0）+ 自定义订阅源/内网镜像** | 严守 `AGENTS.md` 宽松许可证原则，明确排除 GPL-2.0 的 FireHOL；替代已于 2025-01-03 停用的 `abuse.ch SSLBL` |
 | GeoIP 生效方式 | **`ReloadableEngine`（`atomic.Pointer[Engine]`）+ `.revision.json` 目录监听** | 零锁竞争、零重启切换；本机更新、离线上传、HA 同步或手工落盘均可 15 秒内热生效 |
 | 威胁情报生效方式 | **复用 `threatintel.Service.Import` + 批量去重发布** | 写入 PostgreSQL `ip_access_rules` 后经现有发布通道扇出至所有网关节点，天然兼容 HA |
 | 出站安全策略 | **内置官方源白名单 + 可选内网镜像/正向代理（复用 `outboundhttp`）** | 拨号期 DNS 重绑定复检、每跳重定向复检、跨 Host 剥离敏感头、硬阻断云元数据网段 |
@@ -155,12 +155,14 @@ flowchart TD
 
 每个订阅源拥有独立 `feed_key`（`^[a-z0-9][a-z0-9_-]{0,31}$`），复用于 `threatintel.Service.Import` 的 `reason LIKE '威胁情报 <feed_key> 批次%'` 命名空间隔离对账。
 
-| `feed_key` | 展示名称 | 格式 | 上游地址 | 许可证 | 默认 TTL |
+| `feed_key` | 展示名称 | 格式 / CIDR | 上游地址 | 许可证 | 默认 TTL / Cron |
 |---|---|---|---|---|---|
-| `feodo` | abuse.ch Feodo C2 IP 清单 | `text` / `csv` | `https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt` | **CC0-1.0** | 30 天 |
-| `sslbl` | abuse.ch SSLBL 恶意 C2 IP 清单 | `text` | `https://sslbl.abuse.ch/blacklist/sslipblacklist.txt` | **CC0-1.0** | 30 天 |
+| `ipsum_l5` | IPsum 高置信恶意 IP 清单 (Level 5) | `text` / 仅单 IP | `https://raw.githubusercontent.com/stamparm/ipsum/master/levels/5.txt` | **Unlicense** | 7 天 / `0 4 * * *` |
+| `spamhaus_drop` | Spamhaus DROP 恶意网段清单 | `text` / **允许 CIDR（`/16`–`/32`）** | `https://www.spamhaus.org/drop/drop.txt` | **Spamhaus DROP (Free/Permissive)** | 30 天 / `0 */12 * * *` |
+| `et_compromised` | Emerging Threats 失陷攻击主机清单 | `text` / 仅单 IP | `https://rules.emergingthreats.net/blockrules/compromised-ips.txt` | **BSD-3-Clause** | 14 天 / `0 */6 * * *` |
+| `feodo` | abuse.ch Feodo C2 IP 清单 | `text` / 仅单 IP（聚焦少量活跃 C2，通常 1–50 条） | `https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt` | **CC0-1.0** | 30 天 / `0 */6 * * *` |
 
-- 明确排除 FireHOL（GPL-2.0）；客户可通过 `CUSTOM_URL`（内网镜像/商业情报/SOC 导出）或 `OFFLINE_ONLY` 扩展。
+- 明确排除 FireHOL（GPL-2.0）；已于 2025-01-03 停止维护的 `abuse.ch SSLBL` 由迁移 `000257_threat_intel_active_presets` 清理/停用并替换为上述高体量活跃预置源；`Spamhaus DROP` 中极少量 `/11`–`/15` 超宽网段由既有 `/16`–`/32` 解析护栏自动拒绝；客户可通过 `CUSTOM_URL`（内网镜像/商业情报/SOC 导出）或 `OFFLINE_ONLY` 扩展。
 
 ### 4.2 解析器增强与自动化安全护栏
 
@@ -177,7 +179,7 @@ flowchart TD
 
 复用 `server/internal/outboundhttp`（拨号期 DNS 重绑定复检 + 每跳重定向复检 + 硬阻断云元数据网段）：
 - `OFFLINE_ONLY`：零出站；
-- `OFFICIAL`：仅允许硬编码官方域名白名单（`download.db-ip.com`、`download.maxmind.com`、`raw.githubusercontent.com`、`github.com`、`feodotracker.abuse.ch`、`sslbl.abuse.ch`），强制 HTTPS，允许最多 5 跳重定向且跨 Host 剥离敏感头；
+- `OFFICIAL`：仅允许硬编码官方域名与路径白名单（`download.db-ip.com`、`download.maxmind.com`、`raw.githubusercontent.com`、`github.com`、`feodotracker.abuse.ch`、`www.spamhaus.org`（限定 `/drop/` 路径前缀）、`rules.emergingthreats.net`（限定 `/blockrules/` 路径前缀）；已移除停用的 `sslbl.abuse.ch`），强制 HTTPS，允许最多 5 跳重定向且跨 Host 剥离敏感头；
 - `CUSTOM_URL`：默认仅公网 HTTPS；指向内网镜像须显式登记 `ip_library.outbound_allowlist`（CIDR 或精确主机名），且仅开启 `allow_insecure_http_mirror` 才对 allowlist 内网目标放宽 HTTP；云元数据网段永远硬拦截；
 - 可选正向代理（`ip_library.proxy_url` + 加密存储 `ip_library.proxy_auth_encrypted`）：校验代理地址合法性并阻断元数据网段，同时对目标 URL 独立做方案与主机检查。
 
@@ -216,7 +218,7 @@ flowchart TD
 
 - 位于左侧导航 **「访问控制 → IP 库与威胁情报」**（路由 `/ip-libraries`），可见权限要求 `geoip.read` 或 `threat_intel.read`，双页签布局：
   - **GeoIP 归属地库**：槽位状态、在线定时/MaxMind 凭据/出站代理配置、立即同步、离线上传（`.xdb`/`.mmdb`/`.gz`/`.tar.gz`）、历史版本回滚、HA 节点同步与运行日志；
-  - **威胁情报 IP 黑名单库**：订阅源管理（内置 Feodo/SSLBL + 自定义源）、定时/TTL/CIDR/防误清保护、立即拉取（支持人工确认忽略保护）、离线快照导入（接入现有 `/threat-intel/import`）与对账历史。
+  - **威胁情报 IP 黑名单库**：订阅源管理（内置 IPsum Level 5 / Spamhaus DROP / Emerging Threats Compromised / Feodo + 自定义源，迁移 `000257` 更新预置源种子）、定时/TTL/CIDR/防误清保护、立即拉取（支持人工确认忽略保护）、离线快照导入（接入现有 `/threat-intel/import`）与对账历史。
 
 ---
 

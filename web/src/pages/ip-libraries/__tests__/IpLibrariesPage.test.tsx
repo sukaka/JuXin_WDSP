@@ -142,16 +142,48 @@ const THREAT_FEEDS_DATA: ThreatIntelFeedsResponse = {
   },
   presets: [
     {
-      key: 'feodo',
-      name: 'abuse.ch Feodo C2 IP 清单（CC0-1.0）',
+      key: 'ipsum_l5',
+      name: 'IPsum 高置信恶意 IP 清单 (Level 5)',
+      description: '每日更新的高置信恶意 IPv4 清单，收录同时被至少 5 个公开黑名单标记的攻击源',
+      url: 'https://raw.githubusercontent.com/stamparm/ipsum/master/levels/5.txt',
       format: 'text',
-      license: 'CC0-1.0',
+      license: 'Unlicense',
+      default_ttl_days: 7,
+      default_cron: '0 4 * * *',
+      allow_cidr: false,
     },
     {
-      key: 'sslbl',
-      name: 'abuse.ch SSLBL 恶意 C2 IP 清单（CC0-1.0）',
+      key: 'spamhaus_drop',
+      name: 'Spamhaus DROP 恶意网段清单',
+      description: 'Spamhaus 劫持与僵尸网络恶意网段清单（/16–/32 CIDR）',
+      url: 'https://www.spamhaus.org/drop/drop.txt',
+      format: 'text',
+      license: 'Spamhaus DROP (Free/Permissive)',
+      default_ttl_days: 30,
+      default_cron: '0 */12 * * *',
+      allow_cidr: true,
+    },
+    {
+      key: 'et_compromised',
+      name: 'Emerging Threats 失陷攻击主机清单',
+      description: 'Emerging Threats 活跃失陷攻击主机 IPv4 列表',
+      url: 'https://rules.emergingthreats.net/blockrules/compromised-ips.txt',
+      format: 'text',
+      license: 'BSD-3-Clause',
+      default_ttl_days: 14,
+      default_cron: '0 */6 * * *',
+      allow_cidr: false,
+    },
+    {
+      key: 'feodo',
+      name: 'abuse.ch Feodo C2 IP 清单',
+      description: 'abuse.ch 活跃僵尸网络控制端（C2）精选 IPv4 列表（通常 1–50 条）',
+      url: 'https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt',
       format: 'text',
       license: 'CC0-1.0',
+      default_ttl_days: 30,
+      default_cron: '0 */6 * * *',
+      allow_cidr: false,
     },
   ],
   feeds: [
@@ -159,7 +191,7 @@ const THREAT_FEEDS_DATA: ThreatIntelFeedsResponse = {
       id: 'feed-feodo',
       feed_key: 'feodo',
       name: 'abuse.ch Feodo C2 IP 清单',
-      description: '僵尸网络控制端推荐封禁 IPv4 列表',
+      description: 'abuse.ch 活跃僵尸网络控制端（C2）精选 IPv4 列表（通常 1–50 条）',
       is_builtin: true,
       enabled: true,
       source_mode: 'OFFICIAL',
@@ -177,6 +209,29 @@ const THREAT_FEEDS_DATA: ThreatIntelFeedsResponse = {
       last_sync_at: '2026-11-28T05:00:00Z',
       last_status: 'GUARD_ABORTED',
       last_error: '新批次条目缩水 92%，触发骤降保护',
+    },
+    {
+      id: 'feed-ipsum',
+      feed_key: 'ipsum_l5',
+      name: 'IPsum 高置信恶意 IP 清单 (Level 5)',
+      description: '每日更新的高置信恶意 IPv4 清单',
+      is_builtin: true,
+      enabled: false,
+      source_mode: 'OFFICIAL',
+      official_preset: 'ipsum_l5',
+      custom_url: '',
+      format: 'text',
+      allow_cidr: false,
+      ttl_days: 7,
+      schedule_cron: '0 4 * * *',
+      min_entries_guard: true,
+      max_drop_ratio: 0.8,
+      active_rule_count: 0,
+      consecutive_failures: 0,
+      circuit_open: false,
+      last_sync_at: null,
+      last_status: 'IDLE',
+      last_error: '',
     },
     {
       id: 'feed-soc',
@@ -365,6 +420,19 @@ function createFetchMock() {
     }
     if (url.includes('/threat-intel/settings') && method === 'PUT') {
       return ok({ auto_update_enabled: true, circuit_threshold: 5 })
+    }
+    if (url.includes('/threat-intel/feeds') && method === 'POST') {
+      const reqBody = init?.body ? JSON.parse(String(init.body)) : {}
+      return ok({
+        id: 'feed-created',
+        ...reqBody,
+        is_builtin: false,
+        active_rule_count: 0,
+        consecutive_failures: 0,
+        circuit_open: false,
+        last_status: 'IDLE',
+        last_error: '',
+      })
     }
     if (url.includes('/threat-intel/feeds') && method === 'GET') {
       return ok(THREAT_FEEDS_DATA)
@@ -575,6 +643,12 @@ describe('IpLibrariesPage IP 库与威胁情报', () => {
     // 切换到威胁情报页签
     fireEvent.click(screen.getByRole('tab', { name: /威胁情报 IP 黑名单库/ }))
     expect(await screen.findByText('abuse.ch Feodo C2 IP 清单')).toBeInTheDocument()
+    expect(screen.getByText('IPsum 高置信恶意 IP 清单 (Level 5)')).toBeInTheDocument()
+    // 内置标签显示「内置」与真实许可证标签，不再硬编码「内置 CC0」
+    expect(screen.queryByText('内置 CC0')).not.toBeInTheDocument()
+    expect(screen.getAllByText('内置').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText('Unlicense')).toBeInTheDocument()
+    expect(screen.getByText('CC0-1.0')).toBeInTheDocument()
     expect(screen.getByText(/共有 1 个威胁情报源处于熔断状态/)).toBeInTheDocument()
 
     // 护栏中止源显示强制同步按钮，二次确认后调用 force_ignore_guard: true
@@ -682,5 +756,75 @@ describe('IpLibrariesPage IP 库与威胁情报', () => {
     expect(screen.queryByRole('button', { name: /离线快照导入/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /强制同步/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /保存调度设置/ })).not.toBeInTheDocument()
+  })
+
+  it('威胁情报新建弹窗切换官方预置源自动联动 allow_cidr / ttl_days / schedule_cron 默认值', async () => {
+    renderPage()
+    await screen.findByText('ip2region IPv4（国内省市/运营商）')
+
+    fireEvent.click(screen.getByRole('tab', { name: /威胁情报 IP 黑名单库/ }))
+    expect(await screen.findByText('abuse.ch Feodo C2 IP 清单')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /新建自定义源/ }))
+    const dialog = await screen.findByRole('dialog')
+
+    // 填写 feed_key 并切换来源模式为 OFFICIAL（自动选中首个预置源 ipsum_l5）
+    fireEvent.change(within(dialog).getByPlaceholderText(/corp_soc_blocklist/), {
+      target: { value: 'custom_drop' },
+    })
+    const modeSelect = within(dialog).getByLabelText('来源模式')
+    fireEvent.mouseDown(modeSelect)
+    fireEvent.click(await screen.findByText('官方源（硬编码域名白名单 HTTPS）'))
+
+    await waitFor(() => {
+      expect((within(dialog).getByLabelText('定时 Cron（5 位）') as HTMLInputElement).value).toBe(
+        '0 4 * * *',
+      )
+      expect(
+        (within(dialog).getByLabelText('规则有效期（天，0=永久）') as HTMLInputElement).value,
+      ).toBe('7')
+      expect(within(dialog).getByLabelText('允许解析 IPv4 CIDR')).toHaveAttribute(
+        'aria-checked',
+        'false',
+      )
+    })
+
+    // 切换预置源至 spamhaus_drop -> 自动开启 allow_cidr 并更新 TTL=30 与 Cron=0 */12 * * *
+    const presetSelect = within(dialog).getByLabelText('官方预置源（宽松许可）')
+    fireEvent.mouseDown(presetSelect)
+    fireEvent.click(
+      await screen.findByText('Spamhaus DROP 恶意网段清单（Spamhaus DROP (Free/Permissive)）'),
+    )
+
+    await waitFor(() => {
+      expect((within(dialog).getByLabelText('定时 Cron（5 位）') as HTMLInputElement).value).toBe(
+        '0 */12 * * *',
+      )
+      expect(
+        (within(dialog).getByLabelText('规则有效期（天，0=永久）') as HTMLInputElement).value,
+      ).toBe('30')
+      expect(within(dialog).getByLabelText('允许解析 IPv4 CIDR')).toHaveAttribute(
+        'aria-checked',
+        'true',
+      )
+    })
+
+    // 提交保存，验证 POST /threat-intel/feeds 携带联动后的字段
+    fireEvent.click(within(dialog).getByRole('button', { name: /保\s*存/ }))
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls.find(
+        (c) => String(c[0]).includes('/threat-intel/feeds') && c[1]?.method === 'POST',
+      )
+      expect(postCall).toBeDefined()
+      expect(JSON.parse(String(postCall?.[1]?.body))).toMatchObject({
+        feed_key: 'custom_drop',
+        source_mode: 'OFFICIAL',
+        official_preset: 'spamhaus_drop',
+        format: 'text',
+        allow_cidr: true,
+        ttl_days: 30,
+        schedule_cron: '0 */12 * * *',
+      })
+    })
   })
 })

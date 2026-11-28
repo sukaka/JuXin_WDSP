@@ -55,12 +55,41 @@ var OfficialHosts = map[string]bool{
 	"raw.githubusercontent.com": true,
 	"github.com":                true,
 	"feodotracker.abuse.ch":     true,
-	"sslbl.abuse.ch":            true,
+	"www.spamhaus.org":          true,
+	"rules.emergingthreats.net": true,
+}
+
+// OfficialHostPathPrefixes 限定特定官方主机在 OFFICIAL 模式下允许访问的路径前缀（防同域非清单路径滥用）。
+var OfficialHostPathPrefixes = map[string][]string{
+	"www.spamhaus.org":          {"/drop/"},
+	"rules.emergingthreats.net": {"/blockrules/"},
 }
 
 // IsOfficialHost 判断主机名是否命中官方硬编码白名单（大小写不敏感，容忍末尾根点）。
 func IsOfficialHost(host string) bool {
 	return OfficialHosts[normalizeHost(host)]
+}
+
+// IsOfficialURLAllowed 判断主机与路径是否满足 OFFICIAL 模式硬编码主机及路径前缀白名单。
+func IsOfficialURLAllowed(host, urlPath string) bool {
+	norm := normalizeHost(host)
+	if !OfficialHosts[norm] {
+		return false
+	}
+	prefixes, restricted := OfficialHostPathPrefixes[norm]
+	if !restricted {
+		return true
+	}
+	if strings.Contains(urlPath, "\\") {
+		return false
+	}
+	cleaned := path.Clean("/" + strings.TrimPrefix(urlPath, "/"))
+	for _, p := range prefixes {
+		if strings.HasPrefix(cleaned, p) {
+			return true
+		}
+	}
+	return false
 }
 
 var (
@@ -216,8 +245,13 @@ func (d *Downloader) validateTargetWithSettings(
 		if u.Scheme != "https" {
 			return nil, fmt.Errorf("%w: 官方源仅允许 https 协议", outboundhttp.ErrDenied)
 		}
-		if isInitialHop && !IsOfficialHost(host) {
-			return nil, fmt.Errorf("%w: 官方源主机 %s 不在硬编码白名单内", outboundhttp.ErrDenied, host)
+		if isInitialHop {
+			if !IsOfficialHost(host) {
+				return nil, fmt.Errorf("%w: 官方源主机 %s 不在硬编码白名单内", outboundhttp.ErrDenied, host)
+			}
+			if !IsOfficialURLAllowed(host, u.Path) {
+				return nil, fmt.Errorf("%w: 官方源路径 %s 不在主机 %s 允许的路径前缀白名单内", outboundhttp.ErrDenied, u.Path, host)
+			}
 		}
 		if isLocalhostName(host) {
 			return nil, fmt.Errorf("%w: 官方源禁止访问本地回环主机", outboundhttp.ErrDenied)

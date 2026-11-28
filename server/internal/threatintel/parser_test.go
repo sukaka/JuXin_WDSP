@@ -319,3 +319,70 @@ func TestParseCSVWithOptions_CIDR(t *testing.T) {
 		t.Fatalf("ErrorTotal=%d, want 2", res.ErrorTotal)
 	}
 }
+
+func TestParseTextWithOptions_SpamhausDROPRealFormat(t *testing.T) {
+	sample := strings.Join([]string{
+		"; Spamhaus DROP List 2026/11/28 - (c) 2026 The Spamhaus Project",
+		"; https://www.spamhaus.org/drop/drop.txt",
+		"; Last-Modified: Sat, 28 Nov 2026 04:00:00 UTC",
+		"1.10.16.0/20 ; SBL256894",
+		"1.10.0.0/11 ; SBL999001",
+		"2.57.122.0/24 ; SBL512345",
+		"45.0.0.0/15 ; SBL999002",
+		"45.134.26.0/23 ; SBL600100",
+		"198.51.100.192/26 ; SBL700001",
+	}, "\n")
+
+	res := ParseTextWithOptions(sample, ParseOptions{AllowCIDR: true})
+	want := []string{"1.10.16.0/20", "2.57.122.0/24", "45.134.26.0/23", "198.51.100.192/26"}
+	if len(res.Entries) != len(want) {
+		t.Fatalf("entries=%d, want %d: %+v", len(res.Entries), len(want), res.Entries)
+	}
+	for i, w := range want {
+		if res.Entries[i].IP != w {
+			t.Errorf("entry[%d].IP=%s, want %s", i, res.Entries[i].IP, w)
+		}
+	}
+	if res.ErrorTotal != 2 {
+		t.Fatalf("ErrorTotal=%d, want 2 (/11 and /15 rejected by /16 guard): %+v", res.ErrorTotal, res.Errors)
+	}
+	for _, rowErr := range res.Errors {
+		if !strings.Contains(rowErr.Error, "/16") {
+			t.Errorf("expected /16 guard error, got: %+v", rowErr)
+		}
+	}
+
+	// 同样本在 AllowCIDR=false 时全部 CIDR 行均被拒绝
+	noCIDR := ParseTextWithOptions(sample, ParseOptions{AllowCIDR: false})
+	if len(noCIDR.Entries) != 0 || noCIDR.ErrorTotal != 6 {
+		t.Fatalf("AllowCIDR=false: entries=%d errors=%d, want 0/6", len(noCIDR.Entries), noCIDR.ErrorTotal)
+	}
+}
+
+func TestParseText_IPsumAndETPlainFormat(t *testing.T) {
+	ipsumSample := "# IPsum level 5 (https://github.com/stamparm/ipsum)\r\n" +
+		"# Updated daily\r\n" +
+		"1.186.178.203\r\n" +
+		"45.95.147.200\r\n" +
+		"1.186.178.203\r\n" +
+		"185.220.101.4 \r\n"
+	resIPsum := ParseText(ipsumSample)
+	if resIPsum.ErrorTotal != 0 {
+		t.Fatalf("IPsum unexpected errors: %+v", resIPsum.Errors)
+	}
+	wantIPsum := []string{"1.186.178.203", "45.95.147.200", "185.220.101.4"}
+	if len(resIPsum.Entries) != len(wantIPsum) {
+		t.Fatalf("IPsum entries=%d, want %d: %+v", len(resIPsum.Entries), len(wantIPsum), resIPsum.Entries)
+	}
+	for i, w := range wantIPsum {
+		if resIPsum.Entries[i].IP != w {
+			t.Errorf("IPsum entry[%d]=%s, want %s", i, resIPsum.Entries[i].IP, w)
+		}
+	}
+
+	etSample := "5.188.206.14\n91.240.118.172\n194.26.135.88\n"
+	resET := ParseText(etSample)
+	if resET.ErrorTotal != 0 || len(resET.Entries) != 3 {
+		t.Fatalf("ET Compromised parse wrong: entries=%+v errors=%+v", resET.Entries, resET.Errors)
+	}
+}

@@ -112,7 +112,7 @@ func noTestPrincipal(next http.Handler) http.Handler { return next }
 
 func TestFeedsHandler_RBACAndFullLifecycle(t *testing.T) {
 	feodoID := uuid.New()
-	sslblID := uuid.New()
+	ipsumID := uuid.New()
 	repo := newMemFeedRepo(
 		&Feed{
 			ID: feodoID, FeedKey: "feodo", Name: "abuse.ch Feodo C2 IP 清单",
@@ -121,9 +121,9 @@ func TestFeedsHandler_RBACAndFullLifecycle(t *testing.T) {
 			MinEntriesGuard: true, MaxDropRatio: 0.80, ActiveRuleCount: 12,
 		},
 		&Feed{
-			ID: sslblID, FeedKey: "sslbl", Name: "abuse.ch SSLBL 恶意 C2 IP 清单",
-			IsBuiltin: true, Enabled: false, SourceMode: SourceModeOfficial, OfficialPreset: "sslbl",
-			Format: "text", TTLDays: 30, ScheduleCron: DefaultScheduleCron,
+			ID: ipsumID, FeedKey: "ipsum_l5", Name: "IPsum 高置信恶意 IP 清单 (Level 5)",
+			IsBuiltin: true, Enabled: false, SourceMode: SourceModeOfficial, OfficialPreset: "ipsum_l5",
+			Format: "text", TTLDays: 7, ScheduleCron: "0 4 * * *",
 			MinEntriesGuard: true, MaxDropRatio: 0.80, CircuitOpen: true, ConsecutiveFailures: 5,
 		},
 	)
@@ -191,8 +191,11 @@ func TestFeedsHandler_RBACAndFullLifecycle(t *testing.T) {
 	if listResp.Data.Summary.EnabledCount != 1 || listResp.Data.Summary.TotalActiveRules != 12 || listResp.Data.Summary.CircuitOpenCount != 1 {
 		t.Fatalf("summary wrong: %+v", listResp.Data.Summary)
 	}
-	if len(listResp.Data.Presets) != 2 || len(listResp.Data.Feeds) != 2 {
-		t.Fatalf("presets=%d feeds=%d, want 2/2", len(listResp.Data.Presets), len(listResp.Data.Feeds))
+	if len(listResp.Data.Presets) != 4 || len(listResp.Data.Feeds) != 2 {
+		t.Fatalf("presets=%d feeds=%d, want 4/2", len(listResp.Data.Presets), len(listResp.Data.Feeds))
+	}
+	if listResp.Data.Presets[0].Key != "ipsum_l5" || listResp.Data.Presets[1].Key != "spamhaus_drop" {
+		t.Fatalf("expected ipsum_l5 & spamhaus_drop first, got %+v", listResp.Data.Presets)
 	}
 
 	// 2b. PUT /settings validation & persistence
@@ -216,12 +219,31 @@ func TestFeedsHandler_RBACAndFullLifecycle(t *testing.T) {
 		t.Fatalf("updated settings wrong: %+v", stResp.Data)
 	}
 
-	// 2c. POST /feeds rejects SSRF URL
+	// 2c. POST /feeds rejects SSRF URL and deprecated sslbl preset; accepts active official preset defaults
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/threat-intel/feeds",
 		strings.NewReader(`{"feed_key":"bad_ssrf","name":"Bad","source_mode":"CUSTOM_URL","custom_url":"http://169.254.169.254/latest/meta-data/"}`)))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("SSRF custom_url got %d, want 400", w.Code)
+	}
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/threat-intel/feeds",
+		strings.NewReader(`{"feed_key":"old_sslbl","name":"Deprecated SSLBL","source_mode":"OFFICIAL","official_preset":"sslbl"}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("deprecated sslbl preset got %d, want 400", w.Code)
+	}
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/threat-intel/feeds",
+		strings.NewReader(`{"feed_key":"drop_mirror","name":"Spamhaus DROP 副本","source_mode":"OFFICIAL","official_preset":"spamhaus_drop"}`)))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("POST official spamhaus_drop preset got %d: %s", w.Code, w.Body.String())
+	}
+	var dropResp struct {
+		Data Feed `json:"data"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &dropResp)
+	if !dropResp.Data.AllowCIDR || dropResp.Data.TTLDays != 30 || dropResp.Data.ScheduleCron != "0 */12 * * *" {
+		t.Fatalf("expected spamhaus_drop defaults inherited, got %+v", dropResp.Data)
 	}
 
 	// 2d. POST /feeds creates custom feed, duplicate key -> 409

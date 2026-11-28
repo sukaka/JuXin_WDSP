@@ -34536,8 +34536,10 @@ components:
         key:
           type: string
           enum:
+          - ipsum_l5
+          - spamhaus_drop
+          - et_compromised
           - feodo
-          - sslbl
         name:
           type: string
         description:
@@ -71961,7 +71963,7 @@ paths:
       tags:
       - ip-libraries
       summary: 查询威胁情报订阅源列表与全局状态
-      description: 返回威胁情报全局定时与熔断设置、启用与在册黑名单统计摘要、内置 CC0 官方预置源（Feodo / SSLBL）以及全部订阅源配置与运行态。权限：`threat_intel.read`
+      description: 返回威胁情报全局定时与熔断设置、启用与在册黑名单统计摘要、内置宽松许可官方预置源（ipsum_l5 / spamhaus_drop / et_compromised / feodo）以及全部订阅源配置与运行态。权限：`threat_intel.read`
       responses:
         '200':
           description: 威胁情报订阅源总览与列表

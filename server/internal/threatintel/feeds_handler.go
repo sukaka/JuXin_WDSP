@@ -278,6 +278,22 @@ func (h *FeedsHandler) CreateFeed(w http.ResponseWriter, r *http.Request) {
 	if feed.SourceMode == "" {
 		feed.SourceMode = SourceModeOfflineOnly
 	}
+	if feed.SourceMode == SourceModeOfficial {
+		if preset, ok := LookupOfficialPreset(feed.OfficialPreset); ok {
+			if feed.Format == "" {
+				feed.Format = preset.Format
+			}
+			if req.AllowCIDR == nil {
+				feed.AllowCIDR = preset.AllowCIDR
+			}
+			if req.TTLDays == nil {
+				feed.TTLDays = preset.DefaultTTLDays
+			}
+			if feed.ScheduleCron == "" {
+				feed.ScheduleCron = preset.DefaultCron
+			}
+		}
+	}
 	if feed.Format == "" {
 		feed.Format = "text"
 	}
@@ -671,7 +687,12 @@ func (h *FeedsHandler) validateFeedFields(ctx context.Context, f *Feed) error {
 		f.CustomURL = ""
 	case SourceModeOfficial:
 		if _, ok := LookupOfficialPreset(f.OfficialPreset); !ok {
-			return fmt.Errorf("官方预置源无效（仅支持 CC0 预置源 feodo / sslbl）: %q", f.OfficialPreset)
+			presets := OfficialPresets()
+			keys := make([]string, 0, len(presets))
+			for _, p := range presets {
+				keys = append(keys, p.Key)
+			}
+			return fmt.Errorf("官方预置源无效（仅支持宽松许可预置源 %s）: %q", strings.Join(keys, " / "), f.OfficialPreset)
 		}
 		f.CustomURL = ""
 	case SourceModeCustomURL:
