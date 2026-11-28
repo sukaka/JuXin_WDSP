@@ -10,14 +10,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/encryption"
+	"github.com/jiuzhang-waf/server/internal/rulepacks"
 )
 
 // MaxDecompressedBytes 备份解压后总字节硬上限（8GiB，防 gzip 炸弹耗尽磁盘/CPU）。
@@ -120,6 +123,13 @@ func (e *Exporter) Export(ctx context.Context, jobID uuid.UUID, backupType, crea
 		m.Tables = append(m.Tables, *tm)
 		m.TotalRows += tm.RowCount
 	}
+	if backupType == TypeFull {
+		rpMeta, err := e.exportActiveRulePackArchive(ctx, tx, tw)
+		if err != nil {
+			return cleanup(fmt.Errorf("export active rulepack archive: %w", err))
+		}
+		m.ActiveRulePack = rpMeta
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return cleanup(fmt.Errorf("commit backup read tx: %w", err))
 	}
@@ -213,6 +223,144 @@ func (e *Exporter) exportTable(ctx context.Context, q queryRunner, tw *tar.Write
 		return nil, err
 	}
 	return tm, nil
+}
+
+// ResolveRulePackArchivePath 在 <dataDir>/rulepack-archives/ 安全边界内定位规则包签名归档文件。
+// 拒绝符号链接与目录穿越；文件不存在时返回 ("", os.ErrNotExist)。
+func ResolveRulePackArchivePath(dataDir string, packID uuid.UUID, storedPath string) (string, error) {
+	baseDir := filepath.Join(strings.TrimSpace(dataDir), RulePackArchivesDirName)
+	baseAbs, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", err
+	}
+	candidates := []string{
+		filepath.Join(baseAbs, packID.String()+".tar.gz"),
+	}
+	if trimmed := strings.TrimSpace(storedPath); trimmed != "" {
+		if abs, absErr := filepath.Abs(trimmed); absErr == nil {
+			if strings.HasPrefix(abs, baseAbs+string(os.PathSeparator)) && abs != candidates[0] {
+				candidates = append(candidates, abs)
+			}
+		}
+	}
+	for _, cand := range candidates {
+		st, err := os.Lstat(cand)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", err
+		}
+		if st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() {
+			return "", fmt.Errorf("%w: rulepack archive %s is not a regular file", ErrBadFile, filepath.Base(cand))
+		}
+		return cand, nil
+	}
+	return "", os.ErrNotExist
+}
+
+// WriteRulePackArchiveEntry 校验磁盘签名规则包归档并将其写入备份 tar 的固定条目 rulepacks/active.tar.gz。
+func WriteRulePackArchiveEntry(tw *tar.Writer, meta RulePackArchiveMeta, archivePath string) (*RulePackArchiveMeta, error) {
+	if _, err := uuid.Parse(strings.TrimSpace(meta.PackID)); err != nil {
+		return nil, fmt.Errorf("%w: invalid rulepack pack_id", ErrManifestInvalid)
+	}
+	if err := rulepacks.ValidateRulePackVersion(meta.RulePackVersion); err != nil {
+		return nil, fmt.Errorf("%w: invalid rulepack version: %v", ErrManifestInvalid, err)
+	}
+	st, err := os.Lstat(archivePath)
+	if err != nil {
+		return nil, err
+	}
+	if st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: rulepack archive must be a regular non-symlink file", ErrBadFile)
+	}
+	if st.Size() <= 0 || st.Size() > rulepacks.MaxArchiveBytes {
+		return nil, fmt.Errorf("%w: rulepack archive size %d out of bounds", ErrBadFile, st.Size())
+	}
+	actualSHA, err := FileSHA256(archivePath)
+	if err != nil {
+		return nil, err
+	}
+	if want := strings.TrimSpace(meta.FileSHA256); want != "" && !strings.EqualFold(actualSHA, want) {
+		return nil, fmt.Errorf("%w: active rulepack archive sha256 mismatch on disk", ErrHashMismatch)
+	}
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	if err := tw.WriteHeader(&tar.Header{
+		Name:    RulePackArchiveEntryName,
+		Mode:    0600,
+		Size:    st.Size(),
+		ModTime: time.Now(),
+	}); err != nil {
+		return nil, err
+	}
+	h := sha256.New()
+	written, err := io.CopyN(io.MultiWriter(tw, h), f, st.Size())
+	if err != nil {
+		return nil, err
+	}
+	if written != st.Size() {
+		return nil, fmt.Errorf("%w: short write for rulepack archive", ErrBadFile)
+	}
+	streamSHA := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(streamSHA, actualSHA) {
+		return nil, fmt.Errorf("%w: active rulepack archive changed during export", ErrHashMismatch)
+	}
+	out := meta
+	out.EntryName = RulePackArchiveEntryName
+	out.FileSize = st.Size()
+	out.FileSHA256 = streamSHA
+	if err := out.Validate(); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// exportActiveRulePackArchive 在 FULL 备份事务中查询当前生效的非内置离线规则包，
+// 若磁盘上存在其签名原始归档（<dataDir>/rulepack-archives/<id>.tar.gz），则同步打入备份流。
+func (e *Exporter) exportActiveRulePackArchive(ctx context.Context, q queryRunner, tw *tar.Writer) (*RulePackArchiveMeta, error) {
+	var (
+		packID         uuid.UUID
+		version        string
+		crsVersion     string
+		fileName       string
+		fileSHA256     string
+		manifestSHA256 string
+		archivePath    string
+	)
+	err := q.QueryRow(ctx, `
+SELECT id, rulepack_version, crs_version, file_name, file_sha256, manifest_sha256, archive_path
+FROM waf_rule_packs
+WHERE status = 'APPLIED' AND is_builtin = FALSE
+LIMIT 1`).Scan(&packID, &version, &crsVersion, &fileName, &fileSHA256, &manifestSHA256, &archivePath)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	resolved, err := ResolveRulePackArchivePath(e.dataDir, packID, archivePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			slog.Warn("active non-builtin rulepack archive missing on disk; backup will continue without bundled archive",
+				"pack_id", packID, "version", version)
+			return nil, nil
+		}
+		return nil, err
+	}
+	return WriteRulePackArchiveEntry(tw, RulePackArchiveMeta{
+		PackID:          packID.String(),
+		RulePackVersion: version,
+		CRSVersion:      crsVersion,
+		FileName:        fileName,
+		EntryName:       RulePackArchiveEntryName,
+		FileSHA256:      fileSHA256,
+		ManifestSHA256:  manifestSHA256,
+	}, resolved)
 }
 
 // tableColumns 当前库表列名（按定义顺序）。
@@ -332,15 +480,28 @@ func (b *byteCounter) Write(p []byte) (int, error) {
 }
 
 // WalkSegments 遍历备份文件数据段：先回调清单（onManifest），再逐表回调明文 JSONL 流。
-// 条目名经白名单校验，拒绝非表数据条目与重复表条目，并强制执行解压字节上限与密文/明文摘要核验。
+// 若备份携带激活规则包归档条目（rulepacks/active.tar.gz），同时执行大小与 SHA-256 完整性核验。
+// 条目名经白名单校验，拒绝非白名单条目与重复条目，并强制执行解压字节上限与密文/明文摘要核验。
 func (e *Exporter) WalkSegments(path string, onManifest func(*Manifest) error, fn func(table string, r io.Reader) error) error {
+	return e.WalkEntries(path, onManifest, fn, nil)
+}
+
+// WalkEntries 遍历备份文件全部白名单条目：表 JSONL 段（tables/*.jsonl）及可选的激活规则包签名归档（rulepacks/active.tar.gz）。
+func (e *Exporter) WalkEntries(
+	path string,
+	onManifest func(*Manifest) error,
+	onTable func(table string, r io.Reader) error,
+	onRulePack func(meta *RulePackArchiveMeta, r io.Reader) error,
+) error {
 	rd, err := OpenReader(path, e.enc)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rd.Close() }()
-	if err := onManifest(rd.Manifest); err != nil {
-		return err
+	if onManifest != nil {
+		if err := onManifest(rd.Manifest); err != nil {
+			return err
+		}
 	}
 	// 明文整体哈希与长度在解压前统计（gzip 可能预读，结束后排空 tee 并核验密文段与明文段摘要）
 	ph := sha256.New()
@@ -356,6 +517,7 @@ func (e *Exporter) WalkSegments(path string, onManifest func(*Manifest) error, f
 	limitedGZ := &cappedReader{r: gz, max: maxDecomp}
 	tr := tar.NewReader(limitedGZ)
 	seenTables := make(map[string]bool)
+	seenRulePack := false
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -373,6 +535,37 @@ func (e *Exporter) WalkSegments(path string, onManifest func(*Manifest) error, f
 		if hdr.Size < 0 || hdr.Size > maxDecomp {
 			return fmt.Errorf("%w: entry %q exceeds decompressed limit", ErrTooLarge, hdr.Name)
 		}
+		if hdr.Name == RulePackArchiveEntryName {
+			meta := rd.Manifest.ActiveRulePack
+			if meta == nil {
+				return fmt.Errorf("%w: unexpected rulepack archive entry not declared in manifest", ErrBadFile)
+			}
+			if seenRulePack {
+				return fmt.Errorf("%w: duplicate rulepack archive entry", ErrBadFile)
+			}
+			if hdr.Size != meta.FileSize || hdr.Size > rulepacks.MaxArchiveBytes {
+				return fmt.Errorf("%w: rulepack archive size %d != manifest %d", ErrManifestInvalid, hdr.Size, meta.FileSize)
+			}
+			seenRulePack = true
+			rph := sha256.New()
+			rpBytes := &byteCounter{}
+			rpReader := io.TeeReader(tr, io.MultiWriter(rph, rpBytes))
+			if onRulePack != nil {
+				if err := onRulePack(meta, rpReader); err != nil {
+					return err
+				}
+			}
+			if _, err := io.Copy(io.Discard, rpReader); err != nil {
+				return err
+			}
+			if rpBytes.n != meta.FileSize {
+				return fmt.Errorf("%w: rulepack archive byte count %d != manifest %d", ErrManifestInvalid, rpBytes.n, meta.FileSize)
+			}
+			if got := hex.EncodeToString(rph.Sum(nil)); !strings.EqualFold(got, meta.FileSHA256) {
+				return fmt.Errorf("%w: rulepack archive sha256 mismatch", ErrHashMismatch)
+			}
+			continue
+		}
 		table := SegmentTableName(hdr.Name)
 		if table == "" || !IsBackupTable(table) {
 			return fmt.Errorf("%w: illegal entry %q", ErrBadFile, hdr.Name)
@@ -381,9 +574,18 @@ func (e *Exporter) WalkSegments(path string, onManifest func(*Manifest) error, f
 			return fmt.Errorf("%w: duplicate table entry %q", ErrBadFile, table)
 		}
 		seenTables[table] = true
-		if err := fn(table, tr); err != nil {
-			return err
+		if onTable != nil {
+			if err := onTable(table, tr); err != nil {
+				return err
+			}
+		} else {
+			if _, err := io.Copy(io.Discard, tr); err != nil {
+				return err
+			}
 		}
+	}
+	if rd.Manifest.ActiveRulePack != nil && !seenRulePack {
+		return fmt.Errorf("%w: manifest declares active_rulepack but archive entry is missing", ErrManifestInvalid)
 	}
 	if err := gz.Close(); err != nil {
 		return fmt.Errorf("%w: gzip close: %v", ErrBadFile, err)
@@ -401,11 +603,11 @@ func (e *Exporter) WalkSegments(path string, onManifest func(*Manifest) error, f
 	return nil
 }
 
-// Extract 解密并解包备份文件到目标目录（每表一个 {table}.jsonl），返回清单。
+// Extract 解密并解包备份文件到目标目录（每表一个 {table}.jsonl，若携带激活规则包归档则同时解出 active-rulepack.tar.gz），返回清单。
 // 目标目录必须已存在且为空；调用方负责清理。
 func (e *Exporter) Extract(path, destDir string) (*Manifest, error) {
 	var m *Manifest
-	err := e.WalkSegments(path, func(mm *Manifest) error {
+	err := e.WalkEntries(path, func(mm *Manifest) error {
 		m = mm
 		return nil
 	}, func(table string, r io.Reader) error {
@@ -423,6 +625,26 @@ func (e *Exporter) Extract(path, destDir string) (*Manifest, error) {
 			return copyErr
 		}
 		return closeErr
+	}, func(_ *RulePackArchiveMeta, r io.Reader) error {
+		name, err := SafeJoin(destDir, ExtractedRulePackFileName)
+		if err != nil {
+			return err
+		}
+		f, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(f, r)
+		closeErr := f.Close()
+		if copyErr != nil {
+			_ = os.Remove(name)
+			return copyErr
+		}
+		if closeErr != nil {
+			_ = os.Remove(name)
+			return closeErr
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err

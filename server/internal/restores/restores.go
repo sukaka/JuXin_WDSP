@@ -49,6 +49,7 @@ const (
 	FailRestore         = "RESTORE_FAILED"
 	FailEmptyScope      = "EMPTY_SCOPE"
 	FailActiveRestore   = "ACTIVE_RESTORE_EXISTS"
+	FailRulePack        = "RULEPACK_RESTORE_FAILED"
 )
 
 // 维护模式标志（Valkey key；本阶段实现标志设置，中间件读取在后续阶段接入）
@@ -180,9 +181,10 @@ type Preview struct {
 	SchemaVersion        int            `json:"schema_version"`
 	CurrentSchemaVersion int            `json:"current_schema_version"`
 	Compatible           bool           `json:"compatible"`
-	Tables               []TablePreview `json:"tables"`
-	TotalRows            int64          `json:"total_rows"`
-	Note                 string         `json:"note,omitempty"`
+	Tables                []TablePreview `json:"tables"`
+	TotalRows             int64          `json:"total_rows"`
+	ActiveRulePackVersion string         `json:"active_rulepack_version,omitempty"`
+	Note                  string         `json:"note,omitempty"`
 }
 
 // failMsg 规范化失败信息。

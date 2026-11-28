@@ -481,6 +481,15 @@ func FileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// RulePackArchiveEntryName 随 FULL 备份写入 tar 的激活规则包签名归档固定条目名。
+const RulePackArchiveEntryName = "rulepacks/active.tar.gz"
+
+// RulePackArchivesDirName 持久化签名规则包归档目录名（位于 GATEWAY_DATA_DIR 下）。
+const RulePackArchivesDirName = "rulepack-archives"
+
+// ExtractedRulePackFileName Extract 解包后的激活规则包签名归档文件名。
+const ExtractedRulePackFileName = "active-rulepack.tar.gz"
+
 // segmentNameRe 数据段条目名白名单（防 zip-slip）。
 var segmentNameRe = regexp.MustCompile(`^tables/([a-z0-9_]+)\.jsonl$`)
 

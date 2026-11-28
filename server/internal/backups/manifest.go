@@ -2,8 +2,13 @@
 package backups
 
 import (
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/rulepacks"
 )
 
 // 备份文件格式标识
@@ -56,22 +61,71 @@ type TableManifest struct {
 	Truncated bool `json:"truncated,omitempty"`
 }
 
+// RulePackArchiveMeta 记录随 FULL 备份携带的当前激活非内置离线规则包签名归档元信息。
+// 恢复端须先核对条目的大小与 SHA-256，再用 rulepacks.VerifyArchiveFile 独立验证 Ed25519 签名后解包恢复。
+type RulePackArchiveMeta struct {
+	PackID          string `json:"pack_id"`
+	RulePackVersion string `json:"rulepack_version"`
+	CRSVersion      string `json:"crs_version,omitempty"`
+	FileName        string `json:"file_name,omitempty"`
+	EntryName       string `json:"entry_name"`
+	FileSize        int64  `json:"file_size"`
+	FileSHA256      string `json:"file_sha256"`
+	ManifestSHA256  string `json:"manifest_sha256,omitempty"`
+}
+
+// Validate 校验规则包归档元信息的自洽性与安全边界（fail-closed）。
+func (r *RulePackArchiveMeta) Validate() error {
+	if r == nil {
+		return nil
+	}
+	if _, err := uuid.Parse(strings.TrimSpace(r.PackID)); err != nil {
+		return fmt.Errorf("%w: invalid active_rulepack pack_id %q", ErrManifestInvalid, r.PackID)
+	}
+	if err := rulepacks.ValidateRulePackVersion(r.RulePackVersion); err != nil {
+		return fmt.Errorf("%w: invalid active_rulepack version %q: %v", ErrManifestInvalid, r.RulePackVersion, err)
+	}
+	if r.EntryName != RulePackArchiveEntryName {
+		return fmt.Errorf("%w: unexpected active_rulepack entry_name %q", ErrManifestInvalid, r.EntryName)
+	}
+	if r.FileSize <= 0 || r.FileSize > rulepacks.MaxArchiveBytes {
+		return fmt.Errorf("%w: invalid active_rulepack file_size %d", ErrManifestInvalid, r.FileSize)
+	}
+	if !isSHA256Hex(r.FileSHA256) {
+		return fmt.Errorf("%w: invalid active_rulepack file_sha256", ErrManifestInvalid)
+	}
+	if strings.TrimSpace(r.ManifestSHA256) != "" && !isSHA256Hex(r.ManifestSHA256) {
+		return fmt.Errorf("%w: invalid active_rulepack manifest_sha256", ErrManifestInvalid)
+	}
+	return nil
+}
+
+func isSHA256Hex(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
 // Manifest 备份清单（文件尾部的 manifest.json 内容）。
 type Manifest struct {
-	Format        string          `json:"format"`
-	FormatVersion int             `json:"format_version"`
-	BackupID      string          `json:"backup_id"`
-	BackupType    string          `json:"backup_type"`
-	CreatedAt     time.Time       `json:"created_at"`
-	CreatedBy     string          `json:"created_by"`
-	SchemaVersion int             `json:"schema_version"` // 备份时 schema_migrations 最大版本
-	AppComponent  string          `json:"app_component"`
-	Compression   string          `json:"compression"`    // gzip
-	ArchiveFormat string          `json:"archive_format"` // tar
-	Encryption    EncryptionMeta  `json:"encryption"`
-	Data          DataMeta        `json:"data"`
-	Tables        []TableManifest `json:"tables"`
-	TotalRows     int64           `json:"total_rows"`
+	Format         string               `json:"format"`
+	FormatVersion  int                  `json:"format_version"`
+	BackupID       string               `json:"backup_id"`
+	BackupType     string               `json:"backup_type"`
+	CreatedAt      time.Time            `json:"created_at"`
+	CreatedBy      string               `json:"created_by"`
+	SchemaVersion  int                  `json:"schema_version"` // 备份时 schema_migrations 最大版本
+	AppComponent   string               `json:"app_component"`
+	Compression    string               `json:"compression"`    // gzip
+	ArchiveFormat  string               `json:"archive_format"` // tar
+	Encryption     EncryptionMeta       `json:"encryption"`
+	Data           DataMeta             `json:"data"`
+	Tables         []TableManifest      `json:"tables"`
+	TotalRows      int64                `json:"total_rows"`
+	ActiveRulePack *RulePackArchiveMeta `json:"active_rulepack,omitempty"`
 	// AuthKey 与 AuthMAC 对清单本身做主密钥绑定的 HMAC-SHA256 认证，防未授权篡改。
 	AuthKey string `json:"auth_key,omitempty"`
 	AuthMAC string `json:"auth_mac,omitempty"`
@@ -118,6 +172,11 @@ func (m *Manifest) Validate() error {
 	}
 	if total != m.TotalRows {
 		return fmt.Errorf("%w: total_rows %d != sum %d", ErrManifestInvalid, m.TotalRows, total)
+	}
+	if m.ActiveRulePack != nil {
+		if err := m.ActiveRulePack.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

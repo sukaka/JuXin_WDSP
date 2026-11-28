@@ -4,8 +4,10 @@ package restores
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/backups"
+	"github.com/jiuzhang-waf/server/internal/rulepacks"
 )
 
 // MaintenanceFlag 维护模式标志存储（*cache.Client 满足）。
@@ -26,13 +29,15 @@ type MaintenanceFlag interface {
 
 // Service 恢复服务。
 type Service struct {
-	db       *pgxpool.Pool
-	store    *Store
-	backups  *backups.Store
-	exporter *backups.Exporter
-	dataDir  string
-	maint    MaintenanceFlag
-	alertFn  backups.AlertFunc
+	db                *pgxpool.Pool
+	store             *Store
+	backups           *backups.Store
+	exporter          *backups.Exporter
+	dataDir           string
+	rulesStoreDir     string
+	rulePackVerifyKey ed25519.PublicKey // nil = 生产内嵌公钥 rulepacks.VerifyArchiveFile；仅单测覆盖
+	maint             MaintenanceFlag
+	alertFn           backups.AlertFunc
 }
 
 // NewService 创建恢复服务。
@@ -40,8 +45,152 @@ func NewService(db *pgxpool.Pool, store *Store, backupStore *backups.Store, expo
 	dataDir string, maint MaintenanceFlag, alertFn backups.AlertFunc) *Service {
 	return &Service{
 		db: db, store: store, backups: backupStore, exporter: exporter,
-		dataDir: dataDir, maint: maint, alertFn: alertFn,
+		dataDir: dataDir, rulesStoreDir: strings.TrimSpace(os.Getenv("WAF_RULES_STORE_DIR")),
+		maint: maint, alertFn: alertFn,
 	}
+}
+
+// SetRulesStoreDir 配置离线规则包版本化存储根目录（默认读取 WAF_RULES_STORE_DIR）。
+func (s *Service) SetRulesStoreDir(dir string) {
+	s.rulesStoreDir = strings.TrimSpace(dir)
+}
+
+// SetRulePackVerifyKeyForTest 仅用于单元测试覆盖规则包 Ed25519 验签公钥（生产不调用）。
+func (s *Service) SetRulePackVerifyKeyForTest(pub ed25519.PublicKey) {
+	s.rulePackVerifyKey = append(ed25519.PublicKey(nil), pub...)
+}
+
+type preparedRulePack struct {
+	PackID               uuid.UUID
+	Version              string
+	PersistedArchivePath string
+	Storage              *rulepacks.Storage
+}
+
+func scopeIncludesRulePack(scope string) bool {
+	return scope == ScopeFull || scope == ScopeConfig
+}
+
+// verifyRulePackArchive 独立调用 rulepacks.VerifyArchiveFile（或测试公钥钩子）对备份中随附的规则包归档做完整 Ed25519 验签与元数据比对。
+func (s *Service) verifyRulePackArchive(archivePath string, meta *backups.RulePackArchiveMeta) (*rulepacks.VerifiedArtifact, error) {
+	if err := meta.Validate(); err != nil {
+		return nil, err
+	}
+	var (
+		art *rulepacks.VerifiedArtifact
+		err error
+	)
+	if len(s.rulePackVerifyKey) > 0 {
+		art, err = rulepacks.VerifyArchiveFileWithKey(archivePath, "", s.rulePackVerifyKey)
+	} else {
+		art, err = rulepacks.VerifyArchiveFile(archivePath, "")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if art.Manifest.RulePackVersion != meta.RulePackVersion {
+		return nil, fmt.Errorf("%w: rulepack version mismatch (archive=%s, backup_manifest=%s)",
+			rulepacks.ErrInvalidArchive, art.Manifest.RulePackVersion, meta.RulePackVersion)
+	}
+	if !strings.EqualFold(art.FileSHA256, meta.FileSHA256) {
+		return nil, fmt.Errorf("%w: rulepack file sha256 mismatch", backups.ErrHashMismatch)
+	}
+	if want := strings.TrimSpace(meta.ManifestSHA256); want != "" && !strings.EqualFold(art.ManifestSHA256, want) {
+		return nil, fmt.Errorf("%w: rulepack manifest sha256 mismatch", backups.ErrHashMismatch)
+	}
+	return art, nil
+}
+
+// prepareRulePackFromBackup 从加密备份中解出随附的激活规则包归档，独立验签并解包至 releases/<ver>/（不切换 current 软链）。
+// 若范围不含规则配置、备份未携带非内置规则包归档或未配置 WAF_RULES_STORE_DIR，则返回 (nil, nil)。
+func (s *Service) prepareRulePackFromBackup(backupPath, scope string) (*preparedRulePack, error) {
+	if !scopeIncludesRulePack(scope) || strings.TrimSpace(s.rulesStoreDir) == "" {
+		return nil, nil
+	}
+	if s.exporter == nil {
+		return nil, fmt.Errorf("backup exporter unavailable")
+	}
+	tmpDir, err := s.tmpDir("rulepack-" + uuid.NewString())
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	var (
+		rpMeta  *backups.RulePackArchiveMeta
+		tmpPath string
+	)
+	err = s.exporter.WalkEntries(backupPath, func(m *backups.Manifest) error {
+		rpMeta = m.ActiveRulePack
+		return nil
+	}, nil, func(meta *backups.RulePackArchiveMeta, r io.Reader) error {
+		dst, joinErr := backups.SafeJoin(tmpDir, backups.ExtractedRulePackFileName)
+		if joinErr != nil {
+			return joinErr
+		}
+		f, openErr := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+		if openErr != nil {
+			return openErr
+		}
+		_, copyErr := io.Copy(f, r)
+		closeErr := f.Close()
+		if copyErr != nil {
+			_ = os.Remove(dst)
+			return copyErr
+		}
+		if closeErr != nil {
+			_ = os.Remove(dst)
+			return closeErr
+		}
+		tmpPath = dst
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if rpMeta == nil {
+		return nil, nil
+	}
+	if tmpPath == "" {
+		return nil, fmt.Errorf("%w: bundled rulepack archive missing from backup", backups.ErrManifestInvalid)
+	}
+	if _, err := s.verifyRulePackArchive(tmpPath, rpMeta); err != nil {
+		return nil, err
+	}
+	packID, err := uuid.Parse(strings.TrimSpace(rpMeta.PackID))
+	if err != nil {
+		return nil, err
+	}
+	archivesDir := filepath.Join(s.dataDir, backups.RulePackArchivesDirName)
+	storage := rulepacks.NewStorage(s.rulesStoreDir, archivesDir)
+	persistedPath, err := storage.PersistArchive(tmpPath, packID)
+	if err != nil {
+		return nil, fmt.Errorf("persist restored rulepack archive: %w", err)
+	}
+	if !storage.HasRelease(rpMeta.RulePackVersion) {
+		if _, err := storage.StageArchive(persistedPath, rpMeta.RulePackVersion); err != nil {
+			return nil, fmt.Errorf("stage restored rulepack %s: %w", rpMeta.RulePackVersion, err)
+		}
+	}
+	return &preparedRulePack{
+		PackID:               packID,
+		Version:              rpMeta.RulePackVersion,
+		PersistedArchivePath: persistedPath,
+		Storage:              storage,
+	}, nil
+}
+
+// RestoreRulePackFromBackup 从加密备份中独立验签并恢复激活离线规则包快照及 current 相对软链。
+// 返回已恢复的规则包版本号；未携带规则包或范围/存储不适用时返回空串。
+func (s *Service) RestoreRulePackFromBackup(backupPath, scope string) (string, error) {
+	prep, err := s.prepareRulePackFromBackup(backupPath, scope)
+	if err != nil || prep == nil {
+		return "", err
+	}
+	if err := prep.Storage.SwitchCurrentSymlink(prep.Version); err != nil {
+		return "", err
+	}
+	return prep.Version, nil
 }
 
 // StagingImportPath 返回导入上传的暂存路径（数据目录内，供 ImportBackup 校验）。
@@ -118,6 +267,9 @@ func (s *Service) buildPreview(ctx context.Context, job *backups.Job, m *backups
 		SchemaVersion:        m.SchemaVersion,
 		CurrentSchemaVersion: cur,
 		Compatible:           true,
+	}
+	if m.ActiveRulePack != nil && (scope == "" || scopeIncludesRulePack(scope)) {
+		p.ActiveRulePackVersion = m.ActiveRulePack.RulePackVersion
 	}
 	for _, t := range m.Tables {
 		tp := TablePreview{
@@ -254,6 +406,13 @@ func (s *Service) runIsolated(id uuid.UUID) {
 	if err != nil {
 		fail(FailValidate, err)
 		return
+	}
+	if scopeIncludesRulePack(job.RestoreScope) && m.ActiveRulePack != nil {
+		rpPath := filepath.Join(extractDir, backups.ExtractedRulePackFileName)
+		if _, err := s.verifyRulePackArchive(rpPath, m.ActiveRulePack); err != nil {
+			fail(FailRulePack, fmt.Errorf("verify bundled rulepack %s: %w", m.ActiveRulePack.RulePackVersion, err))
+			return
+		}
 	}
 	cur, err := backups.SchemaVersion(ctx, s.db)
 	if err != nil {
@@ -410,6 +569,17 @@ func (s *Service) Confirm(ctx context.Context, id uuid.UUID, confirmedBy uuid.UU
 	if err != nil || len(deleteTables) == 0 {
 		return fail(FailEmptyScope, ErrEmptyScope)
 	}
+	var prepRP *preparedRulePack
+	if scopeIncludesRulePack(job.RestoreScope) && m.ActiveRulePack != nil && strings.TrimSpace(s.rulesStoreDir) != "" {
+		backupPath, bpErr := backups.BackupPath(s.dataDir, *job.BackupJobID)
+		if bpErr != nil {
+			return fail(FailRulePack, bpErr)
+		}
+		prepRP, err = s.prepareRulePackFromBackup(backupPath, job.RestoreScope)
+		if err != nil {
+			return fail(FailRulePack, fmt.Errorf("prepare active rulepack restore: %w", err))
+		}
+	}
 	schema := StagingSchema(id)
 
 	tx, err := s.db.Begin(ctxT)
@@ -458,6 +628,12 @@ func (s *Service) Confirm(ctx context.Context, id uuid.UUID, confirmedBy uuid.UU
 			return fail(FailRestore, fmt.Errorf("table %s: inserted %d != staging %d", table, res.RowsAffected(), stagingCount))
 		}
 	}
+	if prepRP != nil {
+		if _, err := tx.Exec(ctxT, `UPDATE waf_rule_packs SET archive_path = $1 WHERE id = $2`,
+			prepRP.PersistedArchivePath, prepRP.PackID); err != nil {
+			return fail(FailRulePack, fmt.Errorf("update restored rulepack archive_path: %w", err))
+		}
+	}
 	// 隔离 schema 随事务一并删除
 	if _, err := tx.Exec(ctxT, fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, pgx.Identifier{schema}.Sanitize())); err != nil {
 		return fail(FailRestore, err)
@@ -466,6 +642,13 @@ func (s *Service) Confirm(ctx context.Context, id uuid.UUID, confirmedBy uuid.UU
 		return fail(FailRestore, err)
 	}
 	committed = true
+
+	if prepRP != nil {
+		if err := prepRP.Storage.SwitchCurrentSymlink(prepRP.Version); err != nil {
+			return fail(FailRulePack, fmt.Errorf("switch restored rulepack current symlink: %w", err))
+		}
+		slog.Info("restored active rulepack snapshot", "id", id, "version", prepRP.Version, "rules_store_dir", s.rulesStoreDir)
+	}
 
 	// ---- 恢复后验证（核心表可读） ----
 	summary, err := s.postVerify(ctxT, job.RestoreScope)
