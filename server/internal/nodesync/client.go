@@ -370,6 +370,161 @@ func (c *Client) GetUpgradeJobResult(ctx context.Context, jobID string) (*Upgrad
 	return &out, nil
 }
 
+// StageRulePack streams a local signed offline rulepack .tar.gz to POST /v1/rulepacks/stage.
+// Pass 1 validates regular file, 64 MiB limit, and computes SHA-256 (checking expectedSHA256 if provided);
+// Pass 2 rewinds and streams directly to hasyncd without buffering the archive in memory.
+func (c *Client) StageRulePack(ctx context.Context, version, localArchivePath, expectedSHA256 string) (*RulePackStageResponse, error) {
+	version = strings.TrimSpace(version)
+	if err := ValidateRulePackVersion(version); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(localArchivePath) == "" {
+		return nil, errors.New("local rulepack archive path is empty")
+	}
+
+	f, err := os.Open(localArchivePath)
+	if err != nil {
+		return nil, fmt.Errorf("open rulepack archive: %w", err)
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat rulepack archive: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, errors.New("rulepack archive must be a regular file")
+	}
+	if fi.Size() <= 0 || fi.Size() > MaxRulePackArchiveBytes {
+		return nil, fmt.Errorf("rulepack archive size %d out of range (1..%d bytes)", fi.Size(), MaxRulePackArchiveBytes)
+	}
+
+	h := sha256.New()
+	hashedBytes, err := io.Copy(h, io.LimitReader(f, MaxRulePackArchiveBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("hash rulepack archive: %w", err)
+	}
+	if hashedBytes <= 0 || hashedBytes > MaxRulePackArchiveBytes {
+		return nil, fmt.Errorf("rulepack archive size %d exceeds maximum %d bytes", hashedBytes, MaxRulePackArchiveBytes)
+	}
+	shaHex := hex.EncodeToString(h.Sum(nil))
+	if exp := strings.ToLower(strings.TrimSpace(expectedSHA256)); exp != "" {
+		if !isLowerHex64(exp) {
+			return nil, errors.New("expectedSHA256 must be 64 lowercase hex chars")
+		}
+		if !hmac.Equal([]byte(shaHex), []byte(exp)) {
+			return nil, fmt.Errorf("local rulepack archive sha256 mismatch: got=%s want=%s", shaHex, exp)
+		}
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("rewind rulepack archive: %w", err)
+	}
+	return c.StageRulePackReader(ctx, version, f, hashedBytes, shaHex)
+}
+
+// StageRulePackReader streams r with a precomputed SHA-256 digest to POST /v1/rulepacks/stage.
+func (c *Client) StageRulePackReader(ctx context.Context, version string, r io.Reader, size int64, sha256Hex string) (*RulePackStageResponse, error) {
+	version = strings.TrimSpace(version)
+	if err := ValidateRulePackVersion(version); err != nil {
+		return nil, err
+	}
+	sha256Hex = strings.ToLower(strings.TrimSpace(sha256Hex))
+	if !isLowerHex64(sha256Hex) {
+		return nil, errors.New("sha256Hex must be 64 lowercase hex chars")
+	}
+	if r == nil {
+		return nil, errors.New("rulepack reader is nil")
+	}
+	if size > MaxRulePackArchiveBytes {
+		return nil, fmt.Errorf("rulepack archive size %d exceeds maximum %d bytes", size, MaxRulePackArchiveBytes)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/rulepacks/stage", r)
+	if err != nil {
+		return nil, err
+	}
+	if size >= 0 {
+		req.ContentLength = size
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set(HeaderRulePackVersion, version)
+	req.Header.Set(HeaderRulePackPackageSHA256, sha256Hex)
+	if err := SignRequest(req, c.secret, c.nodeName, sha256Hex, c.now(), ""); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.uploadClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("stage rulepack request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read stage rulepack response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Message:    extractErrorMessage(respBody),
+			Body:       truncateStr(string(respBody), 1024),
+		}
+	}
+	var out RulePackStageResponse
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("decode stage rulepack response: %w", err)
+	}
+	return &out, nil
+}
+
+// GetRulePackStatus calls GET /v1/rulepacks/status.
+func (c *Client) GetRulePackStatus(ctx context.Context) (*RulePackStatusResponse, error) {
+	var out RulePackStatusResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/v1/rulepacks/status", nil, &out); err != nil {
+		return nil, err
+	}
+	if out.StagedVersions == nil {
+		out.StagedVersions = map[string]string{}
+	}
+	return &out, nil
+}
+
+// ActivateRulePack calls POST /v1/rulepacks/activate to switch the remote current symlink.
+func (c *Client) ActivateRulePack(ctx context.Context, version, manifestSHA256 string) (*RulePackActivateResponse, error) {
+	version = strings.TrimSpace(version)
+	if err := ValidateAnyRulePackReleaseVersion(version); err != nil {
+		return nil, err
+	}
+	manifestSHA256 = strings.ToLower(strings.TrimSpace(manifestSHA256))
+	if manifestSHA256 != "" && !isLowerHex64(manifestSHA256) {
+		return nil, errors.New("invalid manifest_sha256")
+	}
+	var out RulePackActivateResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/v1/rulepacks/activate", RulePackActivateRequest{
+		Version:        version,
+		ManifestSHA256: manifestSHA256,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteRulePackRelease calls DELETE /v1/rulepacks/releases/{version} to prune an inactive release.
+func (c *Client) DeleteRulePackRelease(ctx context.Context, version string) (*RulePackDeleteResponse, error) {
+	version = strings.TrimSpace(version)
+	if IsBuiltinRulePackVersion(version) || strings.HasPrefix(version, "builtin-") {
+		return nil, errors.New("refusing to delete builtin baseline release")
+	}
+	if err := ValidateRulePackVersion(version); err != nil {
+		return nil, err
+	}
+	var out RulePackDeleteResponse
+	if err := c.doJSON(ctx, http.MethodDelete, "/v1/rulepacks/releases/"+version, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) doJSON(ctx context.Context, method, path string, reqBody any, out any) error {
 	var raw []byte
 	var contentType string

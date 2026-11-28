@@ -3,6 +3,7 @@
 package nodesync
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,19 +11,27 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Shared HMAC-SHA256 authentication protocol headers (byte-for-byte identical to gateway/hasyncd).
 const (
-	HeaderNode            = "X-JZ-Node"
-	HeaderTimestamp       = "X-JZ-Timestamp"
-	HeaderNonce           = "X-JZ-Nonce"
-	HeaderBodySHA256      = "X-JZ-Body-SHA256"
-	HeaderSignature       = "X-JZ-Signature"
-	HeaderPackageFilename = "X-JZ-Package-Filename"
-	HeaderPackageSHA256   = "X-JZ-Package-SHA256"
+	HeaderNode                  = "X-JZ-Node"
+	HeaderTimestamp             = "X-JZ-Timestamp"
+	HeaderNonce                 = "X-JZ-Nonce"
+	HeaderBodySHA256            = "X-JZ-Body-SHA256"
+	HeaderSignature             = "X-JZ-Signature"
+	HeaderPackageFilename       = "X-JZ-Package-Filename"
+	HeaderPackageSHA256         = "X-JZ-Package-SHA256"
+	HeaderRulePackVersion       = "X-JiuZhang-RulePack-Version"
+	HeaderRulePackPackageSHA256 = "X-JiuZhang-Package-SHA256"
+
+	// MaxRulePackArchiveBytes matches gateway/hasyncd and server/internal/rulepacks 64 MiB cap.
+	MaxRulePackArchiveBytes int64 = 64 << 20
 )
 
 // Allowlisted sidecar filenames synchronized via PUT/DELETE /v1/sidecars/{name}.
@@ -42,6 +51,8 @@ var (
 	}
 	packageFilenameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(\.tar\.gz|\.run)$`)
 	uuidRE            = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	rulePackVersionRE = regexp.MustCompile(`^([0-9]{8})\.([0-9]{1,3})$`)
+	rulePackBuiltinRE = regexp.MustCompile(`^builtin-[0-9A-Za-z._-]+$`)
 )
 
 // AllowedSidecarFile reports whether name is in the strict sidecar allowlist.
@@ -76,6 +87,37 @@ func ValidateUUID(raw string) (string, error) {
 	return strings.ToLower(trimmed), nil
 }
 
+// ValidateRulePackVersion enforces the formal offline rulepack version format YYYYMMDD.N.
+func ValidateRulePackVersion(v string) error {
+	v = strings.TrimSpace(v)
+	m := rulePackVersionRE.FindStringSubmatch(v)
+	if m == nil {
+		return fmt.Errorf("invalid rulepack version %q (expect YYYYMMDD.N)", v)
+	}
+	if _, err := time.Parse("20060102", m[1]); err != nil {
+		return fmt.Errorf("invalid rulepack version date %q", v)
+	}
+	seq, err := strconv.Atoi(m[2])
+	if err != nil || seq <= 0 {
+		return fmt.Errorf("invalid rulepack version sequence %q", v)
+	}
+	return nil
+}
+
+// IsBuiltinRulePackVersion reports whether v matches builtin-<token>.
+func IsBuiltinRulePackVersion(v string) bool {
+	return rulePackBuiltinRE.MatchString(strings.TrimSpace(v))
+}
+
+// ValidateAnyRulePackReleaseVersion accepts either formal YYYYMMDD.N or builtin-* versions.
+func ValidateAnyRulePackReleaseVersion(v string) error {
+	v = strings.TrimSpace(v)
+	if IsBuiltinRulePackVersion(v) {
+		return nil
+	}
+	return ValidateRulePackVersion(v)
+}
+
 // CanonicalBusinessConfigHash computes the canonical JSON SHA-256 with top-level "admin" stripped,
 // matching gateway/hasyncd and gatewayconfig.CanonicalBusinessConfigHash.
 func CanonicalBusinessConfigHash(configJSON []byte) (string, error) {
@@ -102,8 +144,12 @@ type HealthResponse struct {
 	CaddyReachable bool      `json:"caddy_reachable"`
 	HostctlReady   bool      `json:"hostctl_ready"`
 	UpgradeReady   bool      `json:"upgrade_ready"`
+	RulePackReady  bool      `json:"rulepack_ready"`
 	Now            time.Time `json:"now"`
 }
+
+// NodeHealth aliases HealthResponse for callers checking remote node readiness.
+type NodeHealth = HealthResponse
 
 // InterfaceSnapshot mirrors gateway/modules/jiuzhang_guard/netif.Record.
 type InterfaceSnapshot struct {
@@ -212,6 +258,75 @@ type UpgradeJobResult struct {
 	ErrorCode  string    `json:"error_code,omitempty"`
 	Message    string    `json:"message,omitempty"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
+}
+
+// RulePackStageResponse is returned by POST /v1/rulepacks/stage.
+type RulePackStageResponse struct {
+	OK             bool   `json:"ok"`
+	Version        string `json:"version"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	FileSHA256     string `json:"file_sha256"`
+	FileSize       int64  `json:"file_size"`
+	Idempotent     bool   `json:"idempotent,omitempty"`
+}
+
+// RulePackReleaseInfo describes one staged rulepack snapshot reported by hasyncd.
+type RulePackReleaseInfo struct {
+	Version        string    `json:"version"`
+	ManifestSHA256 string    `json:"manifest_sha256"`
+	StagedAt       time.Time `json:"staged_at,omitempty"`
+}
+
+// RulePackStatusResponse is returned by GET /v1/rulepacks/status.
+type RulePackStatusResponse struct {
+	RulesDirWritable bool                  `json:"rules_dir_writable"`
+	ActiveSymlink    string                `json:"active_symlink"`
+	ActiveVersion    string                `json:"active_version,omitempty"`
+	StagedVersions   map[string]string     `json:"staged_versions"`
+	Releases         []RulePackReleaseInfo `json:"releases,omitempty"`
+	DiskFreeBytes    int64                 `json:"disk_free_bytes"`
+}
+
+// RulePackActivateRequest is the JSON body for POST /v1/rulepacks/activate.
+type RulePackActivateRequest struct {
+	Version        string `json:"version"`
+	ManifestSHA256 string `json:"manifest_sha256,omitempty"`
+}
+
+// RulePackActivateResponse is returned by POST /v1/rulepacks/activate.
+type RulePackActivateResponse struct {
+	OK             bool   `json:"ok"`
+	Version        string `json:"version"`
+	ActiveSymlink  string `json:"active_symlink"`
+	ManifestSHA256 string `json:"manifest_sha256,omitempty"`
+}
+
+// RulePackDeleteResponse is returned by DELETE /v1/rulepacks/releases/{version}.
+type RulePackDeleteResponse struct {
+	OK      bool   `json:"ok"`
+	Version string `json:"version"`
+	Deleted bool   `json:"deleted"`
+}
+
+// NodeRulePackStatus aggregates remote /v1/health rulepack readiness and /v1/rulepacks/status.
+type NodeRulePackStatus struct {
+	Reachable        bool              `json:"reachable"`
+	RulePackReady    bool              `json:"rulepack_ready"`
+	RulesDirWritable bool              `json:"rules_dir_writable"`
+	ActiveSymlink    string            `json:"active_symlink"`
+	ActiveVersion    string            `json:"active_version"`
+	StagedVersions   map[string]string `json:"staged_versions"`
+	DiskFreeBytes    int64             `json:"disk_free_bytes"`
+	Error            string            `json:"error,omitempty"`
+}
+
+// RulePackSyncClient defines the HA standby rulepack sync contract implemented by *Manager.
+type RulePackSyncClient interface {
+	CheckNodeHealth(ctx context.Context, nodeID uuid.UUID) (*HealthResponse, error)
+	CheckNodeRulePackStatus(ctx context.Context, nodeID uuid.UUID) (*NodeRulePackStatus, error)
+	StageRulePack(ctx context.Context, nodeID uuid.UUID, version, archivePath, expectedSHA256 string) (*RulePackStageResponse, error)
+	ActivateRulePack(ctx context.Context, nodeID uuid.UUID, version, manifestSHA256 string) (*RulePackActivateResponse, error)
+	DeleteRulePackRelease(ctx context.Context, nodeID uuid.UUID, version string) (*RulePackDeleteResponse, error)
 }
 
 // APIError represents a non-2xx response returned by hasyncd.

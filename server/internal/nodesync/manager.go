@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -66,11 +68,12 @@ type Manager struct {
 	now       func() time.Time
 }
 
-// Compile-time interface assertions against gatewayconfig and hagroups hooks.
+// Compile-time interface assertions against gatewayconfig, hagroups, and rulepack sync hooks.
 var (
 	_ gatewayconfig.NodeAgentSyncer = (*Manager)(nil)
 	_ hagroups.RemoteSyncer         = (*Manager)(nil)
 	_ hagroups.NodeStatusProvider   = (*Manager)(nil)
+	_ RulePackSyncClient            = (*Manager)(nil)
 )
 
 // NewManager creates a nodesync Manager.
@@ -424,6 +427,113 @@ func (m *Manager) GetUpgradeJobResult(ctx context.Context, nodeID uuid.UUID, job
 	resp, err := cli.GetUpgradeJobResult(ctx, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("查询节点 %s 升级结果失败: %w", cred.NodeName, err)
+	}
+	return resp, nil
+}
+
+// ---------- Offline WAF RulePack Sync Primitives (Stage R2) ----------
+
+// CheckNodeHealth probes GET /v1/health on a remote node (enforcing SSRF/private-IP/DNS-rebind checks).
+func (m *Manager) CheckNodeHealth(ctx context.Context, nodeID uuid.UUID) (*HealthResponse, error) {
+	resp, _, err := m.ProbeNodeHealth(ctx, nodeID)
+	return resp, err
+}
+
+// CheckNodeRulePackStatus probes GET /v1/health (checking rulepack_ready) and GET /v1/rulepacks/status
+// on a remote node, enforcing SSRF/private-address/DNS-rebind protections via ClientForNodeID.
+func (m *Manager) CheckNodeRulePackStatus(ctx context.Context, nodeID uuid.UUID) (*NodeRulePackStatus, error) {
+	cli, cred, err := m.ClientForNodeID(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	health, err := cli.Health(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("探测节点 %s 健康状态失败: %w", cred.NodeName, err)
+	}
+	if !health.RulePackReady {
+		return &NodeRulePackStatus{
+			Reachable:      true,
+			RulePackReady:  false,
+			StagedVersions: map[string]string{},
+			Error:          "备节点 hasyncd 版本过旧或未配置可写规则包目录（rulepack_ready=false），需先通过 update-full 升级备节点基线",
+		}, nil
+	}
+	st, err := cli.GetRulePackStatus(ctx)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusServiceUnavailable) {
+			return &NodeRulePackStatus{
+				Reachable:      true,
+				RulePackReady:  false,
+				StagedVersions: map[string]string{},
+				Error:          "备节点 hasyncd 版本过旧或未启用规则包目录，需先通过 update-full 升级备节点基线",
+			}, nil
+		}
+		return nil, fmt.Errorf("查询节点 %s 规则包状态失败: %w", cred.NodeName, err)
+	}
+	activeVer := strings.TrimSpace(st.ActiveVersion)
+	if activeVer == "" {
+		cleaned := filepath.ToSlash(strings.TrimSpace(st.ActiveSymlink))
+		activeVer = strings.TrimPrefix(cleaned, "releases/")
+	}
+	ready := health.RulePackReady && st.RulesDirWritable
+	errMsg := ""
+	if !st.RulesDirWritable {
+		errMsg = "备节点规则包存储目录不可写"
+	}
+	return &NodeRulePackStatus{
+		Reachable:        true,
+		RulePackReady:    ready,
+		RulesDirWritable: st.RulesDirWritable,
+		ActiveSymlink:    st.ActiveSymlink,
+		ActiveVersion:    activeVer,
+		StagedVersions:   st.StagedVersions,
+		DiskFreeBytes:    st.DiskFreeBytes,
+		Error:            errMsg,
+	}, nil
+}
+
+// StageRulePack streams a local signed rulepack archive to a remote node's POST /v1/rulepacks/stage
+// and verifies the returned file SHA-256 matches expectedSHA256 when non-empty.
+func (m *Manager) StageRulePack(ctx context.Context, nodeID uuid.UUID, version, archivePath, expectedSHA256 string) (*RulePackStageResponse, error) {
+	cli, cred, err := m.ClientForNodeID(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := cli.StageRulePack(ctx, version, archivePath, expectedSHA256)
+	if err != nil {
+		return nil, fmt.Errorf("向备节点 %s 分发规则包 %s 失败: %w", cred.NodeName, version, err)
+	}
+	if exp := strings.ToLower(strings.TrimSpace(expectedSHA256)); exp != "" && resp != nil {
+		if !strings.EqualFold(strings.TrimSpace(resp.FileSHA256), exp) {
+			return nil, fmt.Errorf("备节点 %s 规则包校验和不匹配: got=%s want=%s", cred.NodeName, resp.FileSHA256, exp)
+		}
+	}
+	return resp, nil
+}
+
+// ActivateRulePack switches the remote node's current symlink via POST /v1/rulepacks/activate.
+func (m *Manager) ActivateRulePack(ctx context.Context, nodeID uuid.UUID, version, manifestSHA256 string) (*RulePackActivateResponse, error) {
+	cli, cred, err := m.ClientForNodeID(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := cli.ActivateRulePack(ctx, version, manifestSHA256)
+	if err != nil {
+		return nil, fmt.Errorf("切换备节点 %s 规则包软链 %s 失败: %w", cred.NodeName, version, err)
+	}
+	return resp, nil
+}
+
+// DeleteRulePackRelease removes an expired non-active rulepack snapshot via DELETE /v1/rulepacks/releases/{version}.
+func (m *Manager) DeleteRulePackRelease(ctx context.Context, nodeID uuid.UUID, version string) (*RulePackDeleteResponse, error) {
+	cli, cred, err := m.ClientForNodeID(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := cli.DeleteRulePackRelease(ctx, version)
+	if err != nil {
+		return nil, fmt.Errorf("清理备节点 %s 过期规则快照 %s 失败: %w", cred.NodeName, version, err)
 	}
 	return resp, nil
 }

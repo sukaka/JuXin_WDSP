@@ -54,6 +54,7 @@ func run() error {
 		upgradesDir        = flag.String("upgrades-dir", envDefault(hasyncd.DefaultUpgradesDir, "HASYNC_UPGRADES_DIR"), "Local upgrades root directory (packages/ and executor/)")
 		upgradePackagesDir = flag.String("upgrade-packages-dir", envOr("UPGRADE_PACKAGES_DIR"), "Optional override for upgrade packages directory")
 		upgradeExecutorDir = flag.String("upgrade-executor-dir", envOr("UPGRADE_EXECUTOR_DIR"), "Optional override for upgrade executor directory")
+		rulesDir           = flag.String("rules-dir", envOr("HASYNC_RULES_DIR"), "Optional local versioned WAF rules directory (env HASYNC_RULES_DIR)")
 		nodeIfacesLog      = flag.String("node-ifaces-log", envDefault(hasyncd.DefaultNodeIfacesLog, "HASYNC_NODE_IFACES_LOG"), "Path to node-interfaces.jsonl snapshot file")
 		version            = flag.String("version", envOr("APP_VERSION", "HASYNC_VERSION"), "Reported application version (env APP_VERSION)")
 		versionFile        = flag.String("version-file", envOr("APP_VERSION_FILE", "HASYNC_VERSION_FILE"), "Optional version file path fallback")
@@ -78,6 +79,7 @@ func run() error {
 		UpgradesDir:        *upgradesDir,
 		UpgradePackagesDir: *upgradePackagesDir,
 		UpgradeExecutorDir: *upgradeExecutorDir,
+		RulesDir:           *rulesDir,
 		NodeIfacesLog:      *nodeIfacesLog,
 		Version:            *version,
 		VersionFile:        *versionFile,
@@ -90,7 +92,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	log.Printf("[hasyncd] starting node=%s listen=%s caddy_sock=%s sidecar_dir=%s hostctl_dir=%s upgrades_dir=%s",
-		*nodeName, *listenAddr, *caddySocket, *sidecarDir, *hostctlDir, *upgradesDir)
+	log.Printf("[hasyncd] starting node=%s listen=%s caddy_sock=%s sidecar_dir=%s hostctl_dir=%s upgrades_dir=%s rules_dir=%s",
+		*nodeName, *listenAddr, *caddySocket, *sidecarDir, *hostctlDir, *upgradesDir, *rulesDir)
 	return srv.Run(ctx)
 }

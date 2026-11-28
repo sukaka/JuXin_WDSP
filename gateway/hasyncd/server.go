@@ -2,6 +2,7 @@ package hasyncd
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,14 +31,18 @@ var (
 
 // Server is the HMAC-authenticated HA node sync HTTP(S) sidecar server.
 type Server struct {
-	cfg           Config
-	auth          *Authenticator
-	caddy         *localCaddyClient
-	packagesDir   string
-	executorDir   string
-	maxPkgBytes   int64
-	now           func() time.Time
-	handler       http.Handler
+	cfg               Config
+	auth              *Authenticator
+	caddy             *localCaddyClient
+	packagesDir       string
+	executorDir       string
+	rulesDir          string
+	rulePackVerifyKey ed25519.PublicKey
+	maxPkgBytes       int64
+	maxRulePackBytes  int64
+	rulePackMu        sync.RWMutex
+	now               func() time.Time
+	handler           http.Handler
 }
 
 // NewServer validates configuration in fail-closed mode and constructs a Server.
@@ -112,14 +118,39 @@ func NewServer(cfg Config) (*Server, error) {
 		maxPkgBytes = DefaultMaxPackageSize
 	}
 
+	var rulePackKey ed25519.PublicKey
+	if len(cfg.RulePackVerifyKey) > 0 {
+		if len(cfg.RulePackVerifyKey) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("invalid RulePackVerifyKey length %d", len(cfg.RulePackVerifyKey))
+		}
+		rulePackKey = append(ed25519.PublicKey(nil), cfg.RulePackVerifyKey...)
+	} else {
+		rulePackKey, err = ReleaseRulePackPublicKey()
+		if err != nil {
+			return nil, fmt.Errorf("load embedded rulepack public key: %w", err)
+		}
+	}
+
+	rulesDir := strings.TrimSpace(cfg.RulesDir)
+	if rulesDir != "" {
+		rulesDir = filepath.Clean(rulesDir)
+	}
+	maxRulePackBytes := cfg.MaxRulePackBytes
+	if maxRulePackBytes <= 0 || maxRulePackBytes > MaxRulePackArchiveBytes {
+		maxRulePackBytes = MaxRulePackArchiveBytes
+	}
+
 	s := &Server{
-		cfg:         cfg,
-		auth:        auth,
-		caddy:       newLocalCaddyClient(cfg.CaddySocket),
-		packagesDir: filepath.Clean(packagesDir),
-		executorDir: filepath.Clean(executorDir),
-		maxPkgBytes: maxPkgBytes,
-		now:         nowFn,
+		cfg:               cfg,
+		auth:              auth,
+		caddy:             newLocalCaddyClient(cfg.CaddySocket),
+		packagesDir:       filepath.Clean(packagesDir),
+		executorDir:       filepath.Clean(executorDir),
+		rulesDir:          rulesDir,
+		rulePackVerifyKey: rulePackKey,
+		maxPkgBytes:       maxPkgBytes,
+		maxRulePackBytes:  maxRulePackBytes,
+		now:               nowFn,
 	}
 	s.handler = s.buildHandler()
 	return s, nil
@@ -308,6 +339,35 @@ func (s *Server) buildHandler() http.Handler {
 				return
 			}
 			s.handleUpgradeJobResult(w, r, authInfo, jobID)
+		case path == "/v1/rulepacks/stage":
+			if r.Method != http.MethodPost {
+				writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			s.handleRulePackStage(w, r, authInfo)
+		case path == "/v1/rulepacks/status":
+			if r.Method != http.MethodGet {
+				writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			s.handleRulePackStatus(w, r, authInfo)
+		case path == "/v1/rulepacks/activate":
+			if r.Method != http.MethodPost {
+				writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			s.handleRulePackActivate(w, r, authInfo)
+		case strings.HasPrefix(path, "/v1/rulepacks/releases/"):
+			ver := strings.TrimPrefix(path, "/v1/rulepacks/releases/")
+			if ver == "" || strings.Contains(ver, "/") {
+				writeJSONError(w, http.StatusBadRequest, "invalid rulepack version")
+				return
+			}
+			if r.Method != http.MethodDelete {
+				writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			s.handleRulePackDeleteRelease(w, r, authInfo, ver)
 		default:
 			writeJSONError(w, http.StatusNotFound, "not found")
 		}
@@ -324,6 +384,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request, authInfo V
 		CaddyReachable: s.caddy.Ping(r.Context()),
 		HostctlReady:   checkHostctlReady(s.cfg.HostctlDir),
 		UpgradeReady:   s.checkUpgradeReady(),
+		RulePackReady:  s.checkRulePackReady(),
 		Now:            s.now().UTC(),
 	}
 	writeJSON(w, http.StatusOK, resp)

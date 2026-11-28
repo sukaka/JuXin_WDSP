@@ -8,6 +8,7 @@
 package hasyncd
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"os"
 	"time"
@@ -15,13 +16,15 @@ import (
 
 // Shared HMAC-SHA256 authentication protocol headers.
 const (
-	HeaderNode            = "X-JZ-Node"
-	HeaderTimestamp       = "X-JZ-Timestamp"
-	HeaderNonce           = "X-JZ-Nonce"
-	HeaderBodySHA256      = "X-JZ-Body-SHA256"
-	HeaderSignature       = "X-JZ-Signature"
-	HeaderPackageFilename = "X-JZ-Package-Filename"
-	HeaderPackageSHA256   = "X-JZ-Package-SHA256"
+	HeaderNode                  = "X-JZ-Node"
+	HeaderTimestamp             = "X-JZ-Timestamp"
+	HeaderNonce                 = "X-JZ-Nonce"
+	HeaderBodySHA256            = "X-JZ-Body-SHA256"
+	HeaderSignature             = "X-JZ-Signature"
+	HeaderPackageFilename       = "X-JZ-Package-Filename"
+	HeaderPackageSHA256         = "X-JZ-Package-SHA256"
+	HeaderRulePackVersion       = "X-JiuZhang-RulePack-Version"
+	HeaderRulePackPackageSHA256 = "X-JiuZhang-Package-SHA256"
 )
 
 // Default configuration paths and safety limits.
@@ -44,11 +47,17 @@ const (
 	DefaultMaxNonceCount = 65536
 
 	// Endpoint payload caps.
-	MaxCaddyLoadBytes     int64 = 16 << 20 // 16 MiB
-	MaxSidecarBytes       int64 = 4 << 20  // 4 MiB
-	MaxJSONControlBytes   int64 = 1 << 20  // 1 MiB
-	DefaultMaxPackageSize int64 = 8 << 30  // 8 GiB
-	MaxFirewallPorts            = 64
+	MaxCaddyLoadBytes           int64 = 16 << 20  // 16 MiB
+	MaxSidecarBytes             int64 = 4 << 20   // 4 MiB
+	MaxJSONControlBytes         int64 = 1 << 20   // 1 MiB
+	DefaultMaxPackageSize       int64 = 8 << 30   // 8 GiB
+	MaxRulePackArchiveBytes     int64 = 64 << 20  // 64 MiB
+	MaxRulePackExpandedBytes    int64 = 256 << 20 // 256 MiB
+	MaxRulePackSingleFileBytes  int64 = 16 << 20  // 16 MiB
+	MaxRulePackEntries                = 10000
+	MaxRulePackManifestBytes    int64 = 4 << 20 // 4 MiB
+	MaxRulePackManifestSigBytes int64 = 4096
+	MaxFirewallPorts                  = 64
 
 	// Health stamp intervals.
 	DefaultHealthStampInterval = 5 * time.Second
@@ -88,6 +97,9 @@ type Config struct {
 	UpgradesDir        string
 	UpgradePackagesDir string // Optional override; defaults to <UpgradesDir>/packages
 	UpgradeExecutorDir string // Optional override; defaults to <UpgradesDir>/executor
+	RulesDir           string // Optional versioned WAF rules directory (empty disables rulepack endpoints)
+	RulePackVerifyKey  ed25519.PublicKey // Test-only override for Ed25519 verification key; never populated from env/flags
+	MaxRulePackBytes   int64             // Optional test cap (defaults to MaxRulePackArchiveBytes = 64 MiB)
 	NodeIfacesLog      string
 	Version            string
 	VersionFile        string
@@ -105,6 +117,7 @@ type HealthResponse struct {
 	CaddyReachable bool      `json:"caddy_reachable"`
 	HostctlReady   bool      `json:"hostctl_ready"`
 	UpgradeReady   bool      `json:"upgrade_ready"`
+	RulePackReady  bool      `json:"rulepack_ready"`
 	Now            time.Time `json:"now"`
 }
 
@@ -221,6 +234,54 @@ type UpgradeJobResult struct {
 // ErrorResponse is the standard JSON error envelope.
 type ErrorResponse struct {
 	Error string `json:"error"`
+}
+
+// RulePackStageResponse is returned by POST /v1/rulepacks/stage.
+type RulePackStageResponse struct {
+	OK             bool   `json:"ok"`
+	Version        string `json:"version"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	FileSHA256     string `json:"file_sha256"`
+	FileSize       int64  `json:"file_size"`
+	Idempotent     bool   `json:"idempotent,omitempty"`
+}
+
+// RulePackReleaseInfo describes one staged rulepack snapshot on disk.
+type RulePackReleaseInfo struct {
+	Version        string    `json:"version"`
+	ManifestSHA256 string    `json:"manifest_sha256"`
+	StagedAt       time.Time `json:"staged_at,omitempty"`
+}
+
+// RulePackStatusResponse is returned by GET /v1/rulepacks/status.
+type RulePackStatusResponse struct {
+	RulesDirWritable bool                  `json:"rules_dir_writable"`
+	ActiveSymlink    string                `json:"active_symlink"`
+	ActiveVersion    string                `json:"active_version,omitempty"`
+	StagedVersions   map[string]string     `json:"staged_versions"`
+	Releases         []RulePackReleaseInfo `json:"releases,omitempty"`
+	DiskFreeBytes    int64                 `json:"disk_free_bytes"`
+}
+
+// RulePackActivateRequest is the JSON body for POST /v1/rulepacks/activate.
+type RulePackActivateRequest struct {
+	Version        string `json:"version"`
+	ManifestSHA256 string `json:"manifest_sha256,omitempty"`
+}
+
+// RulePackActivateResponse is returned by POST /v1/rulepacks/activate.
+type RulePackActivateResponse struct {
+	OK             bool   `json:"ok"`
+	Version        string `json:"version"`
+	ActiveSymlink  string `json:"active_symlink"`
+	ManifestSHA256 string `json:"manifest_sha256,omitempty"`
+}
+
+// RulePackDeleteResponse is returned by DELETE /v1/rulepacks/releases/{version}.
+type RulePackDeleteResponse struct {
+	OK      bool   `json:"ok"`
+	Version string `json:"version"`
+	Deleted bool   `json:"deleted"`
 }
 
 // HealthStamp is periodically written atomically to the local health stamp file
