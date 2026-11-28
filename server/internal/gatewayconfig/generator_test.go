@@ -2,6 +2,7 @@ package gatewayconfig
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -230,10 +231,20 @@ func TestGenerateProductionAuditOverridesPOC(t *testing.T) {
 	if crsIdx := strings.Index(g.JSON, "Include /etc/caddy/rules/crs/crs-setup.conf"); crsIdx < 0 || engIdx > crsIdx || partsIdx > crsIdx {
 		t.Error("audit overrides must come before crs-setup include")
 	}
+	// Coraza v3.7.0 禁止同一 phase 重复定义 SecDefaultAction：生成器不得内联重复声明，
+	// phase 1~5 默认动作由 gateway/rules/crs/crs-setup.conf 唯一定义。
+	if strings.Contains(g.JSON, "SecDefaultAction") {
+		t.Error("generated directives must not inline SecDefaultAction (duplicates crs-setup.conf and fails Coraza v3.7.0 parsing)")
+	}
+	crsSetupBytes, err := os.ReadFile("../../../gateway/rules/crs/crs-setup.conf")
+	if err != nil {
+		t.Fatalf("read crs-setup.conf: %v", err)
+	}
+	crsSetup := string(crsSetupBytes)
 	for _, phase := range []string{"phase:1", "phase:2", "phase:3", "phase:4", "phase:5"} {
-		want := `SecDefaultAction \"` + phase + `,log,auditlog,pass\"`
-		if !strings.Contains(g.JSON, want) {
-			t.Errorf("missing inline default action for %s in generated directives", phase)
+		want := `SecDefaultAction "` + phase + `,log,auditlog,pass"`
+		if !strings.Contains(crsSetup, want) {
+			t.Errorf("crs-setup.conf missing %s", want)
 		}
 	}
 	if strings.Contains(g.JSON, "SecAuditEngine On") {

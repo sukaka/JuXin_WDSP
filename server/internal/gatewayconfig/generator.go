@@ -1263,14 +1263,9 @@ func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []E
 	// （完整请求体）；保留 E（中断响应体）——仅出现于被阻断事务且体量有界，用于取证。
 	b.WriteString("SecAuditEngine RelevantOnly\n")
 	b.WriteString("SecAuditLogParts ABIJDEFHZ\n")
-	// 显式内联 phase 1~5 默认动作（与 gateway/rules/crs/crs-setup.conf 同口径）：
-	// 避免增量镜像升级后宿主只读挂载的旧版 crs-setup.conf 缺失 phase:1/3/4/5 默认动作，
-	// 导致 phase:1/3/4 规则命中不写入审计日志 messages、攻击类型退化为「其他」。
-	b.WriteString("SecDefaultAction \"phase:1,log,auditlog,pass\"\n")
-	b.WriteString("SecDefaultAction \"phase:2,log,auditlog,pass\"\n")
-	b.WriteString("SecDefaultAction \"phase:3,log,auditlog,pass\"\n")
-	b.WriteString("SecDefaultAction \"phase:4,log,auditlog,pass\"\n")
-	b.WriteString("SecDefaultAction \"phase:5,log,auditlog,pass\"\n")
+	// phase 1~5 的 SecDefaultAction 由下方 Include 的 crs-setup.conf 唯一声明：
+	// Coraza v3.7.0 的 ParseDefaultActions 不支持同 phase 后写覆盖，重复声明会直接报错
+	// "SecDefaultAction already defined for this phase" 导致网关 /load 返回 400。
 	// 策略参数（PL 与异常阈值，覆盖 crs-setup.conf 默认值）
 	pl := app.ParanoiaLevel
 	if pl <= 0 {

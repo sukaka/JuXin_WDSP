@@ -3,6 +3,7 @@ package gatewayconfig
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -83,5 +84,22 @@ func TestPublishRollbackFailureCode(t *testing.T) {
 				t.Fatalf("publishRollbackFailureCode(%q, %v) = %q, want %q", tt.operationCode, tt.rollbackErr, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSanitizeCaddyErrorPreservesNestedWAFDetailAndTruncatesLongErrors(t *testing.T) {
+	nested := `caddy load failed (status 400): {"error":"loading config: loading new config: loading http app module: provision http: server srv1: setting up route handlers: route 0: loading handler modules: position 0: loading module 'jiuzhang_software_bypass': provision http.handlers.jiuzhang_software_bypass: software bypass normal chain: setting up subroutes: route 0: loading handler modules: position 2: loading module 'waf': provision http.handlers.waf: invalid WAF config from string: failed to parse string: failed to compile the directive \"secaction\": SecDefaultAction already defined for this phase: phase:1,log,auditlog,pass"}`
+	if got := sanitizeCaddyError(errors.New(nested)); got != nested {
+		t.Fatalf("nested Caddy WAF error should not be truncated at 500 bytes, got len=%d: %s", len(got), got)
+	}
+
+	oversized := strings.Repeat("错", 2050)
+	got := sanitizeCaddyError(errors.New(oversized))
+	if !strings.HasSuffix(got, "...(truncated)") {
+		t.Fatalf("oversized error missing truncated suffix: len=%d", len(got))
+	}
+	prefix := strings.TrimSuffix(got, "...(truncated)")
+	if len([]rune(prefix)) != 2000 {
+		t.Fatalf("oversized error prefix runes = %d, want 2000", len([]rune(prefix)))
 	}
 }

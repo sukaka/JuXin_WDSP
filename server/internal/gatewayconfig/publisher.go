@@ -2153,11 +2153,13 @@ func stripAPIGuardSections(g *GuardConfig) *GuardConfig {
 	return &cp
 }
 
-// sanitizeCaddyError 清理 Caddy 错误信息（不泄露内部细节）。
+// sanitizeCaddyError 清理 Caddy 错误信息：保留足够长度以完整呈现嵌套处理器
+// （如 jiuzhang_software_bypass → subroutes → waf/coraza）的实际根因，同时限制上限。
 func sanitizeCaddyError(err error) string {
+	const maxLen = 2000
 	msg := err.Error()
-	if len(msg) > 500 {
-		msg = msg[:500] + "...(truncated)"
+	if runes := []rune(msg); len(runes) > maxLen {
+		return string(runes[:maxLen]) + "...(truncated)"
 	}
 	return msg
 }

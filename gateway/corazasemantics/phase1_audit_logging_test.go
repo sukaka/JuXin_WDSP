@@ -188,3 +188,23 @@ func TestPhase1BlockRulesWrittenToAuditLog(t *testing.T) {
 		}
 	})
 }
+
+// TestDuplicateSecDefaultActionRejectedByCoraza 回归：
+// Coraza v3.7.0 禁止同一 phase 重复声明 SecDefaultAction。由于 crs-setup.conf
+// 已声明 phase 1~5 默认动作，配置生成器不得再次内联 SecDefaultAction，否则网关
+// /load 阶段编译 waf 处理器直接返回 400。
+func TestDuplicateSecDefaultActionRejectedByCoraza(t *testing.T) {
+	dup := strings.Replace(
+		crsDirectives(""),
+		"Include ../rules/crs/crs-setup.conf",
+		"SecDefaultAction \"phase:1,log,auditlog,pass\"\nInclude ../rules/crs/crs-setup.conf",
+		1,
+	)
+	_, err := coraza.NewWAF(coraza.NewWAFConfig().WithDirectives(dup))
+	if err == nil {
+		t.Fatal("expected duplicate SecDefaultAction to fail Coraza parsing")
+	}
+	if !strings.Contains(err.Error(), "SecDefaultAction already defined for this phase") {
+		t.Fatalf("unexpected Coraza error: %v", err)
+	}
+}
