@@ -48,11 +48,14 @@ import {
   PCAP_CAPTURE_POINT_LABELS,
   PCAP_MATCH_BASIS_LABELS,
   PCAP_VERIFY_ERROR_LABELS,
+  PERMISSION_CODE_LABELS,
   PERMISSION_MODULE_LABELS,
   PRECHECK_NAME_LABELS,
   PRINCIPAL_SOURCE_LABELS,
   PUBLISH_FAILURE_CODE_LABELS,
   REG_FAMILY_LABELS,
+  RULEPACK_ALERT_TYPE_LABELS,
+  RULEPACK_FAILURE_CODE_LABELS,
   SOURCE_TABLE_LABELS,
   SPEC_FORMAT_LABELS,
   STRONG_FLOW_ACTION_LABELS,
@@ -149,8 +152,10 @@ describe('i18nLabels 核心词表完整性', () => {
     expect(formatEnvironment('staging')).toBe('预发布')
     expect(formatEnvironment('dev')).toBe('开发')
     expect(formatEnvironment('canary')).toBe('canary')
-    expect(Object.keys(UPSTREAM_ERROR_CODE_LABELS)).toHaveLength(11)
+    expect(Object.keys(UPSTREAM_ERROR_CODE_LABELS)).toHaveLength(13)
     expect(UPSTREAM_ERROR_CODE_LABELS.SSRF_BLOCKED).toBe('SSRF 防护拦截')
+    expect(UPSTREAM_ERROR_CODE_LABELS.TLS_CERTIFICATE_ERROR).toBe('TLS 证书校验失败')
+    expect(UPSTREAM_ERROR_CODE_LABELS.TLS_HANDSHAKE_FAILED).toBe('TLS 握手失败')
     expect(PUBLISH_FAILURE_CODE_LABELS.REGRESSION_GATE_REJECTED).toBe('安全回归门禁拒绝')
     expect(PUBLISH_FAILURE_CODE_LABELS.FIREWALL_ENSURE_FAILED).toBe('防火墙端口放行失败')
     expect(DECISION_REASON_CODE_LABELS.WAF_INTERCEPT).toBe('WAF 规则拦截')
@@ -257,6 +262,23 @@ describe('i18nLabels 核心词表完整性', () => {
     expect(CLASSIFICATION_DIRECTION_LABELS.INBOUND).toBe('入向')
     expect(COMMON_DETAIL_FIELD_LABELS.username).toBe('用户名')
     expect(COMMON_DETAIL_VALUE_LABELS.status.ACTIVE).toBe('启用')
+  })
+
+  it('纯离线规则包权限码、审计动作/对象、失败码与系统告警词表完整', () => {
+    expect(PERMISSION_CODE_LABELS['waf_rules.pack.manage']).toBe('离线规则包更新管理')
+    expect(AUDIT_ACTION_LABELS.rulepack_upload).toBe('上传离线规则包')
+    expect(AUDIT_ACTION_LABELS.rulepack_apply).toBe('应用离线规则包')
+    expect(AUDIT_ACTION_LABELS.rulepack_rollback).toBe('回滚离线规则包')
+    expect(AUDIT_ACTION_LABELS.rulepack_retry_node_sync).toBe('补发节点规则包并重同步')
+    expect(formatAuditAction('rulepack_apply')).toBe('应用离线规则包')
+    expect(AUDIT_OBJECT_TYPE_LABELS.waf_rule_pack).toBe('离线规则包')
+    expect(formatAuditObjectType('waf_rule_pack')).toBe('离线规则包')
+    expect(RULEPACK_FAILURE_CODE_LABELS.GATEWAY_PUBLISH_FAILED).toBe('网关发布验证失败')
+    expect(RULEPACK_FAILURE_CODE_LABELS.STANDBY_STAGE_FAILED).toBe('备节点规则包落盘校验失败')
+    expect(RULEPACK_ALERT_TYPE_LABELS.RULEPACK_APPLY_FAILED).toBe('离线规则包应用失败')
+    expect(RULEPACK_ALERT_TYPE_LABELS.RULEPACK_NODE_DRIFT).toBe('HA 规则包版本漂移')
+    expect(COMMON_DETAIL_VALUE_LABELS.failure_code.GATEWAY_PUBLISH_FAILED).toBe('网关发布验证失败')
+    expect(COMMON_DETAIL_VALUE_LABELS.alert_type.RULEPACK_NODE_DRIFT).toBe('HA 规则包版本漂移')
   })
 })
 

@@ -9,31 +9,45 @@ import {
   Descriptions,
   Divider,
   Drawer,
+  Dropdown,
   Form,
   Input,
   InputNumber,
   List,
+  Modal,
   Popconfirm,
   Row,
   Select,
   Space,
   Statistic,
+  Table,
   Tag,
   Tooltip,
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { EditOutlined, PlusOutlined, SyncOutlined, UndoOutlined } from '@ant-design/icons'
+import {
+  DownOutlined,
+  EditOutlined,
+  HistoryOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  SyncOutlined,
+  UndoOutlined,
+  UploadOutlined,
+} from '@ant-design/icons'
 import { ApiError } from '../../api/client'
 import { applicationsApi } from '../../api/applications'
 import { protectionPoliciesApi } from '../../api/protectionPolicies'
 import { ruleOverridesApi } from '../../api/ruleOverrides'
+import { rulePacksApi } from '../../api/rulePacks'
 import { securityEventsApi } from '../../api/securityEvents'
 import { wafRulesApi } from '../../api/wafRules'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { ruleMessageZh, ruleNameZh } from '../../utils/crsRuleNames'
+import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import {
   formatRulePhaseZh,
@@ -50,7 +64,13 @@ import {
   RULE_SEVERITY_META,
   RULE_SOURCE_META,
 } from '../../utils/stage4'
-import type { WafRuleDescriptionPayload, WafRuleItem } from '../../types'
+import RulePackHistoryDrawer from './RulePackHistoryDrawer'
+import RulePackUpdateDrawer from './RulePackUpdateDrawer'
+import type {
+  RulePackNodePrecheckStatus,
+  WafRuleDescriptionPayload,
+  WafRuleItem,
+} from '../../types'
 
 interface Filters {
   rule_id?: number
@@ -76,15 +96,26 @@ const OVERRIDE_SCOPE_META: Record<string, { color: string; label: string }> = {
   POLICY: { ...EXCEPTION_SCOPE_META.POLICY, label: '防护策略' },
 }
 
-export default function WafRulesPage() {
+export interface WafRulesPageProps {
+  /** 规则包任务轮询间隔（毫秒），默认 1500；测试可传入更短间隔 */
+  rulePackPollIntervalMs?: number
+}
+
+export default function WafRulesPage({ rulePackPollIntervalMs }: WafRulesPageProps = {}) {
   const { message, modal } = AntdApp.useApp()
   const queryClient = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
+  const canManageRulePack = hasPermission(permissions, 'waf_rules.pack.manage')
+  const canSyncRules = hasPermission(permissions, 'waf_rules.sync')
 
   const [filters, setFilters] = useState<Filters>({})
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [detailRuleId, setDetailRuleId] = useState<number | null>(null)
+  const [updateDrawerOpen, setUpdateDrawerOpen] = useState(false)
+  const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false)
+  const [driftModalOpen, setDriftModalOpen] = useState(false)
+  const [retryingNodeId, setRetryingNodeId] = useState<string | null>(null)
   // 规则 ID 筛选为本地输入态，回车/失焦才提交查询（与同页 Input.Search 纪律一致，避免逐字符触发）
   const [ruleIdInput, setRuleIdInput] = useState<number | null>(null)
 
@@ -108,6 +139,12 @@ export default function WafRulesPage() {
   const versionsQuery = useQuery({
     queryKey: ['waf-rules', 'versions'],
     queryFn: () => wafRulesApi.versions(),
+  })
+
+  const rulePackCurrentQuery = useQuery({
+    queryKey: ['rule-packs', 'current'],
+    queryFn: () => rulePacksApi.current(),
+    retry: false,
   })
 
   const detailQuery = useQuery({
@@ -244,6 +281,21 @@ export default function WafRulesPage() {
     },
   })
 
+  const retryNodeSyncMutation = useMutation({
+    mutationFn: async (nodeId: string) => {
+      setRetryingNodeId(nodeId)
+      return rulePacksApi.retryNodeSync(nodeId)
+    },
+    onSuccess: (r) => {
+      message.success(r.message || '节点规则包与配置已补齐同步')
+      void queryClient.invalidateQueries({ queryKey: ['rule-packs'] })
+    },
+    onError: (e: unknown) => {
+      message.error(e instanceof ApiError ? e.message : '补齐节点规则包同步失败')
+    },
+    onSettled: () => setRetryingNodeId(null),
+  })
+
   const columns: ColumnsType<WafRuleItem> = [
     {
       title: '规则ID',
@@ -314,30 +366,186 @@ export default function WafRulesPage() {
   const detail = detailQuery.data
   const detailTags = detail ? parseWafRuleTags(detail.tags) : []
   const ruleDetailInfo = detail ? resolveWafRuleDetail(detail) : null
+  const rulePackStatus = rulePackCurrentQuery.data
+  const displayCRSVersion =
+    rulePackStatus?.active_crs_version || (versionsQuery.data?.versions ?? []).join('、')
+  const showHaAlignment = Boolean(
+    rulePackStatus && (rulePackStatus.ha_sync_enabled || (rulePackStatus.nodes?.length ?? 0) > 1),
+  )
+  const driftedStandbyNodes = (rulePackStatus?.nodes ?? []).filter(
+    (n) => n.role === 'STANDBY' && !n.aligned && Boolean(n.node_id),
+  )
+
+  const driftNodeColumns: ColumnsType<RulePackNodePrecheckStatus> = [
+    {
+      title: '节点',
+      key: 'node',
+      width: 180,
+      render: (_, n) => (
+        <Space size={6} wrap>
+          <Typography.Text strong>{n.node_name}</Typography.Text>
+          <Tag color={n.role === 'PRIMARY' ? 'gold' : 'blue'}>
+            {n.role === 'PRIMARY' ? '主节点' : '备节点'}
+          </Tag>
+        </Space>
+      ),
+    },
+    {
+      title: '当前规则包版本',
+      dataIndex: 'current_version',
+      width: 150,
+      render: (v?: string) => <Typography.Text code>{v || '-'}</Typography.Text>,
+    },
+    {
+      title: '对齐状态',
+      key: 'status',
+      width: 170,
+      render: (_, n) => (
+        <Space size={4} wrap>
+          <Tag color={n.reachable ? 'green' : 'red'}>{n.reachable ? '在线' : '不可达'}</Tag>
+          <Tag color={n.aligned ? 'green' : 'error'}>{n.aligned ? '已对齐' : '存在漂移'}</Tag>
+        </Space>
+      ),
+    },
+    {
+      title: '诊断',
+      dataIndex: 'error',
+      render: (v?: string) =>
+        v ? (
+          <Typography.Text type="danger" style={{ fontSize: 12 }}>
+            {v}
+          </Typography.Text>
+        ) : (
+          '-'
+        ),
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 120,
+      render: (_, n) => {
+        if (!canManageRulePack || n.role !== 'STANDBY' || n.aligned || !n.node_id) {
+          return '-'
+        }
+        return (
+          <Button
+            type="link"
+            size="small"
+            icon={<ReloadOutlined />}
+            loading={retryingNodeId === n.node_id}
+            onClick={() => n.node_id && retryNodeSyncMutation.mutate(n.node_id)}
+          >
+            补齐同步
+          </Button>
+        )
+      },
+    },
+  ]
 
   return (
     <Card
       title="防护规则库"
       extra={
-        <Space>
-          {(versionsQuery.data?.versions ?? []).length > 0 && (
-            <Typography.Text type="secondary">
-              CRS 版本：{(versionsQuery.data?.versions ?? []).join('、')}
-            </Typography.Text>
+        <Space wrap>
+          {rulePackStatus && (
+            <Space size={8} wrap>
+              <Typography.Text type="secondary">
+                规则包版本：
+                <Typography.Text code strong>
+                  {rulePackStatus.active_version || '未版本化'}
+                </Typography.Text>
+              </Typography.Text>
+              {rulePackStatus.storage_mode === 'LEGACY_FLAT' && (
+                <Tag color="default">传统目录模式</Tag>
+              )}
+              {rulePackStatus.storage_mode === 'VERSIONED' && !rulePackStatus.writable && (
+                <Tag color="warning">存储只读</Tag>
+              )}
+              {rulePackStatus.active_pack?.applied_at && (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  生效时间：{formatDateTime(rulePackStatus.active_pack.applied_at)}
+                </Typography.Text>
+              )}
+              {showHaAlignment && (
+                rulePackStatus.drift_detected ? (
+                  <Space size={4}>
+                    <Tag color="error">存在漂移</Tag>
+                    {canManageRulePack ? (
+                      <Button size="small" danger onClick={() => setDriftModalOpen(true)}>
+                        补齐同步
+                      </Button>
+                    ) : (
+                      <Button size="small" onClick={() => setDriftModalOpen(true)}>
+                        查看节点
+                      </Button>
+                    )}
+                  </Space>
+                ) : (
+                  <Tag color="green">已对齐</Tag>
+                )
+              )}
+            </Space>
           )}
-          {hasPermission(permissions, 'waf_rules.sync') && (
+          {displayCRSVersion && (
+            <Typography.Text type="secondary">CRS 版本：{displayCRSVersion}</Typography.Text>
+          )}
+          {canManageRulePack && (
             <Button
               type="primary"
-              icon={<SyncOutlined />}
-              loading={syncMutation.isPending}
-              onClick={() => syncMutation.mutate()}
+              icon={<UploadOutlined />}
+              onClick={() => setUpdateDrawerOpen(true)}
             >
-              同步CRS规则
+              更新离线规则包
             </Button>
+          )}
+          <Button icon={<HistoryOutlined />} onClick={() => setHistoryDrawerOpen(true)}>
+            版本历史与回滚
+          </Button>
+          {canSyncRules && (
+            <Dropdown
+              menu={{
+                items: [
+                  {
+                    key: 'sync-crs',
+                    icon: <SyncOutlined spin={syncMutation.isPending} />,
+                    disabled: syncMutation.isPending,
+                    label: (
+                      <Tooltip title="仅在异常修复时用于重建本地规则索引，离线规则包应用与回滚已自动同步">
+                        <span>同步CRS规则</span>
+                      </Tooltip>
+                    ),
+                    onClick: () => syncMutation.mutate(),
+                  },
+                ],
+              }}
+              trigger={['click']}
+            >
+              <Button loading={syncMutation.isPending}>
+                更多运维 <DownOutlined />
+              </Button>
+            </Dropdown>
           )}
         </Space>
       }
     >
+      {rulePackStatus?.drift_detected && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="检测到 HA 备节点规则包版本存在漂移"
+          description={
+            driftedStandbyNodes.length > 0
+              ? `存在 ${driftedStandbyNodes.length} 个备节点与主节点激活版本（${rulePackStatus.active_version || '-'}）不一致，建议在备机恢复在线后立即补齐同步。`
+              : '存在备节点不可达或规则包版本未对齐，请检查节点状态并补齐同步。'
+          }
+          action={
+            <Button size="small" type="primary" ghost onClick={() => setDriftModalOpen(true)}>
+              {canManageRulePack ? '查看与补齐' : '查看节点'}
+            </Button>
+          }
+        />
+      )}
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col span={4}>
           <Card size="small">
@@ -778,7 +986,7 @@ export default function WafRulesPage() {
                 </pre>
               ) : (
                 <Typography.Text type="secondary">
-                  暂未读取到原始 SecRule 文本（可点击右上角「同步CRS规则」重新同步规则文件）。
+                  暂未读取到原始 SecRule 文本（可在右上角「更多运维 → 同步CRS规则」重建本地规则索引）。
                 </Typography.Text>
               )}
             </Card>
@@ -987,6 +1195,67 @@ export default function WafRulesPage() {
           </>
         ) : null}
       </Drawer>
+
+      <RulePackUpdateDrawer
+        open={updateDrawerOpen}
+        currentStatus={rulePackStatus}
+        pollIntervalMs={rulePackPollIntervalMs}
+        onClose={() => setUpdateDrawerOpen(false)}
+      />
+
+      <RulePackHistoryDrawer
+        open={historyDrawerOpen}
+        canManage={canManageRulePack}
+        currentStatus={rulePackStatus}
+        pollIntervalMs={rulePackPollIntervalMs}
+        onClose={() => setHistoryDrawerOpen(false)}
+      />
+
+      <Modal
+        title="HA 节点规则包对齐状态与补齐同步"
+        open={driftModalOpen}
+        onCancel={() => setDriftModalOpen(false)}
+        footer={
+          <Space>
+            <Button
+              icon={<ReloadOutlined />}
+              loading={rulePackCurrentQuery.isFetching}
+              onClick={() => void rulePackCurrentQuery.refetch()}
+            >
+              刷新节点状态
+            </Button>
+            <Button type="primary" onClick={() => setDriftModalOpen(false)}>
+              关闭
+            </Button>
+          </Space>
+        }
+        width={780}
+        destroyOnHidden
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Alert
+            type={rulePackStatus?.drift_detected ? 'warning' : 'success'}
+            showIcon
+            message={
+              rulePackStatus?.drift_detected
+                ? `主节点激活版本为 ${rulePackStatus?.active_version || '-'}，部分备节点存在版本漂移或未就绪`
+                : `全部节点均已对齐版本 ${rulePackStatus?.active_version || '-'}`
+            }
+            description={
+              canManageRulePack
+                ? '点击「补齐同步」将先向备节点补发当前激活规则包并完成独立 Ed25519 验签落盘，再重同步网关配置与激活软链。'
+                : '当前账号仅具有只读权限，请联系具备离线规则包管理权限的管理员执行补齐同步。'
+            }
+          />
+          <Table<RulePackNodePrecheckStatus>
+            size="small"
+            rowKey={(n) => n.node_id || `${n.role}-${n.node_name}`}
+            columns={driftNodeColumns}
+            dataSource={rulePackStatus?.nodes ?? []}
+            pagination={false}
+          />
+        </Space>
+      </Modal>
     </Card>
   )
 }

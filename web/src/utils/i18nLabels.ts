@@ -91,6 +91,13 @@ export function formatPermissionModule(mod: string): string {
   return PERMISSION_MODULE_LABELS[mod] ?? PERMISSION_MODULE_LABELS[mod.trim().toLowerCase()] ?? mod
 }
 
+/** 细粒度权限码中文补充词表（用于权限说明、按钮提示及角色展示兜底） */
+export const PERMISSION_CODE_LABELS: Record<string, string> = {
+  'waf_rules.read': '查看防护规则与规则包',
+  'waf_rules.sync': '重建本地规则索引（同步 CRS 规则）',
+  'waf_rules.pack.manage': '离线规则包更新管理',
+}
+
 /* ==================== 操作审计（模块 / 动作 / 对象类型） ==================== */
 
 /** 操作审计模块（operation_audits.module） */
@@ -164,6 +171,7 @@ export const AUDIT_MODULE_LABELS: Record<string, string> = {
   vuln_intel: '漏洞情报',
   vuln_refs: '漏洞规则关联',
   waf_rules: 'WAF 规则',
+  waf_rule_packs: '离线规则包',
   wasm_plugins: 'Wasm 检测插件',
   xdp_acceleration: '内核 XDP 加速',
 }
@@ -319,6 +327,10 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   noise_draft_rule: '生成降噪规则草稿',
   ai_data_retention: 'AI 数据留存清理',
   ai_schedule_circuit_open: 'AI 定时任务熔断',
+  rulepack_upload: '上传离线规则包',
+  rulepack_apply: '应用离线规则包',
+  rulepack_rollback: '回滚离线规则包',
+  rulepack_retry_node_sync: '补发节点规则包并重同步',
 }
 
 /** 操作审计对象类型（operation_audits.object_type） */
@@ -399,6 +411,8 @@ export const AUDIT_OBJECT_TYPE_LABELS: Record<string, string> = {
   user: '用户',
   users: '用户',
   vuln_ref: '漏洞规则关联',
+  waf_rule_pack: '离线规则包',
+  waf_rule_packs: '离线规则包',
   wasm_plugin: 'Wasm 检测插件',
   wasm_plugin_version: 'Wasm 插件版本',
   xdp_acceleration_config: '内核 XDP 加速配置',
@@ -516,6 +530,26 @@ export const PUBLISH_FAILURE_CODE_LABELS: Record<string, string> = {
   VERSION_NOT_PUBLISHED: '目标版本未发布',
   TIMEOUT: '发布超时',
   UNKNOWN: '未知错误',
+}
+
+/** 离线规则包应用/回滚失败码（server/internal/rulepacks/service.go） */
+export const RULEPACK_FAILURE_CODE_LABELS: Record<string, string> = {
+  STAGE_LOCAL_FAILED: '主节点解包校验失败',
+  ARCHIVE_MISSING: '规则包签名归档缺失',
+  HA_NODE_LIST_FAILED: '查询 HA 备节点列表失败',
+  STANDBY_STAGE_FAILED: '备节点规则包落盘校验失败',
+  GATEWAY_PUBLISH_FAILED: '网关发布验证失败',
+  ACTIVATE_FAILED: '切换激活版本软链失败',
+  SYMLINK_SWITCH_FAILED: '切换规则软链失败',
+  ACTIVATE_DB_FAILED: '切换数据库激活版本失败',
+  STANDBY_ACTIVATE_FAILED: '备节点切换激活版本失败',
+  METADATA_SYNC_FAILED: '规则库元数据同步失败',
+}
+
+/** 离线规则包系统告警类型（server/internal/systemalerts/rules.go & notify.go） */
+export const RULEPACK_ALERT_TYPE_LABELS: Record<string, string> = {
+  RULEPACK_APPLY_FAILED: '离线规则包应用失败',
+  RULEPACK_NODE_DRIFT: 'HA 规则包版本漂移',
 }
 
 /** 网关请求决策原因码（gateway/modules/jiuzhang_guard） */
@@ -1918,6 +1952,13 @@ export const COMMON_DETAIL_FIELD_LABELS: Record<string, string> = {
   target_version: '目标回滚版本',
   expected_sha256: '预期 SHA-256',
   sha256: 'SHA-256 摘要',
+  rulepack_version: '规则包版本',
+  crs_version: 'CRS 版本',
+  min_system_version: '最低系统版本',
+  manifest_sha256: '清单 SHA-256',
+  file_sha256: '文件 SHA-256',
+  allow_degraded_ha: '允许 HA 降级生效',
+  degraded_reason: '降级应急说明',
 }
 
 const COMMON_STATUS_VALUES: Record<string, string> = {
@@ -2003,6 +2044,12 @@ const COMMON_STATUS_VALUES: Record<string, string> = {
   IN_REVIEW: '评审中',
   FORMAL: '正式',
   SUPERSEDED: '已被取代',
+  APPLIED: '当前生效',
+  STAGING_LOCAL: '主节点解包中',
+  STAGING_STANDBY: '备节点落盘中',
+  ACTIVATING: '切换激活版本中',
+  SYNCING_METADATA: '同步规则元数据中',
+  SKIPPED: '已跳过',
   ENFORCING: '已生效',
   ENROLLING: '注册中',
   CONNECTED_BASELINE: '已连接·基线',
@@ -2327,10 +2374,12 @@ export const COMMON_DETAIL_VALUE_LABELS: Record<string, Record<string, string>> 
   },
   failure_code: {
     ...PUBLISH_FAILURE_CODE_LABELS,
+    ...RULEPACK_FAILURE_CODE_LABELS,
     ...UPSTREAM_ERROR_CODE_LABELS,
   },
   error_code: {
     ...UPSTREAM_ERROR_CODE_LABELS,
+    ...RULEPACK_FAILURE_CODE_LABELS,
     ...PUBLISH_FAILURE_CODE_LABELS,
   },
   reason_code: {
@@ -2403,6 +2452,10 @@ export const COMMON_DETAIL_VALUE_LABELS: Record<string, Record<string, string>> 
     WASM_PLUGIN_BLOCK: 'Wasm 插件阻断',
     WASM_PLUGIN_RATE_LIMIT: 'Wasm 插件限速',
     WASM_PLUGIN_ERROR: 'Wasm 插件执行异常',
+    ...RULEPACK_ALERT_TYPE_LABELS,
+  },
+  alert_type: {
+    ...RULEPACK_ALERT_TYPE_LABELS,
   },
   pin_enforcement: {
     OFF: '关闭',

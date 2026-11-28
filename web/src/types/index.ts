@@ -4026,3 +4026,225 @@ export interface ApmDiagnosticOverhead {
 export interface ApmDiagnosticDryRunResult {
   estimated_overhead: ApmDiagnosticOverhead
 }
+
+/* ==================== 纯离线 WAF 规则包热更新（Stage 8 / R4） ==================== */
+
+/** 规则存储模式：VERSIONED 版本化目录 / LEGACY_FLAT 旧版扁平目录 */
+export type RulePackStorageMode = 'VERSIONED' | 'LEGACY_FLAT'
+
+/** 规则包档案状态（waf_rule_packs.status） */
+export type RulePackStatus = 'VERIFIED' | 'REJECTED' | 'APPLIED' | 'SUPERSEDED' | 'ROLLED_BACK'
+
+/** 规则包执行任务类型 */
+export type RulePackJobType = 'APPLY' | 'ROLLBACK'
+
+/** 规则包执行任务状态（waf_rule_pack_jobs.status） */
+export type RulePackJobStatus =
+  | 'PENDING'
+  | 'STAGING_LOCAL'
+  | 'STAGING_STANDBY'
+  | 'PUBLISHING'
+  | 'ACTIVATING'
+  | 'SYNCING_METADATA'
+  | 'SUCCESS'
+  | 'ROLLING_BACK'
+  | 'ROLLED_BACK'
+  | 'FAILED'
+
+/** 规则包集群节点角色 */
+export type RulePackNodeRole = 'PRIMARY' | 'STANDBY'
+
+/** 规则包逐节点阶段状态 */
+export type RulePackNodeStepStatus = 'PENDING' | 'SUCCESS' | 'FAILED' | 'SKIPPED'
+
+/** 规则包归档内单个文件校验项 */
+export interface RulePackManifestFile {
+  path: string
+  sha256: string
+  size: number
+}
+
+/** 规则包清单规则统计摘要 */
+export interface RulePackRuleSummary {
+  total_rules: number
+  by_source?: Record<string, number>
+  highlighted_cves?: string[]
+}
+
+/** 离线规则包 manifest.json 结构 */
+export interface RulePackManifest {
+  schema_version: number
+  product: string
+  package_type: string
+  rulepack_version: string
+  crs_version: string
+  min_system_version: string
+  coraza_compat?: string
+  released_at?: string
+  changelog?: string[]
+  rule_summary?: RulePackRuleSummary | null
+  files?: RulePackManifestFile[]
+  files_manifest_sha256: string
+}
+
+/** 规则增删改抽样项 */
+export interface RulePackChangeItem {
+  rule_id: number
+  rule_source: string
+  file_name: string
+  name: string
+  attack_type: string
+  severity: string
+}
+
+/** 候选规则包与当前激活规则集的差异统计 */
+export interface RulePackDiffSummary {
+  total_rules: number
+  added_count: number
+  updated_count: number
+  removed_count: number
+  unchanged_count: number
+  by_source?: Record<string, number>
+  by_attack_type?: Record<string, number>
+  added_samples?: RulePackChangeItem[]
+  updated_samples?: RulePackChangeItem[]
+  removed_samples?: RulePackChangeItem[]
+}
+
+/** 客户策略影响预警类型（只提示不自动修改客户配置） */
+export type RulePackPolicyWarningKind =
+  | 'OVERRIDE_RULE_REMOVED'
+  | 'OVERRIDE_RULE_UPDATED'
+  | 'EXCEPTION_RULE_REMOVED'
+  | 'EXCEPTION_RULE_UPDATED'
+  | 'EXCEPTION_TAG_NEW_RULES'
+
+/** 客户规则覆盖或例外策略影响预警条目 */
+export interface RulePackPolicyImpactWarning {
+  kind: RulePackPolicyWarningKind | string
+  object_id: string
+  object_name?: string
+  rule_id?: number
+  tag?: string
+  message: string
+}
+
+/** 预检及状态接口返回的节点就绪与版本对齐快照 */
+export interface RulePackNodePrecheckStatus {
+  node_id?: string | null
+  node_name: string
+  role: RulePackNodeRole | string
+  reachable: boolean
+  rulepack_ready: boolean
+  current_version?: string
+  aligned: boolean
+  error?: string
+}
+
+/** 上传即校验阶段生成的预检差异与影响报告 */
+export interface RulePackPreviewReport {
+  verified_at: string
+  signature_verified: boolean
+  integrity_verified: boolean
+  static_gate_passed: boolean
+  previous_version?: string
+  previous_crs_version?: string
+  target_version: string
+  target_crs_version: string
+  changelog?: string[]
+  highlighted_cves?: string[]
+  diff: RulePackDiffSummary
+  policy_warnings?: RulePackPolicyImpactWarning[]
+  node_prechecks?: RulePackNodePrecheckStatus[]
+  disk_free_bytes: number
+  disk_ok: boolean
+  split_brain_detected: boolean
+  active_upgrade_job: boolean
+}
+
+/** 规则包档案记录（waf_rule_packs） */
+export interface RulePackItem {
+  id: string
+  rulepack_version: string
+  crs_version: string
+  min_system_version: string
+  coraza_compat: string
+  is_builtin: boolean
+  file_name: string
+  file_size: number
+  file_sha256: string
+  manifest_sha256: string
+  manifest_json?: RulePackManifest | Record<string, unknown> | null
+  preview_report?: RulePackPreviewReport | Record<string, unknown> | null
+  status: RulePackStatus | string
+  reject_reason?: string
+  uploaded_by?: string | null
+  uploaded_at: string
+  applied_by?: string | null
+  applied_at?: string | null
+  created_at: string
+  updated_at: string
+  /** 运行时计算：是否保留磁盘快照或原始归档可供一键回滚 */
+  can_rollback: boolean
+}
+
+/** HA 逐节点规则包执行明细（waf_rule_pack_node_states） */
+export interface RulePackNodeState {
+  id: string
+  job_id: string
+  node_id?: string | null
+  node_name: string
+  role: RulePackNodeRole | string
+  stage_status: RulePackNodeStepStatus | string
+  load_status: RulePackNodeStepStatus | string
+  activate_status: RulePackNodeStepStatus | string
+  error_code?: string
+  error_message?: string
+  updated_at: string
+}
+
+/** 规则包应用/回滚执行任务（waf_rule_pack_jobs） */
+export interface RulePackJob {
+  id: string
+  job_type: RulePackJobType | string
+  target_pack_id: string
+  target_version?: string
+  previous_pack_id?: string | null
+  previous_version?: string
+  publish_task_id?: string | null
+  status: RulePackJobStatus | string
+  current_step: string
+  progress: number
+  allow_degraded_ha: boolean
+  degraded_reason?: string
+  sync_report?: WafRuleSyncReport | Record<string, unknown> | null
+  failure_code?: string
+  failure_message?: string
+  requested_by?: string | null
+  request_id?: string
+  started_at?: string | null
+  finished_at?: string | null
+  created_at: string
+  node_states?: RulePackNodeState[]
+}
+
+/** 当前生效离线规则包与集群节点对齐状态（GET /api/v1/rule-packs/current） */
+export interface RulePackCurrentStatus {
+  storage_mode: RulePackStorageMode | string
+  writable: boolean
+  retention: number
+  active_pack: RulePackItem | null
+  active_version: string
+  active_crs_version: string
+  gateway_rules_base_path: string
+  latest_job?: RulePackJob | null
+  ha_sync_enabled: boolean
+  nodes: RulePackNodePrecheckStatus[]
+  drift_detected: boolean
+}
+
+/** POST /api/v1/rule-packs/{id}/apply 与 /rollback 请求体 */
+export interface RulePackApplyRequest {
+  allow_degraded_ha?: boolean
+  degraded_reason?: string
+}

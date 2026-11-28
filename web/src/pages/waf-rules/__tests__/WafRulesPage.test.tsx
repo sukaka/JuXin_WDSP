@@ -20,6 +20,31 @@ const RULE = {
   crs_version: '4.0.0',
 }
 
+function defaultRulePackCurrent() {
+  return {
+    storage_mode: 'VERSIONED',
+    writable: true,
+    retention: 5,
+    active_pack: null,
+    active_version: 'builtin-1.19.1',
+    active_crs_version: '4.28.0',
+    gateway_rules_base_path: '/etc/caddy/rules/releases/builtin-1.19.1',
+    latest_job: null,
+    ha_sync_enabled: false,
+    nodes: [
+      {
+        node_name: 'primary',
+        role: 'PRIMARY',
+        reachable: true,
+        rulepack_ready: true,
+        current_version: 'builtin-1.19.1',
+        aligned: true,
+      },
+    ],
+    drift_detected: false,
+  }
+}
+
 function jsonResponse(data: unknown): Response {
   return new Response(JSON.stringify({ code: 'SUCCESS', message: 'ok', data }), {
     status: 200,
@@ -57,6 +82,9 @@ describe('WafRulesPage 规则效果', () => {
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input)
+        if (url.includes('/rule-packs/current')) {
+          return Promise.resolve(jsonResponse(defaultRulePackCurrent()))
+        }
         if (url.includes('/waf-rules/effect-statistics')) {
           return Promise.resolve(
             jsonResponse({
@@ -203,6 +231,9 @@ describe('WafRulesPage 规则效果', () => {
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input)
+        if (url.includes('/rule-packs/current')) {
+          return Promise.resolve(jsonResponse(defaultRulePackCurrent()))
+        }
         if (url.includes('/waf-rules/effect-statistics')) {
           return Promise.resolve(
             jsonResponse({
@@ -352,6 +383,9 @@ describe('WafRulesPage 规则效果', () => {
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input)
+        if (url.includes('/rule-packs/current')) {
+          return Promise.resolve(jsonResponse(defaultRulePackCurrent()))
+        }
         if (url.includes('/waf-rules/effect-statistics')) {
           return Promise.resolve(jsonResponse({ items: [], page: 1, page_size: 30, total: 0 }))
         }
@@ -410,6 +444,9 @@ describe('WafRulesPage 规则效果', () => {
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input)
+        if (url.includes('/rule-packs/current')) {
+          return Promise.resolve(jsonResponse(defaultRulePackCurrent()))
+        }
         if (url.includes('/waf-rules/effect-statistics')) {
           return Promise.resolve(jsonResponse({ items: [], page: 1, page_size: 30, total: 0 }))
         }
@@ -517,6 +554,9 @@ describe('WafRulesPage 规则效果', () => {
           currentRule = baseRule
           return Promise.resolve(jsonResponse(baseRule))
         }
+        if (url.includes('/rule-packs/current')) {
+          return Promise.resolve(jsonResponse(defaultRulePackCurrent()))
+        }
         if (url.includes('/waf-rules/effect-statistics')) {
           return Promise.resolve(jsonResponse({ items: [], page: 1, page_size: 30, total: 0 }))
         }
@@ -578,6 +618,9 @@ describe('WafRulesPage 规则效果', () => {
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input)
+        if (url.includes('/rule-packs/current')) {
+          return Promise.resolve(jsonResponse(defaultRulePackCurrent()))
+        }
         if (url.includes('/waf-rules/effect-statistics')) {
           return Promise.resolve(jsonResponse({ items: [], page: 1, page_size: 30, total: 0 }))
         }

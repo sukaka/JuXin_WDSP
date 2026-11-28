@@ -112,6 +112,8 @@ describe('阶段6 展示元数据完整性', () => {
         'APM_SLO_BREACH',
         'APM_INGEST_LAG',
         'AI_OPS_SCHEDULE_CIRCUIT_OPEN',
+        'RULEPACK_APPLY_FAILED',
+        'RULEPACK_NODE_DRIFT',
       ].sort(),
     )
   })
@@ -317,6 +319,7 @@ describe('系统告警组件与详情中文化格式化', () => {
     expect(formatAlertComponent('clickhouse')).toBe('ClickHouse 时序存储')
     expect(formatAlertComponent('API_SECURITY')).toBe('API 安全采集')
     expect(formatAlertComponent('API_ENDPOINT_DISCOVERY')).toBe('API 端点发现')
+    expect(formatAlertComponent('waf_rule_packs')).toBe('离线规则包')
     expect(formatAlertComponent('vuln_intel:php')).toBe('漏洞情报：php')
     expect(formatAlertComponent('shop/GET /v1/orders')).toBe('shop/GET /v1/orders')
     expect(formatAlertComponent('')).toBe('-')

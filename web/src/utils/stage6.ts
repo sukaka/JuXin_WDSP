@@ -130,6 +130,8 @@ export const ALERT_TYPE_META: Record<string, { color: string; label: string }> =
   APM_SLO_BREACH: { color: 'red', label: 'APM SLO 违约' },
   APM_INGEST_LAG: { color: 'orange', label: 'APM 采集入库滞后' },
   AI_OPS_SCHEDULE_CIRCUIT_OPEN: { color: 'volcano', label: 'AI 定时运营任务熔断' },
+  RULEPACK_APPLY_FAILED: { color: 'red', label: '离线规则包应用失败' },
+  RULEPACK_NODE_DRIFT: { color: 'volcano', label: 'HA 规则包版本漂移' },
 }
 
 /** 监控组件展示名 */
@@ -167,6 +169,7 @@ export const ALERT_COMPONENT_NAME_META: Record<string, string> = {
   API_GATEWAY_NODES: '多节点网关',
   API_GATEWAY_NODE_SYNC: '网关节点配置同步',
   API_ENDPOINT_DISCOVERY: 'API 端点发现',
+  WAF_RULE_PACKS: '离线规则包',
 }
 
 /** 格式化系统告警组件名（大小写不敏感，支持 vuln_intel:<tech> 前缀；未知动态组件原样返回） */
