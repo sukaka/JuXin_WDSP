@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+## [1.21.1] - 2026-11-28
+
+### 修复与优化
+
+- **替换已停用的 `abuse.ch SSLBL` 威胁情报预置源，补齐 3 个活跃维护、宽松许可的高体量官方源**：
+  - **数据库迁移**：新增可回滚迁移 `000257_threat_intel_active_presets`：安全清理无在册规则的已停用内置源 `sslbl`（若存量环境仍有在册规则则自动停用并转为纯离线保留历史规则），更新 `feodo` 展示说明（聚焦少量活跃 C2 节点，CC0-1.0），并预置 3 个活跃官方源（全部默认关闭以严守纯离线零外连基线）：
+    - `ipsum_l5`：IPsum 高置信恶意 IP 清单 Level 5（Unlicense，约 3,000+ 条，仅单 IP）
+    - `spamhaus_drop`：Spamhaus DROP 恶意网段清单（Free/Permissive，启用 CIDR 仅导入 `/16`–`/32` 公网网段，约 1,700+ 条）
+    - `et_compromised`：Emerging Threats 失陷攻击主机清单（BSD-3-Clause，约 500+ 条，仅单 IP）
+  - **出站白名单与后端同步器**：`server/internal/iplibhttp/client.go` 精确放行 `www.spamhaus.org`（限定 `/drop/` 路径前缀）与 `rules.emergingthreats.net`（限定 `/blockrules/` 路径前缀）并移除停用的 `sslbl.abuse.ch`；`server/internal/threatintel`（`syncer.go`、`feeds_handler.go`、`feeds_store.go`）与 OpenAPI `34-ip-libraries.yaml` / `wdsp-api.yaml` 同步更新预置源清单与单测覆盖。
+  - **前端展示优化**：`web/src/pages/ip-libraries/ThreatIntelTab.tsx` 与 `meta.ts` 更新官方预置源选择与说明标签，补齐 `IpLibrariesPage.test.tsx` 回归用例；同步更新设计文档 `docs/IP_LIBRARY_UPDATE_DESIGN.md`。
+
+### 验证与边界
+
+- **后端与 OpenAPI**：`cd server && go build ./cmd/...` 及 `go test -race -count=1 ./internal/iplibhttp/... ./internal/threatintel/... ./internal/upgrades/...` 全部通过；`python3 tools/check-api-reconcile.py` 确认 0 新增缺失。
+- **前端**：`cd web && npm run typecheck`、`eslint`（改动文件 0 报错）、`vitest`（`IpLibrariesPage.test.tsx` 与 `ipLibraries.test.ts` 共 11/11 通过）与 `npm run build` 全部通过。
+- **未执行项（`NOT_RUN`）**：按 `docs/tasks/UPGRADE_INCIDENT_2026-11-17.md`，目标机升级后真实外网拉取 `ipsum_l5`/`spamhaus_drop`/`et_compromised` 与 Playwright 端到端回归在发版时为 `NOT_RUN`。
+
 ## [1.21.0] - 2026-11-28
 
 ### 新增
