@@ -15,10 +15,6 @@ import (
 )
 
 const (
-	mirrorTargetUID  = 1000
-	mirrorTargetGID  = 1000
-	capNetAdmin      = 12
-	capNetRaw        = 13
 	prSetKeepCaps    = 8
 	prCapBSetDrop    = 24
 	prSetNoNewPrivs  = 38
@@ -40,14 +36,42 @@ type capData struct {
 	inheritable uint32
 }
 
+type linuxHealthcheckPrivOps struct{}
+
+func (linuxHealthcheckPrivOps) Geteuid() int                { return syscall.Geteuid() }
+func (linuxHealthcheckPrivOps) ReadCapPrm() (uint64, error) { return readCapPrm() }
+func (linuxHealthcheckPrivOps) SetNoNewPrivs() error        { return prctl(prSetNoNewPrivs, 1, 0, 0, 0) }
+func (linuxHealthcheckPrivOps) ClearGroups() error          { return syscall.Setgroups(nil) }
+func (linuxHealthcheckPrivOps) DropAllBoundingCaps() error  { return dropOtherBoundingCaps(0) }
+func (linuxHealthcheckPrivOps) Setresgid(gid int) error     { return syscall.Setresgid(gid, gid, gid) }
+func (linuxHealthcheckPrivOps) Setresuid(uid int) error     { return syscall.Setresuid(uid, uid, uid) }
+func (linuxHealthcheckPrivOps) ClearCapabilities() error {
+	hdr := capHeader{version: capabilityVers3}
+	var data [2]capData
+	if _, _, errno := syscall.Syscall(syscall.SYS_CAPSET,
+		uintptr(unsafe.Pointer(&hdr)), uintptr(unsafe.Pointer(&data[0])), 0); errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+// maybeDropHealthcheckPrivileges 在 --healthcheck 路径降权至 UID/GID 1000（零 capability），
+// 并在当前锁定 OS 线程上同步完成后续只读目录校验后退出。
+func maybeDropHealthcheckPrivileges() error {
+	if !shouldDropPrivileges() || syscall.Geteuid() != 0 {
+		return nil
+	}
+	runtime.LockOSThread()
+	return dropHealthcheckPrivilegesWith(linuxHealthcheckPrivOps{})
+}
+
 // maybeDropPrivileges 在生产容器（MIRROR_DROP_PRIVS=1 且以 root 启动）中将进程
 // 降权至 UID/GID 1000 并通过 ambient capability 仅保留 CAP_NET_RAW/CAP_NET_ADMIN，
 // 随后重新 exec 自身使全部 Go 运行时线程处于同一 UID 1000 身份。
 // 这样 mirrorcap 写出的日志属主与 caddy/api/logrotator（1000:1000）完全一致，
 // 且不持有 CAP_DAC_OVERRIDE 或 root 权限。
 func maybeDropPrivileges() error {
-	if !strings.EqualFold(strings.TrimSpace(os.Getenv("MIRROR_DROP_PRIVS")), "1") &&
-		!strings.EqualFold(strings.TrimSpace(os.Getenv("MIRROR_DROP_PRIVS")), "true") {
+	if !shouldDropPrivileges() {
 		return nil
 	}
 	if syscall.Geteuid() != 0 {

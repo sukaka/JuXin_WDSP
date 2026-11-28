@@ -2,4 +2,5 @@
 
 package main
 
-func maybeDropPrivileges() error { return nil }
+func maybeDropPrivileges() error            { return nil }
+func maybeDropHealthcheckPrivileges() error { return nil }

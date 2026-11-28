@@ -44,14 +44,16 @@ import (
 )
 
 func main() {
-	for _, arg := range os.Args[1:] {
-		if arg == "--healthcheck" {
-			if err := runHealthcheck(); err != nil {
-				fmt.Fprintf(os.Stderr, "mirrorcap healthcheck failed: %v\n", err)
-				os.Exit(1)
-			}
-			return
+	if hasHealthcheckFlag(os.Args[1:]) {
+		if err := maybeDropHealthcheckPrivileges(); err != nil {
+			fmt.Fprintf(os.Stderr, "mirrorcap healthcheck privilege drop error: %v\n", err)
+			os.Exit(1)
 		}
+		if err := runHealthcheck(); err != nil {
+			fmt.Fprintf(os.Stderr, "mirrorcap healthcheck failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 	if err := maybeDropPrivileges(); err != nil {
 		fmt.Fprintf(os.Stderr, "mirrorcap privilege drop error: %v\n", err)
@@ -61,6 +63,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "mirrorcap error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func hasHealthcheckFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--healthcheck" {
+			return true
+		}
+	}
+	return false
 }
 
 // runHealthcheck 校验基础日志目录与规则目录可访问（容器 HEALTHCHECK / 升级就绪探针）。
