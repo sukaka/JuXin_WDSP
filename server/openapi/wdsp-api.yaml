@@ -38015,7 +38015,7 @@ paths:
       summary: 防护策略实际生效内容（SecLang 指令与生效规则清单）
       description: '返回与配置发布同源生成的 Coraza SecLang 指令、按序加载的规则文件清单、
 
-        生效的规则覆盖/自定义规则/全局 WAF 例外，以及防护规则库在该策略模式与 PL 下的生效规则清单（分页，附带原始 SecRule 原文）。
+        生效的规则覆盖/自定义规则/全局 WAF 例外，以及防护规则库在该策略模式与 PL 下的生效规则清单（分页，附带结构化中文规则说明 description/detail 与原始 SecRule 原文）。
 
         权限：`protection_policies.read`
 

@@ -41,6 +41,11 @@ import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import { ATTACK_TYPE_META, RULE_SEVERITY_META, RULE_SOURCE_META } from '../../utils/stage4'
+import {
+  resolveWafRuleDetail,
+  WAF_RULE_DETAIL_SOURCE_META,
+  WAF_RULE_TYPE_META,
+} from '../../utils/wafRuleDetails'
 import type { ProtectionPolicyEffectiveRuleItem, ProtectionPolicyItem } from '../../types'
 
 interface Filters {
@@ -571,7 +576,7 @@ export default function ProtectionPoliciesPage() {
         title={detail ? `策略详情：${detail.name}` : '策略详情'}
         open={detailId !== null}
         onClose={closeDetail}
-        width={860}
+        width={960}
       >
         {detailQuery.isLoading ? (
           <Typography.Text type="secondary">加载中...</Typography.Text>
@@ -984,64 +989,147 @@ export default function ProtectionPoliciesPage() {
                       loading={contentQuery.isLoading}
                       dataSource={contentQuery.data?.rules ?? []}
                       expandable={{
-                        expandedRowRender: (rec) =>
-                          rec.raw_rule ? (
-                            <pre
-                              style={{
-                                margin: 0,
-                                maxHeight: 240,
-                                overflow: 'auto',
-                                background: '#f5f5f5',
-                                padding: 10,
-                                borderRadius: 6,
-                                fontSize: 12,
-                                fontFamily: 'monospace',
-                                whiteSpace: 'pre-wrap',
-                                wordBreak: 'break-all',
-                              }}
-                            >
-                              {rec.raw_rule}
-                            </pre>
-                          ) : (
-                            <Typography.Text type="secondary">
-                              暂未读取到原始 SecRule 原文，请先在「防护规则库」同步 CRS 规则。
-                            </Typography.Text>
-                          ),
+                        expandedRowRender: (rec) => {
+                          const ruleDetail = resolveWafRuleDetail(rec)
+                          const typeMeta = WAF_RULE_TYPE_META[ruleDetail.rule_type]
+                          const sourceMeta =
+                            WAF_RULE_DETAIL_SOURCE_META[ruleDetail.source ?? 'BUILTIN']
+                          return (
+                            <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                              <Card
+                                size="small"
+                                title={
+                                  <Space size={6} wrap>
+                                    <span>规则中文说明</span>
+                                    {typeMeta && <Tag color={typeMeta.color}>{typeMeta.label}</Tag>}
+                                    {sourceMeta && (
+                                      <Tag color={sourceMeta.color}>{sourceMeta.label}</Tag>
+                                    )}
+                                  </Space>
+                                }
+                                extra={
+                                  rec.file_name ? (
+                                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                      {rec.file_name}
+                                    </Typography.Text>
+                                  ) : null
+                                }
+                              >
+                                <Descriptions column={1} size="small" colon>
+                                  <Descriptions.Item label="用途说明">
+                                    {ruleDetail.summary}
+                                  </Descriptions.Item>
+                                  <Descriptions.Item label="检测与执行逻辑">
+                                    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                                      <span>{ruleDetail.detection_logic}</span>
+                                      {ruleDetail.targets.length > 0 && (
+                                        <Space wrap size={[4, 4]}>
+                                          {ruleDetail.targets.map((target) => (
+                                            <Tag key={target} color="geekblue">
+                                              {target}
+                                            </Tag>
+                                          ))}
+                                        </Space>
+                                      )}
+                                    </Space>
+                                  </Descriptions.Item>
+                                  <Descriptions.Item label="执行阶段">
+                                    {ruleDetail.phase_description}
+                                  </Descriptions.Item>
+                                  <Descriptions.Item label="触发动作">
+                                    {ruleDetail.action_behavior}
+                                  </Descriptions.Item>
+                                  <Descriptions.Item label="风险与防护意义">
+                                    {ruleDetail.risk_impact}
+                                  </Descriptions.Item>
+                                  <Descriptions.Item label="排查与调优建议">
+                                    {ruleDetail.tuning_advice}
+                                  </Descriptions.Item>
+                                </Descriptions>
+                              </Card>
+
+                              <Card
+                                size="small"
+                                title="原始 SecRule 原文"
+                                extra={
+                                  rec.raw_rule ? (
+                                    <Typography.Text
+                                      copyable={{
+                                        text: rec.raw_rule,
+                                        tooltips: ['复制规则原文', '已复制'],
+                                      }}
+                                    >
+                                      复制原文
+                                    </Typography.Text>
+                                  ) : null
+                                }
+                              >
+                                {rec.raw_rule ? (
+                                  <pre
+                                    style={{
+                                      margin: 0,
+                                      maxHeight: 240,
+                                      overflow: 'auto',
+                                      background: '#f5f5f5',
+                                      padding: 10,
+                                      borderRadius: 6,
+                                      fontSize: 12,
+                                      fontFamily: 'monospace',
+                                      whiteSpace: 'pre-wrap',
+                                      wordBreak: 'break-all',
+                                    }}
+                                  >
+                                    {rec.raw_rule}
+                                  </pre>
+                                ) : (
+                                  <Typography.Text type="secondary">
+                                    暂未读取到原始 SecRule 原文，请先在「防护规则库」同步 CRS 规则。
+                                  </Typography.Text>
+                                )}
+                              </Card>
+                            </Space>
+                          )
+                        },
                       }}
                       columns={[
                         {
                           title: '规则ID',
                           dataIndex: 'rule_id',
-                          width: 96,
+                          width: 92,
                           render: (v: number) => <Typography.Text code>{v}</Typography.Text>,
                         },
                         {
                           title: '名称',
                           dataIndex: 'name',
-                          ellipsis: true,
+                          ellipsis: { showTitle: false },
+                          render: (v: string) => (
+                            <Tooltip title={v} placement="topLeft">
+                              <span>{v}</span>
+                            </Tooltip>
+                          ),
                         },
                         {
                           title: '攻击类型',
                           dataIndex: 'attack_type',
-                          width: 125,
+                          width: 118,
                           render: (v: string) => <StatusTag value={v} map={ATTACK_TYPE_META} />,
                         },
                         {
                           title: '等级',
                           dataIndex: 'paranoia_level',
-                          width: 72,
+                          width: 68,
                           render: (v: number) => (v > 0 ? <Tag>{`PL${v}`}</Tag> : <Tag>通用</Tag>),
                         },
                         {
                           title: '来源',
                           dataIndex: 'rule_source',
-                          width: 110,
+                          width: 138,
                           render: (v: string) => <StatusTag value={v} map={RULE_SOURCE_META} />,
                         },
                         {
                           title: '状态',
                           dataIndex: 'effective_status',
-                          width: 100,
+                          width: 92,
                           render: (v: string) => (
                             <StatusTag value={v} map={EFFECTIVE_RULE_STATUS_META} />
                           ),
@@ -1052,7 +1140,7 @@ export default function ProtectionPoliciesPage() {
                         pageSize: rulePageSize,
                         total: contentQuery.data?.rules_total ?? 0,
                         showSizeChanger: true,
-                        showTotal: (t) => `共 ${t} 条（点击行首 + 展开原始 SecRule）`,
+                        showTotal: (t) => `共 ${t} 条（点击行首 + 查看中文说明与原始 SecRule）`,
                         onChange: (p, ps) => {
                           setRulePage(p)
                           setRulePageSize(ps)

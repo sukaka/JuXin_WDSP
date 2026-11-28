@@ -173,3 +173,18 @@ func LookupRuleNameZh(ruleID int) (string, bool) {
 	v, ok := ruleNamesZh[ruleID]
 	return v, ok
 }
+
+// MatchLocalizedRuleIDs 按关键词不区分大小写检索内置中文规则名称映射，返回匹配的 rule_id 列表。
+func MatchLocalizedRuleIDs(keyword string) []int {
+	kw := strings.ToLower(strings.TrimSpace(keyword))
+	if kw == "" {
+		return nil
+	}
+	var ids []int
+	for id, name := range ruleNamesZh {
+		if strings.Contains(strings.ToLower(name), kw) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}

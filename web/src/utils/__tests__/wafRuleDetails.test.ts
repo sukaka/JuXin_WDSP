@@ -83,5 +83,16 @@ describe('wafRuleDetails 中文详述与展示工具', () => {
     expect(resolved.source).toBe('AUTO')
     expect(WAF_RULE_DETAIL_SOURCE_META.PARSED.label).toBe('规则文件自动解析')
     expect(WAF_RULE_DETAIL_SOURCE_META.CUSTOM.label).toBe('人工维护说明')
+
+    const renamedInitRule = resolveWafRuleDetail({
+      rule_id: 901164,
+      rule_source: 'OWASP_CRS',
+      file_name: 'REQUEST-901-INITIALIZATION.conf',
+      name: '初始化：默认受限文件扩展名清单',
+      phase: 1,
+      attack_type: 'OTHER',
+    })
+    expect(renamedInitRule.rule_type).toBe('INTERNAL')
+    expect(renamedInitRule.rule_type_label).toBe('引擎内部控制规则')
   })
 })

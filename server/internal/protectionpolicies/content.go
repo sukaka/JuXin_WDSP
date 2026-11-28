@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/exceptions"
@@ -61,16 +62,18 @@ type PolicyExceptionItem struct {
 
 // PolicyEffectiveRuleItem 是规则库中单条规则在当前策略下的生效视图。
 type PolicyEffectiveRuleItem struct {
-	RuleID          int    `json:"rule_id"`
-	Name            string `json:"name"`
-	AttackType      string `json:"attack_type"`
-	Severity        string `json:"severity"`
-	Phase           int    `json:"phase"`
-	RuleSource      string `json:"rule_source"`
-	FileName        string `json:"file_name"`
-	ParanoiaLevel   int    `json:"paranoia_level"`
-	EffectiveStatus string `json:"effective_status"`
-	RawRule         string `json:"raw_rule"`
+	RuleID          int                  `json:"rule_id"`
+	Name            string               `json:"name"`
+	Description     string               `json:"description"`
+	Detail          *wafrules.RuleDetail `json:"detail,omitempty"`
+	AttackType      string               `json:"attack_type"`
+	Severity        string               `json:"severity"`
+	Phase           int                  `json:"phase"`
+	RuleSource      string               `json:"rule_source"`
+	FileName        string               `json:"file_name"`
+	ParanoiaLevel   int                  `json:"paranoia_level"`
+	EffectiveStatus string               `json:"effective_status"`
+	RawRule         string               `json:"raw_rule"`
 }
 
 // PolicyRuleFileStage 描述网关按顺序加载的规则文件阶段。
@@ -173,24 +176,37 @@ func ExtractRuleParanoiaLevel(tags []string, parsedSpec []byte) int {
 }
 
 type rawWafRuleRow struct {
-	RuleID     int
-	RuleSource string
-	FileName   string
-	Name       string
-	Severity   string
-	Phase      int
-	Tags       []byte
-	AttackType string
-	ParsedSpec []byte
-	RawRule    string
+	RuleID       int
+	RuleSource   string
+	FileName     string
+	Name         string
+	Message      string
+	Severity     string
+	Phase        int
+	Tags         []byte
+	AttackType   string
+	DefaultState string
+	CRSVersion   string
+	ParsedSpec   []byte
+	RawRule      string
+	OvSummary    string
+	OvLogic      string
+	OvRisk       string
+	OvTuning     string
+	OvUpdatedBy  string
+	OvUpdatedAt  *time.Time
 }
 
 func (s *Store) listWafRulesForContent(ctx context.Context) ([]rawWafRuleRow, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT DISTINCT ON (rule_id)
-  rule_id, rule_source, file_name, name, severity, phase, tags, attack_type, parsed_spec, COALESCE(raw_rule, '')
-FROM waf_rules
-ORDER BY rule_id ASC, crs_version DESC`)
+SELECT DISTINCT ON (r.rule_id)
+  r.rule_id, r.rule_source, r.file_name, r.name, r.message, r.severity, r.phase,
+  r.tags, r.attack_type, r.default_state, r.crs_version, r.parsed_spec, COALESCE(r.raw_rule, ''),
+  COALESCE(d.summary, ''), COALESCE(d.detection_logic, ''), COALESCE(d.risk_impact, ''),
+  COALESCE(d.tuning_advice, ''), COALESCE(d.updated_by_name, ''), d.updated_at
+FROM waf_rules r
+LEFT JOIN waf_rule_descriptions d ON d.rule_id = r.rule_id
+ORDER BY r.rule_id ASC, r.crs_version DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -198,8 +214,11 @@ ORDER BY rule_id ASC, crs_version DESC`)
 	var out []rawWafRuleRow
 	for rows.Next() {
 		var r rawWafRuleRow
-		if err := rows.Scan(&r.RuleID, &r.RuleSource, &r.FileName, &r.Name, &r.Severity, &r.Phase,
-			&r.Tags, &r.AttackType, &r.ParsedSpec, &r.RawRule); err != nil {
+		if err := rows.Scan(
+			&r.RuleID, &r.RuleSource, &r.FileName, &r.Name, &r.Message, &r.Severity, &r.Phase,
+			&r.Tags, &r.AttackType, &r.DefaultState, &r.CRSVersion, &r.ParsedSpec, &r.RawRule,
+			&r.OvSummary, &r.OvLogic, &r.OvRisk, &r.OvTuning, &r.OvUpdatedBy, &r.OvUpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -377,8 +396,14 @@ func (h *Handler) buildPolicyContentResponse(
 		OverridesCount:        len(overrides),
 	}
 
+	type matchedRuleEntry struct {
+		item PolicyEffectiveRuleItem
+		row  rawWafRuleRow
+		tags []string
+	}
+
 	kw := strings.ToLower(filter.Keyword)
-	matched := make([]PolicyEffectiveRuleItem, 0, len(rawRows))
+	matched := make([]matchedRuleEntry, 0, len(rawRows))
 	for _, r := range rawRows {
 		tags := wafrules.ParseTagsJSON(r.Tags)
 		rulePL := ExtractRuleParanoiaLevel(tags, r.ParsedSpec)
@@ -404,25 +429,30 @@ func (h *Handler) buildPolicyContentResponse(
 		if kw != "" {
 			if !strings.Contains(strconv.Itoa(r.RuleID), kw) &&
 				!strings.Contains(strings.ToLower(name), kw) &&
-				!strings.Contains(strings.ToLower(r.FileName), kw) {
+				!strings.Contains(strings.ToLower(r.FileName), kw) &&
+				!strings.Contains(strings.ToLower(r.OvSummary), kw) {
 				continue
 			}
 		}
-		matched = append(matched, PolicyEffectiveRuleItem{
-			RuleID:          r.RuleID,
-			Name:            name,
-			AttackType:      r.AttackType,
-			Severity:        r.Severity,
-			Phase:           r.Phase,
-			RuleSource:      r.RuleSource,
-			FileName:        r.FileName,
-			ParanoiaLevel:   rulePL,
-			EffectiveStatus: status,
-			RawRule:         r.RawRule,
+		matched = append(matched, matchedRuleEntry{
+			item: PolicyEffectiveRuleItem{
+				RuleID:          r.RuleID,
+				Name:            name,
+				AttackType:      r.AttackType,
+				Severity:        r.Severity,
+				Phase:           r.Phase,
+				RuleSource:      r.RuleSource,
+				FileName:        r.FileName,
+				ParanoiaLevel:   rulePL,
+				EffectiveStatus: status,
+				RawRule:         r.RawRule,
+			},
+			row:  r,
+			tags: tags,
 		})
 	}
 
-	sort.Slice(matched, func(i, j int) bool { return matched[i].RuleID < matched[j].RuleID })
+	sort.Slice(matched, func(i, j int) bool { return matched[i].item.RuleID < matched[j].item.RuleID })
 
 	total := len(matched)
 	start := (filter.Page - 1) * filter.PageSize
@@ -433,14 +463,46 @@ func (h *Handler) buildPolicyContentResponse(
 	if end > total {
 		end = total
 	}
-	pageItems := make([]PolicyEffectiveRuleItem, end-start)
-	copy(pageItems, matched[start:end])
+	pageSlice := matched[start:end]
+	pageItems := make([]PolicyEffectiveRuleItem, len(pageSlice))
 
-	// 仅对当前分页补齐缺失的 raw_rule（文件兜底，避免未重新同步前空白）
-	for i := range pageItems {
-		if strings.TrimSpace(pageItems[i].RawRule) == "" {
-			pageItems[i].RawRule = h.lookupRawRule(pageItems[i].RuleID, pageItems[i].RuleSource, pageItems[i].FileName)
+	// 仅对当前分页生成结构化中文说明，并按需回源补齐缺失的 raw_rule
+	for i, entry := range pageSlice {
+		item := entry.item
+		if strings.TrimSpace(item.RawRule) == "" {
+			item.RawRule = h.lookupRawRule(item.RuleID, item.RuleSource, item.FileName)
 		}
+		var customOv *wafrules.RuleDescriptionOverride
+		ov := &wafrules.RuleDescriptionOverride{
+			Summary:        entry.row.OvSummary,
+			DetectionLogic: entry.row.OvLogic,
+			RiskImpact:     entry.row.OvRisk,
+			TuningAdvice:   entry.row.OvTuning,
+			UpdatedByName:  entry.row.OvUpdatedBy,
+			UpdatedAt:      entry.row.OvUpdatedAt,
+		}
+		if ov.HasAnyContent() {
+			customOv = ov
+		}
+		msg := wafrules.LocalizeRule(entry.row.RuleID, entry.row.FileName, entry.row.Message)
+		detail := wafrules.DescribeRule(wafrules.RuleDescribeInput{
+			RuleID:         entry.row.RuleID,
+			RuleSource:     entry.row.RuleSource,
+			FileName:       entry.row.FileName,
+			Name:           item.Name,
+			Message:        msg,
+			Severity:       entry.row.Severity,
+			Phase:          entry.row.Phase,
+			AttackType:     entry.row.AttackType,
+			DefaultState:   entry.row.DefaultState,
+			CRSVersion:     entry.row.CRSVersion,
+			Tags:           entry.tags,
+			ParsedSpec:     json.RawMessage(entry.row.ParsedSpec),
+			CustomOverride: customOv,
+		})
+		item.Description = detail.Summary
+		item.Detail = &detail
+		pageItems[i] = item
 	}
 
 	return PolicyContentResponse{

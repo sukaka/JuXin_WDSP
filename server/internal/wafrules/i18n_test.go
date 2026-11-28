@@ -164,3 +164,35 @@ func TestHandlerSyncEmptyCRSDirReturns503(t *testing.T) {
 		t.Fatalf("expected actionable Chinese error message, got: %s", rec.Body.String())
 	}
 }
+
+func TestInternalCRSRulesHaveSpecificNamesAndAreSearchable(t *testing.T) {
+	for id, name := range ruleNamesZh {
+		if strings.Contains(name, "内部规则") {
+			t.Errorf("rule %d still has generic internal name: %q", id, name)
+		}
+	}
+	wantNames := map[int]string{
+		901120: "初始化：默认阻断偏执级别（PL1）",
+		901164: "初始化：默认受限文件扩展名清单",
+		905100: "通用例外：内部健康检查探测放行",
+		920011: "协议合规校验：PL1 门槛控制（阶段 1 请求头）",
+		949052: "入站阻断评估：汇总阶段 1 的 PL1 阻断评分",
+		980050: "关联评分：阻断分大于 0 时输出汇总日志",
+	}
+	for id, want := range wantNames {
+		if got := LocalizeRule(id, "", ""); got != want {
+			t.Errorf("LocalizeRule(%d) = %q, want %q", id, got, want)
+		}
+	}
+	matched := MatchLocalizedRuleIDs("受限文件扩展名")
+	found901164 := false
+	for _, id := range matched {
+		if id == 901164 {
+			found901164 = true
+			break
+		}
+	}
+	if !found901164 {
+		t.Errorf("MatchLocalizedRuleIDs(受限文件扩展名) = %v, want 901164 included", matched)
+	}
+}

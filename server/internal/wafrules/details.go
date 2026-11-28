@@ -600,8 +600,34 @@ func extractInner(s, prefix, suffix string) string {
 	return ""
 }
 
+func isCRSInternalRuleID(ruleID int) bool {
+	if ruleID >= 901100 && ruleID <= 901510 && ruleID != 901500 {
+		return true
+	}
+	switch ruleID {
+	case 920539, 921170, 922140, 922150, 941010, 950021, 951100:
+		return true
+	}
+	if ruleID >= 949052 && ruleID <= 949163 && ruleID != 949110 && ruleID != 949111 {
+		return true
+	}
+	if ruleID >= 959052 && ruleID <= 959163 && ruleID != 959100 && ruleID != 959101 {
+		return true
+	}
+	if ruleID >= 980011 && ruleID <= 980051 {
+		return true
+	}
+	if ruleID >= 911010 && ruleID < 990000 {
+		mod := ruleID % 1000
+		if mod >= 10 && mod <= 18 {
+			return true
+		}
+	}
+	return false
+}
+
 func inferKindFallback(in RuleDescribeInput) string {
-	if in.RuleSource == SourceThirdParty || in.AttackType == "EXCLUSION" {
+	if in.RuleSource == SourceThirdParty || in.AttackType == "EXCLUSION" || in.RuleID == 905100 || in.RuleID == 905110 {
 		return "exc"
 	}
 	if in.RuleSource == SourceCRSPlugin {
@@ -610,7 +636,7 @@ func inferKindFallback(in RuleDescribeInput) string {
 	if in.RuleID == 949110 || in.RuleID == 949111 || in.RuleID == 959100 || in.RuleID == 959101 || in.RuleID == 9000102 || in.RuleID == 9000104 {
 		return "blk"
 	}
-	if strings.Contains(in.Name, "内部规则") {
+	if isCRSInternalRuleID(in.RuleID) || strings.Contains(in.Name, "内部规则") {
 		return "int"
 	}
 	return "det"

@@ -1,7 +1,7 @@
 /* ==================== WAF 规则详情中文说明与展示辅助工具 ==================== */
 
 import type { WafRuleDetailInfo, WafRuleItem } from '../types'
-import { CRS_FAMILY_NAMES_ZH, ruleNameZh } from './crsRuleNames'
+import { CRS_FAMILY_NAMES_ZH, isInternalCrsRule, ruleNameZh } from './crsRuleNames'
 import { ATTACK_TYPE_META, parseWafRuleTags, RULE_SEVERITY_META, RULE_SOURCE_META } from './stage4'
 
 /** 规则功能类别展示元数据 */
@@ -109,12 +109,27 @@ export function ruleTagTooltipZh(tag: string): string {
   return `规则分类标签：${tag}`
 }
 
+/** 可解析为中文详细说明的规则最小元数据子集（兼容规则库列表项与策略生效规则项） */
+export interface WafRuleDetailSourceInput {
+  rule_id: number
+  rule_source: string
+  file_name?: string
+  name?: string
+  description?: string
+  detail?: WafRuleDetailInfo
+  severity?: string
+  phase: number
+  tags?: string[] | string | null
+  attack_type: string
+  crs_version?: string
+}
+
 /**
  * 解析规则的结构化中文详细说明：
  * 优先使用后端返回的 detail 对象；若接口未返回（如旧版响应或精简测试桩），
  * 在前端根据规则元数据生成完整中文兜底说明，确保详情抽屉始终有清晰中文解释。
  */
-export function resolveWafRuleDetail(rule: WafRuleItem): WafRuleDetailInfo {
+export function resolveWafRuleDetail(rule: WafRuleDetailSourceInput | WafRuleItem): WafRuleDetailInfo {
   if (rule.detail && rule.detail.summary) {
     return {
       ...rule.detail,
@@ -133,13 +148,17 @@ export function resolveWafRuleDetail(rule: WafRuleItem): WafRuleDetailInfo {
   const tags = parseWafRuleTags(rule.tags)
   const srcLabel = RULE_SOURCE_META[rule.rule_source]?.label ?? 'WAF 防护规则库'
   const attackLabel = ATTACK_TYPE_META[rule.attack_type]?.label ?? '通用安全防护'
-  const sevLabel = RULE_SEVERITY_META[rule.severity]?.label ?? '低'
-  const sevScore = SEVERITY_SCORE_MAP[rule.severity] ?? 2
+  const sevLabel = RULE_SEVERITY_META[rule.severity ?? '']?.label ?? '低'
+  const sevScore = SEVERITY_SCORE_MAP[rule.severity ?? ''] ?? 2
   const familyKey = (rule.file_name ?? '').replace(/\.conf$/i, '')
   const familyName = CRS_FAMILY_NAMES_ZH[familyKey]
 
-  const isInternal = zhName.includes('内部规则')
-  const isExclusion = rule.rule_source === 'THIRD_PARTY' || rule.attack_type === 'EXCLUSION'
+  const isExclusion =
+    rule.rule_source === 'THIRD_PARTY' ||
+    rule.attack_type === 'EXCLUSION' ||
+    rule.rule_id === 905100 ||
+    rule.rule_id === 905110
+  const isInternal = !isExclusion && (isInternalCrsRule(rule.rule_id) || zhName.includes('内部规则'))
   const isBlockingEval = [949110, 949111, 959100, 959101, 9000102, 9000104].includes(rule.rule_id)
 
   const ruleType = isInternal

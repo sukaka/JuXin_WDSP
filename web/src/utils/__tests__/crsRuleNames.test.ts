@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { CRS_FAMILY_NAMES_ZH, CRS_RULE_NAMES_ZH, ruleMessageZh, ruleNameZh } from '../crsRuleNames'
+import {
+  CRS_FAMILY_NAMES_ZH,
+  CRS_RULE_NAMES_ZH,
+  isInternalCrsRule,
+  ruleMessageZh,
+  ruleNameZh,
+} from '../crsRuleNames'
 
 describe('CRS_RULE_NAMES_ZH 逐条映射', () => {
   it('覆盖内置 CRS 4.28.0 全部 622 条规则', () => {
@@ -45,9 +51,22 @@ describe('CRS_RULE_NAMES_ZH 逐条映射', () => {
     expect(CRS_RULE_NAMES_ZH[955100]).toBe('检测到 PHP Web Shell')
   })
 
-  it('msg 为空的内部规则使用「族名 + 内部规则」命名', () => {
-    expect(CRS_RULE_NAMES_ZH[920011]).toBe('协议合规校验内部规则')
-    expect(CRS_RULE_NAMES_ZH[980050]).toBe('关联评分内部规则')
+  it('初始化与流程控制内部规则均按实际用途逐条命名，不再使用笼统的「内部规则」名称', () => {
+    expect(CRS_RULE_NAMES_ZH[901120]).toBe('初始化：默认阻断偏执级别（PL1）')
+    expect(CRS_RULE_NAMES_ZH[901164]).toBe('初始化：默认受限文件扩展名清单')
+    expect(CRS_RULE_NAMES_ZH[905100]).toBe('通用例外：内部健康检查探测放行')
+    expect(CRS_RULE_NAMES_ZH[920011]).toBe('协议合规校验：PL1 门槛控制（阶段 1 请求头）')
+    expect(CRS_RULE_NAMES_ZH[949052]).toBe('入站阻断评估：汇总阶段 1 的 PL1 阻断评分')
+    expect(CRS_RULE_NAMES_ZH[980050]).toBe('关联评分：阻断分大于 0 时输出汇总日志')
+    for (const name of Object.values(CRS_RULE_NAMES_ZH)) {
+      expect(name).not.toContain('内部规则')
+    }
+    expect(isInternalCrsRule(901164)).toBe(true)
+    expect(isInternalCrsRule(913011)).toBe(true)
+    expect(isInternalCrsRule(980050)).toBe(true)
+    expect(isInternalCrsRule(905100)).toBe(false)
+    expect(isInternalCrsRule(942100)).toBe(false)
+    expect(isInternalCrsRule(901500)).toBe(false)
   })
 })
 

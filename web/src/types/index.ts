@@ -717,6 +717,10 @@ export interface ProtectionPolicyExceptionItem {
 export interface ProtectionPolicyEffectiveRuleItem {
   rule_id: number
   name: string
+  /** 规则中文用途概述 */
+  description?: string
+  /** 结构化中文规则详细说明 */
+  detail?: WafRuleDetailInfo
   attack_type: string
   severity: string
   phase: number

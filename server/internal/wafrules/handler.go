@@ -109,7 +109,15 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	if keyword != "" {
 		p := "$" + itoa(argIdx)
-		add("(r.name ILIKE "+p+" OR r.message ILIKE "+p+" OR COALESCE(d.summary, '') ILIKE "+p+")", "%"+keyword+"%")
+		likeCond := "r.name ILIKE " + p + " OR r.message ILIKE " + p + " OR COALESCE(d.summary, '') ILIKE " + p
+		if matchedIDs := MatchLocalizedRuleIDs(keyword); len(matchedIDs) > 0 {
+			pIDs := "$" + itoa(argIdx+1)
+			where += " AND (" + likeCond + " OR r.rule_id = ANY(" + pIDs + "))"
+			args = append(args, "%"+keyword+"%", matchedIDs)
+			argIdx += 2
+		} else {
+			add("("+likeCond+")", "%"+keyword+"%")
+		}
 	}
 	if attackType != "" {
 		add("r.attack_type = $"+itoa(argIdx), attackType)

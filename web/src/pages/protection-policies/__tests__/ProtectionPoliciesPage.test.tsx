@@ -145,6 +145,34 @@ describe('ProtectionPoliciesPage 防护策略', () => {
                 global_exceptions: [],
                 rules: [
                   {
+                    rule_id: 901164,
+                    name: '初始化：默认受限文件扩展名清单',
+                    description: '初始化默认禁止直接访问的敏感文件扩展名清单，供规则 920440 校验。',
+                    detail: {
+                      rule_type: 'INTERNAL',
+                      rule_type_label: '引擎内部控制规则',
+                      source: 'BUILTIN',
+                      source_label: '内置中文规则库',
+                      summary: '初始化默认禁止直接访问的敏感文件扩展名清单，供规则 920440 校验。',
+                      detection_logic: '在阶段 1 检查受限文件扩展名配置变量是否未定义；未定义时写入默认清单。',
+                      risk_impact: '属于引擎变量初始化规则，不直接拦截请求，用于为扩展名限制提供默认清单。',
+                      tuning_advice: '通常不应手动停用；如需放行特定扩展名请通过例外或覆盖调整规则 920440。',
+                      phase_description: '阶段 1（请求头检查）：在接收完整 HTTP 请求头后执行',
+                      paranoia_level: '无条件执行（引擎内部流程控制）',
+                      action_behavior: '内部变量赋值（初始化或汇总引擎事务变量，不阻断、不记日志）',
+                      targets: ['数量统计：受限文件扩展名配置（TX:restricted_extensions）'],
+                      references: [],
+                    },
+                    attack_type: 'OTHER',
+                    severity: 'NOTICE',
+                    phase: 1,
+                    rule_source: 'OWASP_CRS',
+                    file_name: 'REQUEST-901-INITIALIZATION.conf',
+                    paranoia_level: 0,
+                    effective_status: 'ACTIVE',
+                    raw_rule: 'SecRule &TX:restricted_extensions "@eq 0" "id:901164,phase:1,pass,nolog"',
+                  },
+                  {
                     rule_id: 942100,
                     name: 'SQL 注入检测',
                     attack_type: 'SQL_INJECTION',
@@ -157,7 +185,7 @@ describe('ProtectionPoliciesPage 防护策略', () => {
                     raw_rule: 'SecRule ARGS "@detectSQLi" "id:942100,phase:2,block"',
                   },
                 ],
-                rules_total: 1,
+                rules_total: 2,
                 page: 1,
                 page_size: 20,
               },
@@ -335,7 +363,22 @@ describe('ProtectionPoliciesPage 防护策略', () => {
     expect(screen.getByText('阻断测试特征')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('tab', { name: '生效规则清单' }))
-    expect(await screen.findByText('SQL 注入检测')).toBeInTheDocument()
+    expect(await screen.findByText('初始化：默认受限文件扩展名清单')).toBeInTheDocument()
+    expect(screen.getByText('SQL 注入检测')).toBeInTheDocument()
     expect(screen.getByText('942100')).toBeInTheDocument()
+
+    // 展开 901164 行，验证中文规则说明卡片与原始 SecRule 原文一并展示
+    const expandButtons = screen.getAllByRole('button', { name: '展开行' })
+    fireEvent.click(expandButtons[0])
+    expect(await screen.findByText('规则中文说明')).toBeInTheDocument()
+    expect(screen.getByText('引擎内部控制规则')).toBeInTheDocument()
+    expect(
+      screen.getByText('初始化默认禁止直接访问的敏感文件扩展名清单，供规则 920440 校验。'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('原始 SecRule 原文')).toBeInTheDocument()
+    expect(
+      screen.getByText('数量统计：受限文件扩展名配置（TX:restricted_extensions）'),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/SecRule &TX:restricted_extensions/)).toBeInTheDocument()
   })
 })

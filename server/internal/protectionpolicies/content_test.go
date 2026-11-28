@@ -81,6 +81,17 @@ func TestBuildPolicyContentResponseAndDirectives(t *testing.T) {
 	h.SetCRSDir("../../../gateway/rules/crs/rules")
 	rawRows := []rawWafRuleRow{
 		{
+			RuleID:     901164,
+			RuleSource: wafrules.SourceCRS,
+			FileName:   "REQUEST-901-INITIALIZATION.conf",
+			Name:       "初始化内部规则",
+			Severity:   "NOTICE",
+			Phase:      1,
+			Tags:       []byte(`["OWASP_CRS"]`),
+			AttackType: "OTHER",
+			CRSVersion: "4.28.0",
+		},
+		{
 			RuleID:     942100,
 			RuleSource: wafrules.SourceCRS,
 			FileName:   "REQUEST-942-APPLICATION-ATTACK-SQLI.conf",
@@ -89,6 +100,8 @@ func TestBuildPolicyContentResponseAndDirectives(t *testing.T) {
 			Phase:      2,
 			Tags:       []byte(`["attack-sqli","paranoia-level/1"]`),
 			AttackType: "SQL_INJECTION",
+			CRSVersion: "4.28.0",
+			OvSummary:  "人工补充：针对本司订单检索接口的 SQL 注入核心检测规则。",
 		},
 		{
 			RuleID:     920170,
@@ -99,6 +112,7 @@ func TestBuildPolicyContentResponseAndDirectives(t *testing.T) {
 			Phase:      1,
 			Tags:       []byte(`["attack-protocol","paranoia-level/1"]`),
 			AttackType: "PROTOCOL_VIOLATION",
+			CRSVersion: "4.28.0",
 		},
 		{
 			RuleID:     942440,
@@ -109,6 +123,7 @@ func TestBuildPolicyContentResponseAndDirectives(t *testing.T) {
 			Phase:      2,
 			Tags:       []byte(`["attack-sqli","paranoia-level/3"]`),
 			AttackType: "SQL_INJECTION",
+			CRSVersion: "4.28.0",
 		},
 	}
 
@@ -123,28 +138,42 @@ func TestBuildPolicyContentResponseAndDirectives(t *testing.T) {
 		ContentFilter{Page: 1, PageSize: 20},
 	)
 
-	if resp.Summary.TotalRules != 3 || resp.Summary.ActiveRules != 1 ||
+	if resp.Summary.TotalRules != 4 || resp.Summary.ActiveRules != 2 ||
 		resp.Summary.DisabledByOverride != 1 || resp.Summary.SkippedByPL != 1 {
 		t.Fatalf("unexpected summary: %+v", resp.Summary)
 	}
 	if resp.SecRuleEngine != "On" {
 		t.Errorf("SecRuleEngine = %q, want On", resp.SecRuleEngine)
 	}
-	if len(resp.Rules) != 3 {
-		t.Fatalf("rules len = %d, want 3", len(resp.Rules))
+	if len(resp.Rules) != 4 {
+		t.Fatalf("rules len = %d, want 4", len(resp.Rules))
+	}
+	// 规则 901164 应展示精确中文名与结构化中文说明，并自动回源补全原始 SecRule
+	if resp.Rules[0].RuleID != 901164 || resp.Rules[0].Name != "初始化：默认受限文件扩展名清单" {
+		t.Errorf("rule[0] name/id = %+v", resp.Rules[0])
+	}
+	if resp.Rules[0].Detail == nil || resp.Rules[0].Detail.RuleType != "INTERNAL" ||
+		!strings.Contains(resp.Rules[0].Description, "敏感文件扩展名清单") ||
+		!strings.Contains(resp.Rules[0].RawRule, "restricted_extensions") {
+		t.Errorf("rule[0] detail/raw_rule unexpected: desc=%q detail=%+v raw=%q", resp.Rules[0].Description, resp.Rules[0].Detail, resp.Rules[0].RawRule)
 	}
 	// 规则 920170 应通过文件回源自动补全原始 SecRule 文本（含链式子规则）
-	if resp.Rules[0].RuleID != 920170 || resp.Rules[0].EffectiveStatus != RuleStatusActive {
-		t.Errorf("rule[0] = %+v", resp.Rules[0])
-	}
-	if !strings.Contains(resp.Rules[0].RawRule, "id:920170") || !strings.Contains(resp.Rules[0].RawRule, "Content-Length") {
-		t.Errorf("expected raw rule fallback for 920170, got: %q", resp.Rules[0].RawRule)
-	}
-	if resp.Rules[1].RuleID != 942100 || resp.Rules[1].EffectiveStatus != RuleStatusDisabledByOverride {
+	if resp.Rules[1].RuleID != 920170 || resp.Rules[1].EffectiveStatus != RuleStatusActive {
 		t.Errorf("rule[1] = %+v", resp.Rules[1])
 	}
-	if resp.Rules[2].RuleID != 942440 || resp.Rules[2].EffectiveStatus != RuleStatusSkippedByPL {
+	if !strings.Contains(resp.Rules[1].RawRule, "id:920170") || !strings.Contains(resp.Rules[1].RawRule, "Content-Length") {
+		t.Errorf("expected raw rule fallback for 920170, got: %q", resp.Rules[1].RawRule)
+	}
+	// 规则 942100 应透出人工维护说明覆盖
+	if resp.Rules[2].RuleID != 942100 || resp.Rules[2].EffectiveStatus != RuleStatusDisabledByOverride {
 		t.Errorf("rule[2] = %+v", resp.Rules[2])
+	}
+	if resp.Rules[2].Detail == nil || resp.Rules[2].Detail.Source != "CUSTOM" ||
+		!strings.Contains(resp.Rules[2].Description, "人工补充") {
+		t.Errorf("rule[2] expected custom description override, got desc=%q detail=%+v", resp.Rules[2].Description, resp.Rules[2].Detail)
+	}
+	if resp.Rules[3].RuleID != 942440 || resp.Rules[3].EffectiveStatus != RuleStatusSkippedByPL {
+		t.Errorf("rule[3] = %+v", resp.Rules[3])
 	}
 }
 
