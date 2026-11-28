@@ -888,6 +888,7 @@ services:
       UPGRADE_PACKAGES_DIR: /app/runtime/upgrade-packages
       UPGRADE_EXECUTOR_DIR: /app/runtime/upgrade-executor
       HASYNC_RULES_DIR: /app/runtime/rules
+      HASYNC_GEOIP_DIR: /app/runtime/geoip
     ports:
       - "\${HASYNC_BIND_ADDR:-127.0.0.1}:\${HASYNC_PORT:-18443}:18443"
     volumes:

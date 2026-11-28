@@ -212,6 +212,13 @@ export const MENU_ITEMS: MenuDef[] = [
     permissions: ['wasm_plugins.read'],
     group: '访问控制',
   },
+  // IP 库（GeoIP 归属地库 + 威胁情报 IP 黑名单库，迁移 000256；按 geoip.read 或 threat_intel.read 权限门控）
+  {
+    key: '/ip-libraries',
+    label: 'IP 库与威胁情报',
+    permissions: ['geoip.read', 'threat_intel.read'],
+    group: '访问控制',
+  },
   // 阶段8 / WDSP：API 动态防护
   {
     key: '/api-posture',

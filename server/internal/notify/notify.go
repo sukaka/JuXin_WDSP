@@ -112,8 +112,8 @@ var categories = []Category{
 		"SECURITY_EVENT_SPIKE", "LOGIN_BRUTE_FORCE", "CC_BAN_SPIKE"}},
 	{Code: "apm", Name: "业务性能", AlertTypes: []string{
 		"ENDPOINT_LATENCY_HIGH", "ENDPOINT_ERROR_RATE_HIGH", "APM_SLO_BREACH"}},
-	{Code: "threat_intel", Name: "漏洞情报", AlertTypes: []string{
-		"VULN_INTEL_NEW"}},
+	{Code: "threat_intel", Name: "情报与IP库", AlertTypes: []string{
+		"VULN_INTEL_NEW", "GEOIP_SYNC_FAILED", "GEOIP_NODE_DRIFT", "THREAT_INTEL_SYNC_FAILED", "THREAT_INTEL_CIRCUIT_OPEN"}},
 }
 
 // Categories 返回固定类别词表（副本，防调用方修改）。
@@ -183,6 +183,10 @@ var alertTypeNames = map[string]string{
 	"VULN_INTEL_NEW":                "漏洞情报提醒",
 	"RULEPACK_APPLY_FAILED":         "离线规则包应用失败",
 	"RULEPACK_NODE_DRIFT":           "HA规则包版本漂移",
+	"GEOIP_SYNC_FAILED":             "GeoIP归属地库更新失败",
+	"GEOIP_NODE_DRIFT":              "GeoIP主备节点版本漂移",
+	"THREAT_INTEL_SYNC_FAILED":      "威胁情报IP库同步失败",
+	"THREAT_INTEL_CIRCUIT_OPEN":     "威胁情报订阅源熔断",
 }
 
 // AlertTypeName 返回告警类型中文名；未知类型返回原 code。

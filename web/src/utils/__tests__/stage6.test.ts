@@ -64,7 +64,7 @@ describe('阶段6 展示元数据完整性', () => {
     expect(Object.keys(ALERT_STATUS_META)).toEqual(['OPEN', 'ACKNOWLEDGED', 'RESOLVED', 'IGNORED'])
   })
 
-  it('系统告警类型覆盖全部 45 类（含 FD_USAGE_HIGH、VULN_INTEL_NEW、WDSP/APM/HA 告警）', () => {
+  it('系统告警类型覆盖全部 49 类（含 FD_USAGE_HIGH、VULN_INTEL_NEW、WDSP/APM/HA 与 IP 库告警）', () => {
     expect(Object.keys(ALERT_TYPE_META).sort()).toEqual(
       [
         'GATEWAY_DOWN',
@@ -114,6 +114,10 @@ describe('阶段6 展示元数据完整性', () => {
         'AI_OPS_SCHEDULE_CIRCUIT_OPEN',
         'RULEPACK_APPLY_FAILED',
         'RULEPACK_NODE_DRIFT',
+        'GEOIP_SYNC_FAILED',
+        'GEOIP_NODE_DRIFT',
+        'THREAT_INTEL_SYNC_FAILED',
+        'THREAT_INTEL_CIRCUIT_OPEN',
       ].sort(),
     )
   })
@@ -321,6 +325,8 @@ describe('系统告警组件与详情中文化格式化', () => {
     expect(formatAlertComponent('API_ENDPOINT_DISCOVERY')).toBe('API 端点发现')
     expect(formatAlertComponent('waf_rule_packs')).toBe('离线规则包')
     expect(formatAlertComponent('vuln_intel:php')).toBe('漏洞情报：php')
+    expect(formatAlertComponent('geoip:ip2region_v4')).toBe('GeoIP 归属地库：ip2region_v4')
+    expect(formatAlertComponent('threat_intel:feodo')).toBe('威胁情报：feodo')
     expect(formatAlertComponent('shop/GET /v1/orders')).toBe('shop/GET /v1/orders')
     expect(formatAlertComponent('')).toBe('-')
   })

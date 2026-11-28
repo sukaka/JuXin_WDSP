@@ -113,6 +113,8 @@ var SensitiveSettingKeys = map[string]bool{
 	"api_authz:object_hmac_key":              true,
 	"apm_agent:ca_material":                  true,
 	"traffic_agent_ca:ca_material":           true,
+	"ip_library:proxy_auth_encrypted":        true,
+	"geoip:maxmind_license_key_encrypted":    true,
 }
 
 // isSensitiveSetting 判定设置是否敏感（DB 行标记或敏感键清单命中）。

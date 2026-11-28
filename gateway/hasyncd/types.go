@@ -25,6 +25,8 @@ const (
 	HeaderPackageSHA256         = "X-JZ-Package-SHA256"
 	HeaderRulePackVersion       = "X-JiuZhang-RulePack-Version"
 	HeaderRulePackPackageSHA256 = "X-JiuZhang-Package-SHA256"
+	HeaderGeoIPSHA256           = "X-GeoIP-SHA256"
+	HeaderGeoIPRevision         = "X-GeoIP-Revision"
 )
 
 // Default configuration paths and safety limits.
@@ -100,12 +102,14 @@ type Config struct {
 	RulesDir           string // Optional versioned WAF rules directory (empty disables rulepack endpoints)
 	RulePackVerifyKey  ed25519.PublicKey // Test-only override for Ed25519 verification key; never populated from env/flags
 	MaxRulePackBytes   int64             // Optional test cap (defaults to MaxRulePackArchiveBytes = 64 MiB)
+	GeoIPDir           string            // Optional GeoIP runtime directory; empty = fail-closed 503 for /v1/geoip/*
 	NodeIfacesLog      string
 	Version            string
 	VersionFile        string
 	HealthStampPath    string
 	HealthStampPeriod  time.Duration
 	MaxPackageBytes    int64
+	MaxGeoIPBytes      int64 // Optional test override capping per-slot GeoIP max size
 	MaxNonceEntries    int
 	NowFunc            func() time.Time
 }
@@ -229,6 +233,36 @@ type UpgradeJobResult struct {
 	ErrorCode  string    `json:"error_code,omitempty"`
 	Message    string    `json:"message,omitempty"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
+}
+
+// GeoIPSlotMeta describes a single active GeoIP slot file on the local node.
+type GeoIPSlotMeta struct {
+	Filename   string     `json:"filename"`
+	SHA256     string     `json:"sha256"`
+	SizeBytes  int64      `json:"size_bytes"`
+	SourceType string     `json:"source_type,omitempty"`
+	UpdatedAt  *time.Time `json:"updated_at,omitempty"`
+}
+
+// GeoIPStatusResponse is returned by GET /v1/geoip/status.
+type GeoIPStatusResponse struct {
+	Node       string                   `json:"node"`
+	GeoIPReady bool                     `json:"geoip_ready"`
+	Revision   string                   `json:"revision"`
+	UpdatedAt  *time.Time               `json:"updated_at,omitempty"`
+	Slots      map[string]GeoIPSlotMeta `json:"slots"`
+}
+
+// GeoIPSlotPushResponse is returned by PUT /v1/geoip/slots/{slot}.
+type GeoIPSlotPushResponse struct {
+	OK        bool      `json:"ok"`
+	Node      string    `json:"node"`
+	Slot      string    `json:"slot"`
+	Filename  string    `json:"filename"`
+	SHA256    string    `json:"sha256"`
+	SizeBytes int64     `json:"size_bytes"`
+	Revision  string    `json:"revision"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ErrorResponse is the standard JSON error envelope.

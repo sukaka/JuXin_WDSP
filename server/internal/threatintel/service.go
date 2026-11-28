@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
 	"regexp"
 	"strings"
 	"time"
@@ -46,11 +47,18 @@ type ProtectedLister interface {
 	List(ctx context.Context, addressType string) ([]protectedaddresses.ProtectedAddress, error)
 }
 
+// Reconciler 抽象威胁情报集合对账接口（*Service 满足，单测可注入内存实现）。
+type Reconciler interface {
+	Import(ctx context.Context, in ImportInput) (*Result, error)
+}
+
 // Service 是威胁情报对账导入服务。
 type Service struct {
 	db        *pgxpool.Pool
 	protected ProtectedLister
 }
+
+var _ Reconciler = (*Service)(nil)
 
 // NewService 创建服务。
 func NewService(db *pgxpool.Pool, protected ProtectedLister) *Service {
@@ -155,11 +163,21 @@ func (s *Service) Import(ctx context.Context, in ImportInput) (*Result, error) {
 		return nil, err
 	}
 	inBatch := make(map[string]bool, len(in.Entries))
+	familyByIP := make(map[string]string, len(in.Entries))
 	var refreshList []existingRule
 	var toInsert []Entry
 
 	for _, e := range in.Entries {
+		normAddr, _, nerr := accessrules.NormalizeAddress(e.IP)
+		if nerr != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidInput, nerr)
+		}
+		e.IP = normAddr
+		if inBatch[e.IP] {
+			continue
+		}
 		inBatch[e.IP] = true
+		familyByIP[e.IP] = e.Family
 		if cur, ok := existing[e.IP]; ok {
 			if cur.Status == accessrules.StatusDisabled {
 				// 人工停用：不复活不刷新，保留人工处置
@@ -170,8 +188,8 @@ func (s *Service) Import(ctx context.Context, in ImportInput) (*Result, error) {
 			refreshList = append(refreshList, cur)
 			continue
 		}
-		// 保护地址：跳过新建
-		if hit, name := protectedaddresses.MatchProtected(protected, e.IP); hit {
+		// 保护地址：跳过新建（单 IP 与 CIDR 均检查命中或重叠）
+		if hit, name := matchProtectedEntry(protected, e.IP); hit {
 			res.SkippedConflict++
 			res.addConflict(e.IP, "命中保护地址「"+name+"」，禁止加入黑名单")
 			continue
@@ -208,10 +226,6 @@ func (s *Service) Import(ctx context.Context, in ImportInput) (*Result, error) {
 	// 刷新在册：有效期按本批 TTL 重算（TTL>0 → TEMPORARY+新失效时间；TTL=0 → 转 PERMANENT），
 	// reason 更新为最近批次号与 family（决策：记最近批次而非累加全量批次，reason 列 500 字符有界）。
 	if len(refreshList) > 0 {
-		familyByIP := map[string]string{}
-		for _, e := range in.Entries {
-			familyByIP[e.IP] = e.Family
-		}
 		for _, cur := range refreshList {
 			if err := refreshFeedRule(ctx, tx, cur.ID, in.Feed, batchID, familyByIP[cur.Address], validity, until, in.Operator); err != nil {
 				return nil, err
@@ -298,16 +312,74 @@ WHERE deleted_at IS NULL AND rule_type = $1 AND scope_type = $2 AND address = AN
 }
 
 // insertFeedRule 新建一条情报黑名单规则（ACTIVE GLOBAL DENY，source_type=IMPORT）。
+// 同时支持规范化后的单 IP 与 CIDR（统一存入 ip_access_rules.address 列，与 accessrules 口径一致）。
 func insertFeedRule(ctx context.Context, tx pgx.Tx, e Entry, feed, batchID, validity string,
 	until *time.Time, operator uuid.UUID) error {
-	_, err := tx.Exec(ctx, `
+	addr, ipVer, err := accessrules.NormalizeAddress(e.IP)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	_, err = tx.Exec(ctx, `
 INSERT INTO ip_access_rules (name, rule_type, scope_type, application_id, address, ip_version,
   priority, status, validity_type, effective_until, reason, source_type, created_by, updated_by)
 VALUES ($1,$2,$3,NULL,$4,$5,100,$6,$7,$8,$9,$10,$11,$11)`,
-		e.IP, accessrules.RuleTypeDeny, accessrules.ScopeGlobal, e.IP, accessrules.IPVersion4,
+		addr, accessrules.RuleTypeDeny, accessrules.ScopeGlobal, addr, ipVer,
 		accessrules.StatusActive, validity, until,
 		batchReason(feed, batchID, e.Family), accessrules.SourceImport, operator)
 	return err
+}
+
+// matchProtectedEntry 判断单 IP 或 CIDR 是否命中或重叠任一启用中的保护地址。
+// 单 IP 直接复用 protectedaddresses.MatchProtected；CIDR 检查是否包含任一保护单 IP 或与任一保护 CIDR 重叠。
+func matchProtectedEntry(addrs []protectedaddresses.ProtectedAddress, target string) (bool, string) {
+	s := strings.TrimSpace(target)
+	if !strings.Contains(s, "/") {
+		return protectedaddresses.MatchProtected(addrs, s)
+	}
+	entryPrefix, err := netip.ParsePrefix(s)
+	if err != nil {
+		return false, ""
+	}
+	entryPrefix = normalizePrefixV4(entryPrefix)
+	if !entryPrefix.IsValid() {
+		return false, ""
+	}
+	for i := range addrs {
+		a := &addrs[i]
+		if a.Status != protectedaddresses.StatusEnabled {
+			continue
+		}
+		if a.Address != "" {
+			if single, perr := netip.ParseAddr(strings.TrimSpace(a.Address)); perr == nil {
+				if entryPrefix.Contains(single.Unmap()) {
+					return true, a.Name
+				}
+			}
+			continue
+		}
+		if a.CIDR != "" {
+			if pp, perr := netip.ParsePrefix(strings.TrimSpace(a.CIDR)); perr == nil {
+				pp = normalizePrefixV4(pp)
+				if pp.IsValid() && entryPrefix.Overlaps(pp) {
+					return true, a.Name
+				}
+			}
+		}
+	}
+	return false, ""
+}
+
+func normalizePrefixV4(p netip.Prefix) netip.Prefix {
+	pa := p.Addr()
+	bits := p.Bits()
+	if pa.Is4In6() {
+		pa = pa.Unmap()
+		bits -= 96
+		if bits < 0 {
+			return netip.Prefix{}
+		}
+	}
+	return netip.PrefixFrom(pa, bits).Masked()
 }
 
 // refreshFeedRule 刷新在册规则：有效期按本批 TTL 重算、reason 记最近批次、

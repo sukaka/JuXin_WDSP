@@ -38,9 +38,12 @@ type Server struct {
 	executorDir       string
 	rulesDir          string
 	rulePackVerifyKey ed25519.PublicKey
+	geoIPDir          string
 	maxPkgBytes       int64
 	maxRulePackBytes  int64
+	maxGeoIPBytes     int64
 	rulePackMu        sync.RWMutex
+	geoIPMu           sync.RWMutex
 	now               func() time.Time
 	handler           http.Handler
 }
@@ -117,6 +120,11 @@ func NewServer(cfg Config) (*Server, error) {
 	if maxPkgBytes <= 0 {
 		maxPkgBytes = DefaultMaxPackageSize
 	}
+	geoIPDir := strings.TrimSpace(cfg.GeoIPDir)
+	if geoIPDir != "" {
+		geoIPDir = filepath.Clean(geoIPDir)
+	}
+	cfg.GeoIPDir = geoIPDir
 
 	var rulePackKey ed25519.PublicKey
 	if len(cfg.RulePackVerifyKey) > 0 {
@@ -148,8 +156,10 @@ func NewServer(cfg Config) (*Server, error) {
 		executorDir:       filepath.Clean(executorDir),
 		rulesDir:          rulesDir,
 		rulePackVerifyKey: rulePackKey,
+		geoIPDir:          geoIPDir,
 		maxPkgBytes:       maxPkgBytes,
 		maxRulePackBytes:  maxRulePackBytes,
+		maxGeoIPBytes:     cfg.MaxGeoIPBytes,
 		now:               nowFn,
 	}
 	s.handler = s.buildHandler()
@@ -368,6 +378,23 @@ func (s *Server) buildHandler() http.Handler {
 				return
 			}
 			s.handleRulePackDeleteRelease(w, r, authInfo, ver)
+		case path == "/v1/geoip/status":
+			if r.Method != http.MethodGet {
+				writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			s.handleGeoIPStatus(w, r, authInfo)
+		case strings.HasPrefix(path, "/v1/geoip/slots/"):
+			slot := strings.TrimPrefix(path, "/v1/geoip/slots/")
+			if slot == "" || strings.Contains(slot, "/") {
+				writeJSONError(w, http.StatusBadRequest, "invalid geoip slot")
+				return
+			}
+			if r.Method != http.MethodPut {
+				writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			s.handleGeoIPSlotPut(w, r, authInfo, slot)
 		default:
 			writeJSONError(w, http.StatusNotFound, "not found")
 		}

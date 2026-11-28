@@ -1063,7 +1063,7 @@ func parsePostureDays(w http.ResponseWriter, r *http.Request) (int, bool) {
 // postureGeoResolver 构建 Geo 判定器（lookup 未装配返回 nil；home_regions 每次请求实时
 // 读取 system_settings，设置变更无需重启——与 apigeo 数据出境看板一致）。
 func (h *Handler) postureGeoResolver(ctx context.Context) (*apigeo.GeoResolver, error) {
-	if h.geoLookup == nil {
+	if !apigeo.IsLookupEnabled(h.geoLookup) {
 		return nil, nil
 	}
 	raw, err := h.store.getSettingString(ctx, apigeo.SettingsGroup, apigeo.SettingsKeyHomeRegions, apigeo.DefaultHomeRegions)

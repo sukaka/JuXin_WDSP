@@ -102,6 +102,9 @@ const ClientSideSecurityPage = lazy(
 const WasmPluginsPage = lazy(
   () => import('../pages/wasm-plugins/WasmPluginsPage'),
 )
+const IpLibrariesPage = lazy(
+  () => import('../pages/ip-libraries/IpLibrariesPage'),
+)
 const BlockPagesPage = lazy(
   () => import('../pages/block-pages/BlockPagesPage'),
 )
@@ -856,6 +859,15 @@ export default function AppRoutes() {
             element={
               <RequirePermission permission="wasm_plugins.read">
                 <WasmPluginsPage />
+              </RequirePermission>
+            }
+          />
+          {/* IP 库与威胁情报（GeoIP 归属地库 + 威胁情报 IP 黑名单库，迁移 000256） */}
+          <Route
+            path="ip-libraries"
+            element={
+              <RequirePermission permission={['geoip.read', 'threat_intel.read']}>
+                <IpLibrariesPage />
               </RequirePermission>
             }
           />

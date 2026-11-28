@@ -370,6 +370,10 @@ var exportAlertTypeLabels = map[string]string{
 	TypeAIOpsScheduleCircuitOpen: "AI 定时运营任务熔断",
 	TypeRulePackApplyFailed:      "离线规则包应用失败",
 	TypeRulePackNodeDrift:        "HA 规则包版本漂移",
+	TypeGeoIPSyncFailed:          "GeoIP 归属地库更新失败",
+	TypeGeoIPNodeDrift:           "GeoIP 主备节点版本漂移",
+	TypeThreatIntelSyncFailed:    "威胁情报 IP 库同步失败",
+	TypeThreatIntelCircuitOpen:   "威胁情报订阅源熔断",
 }
 
 func exportAlertTypeLabel(v string) string {

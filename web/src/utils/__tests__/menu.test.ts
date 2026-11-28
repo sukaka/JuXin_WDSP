@@ -850,4 +850,28 @@ describe('filterMenusByRoles', () => {
     })
     expect(sysHidden.map((m) => m.key)).not.toContain('/block-pages')
   })
+
+  it('IP 库与威胁情报菜单按 geoip.read 或 threat_intel.read 权限门控并归属访问控制分组', () => {
+    const geoVisible = filterMenusByRoles(['SECURITY_ADMIN'], ['geoip.read'], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    expect(geoVisible.find((m) => m.key === '/ip-libraries')).toMatchObject({
+      key: '/ip-libraries',
+      label: 'IP 库与威胁情报',
+      group: '访问控制',
+    })
+
+    const threatVisible = filterMenusByRoles(['AUDIT_ADMIN'], ['threat_intel.read'], {
+      apiDynamicProtection: false,
+      webWafEnabled: false,
+    })
+    expect(threatVisible.map((m) => m.key)).toContain('/ip-libraries')
+
+    const sysHidden = filterMenusByRoles(['SYSTEM_ADMIN'], [], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    expect(sysHidden.map((m) => m.key)).not.toContain('/ip-libraries')
+  })
 })

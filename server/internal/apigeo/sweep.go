@@ -223,7 +223,7 @@ func riskOf(dataTypes []string, levels map[string]string) string {
 // SweepOnce 执行一次跨境清扫。
 func (s *Sweeper) SweepOnce(ctx context.Context) (*SweepResult, error) {
 	res := &SweepResult{HomeRegions: []string{}}
-	if s.lookup == nil {
+	if !IsLookupEnabled(s.lookup) {
 		return res, nil // GeoIP 数据源未加载：空转降级（GeoEnabled=false 如实标注）
 	}
 	res.GeoEnabled = true

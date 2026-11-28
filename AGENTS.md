@@ -94,6 +94,7 @@ Caddy 中间件顺序必须经过集成测试验证，不得凭经验随意调�
 - [多网口管理与多模式部署设计](docs/NETWORK_MODES_DESIGN.md)
 - [网络诊断工具与网络设置设计](docs/NETWORK_TOOLS_DESIGN.md)
 - [漏洞情报设计（CVE 漏洞库与外部利用情报接入；PHP 场景 MVP 已实现）](docs/VULN_INTEL_DESIGN.md)
+- [IP 库更新与热加载设计（GeoIP 归属地库 + 威胁情报 IP 黑名单库离线/在线定时更新）](docs/IP_LIBRARY_UPDATE_DESIGN.md)
 - [站点资产自动发现设计](docs/SITE_DISCOVERY_DESIGN.md)
 - [生产裸机网关部署设计](docs/BARE_METAL_GATEWAY_DESIGN.md)
 - [主备高可用设计（VIP 漂移 + 网桥端口联动 + 会话保持）](docs/HA_ACTIVE_STANDBY_DESIGN.md)

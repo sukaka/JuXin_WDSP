@@ -97,7 +97,7 @@ func (h *Handler) CrossBorder(w http.ResponseWriter, r *http.Request) {
 		rawHome = h.settings.GetString(r.Context(), SettingsGroup, SettingsKeyHomeRegions, DefaultHomeRegions)
 	}
 	response.JSON(w, r, http.StatusOK, crossBorderResponse{
-		GeoEnabled:  h.lookup != nil,
+		GeoEnabled:  IsLookupEnabled(h.lookup),
 		HomeRegions: ParseHomeRegions(rawHome),
 		Dashboard:   dashboard,
 		Events: response.PageData{

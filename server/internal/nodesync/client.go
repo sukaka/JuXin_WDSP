@@ -525,6 +525,128 @@ func (c *Client) DeleteRulePackRelease(ctx context.Context, version string) (*Ru
 	return &out, nil
 }
 
+// GetGeoIPStatus calls GET /v1/geoip/status on the remote hasyncd agent.
+func (c *Client) GetGeoIPStatus(ctx context.Context) (*GeoIPStatusResponse, error) {
+	var out GeoIPStatusResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/v1/geoip/status", nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Slots == nil {
+		out.Slots = map[string]GeoIPSlotMeta{}
+	}
+	return &out, nil
+}
+
+// PushGeoIPSlot streams a local GeoIP database file to PUT /v1/geoip/slots/{slot}.
+// Pass 1 computes SHA-256 (verifying against expectedSHA256 when provided);
+// Pass 2 rewinds and streams the file body directly over HTTP(S) using uploadClient.
+func (c *Client) PushGeoIPSlot(ctx context.Context, slot, filePath, expectedSHA256, revision string) (*GeoIPSlotPushResponse, error) {
+	if !AllowedGeoIPSlot(slot) {
+		return nil, fmt.Errorf("geoip slot %q not in allowlist", slot)
+	}
+	normRev, err := ValidateGeoIPRevision(revision)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(filePath) == "" {
+		return nil, errors.New("geoip file path is empty")
+	}
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("open geoip file: %w", err)
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat geoip file: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, errors.New("geoip file must be a regular file")
+	}
+	if fi.Size() <= 0 {
+		return nil, errors.New("geoip file is empty")
+	}
+
+	h := sha256.New()
+	hashedBytes, err := io.Copy(h, f)
+	if err != nil {
+		return nil, fmt.Errorf("hash geoip file: %w", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("rewind geoip file: %w", err)
+	}
+	actualSHA := hex.EncodeToString(h.Sum(nil))
+	if exp := strings.ToLower(strings.TrimSpace(expectedSHA256)); exp != "" {
+		if !isLowerHex64(exp) {
+			return nil, errors.New("expectedSHA256 must be 64 lowercase hex chars")
+		}
+		if !hmac.Equal([]byte(actualSHA), []byte(exp)) {
+			return nil, fmt.Errorf("local geoip file sha256 mismatch: got=%s want=%s", actualSHA, exp)
+		}
+	}
+	return c.PushGeoIPSlotReader(ctx, slot, f, hashedBytes, actualSHA, normRev)
+}
+
+// PushGeoIPSlotReader streams r with a precomputed SHA-256 digest to PUT /v1/geoip/slots/{slot}.
+func (c *Client) PushGeoIPSlotReader(ctx context.Context, slot string, r io.Reader, size int64, sha256Hex, revision string) (*GeoIPSlotPushResponse, error) {
+	if !AllowedGeoIPSlot(slot) {
+		return nil, fmt.Errorf("geoip slot %q not in allowlist", slot)
+	}
+	sha256Hex = strings.ToLower(strings.TrimSpace(sha256Hex))
+	if !isLowerHex64(sha256Hex) {
+		return nil, errors.New("sha256Hex must be 64 lowercase hex chars")
+	}
+	normRev, err := ValidateGeoIPRevision(revision)
+	if err != nil {
+		return nil, err
+	}
+	if r == nil {
+		return nil, errors.New("geoip reader is nil")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.baseURL+"/v1/geoip/slots/"+slot, r)
+	if err != nil {
+		return nil, err
+	}
+	if size >= 0 {
+		req.ContentLength = size
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set(HeaderGeoIPSHA256, sha256Hex)
+	req.Header.Set(HeaderGeoIPRevision, normRev)
+	if err := SignRequest(req, c.secret, c.nodeName, sha256Hex, c.now(), ""); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.uploadClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("push geoip slot %s request failed: %w", slot, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read geoip push response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Message:    extractErrorMessage(respBody),
+			Body:       truncateStr(string(respBody), 1024),
+		}
+	}
+	var out GeoIPSlotPushResponse
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("decode geoip push response: %w", err)
+	}
+	if out.SHA256 != "" && !strings.EqualFold(strings.TrimSpace(out.SHA256), sha256Hex) {
+		return nil, fmt.Errorf("peer returned geoip sha256 mismatch: got=%s want=%s", out.SHA256, sha256Hex)
+	}
+	return &out, nil
+}
+
 func (c *Client) doJSON(ctx context.Context, method, path string, reqBody any, out any) error {
 	var raw []byte
 	var contentType string

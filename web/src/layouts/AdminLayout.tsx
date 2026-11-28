@@ -144,6 +144,7 @@ const MENU_ICONS: Record<string, ReactNode> = {
   '/ai-crawl': <RobotOutlined />,
   '/client-side-security': <CodeOutlined />,
   '/wasm-plugins': <CodeSandboxOutlined />,
+  '/ip-libraries': <DatabaseOutlined />,
   '/api-endpoints': <NodeIndexOutlined />,
   '/api-endpoint-groups': <DeploymentUnitOutlined />,
   '/api-posture': <FundProjectionScreenOutlined />,

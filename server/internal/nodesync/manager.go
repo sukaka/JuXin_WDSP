@@ -2,12 +2,19 @@ package nodesync
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -536,4 +543,223 @@ func (m *Manager) DeleteRulePackRelease(ctx context.Context, nodeID uuid.UUID, v
 		return nil, fmt.Errorf("清理备节点 %s 过期规则快照 %s 失败: %w", cred.NodeName, version, err)
 	}
 	return resp, nil
+}
+
+// ---------- HA GeoIP Sync Primitives ----------
+
+const maxConcurrentGeoIPPeers = 8
+
+func (m *Manager) listSyncPeerCredentials(ctx context.Context) ([]NodeCredential, error) {
+	if m.store == nil {
+		return nil, nil
+	}
+	creds, err := m.store.ListSyncAgentNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	local := strings.TrimSpace(m.cfg.LocalNodeName)
+	peers := make([]NodeCredential, 0, len(creds))
+	for _, c := range creds {
+		name := strings.TrimSpace(c.NodeName)
+		if name == "" || (local != "" && name == local) {
+			continue
+		}
+		if !c.SyncEnabled {
+			continue
+		}
+		peers = append(peers, c)
+	}
+	sort.Slice(peers, func(i, j int) bool {
+		return peers[i].NodeName < peers[j].NodeName
+	})
+	return peers, nil
+}
+
+func hashLocalGeoIPFile(filePath, expectedSHA256 string) (string, int64, error) {
+	if strings.TrimSpace(filePath) == "" {
+		return "", 0, errors.New("geoip file path is empty")
+	}
+	f, err := os.Open(filePath)
+	if err != nil {
+		return "", 0, fmt.Errorf("open geoip file: %w", err)
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return "", 0, fmt.Errorf("stat geoip file: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return "", 0, errors.New("geoip file must be a regular file")
+	}
+	if fi.Size() <= 0 {
+		return "", 0, errors.New("geoip file is empty")
+	}
+
+	h := sha256.New()
+	size, err := io.Copy(h, f)
+	if err != nil {
+		return "", 0, fmt.Errorf("hash geoip file: %w", err)
+	}
+	actualSHA := hex.EncodeToString(h.Sum(nil))
+	if exp := strings.ToLower(strings.TrimSpace(expectedSHA256)); exp != "" {
+		if !isLowerHex64(exp) {
+			return "", 0, errors.New("expectedSHA256 must be 64 lowercase hex chars")
+		}
+		if !hmac.Equal([]byte(actualSHA), []byte(exp)) {
+			return "", 0, fmt.Errorf("local geoip file sha256 mismatch: got=%s want=%s", actualSHA, exp)
+		}
+	}
+	return actualSHA, size, nil
+}
+
+// PushGeoIPSlotToPeers concurrently streams a verified local GeoIP slot file to all
+// SyncEnabled HA peer nodes (skipping the local node). Per-peer failures are reported
+// inside the returned slice so partial delivery never blocks the primary node.
+func (m *Manager) PushGeoIPSlotToPeers(ctx context.Context, slot, filePath, expectedSHA256, revision string) ([]GeoIPPeerPushResult, error) {
+	if !AllowedGeoIPSlot(slot) {
+		return nil, fmt.Errorf("geoip slot %q not in allowlist", slot)
+	}
+	normRev, err := ValidateGeoIPRevision(revision)
+	if err != nil {
+		return nil, err
+	}
+	fileSHA, fileSize, err := hashLocalGeoIPFile(filePath, expectedSHA256)
+	if err != nil {
+		return nil, err
+	}
+	peers, err := m.listSyncPeerCredentials(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(peers) == 0 {
+		return []GeoIPPeerPushResult{}, nil
+	}
+
+	results := make([]GeoIPPeerPushResult, len(peers))
+	sem := make(chan struct{}, maxConcurrentGeoIPPeers)
+	var wg sync.WaitGroup
+
+	for i, peer := range peers {
+		wg.Add(1)
+		go func(idx int, cred NodeCredential) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			start := m.now()
+			res := GeoIPPeerPushResult{
+				NodeName: cred.NodeName,
+				Slot:     slot,
+				Revision: normRev,
+			}
+			if cred.NodeID != uuid.Nil {
+				res.NodeID = cred.NodeID.String()
+			}
+			recordDuration := func() {
+				ms := m.now().Sub(start).Milliseconds()
+				if ms < 0 {
+					ms = 0
+				}
+				res.DurationMs = ms
+			}
+
+			cli, err := m.ClientForCredential(&cred)
+			if err != nil {
+				recordDuration()
+				res.Error = err.Error()
+				results[idx] = res
+				return
+			}
+
+			f, err := os.Open(filePath)
+			if err != nil {
+				recordDuration()
+				res.Error = fmt.Sprintf("open geoip file: %v", err)
+				results[idx] = res
+				return
+			}
+			resp, pushErr := cli.PushGeoIPSlotReader(ctx, slot, f, fileSize, fileSHA, normRev)
+			_ = f.Close()
+			recordDuration()
+
+			if pushErr != nil {
+				res.Error = pushErr.Error()
+				results[idx] = res
+				return
+			}
+			res.OK = resp.OK
+			res.SHA256 = resp.SHA256
+			res.SizeBytes = resp.SizeBytes
+			if resp.Revision != "" {
+				res.Revision = resp.Revision
+			}
+			results[idx] = res
+		}(i, peer)
+	}
+	wg.Wait()
+	return results, nil
+}
+
+// ListPeerGeoIPStatus concurrently queries GET /v1/geoip/status across all SyncEnabled
+// HA peer nodes (skipping the local node).
+func (m *Manager) ListPeerGeoIPStatus(ctx context.Context) ([]GeoIPPeerStatus, error) {
+	peers, err := m.listSyncPeerCredentials(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(peers) == 0 {
+		return []GeoIPPeerStatus{}, nil
+	}
+
+	results := make([]GeoIPPeerStatus, len(peers))
+	sem := make(chan struct{}, maxConcurrentGeoIPPeers)
+	var wg sync.WaitGroup
+
+	for i, peer := range peers {
+		wg.Add(1)
+		go func(idx int, cred NodeCredential) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			start := m.now()
+			st := GeoIPPeerStatus{
+				NodeName: cred.NodeName,
+			}
+			if cred.NodeID != uuid.Nil {
+				st.NodeID = cred.NodeID.String()
+			}
+			recordLatency := func() {
+				ms := m.now().Sub(start).Milliseconds()
+				if ms < 0 {
+					ms = 0
+				}
+				st.LatencyMs = ms
+			}
+
+			cli, err := m.ClientForCredential(&cred)
+			if err != nil {
+				recordLatency()
+				st.Error = err.Error()
+				results[idx] = st
+				return
+			}
+			resp, err := cli.GetGeoIPStatus(ctx)
+			recordLatency()
+			if err != nil {
+				st.Error = err.Error()
+				results[idx] = st
+				return
+			}
+			st.Reachable = true
+			st.GeoIPReady = resp.GeoIPReady
+			st.Revision = resp.Revision
+			st.UpdatedAt = resp.UpdatedAt
+			st.Slots = resp.Slots
+			results[idx] = st
+		}(i, peer)
+	}
+	wg.Wait()
+	return results, nil
 }

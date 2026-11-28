@@ -47,14 +47,20 @@ func TestCategoriesContract(t *testing.T) {
 		}
 		total += len(c.AlertTypes)
 	}
-	if total != 40 {
-		t.Errorf("告警类型总数应为 40, got %d", total)
+	if total != 44 {
+		t.Errorf("告警类型总数应为 44, got %d", total)
 	}
 	if got := CategoryOf("RULEPACK_APPLY_FAILED"); got != "ops" {
 		t.Errorf("CategoryOf(RULEPACK_APPLY_FAILED) = %s, want ops", got)
 	}
 	if got := AlertTypeName("RULEPACK_NODE_DRIFT"); got != "HA规则包版本漂移" {
 		t.Errorf("AlertTypeName(RULEPACK_NODE_DRIFT) = %s, want HA规则包版本漂移", got)
+	}
+	if got := CategoryOf("GEOIP_SYNC_FAILED"); got != "threat_intel" {
+		t.Errorf("CategoryOf(GEOIP_SYNC_FAILED) = %s, want threat_intel", got)
+	}
+	if got := AlertTypeName("THREAT_INTEL_CIRCUIT_OPEN"); got != "威胁情报订阅源熔断" {
+		t.Errorf("AlertTypeName(THREAT_INTEL_CIRCUIT_OPEN) = %s, want 威胁情报订阅源熔断", got)
 	}
 	if got := CategoryOf("HA_SPLIT_BRAIN"); got != "infrastructure" {
 		t.Errorf("CategoryOf(HA_SPLIT_BRAIN) = %s, want infrastructure", got)
@@ -88,6 +94,14 @@ func TestCategoriesContract(t *testing.T) {
 	}
 	if got := CategoryOf("VULN_INTEL_NEW"); got != "threat_intel" {
 		t.Errorf("CategoryOf(VULN_INTEL_NEW) = %s, want threat_intel", got)
+	}
+	for _, typ := range []string{"GEOIP_SYNC_FAILED", "GEOIP_NODE_DRIFT", "THREAT_INTEL_SYNC_FAILED", "THREAT_INTEL_CIRCUIT_OPEN"} {
+		if got := CategoryOf(typ); got != "threat_intel" {
+			t.Errorf("CategoryOf(%s) = %s, want threat_intel", typ, got)
+		}
+		if AlertTypeName(typ) == typ {
+			t.Errorf("AlertTypeName(%s) 应有中文名称", typ)
+		}
 	}
 	if got := CategoryOf("NO_SUCH_TYPE"); got != "" {
 		t.Errorf("未知类型应返回空串, got %q", got)

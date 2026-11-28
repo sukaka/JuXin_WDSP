@@ -92,6 +92,12 @@ const (
 	// 纯离线 WAF 规则包热更新告警（OFFLINE_RULEPACK_UPDATE_DESIGN.md）：
 	TypeRulePackApplyFailed = "RULEPACK_APPLY_FAILED" // 离线规则包应用/回滚执行失败
 	TypeRulePackNodeDrift   = "RULEPACK_NODE_DRIFT"   // HA 降级仅主节点生效导致主备规则包漂移
+
+	// IP 库更新告警（IP_LIBRARY_UPDATE_DESIGN.md）：GeoIP 归属地库与威胁情报 IP 黑名单库。
+	TypeGeoIPSyncFailed        = "GEOIP_SYNC_FAILED"         // GeoIP 归属地库更新失败
+	TypeGeoIPNodeDrift         = "GEOIP_NODE_DRIFT"          // HA 主备 GeoIP 归属地库不一致
+	TypeThreatIntelSyncFailed  = "THREAT_INTEL_SYNC_FAILED"  // 威胁情报 IP 库拉取/护栏拦截失败
+	TypeThreatIntelCircuitOpen = "THREAT_INTEL_CIRCUIT_OPEN" // 威胁情报订阅源连续失败触发熔断
 )
 
 // 告警等级（任务书 §11.2）
@@ -181,9 +187,13 @@ var severityRules = map[string]string{
 	TypeAPMSLOBreach:             SeverityMedium, // SLO 违约（预算耗尽），参照 SOURCE_UNHEALTHY 档
 	TypeAPMIngestLag:             SeverityMedium, // 数据面采集滞后，参照 EVENT_COLLECTOR_LAG 档
 	TypeAIOpsScheduleCircuitOpen: SeverityHigh,   // 运营计划熔断停用 = 自动化能力丧失，参照 CONFIG_PUBLISH_FAILED 档
-	TypeVulnIntelNew:             SeverityHigh, // 订阅技术栈新漏洞；批次含 CRITICAL 时调用方显式升 CRITICAL
-	TypeRulePackApplyFailed:      SeverityHigh, // 离线规则包应用或回滚失败
-	TypeRulePackNodeDrift:        SeverityHigh, // HA 节点规则包版本漂移（需补齐同步）
+	TypeVulnIntelNew:             SeverityHigh,   // 订阅技术栈新漏洞；批次含 CRITICAL 时调用方显式升 CRITICAL
+	TypeRulePackApplyFailed:      SeverityHigh,   // 离线规则包应用或回滚失败
+	TypeRulePackNodeDrift:        SeverityHigh,   // HA 节点规则包版本漂移（需补齐同步）
+	TypeGeoIPSyncFailed:          SeverityMedium, // GeoIP 定时更新失败（旧库仍保持服务，不中断业务）
+	TypeGeoIPNodeDrift:           SeverityMedium, // HA 备节点 GeoIP 同步失败导致主备版本漂移
+	TypeThreatIntelSyncFailed:    SeverityMedium, // 威胁情报拉取失败或触发防误清空护栏
+	TypeThreatIntelCircuitOpen:   SeverityHigh,   // 威胁情报订阅源连续失败熔断停用
 }
 
 // IsValidType 判断告警类型是否合法。

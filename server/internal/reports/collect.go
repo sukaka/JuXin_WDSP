@@ -814,9 +814,9 @@ GROUP BY 1 ORDER BY 1`, where), args...)
 // maxGeoDistinctIPs 地区分布统计纳入的去重源 IP 上限（按事件数降序，余量归「其他」）。
 const maxGeoDistinctIPs = 200
 
-// collectSourceGeo 攻击源地区分布（GeoIP 国家码聚合；geo 为 nil 时跳过，渲染层显示未启用）。
+// collectSourceGeo 攻击源地区分布（GeoIP 国家码聚合；geo 不可用时跳过，渲染层显示未启用）。
 func (c *Collector) collectSourceGeo(ctx context.Context, d *ReportData, where string, args []interface{}) error {
-	if c.geo == nil {
+	if !apigeo.IsLookupEnabled(c.geo) {
 		return nil
 	}
 	d.GeoEnabled = true

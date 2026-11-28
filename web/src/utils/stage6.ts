@@ -132,6 +132,10 @@ export const ALERT_TYPE_META: Record<string, { color: string; label: string }> =
   AI_OPS_SCHEDULE_CIRCUIT_OPEN: { color: 'volcano', label: 'AI 定时运营任务熔断' },
   RULEPACK_APPLY_FAILED: { color: 'red', label: '离线规则包应用失败' },
   RULEPACK_NODE_DRIFT: { color: 'volcano', label: 'HA 规则包版本漂移' },
+  GEOIP_SYNC_FAILED: { color: 'orange', label: 'GeoIP 库更新失败' },
+  GEOIP_NODE_DRIFT: { color: 'orange', label: 'GeoIP 主备节点不一致' },
+  THREAT_INTEL_SYNC_FAILED: { color: 'orange', label: '威胁情报同步失败' },
+  THREAT_INTEL_CIRCUIT_OPEN: { color: 'volcano', label: '威胁情报源熔断' },
 }
 
 /** 监控组件展示名 */
@@ -170,18 +174,29 @@ export const ALERT_COMPONENT_NAME_META: Record<string, string> = {
   API_GATEWAY_NODE_SYNC: '网关节点配置同步',
   API_ENDPOINT_DISCOVERY: 'API 端点发现',
   WAF_RULE_PACKS: '离线规则包',
+  GEOIP: 'GeoIP 归属地库',
+  THREAT_INTEL: '威胁情报 IP 库',
 }
 
-/** 格式化系统告警组件名（大小写不敏感，支持 vuln_intel:<tech> 前缀；未知动态组件原样返回） */
+/** 格式化系统告警组件名（大小写不敏感，支持 vuln_intel:/geoip:/threat_intel: 前缀；未知动态组件原样返回） */
 export function formatAlertComponent(component?: string | null): string {
   if (!component) return '-'
   const trimmed = component.trim()
   if (!trimmed) return '-'
   const mapped = ALERT_COMPONENT_NAME_META[trimmed.toUpperCase()]
   if (mapped) return mapped
+  const lower = trimmed.toLowerCase()
   const vulnPrefix = 'vuln_intel:'
-  if (trimmed.toLowerCase().startsWith(vulnPrefix) && trimmed.length > vulnPrefix.length) {
+  if (lower.startsWith(vulnPrefix) && trimmed.length > vulnPrefix.length) {
     return `漏洞情报：${trimmed.slice(vulnPrefix.length)}`
+  }
+  const geoipPrefix = 'geoip:'
+  if (lower.startsWith(geoipPrefix) && trimmed.length > geoipPrefix.length) {
+    return `GeoIP 归属地库：${trimmed.slice(geoipPrefix.length)}`
+  }
+  const threatPrefix = 'threat_intel:'
+  if (lower.startsWith(threatPrefix) && trimmed.length > threatPrefix.length) {
+    return `威胁情报：${trimmed.slice(threatPrefix.length)}`
   }
   return trimmed
 }

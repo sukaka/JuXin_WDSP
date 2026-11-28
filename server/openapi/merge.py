@@ -42,6 +42,7 @@ TAG_DESCRIPTIONS = {
     'trusted-proxies': '可信代理',
     'protected-addresses': '防护地址',
     'access-rules': '访问控制规则（IP 黑白名单）',
+    'ip-libraries': 'IP 库与威胁情报（GeoIP 归属地库、威胁情报黑名单库与出站代理）',
     'rate-limit-policies': '频率与 CC 防护',
     'temporary-blocks': '临时封禁',
     'access-control-events': '访问控制事件',

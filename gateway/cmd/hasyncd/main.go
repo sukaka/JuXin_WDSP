@@ -55,6 +55,7 @@ func run() error {
 		upgradePackagesDir = flag.String("upgrade-packages-dir", envOr("UPGRADE_PACKAGES_DIR"), "Optional override for upgrade packages directory")
 		upgradeExecutorDir = flag.String("upgrade-executor-dir", envOr("UPGRADE_EXECUTOR_DIR"), "Optional override for upgrade executor directory")
 		rulesDir           = flag.String("rules-dir", envOr("HASYNC_RULES_DIR"), "Optional local versioned WAF rules directory (env HASYNC_RULES_DIR)")
+		geoIPDir           = flag.String("geoip-dir", envOr("HASYNC_GEOIP_DIR"), "Optional GeoIP runtime directory (env HASYNC_GEOIP_DIR; empty disables /v1/geoip/* with 503)")
 		nodeIfacesLog      = flag.String("node-ifaces-log", envDefault(hasyncd.DefaultNodeIfacesLog, "HASYNC_NODE_IFACES_LOG"), "Path to node-interfaces.jsonl snapshot file")
 		version            = flag.String("version", envOr("APP_VERSION", "HASYNC_VERSION"), "Reported application version (env APP_VERSION)")
 		versionFile        = flag.String("version-file", envOr("APP_VERSION_FILE", "HASYNC_VERSION_FILE"), "Optional version file path fallback")
@@ -80,6 +81,7 @@ func run() error {
 		UpgradePackagesDir: *upgradePackagesDir,
 		UpgradeExecutorDir: *upgradeExecutorDir,
 		RulesDir:           *rulesDir,
+		GeoIPDir:           *geoIPDir,
 		NodeIfacesLog:      *nodeIfacesLog,
 		Version:            *version,
 		VersionFile:        *versionFile,
@@ -92,7 +94,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	log.Printf("[hasyncd] starting node=%s listen=%s caddy_sock=%s sidecar_dir=%s hostctl_dir=%s upgrades_dir=%s rules_dir=%s",
-		*nodeName, *listenAddr, *caddySocket, *sidecarDir, *hostctlDir, *upgradesDir, *rulesDir)
+	log.Printf("[hasyncd] starting node=%s listen=%s caddy_sock=%s sidecar_dir=%s hostctl_dir=%s upgrades_dir=%s rules_dir=%s geoip_dir=%s",
+		*nodeName, *listenAddr, *caddySocket, *sidecarDir, *hostctlDir, *upgradesDir, *rulesDir, *geoIPDir)
 	return srv.Run(ctx)
 }

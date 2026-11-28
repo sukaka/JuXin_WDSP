@@ -214,3 +214,108 @@ func TestParseCSV_CRLF(t *testing.T) {
 		t.Fatalf("CRLF parse wrong: %+v", res.Entries)
 	}
 }
+
+func TestParseText_SemicolonAndInlineComments(t *testing.T) {
+	content := "\ufeff; Spamhaus style full-line comment\n" +
+		"  ; indented semicolon comment\n" +
+		"# hash comment\n" +
+		"192.0.2.10 ; SBL123456\n" +
+		"198.51.100.20;no-space-comment\n" +
+		"203.0.113.30:443 ; with port and comment\n" +
+		"192.0.2.99 # hash inline comment\n"
+	res := ParseText(content)
+	if res.ErrorTotal != 0 {
+		t.Fatalf("unexpected errors: %+v", res.Errors)
+	}
+	want := []string{"192.0.2.10", "198.51.100.20", "203.0.113.30", "192.0.2.99"}
+	if len(res.Entries) != len(want) {
+		t.Fatalf("entries=%d, want %d: %+v", len(res.Entries), len(want), res.Entries)
+	}
+	for i, w := range want {
+		if res.Entries[i].IP != w {
+			t.Errorf("entry[%d].IP=%s, want %s", i, res.Entries[i].IP, w)
+		}
+	}
+}
+
+func TestParseTextWithOptions_CIDRValidAndNormalized(t *testing.T) {
+	content := strings.Join([]string{
+		"; CIDR list with host bits set (must canonicalize)",
+		"203.0.113.55/24 ; trailing comment",
+		"198.51.100.9/16",
+		"192.0.2.10/32",
+		"45.33.32.156",
+		"203.0.113.99/24", // duplicate after canonical masking -> deduped
+	}, "\n")
+	res := ParseTextWithOptions(content, ParseOptions{AllowCIDR: true})
+	if res.ErrorTotal != 0 {
+		t.Fatalf("unexpected errors: %+v", res.Errors)
+	}
+	want := []string{"203.0.113.0/24", "198.51.0.0/16", "192.0.2.10/32", "45.33.32.156"}
+	if len(res.Entries) != len(want) {
+		t.Fatalf("entries=%d, want %d: %+v", len(res.Entries), len(want), res.Entries)
+	}
+	for i, w := range want {
+		if res.Entries[i].IP != w {
+			t.Errorf("entry[%d].IP=%s, want %s", i, res.Entries[i].IP, w)
+		}
+	}
+}
+
+func TestParseTextWithOptions_RejectBroadAndRestrictedRanges(t *testing.T) {
+	badLines := []string{
+		// 过宽前缀（/0.. /15）硬拒绝
+		"0.0.0.0/0",
+		"1.0.0.0/8",
+		"45.0.0.0/15",
+		// 私网 / 回环 / 链路本地 / CGNAT / 组播 / 保留段（单 IP 与 CIDR）
+		"10.0.0.1",
+		"10.1.0.0/16",
+		"172.16.0.1",
+		"172.31.0.0/16",
+		"192.168.1.1",
+		"192.168.0.0/16",
+		"127.0.0.1",
+		"127.0.0.0/24",
+		"169.254.169.254",
+		"169.254.0.0/16",
+		"100.64.0.1",
+		"100.64.0.0/16",
+		"100.127.255.0/24",
+		"224.0.0.1",
+		"224.0.0.0/24",
+		"240.0.0.1",
+		"240.0.0.0/24",
+		"255.255.255.255",
+		"0.0.0.1",
+		"0.0.0.0/16",
+		"198.18.0.1",
+		"198.18.0.0/16",
+		"192.0.0.1",
+		"192.0.0.0/16", // 重叠 192.0.0.0/24
+		// IPv6 与 4-in-6 CIDR
+		"2001:db8::/32",
+		"::ffff:203.0.113.0/120",
+	}
+	res := ParseTextWithOptions(strings.Join(badLines, "\n"), ParseOptions{AllowCIDR: true})
+	if len(res.Entries) != 0 {
+		t.Fatalf("expected 0 entries, got %+v", res.Entries)
+	}
+	if res.ErrorTotal != len(badLines) {
+		t.Fatalf("ErrorTotal=%d, want %d", res.ErrorTotal, len(badLines))
+	}
+}
+
+func TestParseCSVWithOptions_CIDR(t *testing.T) {
+	content := "dst_ip,malware\n203.0.113.42/24,Botnet\n10.0.0.0/24,Private\n45.0.0.0/15,TooBroad\n"
+	res, err := ParseCSVWithOptions(content, ParseOptions{AllowCIDR: true})
+	if err != nil {
+		t.Fatalf("ParseCSVWithOptions: %v", err)
+	}
+	if len(res.Entries) != 1 || res.Entries[0].IP != "203.0.113.0/24" || res.Entries[0].Family != "Botnet" {
+		t.Fatalf("entries=%+v", res.Entries)
+	}
+	if res.ErrorTotal != 2 {
+		t.Fatalf("ErrorTotal=%d, want 2", res.ErrorTotal)
+	}
+}

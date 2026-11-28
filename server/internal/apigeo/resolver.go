@@ -49,7 +49,7 @@ func NewGeoResolver(lookup CountryLookup, homeRegions []string) *GeoResolver {
 }
 
 // Enabled GeoIP 数据源是否可用（不可用时一切判定为 UNKNOWN，由调用方先行检查）。
-func (r *GeoResolver) Enabled() bool { return r != nil && r.lookup != nil }
+func (r *GeoResolver) Enabled() bool { return r != nil && IsLookupEnabled(r.lookup) }
 
 // HomeRegions 本土地区集合（排序输出，结果确定）。
 func (r *GeoResolver) HomeRegions() []string {
@@ -87,7 +87,7 @@ func ParseHomeRegions(raw string) []string {
 // error 仅来自底层数据损坏（系统性故障，调用方应中止并上抛，不逐条吞掉）。
 // 判定矩阵见 resolver_test.go。
 func (r *GeoResolver) Classify(ipRaw string) (Scope, string, error) {
-	if r == nil || r.lookup == nil {
+	if r == nil || !IsLookupEnabled(r.lookup) {
 		return ScopeUnknown, "", nil
 	}
 	addr, err := netip.ParseAddr(strings.TrimSpace(ipRaw))

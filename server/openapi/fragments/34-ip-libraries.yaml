@@ -1,0 +1,985 @@
+# IP 库与威胁情报（GeoIP 归属地库 + 威胁情报 IP 黑名单库 + 统一出站/代理设置；迁移 000256）
+# 权限种子（遵循 000232 三权边界）：
+#   - geoip.read / threat_intel.read（SECURITY_ADMIN / AUDIT_ADMIN）
+#   - geoip.manage / threat_intel.manage（SECURITY_ADMIN）
+# 注：POST /threat-intel/import 已收录于 04-access-control.yaml，此处不重复声明。
+paths:
+  /ip-libraries/outbound-settings:
+    get:
+      operationId: ipLibrariesGetOutboundSettings
+      tags: [ip-libraries]
+      summary: 查询 IP 库共享出站与代理设置
+      description: 返回 IP 库在线更新允许的内网镜像白名单、明文 HTTP 开关、正向代理地址、超时时间及代理凭据存在标记（绝不回显代理密码明文或密文）。权限：`geoip.read` 或 `threat_intel.read`
+      responses:
+        '200':
+          description: 当前共享出站设置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IpLibOutboundSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      operationId: ipLibrariesUpdateOutboundSettings
+      tags: [ip-libraries]
+      summary: 更新 IP 库共享出站与代理设置
+      description: 校验并保存内网镜像 CIDR/主机名白名单、明文 HTTP 镜像开关、正向代理地址、超时时间（15–600 秒）以及只写代理认证凭据（经系统主密钥加密落库，审计摘要脱敏）。权限：`geoip.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IpLibUpdateOutboundSettingsRequest'
+      responses:
+        '200':
+          description: 更新后的脱敏出站设置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IpLibOutboundSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /geoip/status:
+    get:
+      operationId: geoipGetStatus
+      tags: [ip-libraries]
+      summary: 查询 GeoIP 归属地库状态与槽位摘要
+      description: 返回融合引擎启用态、当前加载数据源、目录 revision、定时调度与 MaxMind 凭据脱敏摘要、5 个槽位磁盘与配置详情、HA 备节点一致性视图及官方预置源清单。权限：`geoip.read`
+      responses:
+        '200':
+          description: GeoIP 引擎与槽位状态快照
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoIPStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /geoip/settings:
+    put:
+      operationId: geoipUpdateSettings
+      tags: [ip-libraries]
+      summary: 更新 GeoIP 定时更新、MaxMind 凭据与槽位来源配置
+      description: 更新在线定时更新总开关、5 段 Cron 表达式、HA 自动同步开关、MaxMind Account ID、只写加密 MaxMind License Key（支持清除），以及按槽位配置启用状态、来源模式（OFFLINE_ONLY/OFFICIAL/CUSTOM_URL）、官方预置源和经 SSRF 校验的自定义镜像 URL。权限：`geoip.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeoIPUpdateSettingsRequest'
+      responses:
+        '200':
+          description: 更新后的 GeoIP 完整状态快照
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoIPStatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /geoip/sync:
+    post:
+      operationId: geoipTriggerSync
+      tags: [ip-libraries]
+      summary: 立即在线同步 GeoIP 归属地库
+      description: 手动触发单个槽位或全部已启用非离线槽位（`slot` 为空）的在线下载、验真、零重启热重载及 HA 备节点推送；单源上游拉取失败在 `runs` 中记录 `FAILED` 并告警。权限：`geoip.manage`
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeoIPSlotActionRequest'
+      responses:
+        '200':
+          description: 同步执行结果与流水摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoIPSyncActionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /geoip/upload:
+    post:
+      operationId: geoipUploadSlot
+      tags: [ip-libraries]
+      summary: 离线上传 GeoIP 数据文件并零重启热重载
+      description: 以 `multipart/form-data` 流式上传 `.xdb` / `.mmdb` / `.gz` / `.tar.gz`（MaxMind GeoLite2），经解压限流、路径穿越检查、可选 SHA-256 校验与探针查询验真后原子替换活跃槽位、备份旧版本并按配置推送至 HA 备节点。权限：`geoip.manage`
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [slot, file]
+              properties:
+                slot:
+                  type: string
+                  enum: [ip2region_v4, ip2region_v6, dbip_city, city_ipv6, country]
+                  description: 目标槽位标识
+                file:
+                  type: string
+                  format: binary
+                  description: GeoIP 数据文件（支持原始 .xdb/.mmdb、.gz 或 MaxMind .tar.gz）
+                expected_sha256:
+                  type: string
+                  description: 可选 64 位十六进制 SHA-256 摘要（原始文件或解压后库文件任一匹配即通过）
+      responses:
+        '200':
+          description: 安装与热加载结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoIPInstallResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          description: 上传或解压后文件超过槽位体积上限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /geoip/rollback:
+    post:
+      operationId: geoipRollbackSlot
+      tags: [ip-libraries]
+      summary: 回滚 GeoIP 槽位至历史备份版本
+      description: 校验 `backup_id` 后重新验真备份文件、备份当前活跃版本并原子切换，随后触发零重启热重载与可选 HA 推送。权限：`geoip.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeoIPRollbackRequest'
+      responses:
+        '200':
+          description: 回滚与热加载结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoIPInstallResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /geoip/ha-resync:
+    post:
+      operationId: geoipTriggerHAResync
+      tags: [ip-libraries]
+      summary: 将主节点 GeoIP 运行期槽位重新同步至 HA 备节点
+      description: 将指定槽位或主节点运行期目录中全部活跃槽位经 `hasyncd` HMAC 通道重新推送至所有启用的 HA 备节点，用于主备版本漂移恢复。权限：`geoip.manage`
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeoIPSlotActionRequest'
+      responses:
+        '200':
+          description: HA 重同步执行结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoIPSyncActionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /geoip/runs:
+    get:
+      operationId: geoipListSyncRuns
+      tags: [ip-libraries]
+      summary: 分页查询 GeoIP 更新与同步历史
+      description: 按槽位、触发方式与执行状态分页查询 GeoIP 在线同步、离线上传、回滚与 HA 重同步流水。权限：`geoip.read`
+      parameters:
+        - name: slot
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [ip2region_v4, ip2region_v6, dbip_city, city_ipv6, country]
+          description: 按槽位过滤
+        - name: trigger_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [SCHEDULED, MANUAL, OFFLINE_UPLOAD, ROLLBACK, HA_RESYNC]
+          description: 按触发方式过滤
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [SUCCESS, SKIPPED_UNCHANGED, PARTIAL_HA_FAILED, FAILED]
+          description: 按执行结果状态过滤
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+          description: 页码（默认 1）
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+          description: 每页条数（默认 20，上限 100）
+      responses:
+        '200':
+          description: GeoIP 同步历史分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoIPSyncRunListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /threat-intel/feeds:
+    get:
+      operationId: threatIntelListFeeds
+      tags: [ip-libraries]
+      summary: 查询威胁情报订阅源列表与全局状态
+      description: 返回威胁情报全局定时与熔断设置、启用与在册黑名单统计摘要、内置 CC0 官方预置源（Feodo / SSLBL）以及全部订阅源配置与运行态。权限：`threat_intel.read`
+      responses:
+        '200':
+          description: 威胁情报订阅源总览与列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThreatIntelFeedsListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: threatIntelCreateFeed
+      tags: [ip-libraries]
+      summary: 新建自定义威胁情报 IP 黑名单订阅源
+      description: 新增自定义订阅源（支持 OFFLINE_ONLY / OFFICIAL / CUSTOM_URL，CUSTOM_URL 经保存期 SSRF 校验，可选开启严格限制公网 /16–/32 的 CIDR 解析与空集/骤降护栏）。权限：`threat_intel.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ThreatIntelFeedUpsertRequest'
+      responses:
+        '201':
+          description: 新建订阅源详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThreatIntelFeed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /threat-intel/settings:
+    put:
+      operationId: threatIntelUpdateSettings
+      tags: [ip-libraries]
+      summary: 更新威胁情报全局定时与熔断设置
+      description: 更新威胁情报在线定时更新总开关及连续失败自动熔断阈值（1–20 次）。权限：`threat_intel.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ThreatIntelSettings'
+      responses:
+        '200':
+          description: 更新后的全局设置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThreatIntelSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /threat-intel/feeds/{id}:
+    put:
+      operationId: threatIntelUpdateFeed
+      tags: [ip-libraries]
+      summary: 修改威胁情报订阅源配置
+      description: 更新指定订阅源的启停、来源模式、自定义 URL（经 SSRF 校验）、格式、CIDR 开关、TTL、Cron 及护栏参数；内置预置源禁止篡改 `feed_key` 与 `is_builtin`。权限：`threat_intel.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 订阅源 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ThreatIntelFeedUpsertRequest'
+      responses:
+        '200':
+          description: 更新后的订阅源详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThreatIntelFeed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: threatIntelDeleteFeed
+      tags: [ip-libraries]
+      summary: 删除自定义威胁情报订阅源
+      description: 删除非内置自定义订阅源（内置预置源返回 400 拒绝删除）。权限：`threat_intel.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 订阅源 ID
+      responses:
+        '200':
+          description: 删除结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThreatIntelDeleteFeedResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /threat-intel/feeds/{id}/sync:
+    post:
+      operationId: threatIntelSyncFeed
+      tags: [ip-libraries]
+      summary: 手动触发单个威胁情报订阅源拉取与对账
+      description: 执行条件请求拉取、解析、空集/骤降护栏检查、黑名单对账与网关配置发布；触发护栏时返回 `guard_triggered=true`，管理员二次确认后可传 `force_ignore_guard=true` 强制同步；手动同步成功后自动复位熔断态。权限：`threat_intel.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 订阅源 ID
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ThreatIntelSyncFeedRequest'
+      responses:
+        '200':
+          description: 同步与对账结果（含护栏与熔断标记）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThreatIntelSyncFeedResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /threat-intel/runs:
+    get:
+      operationId: threatIntelListSyncRuns
+      tags: [ip-libraries]
+      summary: 分页查询威胁情报同步与离线导入历史
+      description: 按订阅源 `feed_key`、触发方式与状态分页查询在线定时拉取、手动同步及离线快照导入对账流水。权限：`threat_intel.read`
+      parameters:
+        - name: feed_key
+          in: query
+          required: false
+          schema: { type: string }
+          description: 按订阅源标识过滤
+        - name: trigger_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [SCHEDULED, MANUAL, OFFLINE_IMPORT]
+          description: 按触发方式过滤
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [SUCCESS, SKIPPED_NOT_MODIFIED, GUARD_ABORTED, FAILED]
+          description: 按执行状态过滤
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+          description: 页码（默认 1）
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+          description: 每页条数（默认 20，上限 100）
+      responses:
+        '200':
+          description: 威胁情报同步流水分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThreatIntelSyncRunListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  schemas:
+    IpLibOutboundSettings:
+      type: object
+      required:
+        - outbound_allowlist
+        - allow_insecure_http_mirror
+        - proxy_url
+        - has_proxy_auth
+        - http_timeout_seconds
+      properties:
+        outbound_allowlist:
+          type: string
+          description: 逗号分隔的内网镜像 CIDR 或精确主机名白名单
+        allow_insecure_http_mirror:
+          type: boolean
+          description: 是否允许已登记白名单的内网镜像源使用明文 HTTP（公网目标始终强制 HTTPS）
+        proxy_url:
+          type: string
+          description: 可选正向代理地址（仅 http/https，不含内嵌凭据）
+        has_proxy_auth:
+          type: boolean
+          description: 是否已配置加密存储的正向代理认证凭据（只写不回显）
+        http_timeout_seconds:
+          type: integer
+          minimum: 15
+          maximum: 600
+          description: 单次在线下载请求超时时间（秒）
+
+    IpLibUpdateOutboundSettingsRequest:
+      type: object
+      properties:
+        outbound_allowlist:
+          type: string
+          description: 逗号分隔的内网镜像 CIDR 或精确主机名白名单
+        allow_insecure_http_mirror:
+          type: boolean
+          description: 是否允许已登记白名单的内网镜像使用明文 HTTP
+        proxy_url:
+          type: string
+          description: 可选正向代理地址（置空表示直连）
+        proxy_auth:
+          type: string
+          description: 只写正向代理认证凭据（user:pass 格式）；留空保留既有凭据
+        clear_proxy_auth:
+          type: boolean
+          description: 为 true 时清除已保存的正向代理认证凭据
+        http_timeout_seconds:
+          type: integer
+          minimum: 15
+          maximum: 600
+          description: 单次在线下载超时时间（秒，默认 120）
+
+    GeoIPBackupEntry:
+      type: object
+      required: [backup_id, filename, sha256, size_bytes, created_at]
+      properties:
+        backup_id: { type: string, description: 备份标识（unixts-sha256_12.ext） }
+        filename: { type: string, description: 规范文件名 }
+        sha256: { type: string, description: 文件 SHA-256 十六进制摘要 }
+        size_bytes: { type: integer, format: int64, description: 文件大小（字节） }
+        created_at: { type: string, format: date-time, description: 备份创建时间 }
+
+    GeoIPSlotStatusView:
+      type: object
+      required:
+        - slot
+        - display_name
+        - canonical_file
+        - format
+        - max_bytes
+        - enabled
+        - source_mode
+        - official_preset
+        - custom_url
+        - active_origin
+        - active_filename
+        - active_source_type
+        - sha256
+        - size_bytes
+        - last_status
+        - last_error
+        - backups
+      properties:
+        slot:
+          type: string
+          enum: [ip2region_v4, ip2region_v6, dbip_city, city_ipv6, country]
+        display_name: { type: string }
+        canonical_file: { type: string }
+        format: { type: string, enum: [xdb, mmdb] }
+        max_bytes: { type: integer, format: int64, description: 解压后允许最大体积（字节） }
+        enabled: { type: boolean }
+        source_mode: { type: string, enum: [OFFLINE_ONLY, OFFICIAL, CUSTOM_URL] }
+        official_preset: { type: string }
+        custom_url: { type: string }
+        active_origin: { type: string, enum: [runtime, builtin, missing] }
+        active_filename: { type: string }
+        active_source_type: { type: string, enum: [BUILTIN, ONLINE, OFFLINE, HA_SYNC, ROLLBACK] }
+        sha256: { type: string }
+        size_bytes: { type: integer, format: int64 }
+        updated_at: { type: string, format: date-time, nullable: true }
+        last_status: { type: string, enum: [IDLE, SUCCESS, SKIPPED_UNCHANGED, PARTIAL_HA_FAILED, FAILED] }
+        last_error: { type: string }
+        backups:
+          type: array
+          items: { $ref: '#/components/schemas/GeoIPBackupEntry' }
+
+    GeoIPScheduleSummary:
+      type: object
+      required:
+        - auto_update_enabled
+        - schedule_cron
+        - ha_sync_enabled
+        - maxmind_account_id
+        - has_maxmind_license_key
+      properties:
+        auto_update_enabled: { type: boolean, description: 在线定时更新总开关 }
+        schedule_cron: { type: string, description: 5 段 Cron 表达式 }
+        ha_sync_enabled: { type: boolean, description: 更新/上传/回滚后是否自动同步至 HA 备节点 }
+        maxmind_account_id: { type: string, description: MaxMind GeoLite2 Account ID }
+        has_maxmind_license_key: { type: boolean, description: 是否已配置加密的 MaxMind License Key（绝不回显原文） }
+
+    GeoIPHANodeSlotDigest:
+      type: object
+      required: [filename, sha256, size_bytes]
+      properties:
+        filename: { type: string }
+        sha256: { type: string }
+        size_bytes: { type: integer, format: int64 }
+
+    GeoIPHANodeStatus:
+      type: object
+      required: [node_name, reachable, geoip_ready, consistent, revision, slots]
+      properties:
+        node_id: { type: string }
+        node_name: { type: string }
+        reachable: { type: boolean }
+        geoip_ready: { type: boolean }
+        consistent: { type: boolean, description: 与主节点运行期槽位 SHA-256 是否完全一致 }
+        revision: { type: string }
+        updated_at: { type: string, format: date-time, nullable: true }
+        slots:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/GeoIPHANodeSlotDigest'
+        error: { type: string }
+
+    GeoIPPresetInfo:
+      type: object
+      required: [id, slot, name, license, url_template, requires_maxmind_auth, monthly_fallback]
+      properties:
+        id: { type: string }
+        slot: { type: string }
+        name: { type: string }
+        license: { type: string }
+        url_template: { type: string }
+        requires_maxmind_auth: { type: boolean }
+        monthly_fallback: { type: boolean }
+
+    GeoIPStatusResponse:
+      type: object
+      required: [geo_enabled, sources, revision, schedule, slots, ha_nodes, presets]
+      properties:
+        geo_enabled: { type: boolean }
+        sources:
+          type: array
+          items: { type: string }
+        loaded_at: { type: string, format: date-time, nullable: true }
+        revision: { type: string }
+        schedule: { $ref: '#/components/schemas/GeoIPScheduleSummary' }
+        slots:
+          type: array
+          items: { $ref: '#/components/schemas/GeoIPSlotStatusView' }
+        ha_nodes:
+          type: array
+          items: { $ref: '#/components/schemas/GeoIPHANodeStatus' }
+        presets:
+          type: array
+          items: { $ref: '#/components/schemas/GeoIPPresetInfo' }
+
+    GeoIPSlotSettingsPatch:
+      type: object
+      required: [slot, enabled, source_mode]
+      properties:
+        slot:
+          type: string
+          enum: [ip2region_v4, ip2region_v6, dbip_city, city_ipv6, country]
+        enabled: { type: boolean }
+        source_mode: { type: string, enum: [OFFLINE_ONLY, OFFICIAL, CUSTOM_URL] }
+        official_preset: { type: string }
+        custom_url: { type: string }
+
+    GeoIPUpdateSettingsRequest:
+      type: object
+      properties:
+        auto_update_enabled: { type: boolean }
+        schedule_cron: { type: string }
+        ha_sync_enabled: { type: boolean }
+        maxmind_account_id: { type: string }
+        maxmind_license_key: { type: string, description: 只写 MaxMind License Key；留空不修改已有密钥 }
+        clear_maxmind_license_key: { type: boolean, description: 为 true 时清除已保存的 MaxMind License Key }
+        slots:
+          type: array
+          items: { $ref: '#/components/schemas/GeoIPSlotSettingsPatch' }
+
+    GeoIPSlotActionRequest:
+      type: object
+      properties:
+        slot:
+          type: string
+          description: 目标槽位标识；留空表示全部已启用/活跃槽位
+
+    GeoIPRollbackRequest:
+      type: object
+      required: [slot, backup_id]
+      properties:
+        slot:
+          type: string
+          enum: [ip2region_v4, ip2region_v6, dbip_city, city_ipv6, country]
+        backup_id: { type: string }
+
+    GeoIPHANodeSyncResult:
+      type: object
+      required: [node_name, status]
+      properties:
+        node_id: { type: string }
+        node_name: { type: string }
+        status: { type: string, enum: [SUCCESS, FAILED, SKIPPED] }
+        sha256: { type: string }
+        error: { type: string }
+
+    GeoIPInstallResult:
+      type: object
+      required: [slot, filename, previous_sha256, new_sha256, size_bytes, revision, unchanged, loaded_sources]
+      properties:
+        slot: { type: string }
+        filename: { type: string }
+        previous_sha256: { type: string }
+        new_sha256: { type: string }
+        size_bytes: { type: integer, format: int64 }
+        revision: { type: string }
+        unchanged: { type: boolean }
+        loaded_sources:
+          type: array
+          items: { type: string }
+        ha_results:
+          type: array
+          items: { $ref: '#/components/schemas/GeoIPHANodeSyncResult' }
+
+    GeoIPSyncRun:
+      type: object
+      required:
+        - id
+        - slot
+        - trigger_type
+        - status
+        - source_label
+        - previous_sha256
+        - new_sha256
+        - file_size_bytes
+        - ha_results
+        - error_message
+        - started_at
+        - finished_at
+      properties:
+        id: { type: string, format: uuid }
+        slot: { type: string }
+        trigger_type: { type: string, enum: [SCHEDULED, MANUAL, OFFLINE_UPLOAD, ROLLBACK, HA_RESYNC] }
+        status: { type: string, enum: [SUCCESS, SKIPPED_UNCHANGED, PARTIAL_HA_FAILED, FAILED] }
+        source_label: { type: string }
+        previous_sha256: { type: string }
+        new_sha256: { type: string }
+        file_size_bytes: { type: integer, format: int64 }
+        ha_results:
+          type: array
+          items: { $ref: '#/components/schemas/GeoIPHANodeSyncResult' }
+        error_message: { type: string }
+        operator_id: { type: string, format: uuid, nullable: true }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+
+    GeoIPSyncActionResponse:
+      type: object
+      required: [runs, succeeded, skipped, partial_ha_failed, failed]
+      properties:
+        runs:
+          type: array
+          items: { $ref: '#/components/schemas/GeoIPSyncRun' }
+        succeeded: { type: integer }
+        skipped: { type: integer }
+        partial_ha_failed: { type: integer }
+        failed: { type: integer }
+
+    GeoIPSyncRunListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/GeoIPSyncRun' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    ThreatIntelSettings:
+      type: object
+      properties:
+        auto_update_enabled: { type: boolean, description: 威胁情报在线定时拉取总开关 }
+        circuit_threshold:
+          type: integer
+          minimum: 1
+          maximum: 20
+          description: 单源连续失败触发自动熔断的阈值次数
+
+    ThreatIntelFeedsSummary:
+      type: object
+      required: [enabled_count, total_active_rules, circuit_open_count]
+      properties:
+        enabled_count: { type: integer }
+        total_active_rules: { type: integer }
+        circuit_open_count: { type: integer }
+
+    ThreatIntelOfficialPreset:
+      type: object
+      required: [key, name, description, url, format, license, default_ttl_days, default_cron, allow_cidr]
+      properties:
+        key: { type: string, enum: [feodo, sslbl] }
+        name: { type: string }
+        description: { type: string }
+        url: { type: string }
+        format: { type: string, enum: [text, csv] }
+        license: { type: string }
+        default_ttl_days: { type: integer }
+        default_cron: { type: string }
+        allow_cidr: { type: boolean }
+
+    ThreatIntelFeed:
+      type: object
+      required:
+        - id
+        - feed_key
+        - name
+        - description
+        - is_builtin
+        - enabled
+        - source_mode
+        - official_preset
+        - custom_url
+        - format
+        - allow_cidr
+        - ttl_days
+        - schedule_cron
+        - min_entries_guard
+        - max_drop_ratio
+        - active_rule_count
+        - consecutive_failures
+        - circuit_open
+        - last_status
+        - last_error
+        - created_at
+        - updated_at
+      properties:
+        id: { type: string, format: uuid }
+        feed_key: { type: string }
+        name: { type: string }
+        description: { type: string }
+        is_builtin: { type: boolean }
+        enabled: { type: boolean }
+        source_mode: { type: string, enum: [OFFLINE_ONLY, OFFICIAL, CUSTOM_URL] }
+        official_preset: { type: string }
+        custom_url: { type: string }
+        format: { type: string, enum: [text, csv] }
+        allow_cidr: { type: boolean }
+        ttl_days: { type: integer, minimum: 0, maximum: 3650 }
+        schedule_cron: { type: string }
+        min_entries_guard: { type: boolean }
+        max_drop_ratio: { type: number, minimum: 0, maximum: 1 }
+        etag: { type: string }
+        last_modified: { type: string }
+        last_content_sha256: { type: string }
+        active_rule_count: { type: integer }
+        consecutive_failures: { type: integer }
+        circuit_open: { type: boolean }
+        last_sync_at: { type: string, format: date-time, nullable: true }
+        last_status: { type: string, enum: [IDLE, SUCCESS, SKIPPED_NOT_MODIFIED, GUARD_ABORTED, FAILED] }
+        last_error: { type: string }
+        created_by: { type: string, format: uuid, nullable: true }
+        updated_by: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ThreatIntelFeedsListResponse:
+      type: object
+      required: [settings, summary, presets, feeds]
+      properties:
+        settings: { $ref: '#/components/schemas/ThreatIntelSettings' }
+        summary: { $ref: '#/components/schemas/ThreatIntelFeedsSummary' }
+        presets:
+          type: array
+          items: { $ref: '#/components/schemas/ThreatIntelOfficialPreset' }
+        feeds:
+          type: array
+          items: { $ref: '#/components/schemas/ThreatIntelFeed' }
+
+    ThreatIntelFeedUpsertRequest:
+      type: object
+      properties:
+        feed_key: { type: string, description: 订阅源唯一键（新增必填，内置源修改不可变） }
+        name: { type: string }
+        description: { type: string }
+        enabled: { type: boolean }
+        source_mode: { type: string, enum: [OFFLINE_ONLY, OFFICIAL, CUSTOM_URL] }
+        official_preset: { type: string }
+        custom_url: { type: string }
+        format: { type: string, enum: [text, csv] }
+        allow_cidr: { type: boolean }
+        ttl_days: { type: integer, minimum: 0, maximum: 3650 }
+        schedule_cron: { type: string }
+        min_entries_guard: { type: boolean }
+        max_drop_ratio: { type: number, minimum: 0, maximum: 1 }
+
+    ThreatIntelDeleteFeedResponse:
+      type: object
+      required: [deleted, id, feed_key]
+      properties:
+        deleted: { type: boolean }
+        id: { type: string, format: uuid }
+        feed_key: { type: string }
+
+    ThreatIntelSyncFeedRequest:
+      type: object
+      properties:
+        force_ignore_guard:
+          type: boolean
+          default: false
+          description: 为 true 时忽略空集与骤降保护，强制执行对账
+
+    ThreatIntelSyncRun:
+      type: object
+      required:
+        - id
+        - feed_key
+        - trigger_type
+        - batch_id
+        - status
+        - total_parsed
+        - added
+        - refreshed
+        - expired
+        - skipped_conflict
+        - invalid_count
+        - published
+        - error_message
+        - started_at
+        - finished_at
+      properties:
+        id: { type: string, format: uuid }
+        feed_key: { type: string }
+        trigger_type: { type: string, enum: [SCHEDULED, MANUAL, OFFLINE_IMPORT] }
+        batch_id: { type: string }
+        status: { type: string, enum: [SUCCESS, SKIPPED_NOT_MODIFIED, GUARD_ABORTED, FAILED] }
+        total_parsed: { type: integer }
+        added: { type: integer }
+        refreshed: { type: integer }
+        expired: { type: integer }
+        skipped_conflict: { type: integer }
+        invalid_count: { type: integer }
+        published: { type: boolean }
+        error_message: { type: string }
+        operator_id: { type: string, format: uuid, nullable: true }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+
+    ThreatIntelSyncFeedResponse:
+      type: object
+      required: [run, feed, guard_triggered, circuit_opened, changed_rules]
+      properties:
+        run: { $ref: '#/components/schemas/ThreatIntelSyncRun' }
+        feed: { $ref: '#/components/schemas/ThreatIntelFeed' }
+        guard_triggered: { type: boolean }
+        guard_reason: { type: string }
+        circuit_opened: { type: boolean }
+        changed_rules: { type: integer }
+
+    ThreatIntelSyncRunListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ThreatIntelSyncRun' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }

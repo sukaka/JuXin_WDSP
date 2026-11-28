@@ -88,6 +88,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/hagroups"
 	"github.com/jiuzhang-waf/server/internal/hastatus"
 	"github.com/jiuzhang-waf/server/internal/ingest"
+	"github.com/jiuzhang-waf/server/internal/iplibhttp"
 	"github.com/jiuzhang-waf/server/internal/jwttrust"
 	"github.com/jiuzhang-waf/server/internal/l7rules"
 	"github.com/jiuzhang-waf/server/internal/license"
@@ -172,8 +173,12 @@ type App struct {
 	authzPublish apiauthz.PublishFunc
 	// 阶段8 / WDSP：API 主动扫描工人（仅 API 动态防护开启时装配，StartStage6Workers 内启动）
 	scanWorker *apiscan.Worker
-	// 统一 GeoIP 引擎（ip2region + DB-IP/MMDB；无可用离线库时 nil 降级，看板 geo_enabled=false）
+	// 统一 GeoIP 引擎（ip2region + DB-IP/MMDB；支持运行期零重启热重载与 15s 目录监听）
+	geoEngine    *apigeo.ReloadableEngine
 	apiGeoLookup apigeo.CountryLookup
+	// IP 库定时更新调度器（GeoIP + 威胁情报多源；均默认关闭、StartStage6Workers 内启动）
+	geoSyncer         *apigeo.GeoSyncer
+	threatIntelSyncer *threatintel.Syncer
 	// 阶段8 / WDSP：AI 定时运营调度器（仅 API 动态防护开启时装配，StartStage6Workers 内启动）
 	aiOpsSweeper *apiops.Sweeper
 	// 阶段8 / WDSP：多节点版本校验聚合器（§201 遥测路径，仅 API 动态防护开启时装配）
@@ -378,13 +383,15 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	vulnRefHandler := vulnrefs.NewHandler(vulnrefs.NewStore(db), auditSvc)
 	ruleOverrideHandler := ruleoverrides.NewHandler(ruleOverrideStore, auditSvc)
 	exceptionHandler := exceptions.NewHandler(exceptionStore, auditSvc)
-	// 统一离线 GeoIP 引擎（ip2region + DB-IP/MMDB）：进程级单实例常驻内存，供安全事件、访问日志、
-	// 报告、攻击大屏批量接口、API 数据出境与来源统计共用；无可用库文件时保持降级不阻断启动。
-	geoEngine := apigeo.OpenEngine(apigeo.DefaultSearchDirs(cfg.Gateway.DataDir)...)
-	var sharedCountryGeo apigeo.CountryLookup
-	if geoEngine.Enabled() {
-		sharedCountryGeo = geoEngine
-	}
+	// 统一离线 GeoIP 引擎（ip2region + DB-IP/MaxMind MMDB）：支持零重启原子热重载与目录监听，
+	// 供安全事件、访问日志、报告、攻击大屏批量接口、API 数据出境与来源统计共用；
+	// 无可用库文件时保持降级（Enabled()==false），后续离线上传或定时同步后即时激活。
+	geoSearchDirs := apigeo.DefaultSearchDirs(cfg.Gateway.DataDir)
+	geoEngine := apigeo.NewReloadableEngine(geoSearchDirs...)
+	geoSlotManager := apigeo.NewSlotManager(filepath.Join(cfg.Gateway.DataDir, "geoip"), geoEngine, geoSearchDirs...)
+	geoManageStore := apigeo.NewPGManageStore(db)
+	geoManageHandler := apigeo.NewManageHandler(geoSlotManager, geoManageStore, settingsSvc, auditSvc)
+	var sharedCountryGeo apigeo.CountryLookup = geoEngine
 
 	eventStore := securityevents.NewStore(db)
 	eventExceptionAdapter := &eventExceptionCreator{store: exceptionStore, events: eventStore}
@@ -449,7 +456,9 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	accessRuleHandler.SetURLWhitelistChecker(urlWhitelistCheckerAdapter{store: urlWhitelistStore})
 	urlWhitelistHandler := urlwhitelists.NewHandler(urlWhitelistStore, auditSvc)
 	// 威胁情报导入（WDSP P2-C1）：Feodo C2 情报对账写入 IP 黑名单（复用 access_control 域）
-	threatIntelHandler := threatintel.NewHandler(threatintel.NewService(db, protectedStore), auditSvc)
+	threatIntelSvc := threatintel.NewService(db, protectedStore)
+	threatIntelHandler := threatintel.NewHandler(threatIntelSvc, auditSvc)
+	var threatIntelPublish threatintel.PublishFunc
 	rateLimitHandler := ratelimitpolicies.NewHandler(rateLimitStore, auditSvc)
 	tempBlockHandler := temporaryblocks.NewHandler(tempBlockStore, auditSvc)
 	tempBlockHandler.SetReleaseEventEmitter(func(ctx context.Context, b *temporaryblocks.Block) {
@@ -726,12 +735,13 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 				slog.Error("bot policy publish trigger failed", "error", err)
 			}
 		})
-		// 威胁情报导入生效集变化触发网关配置发布（IP 黑名单段热生效；口径同上）
-		threatIntelHandler.SetPublishFunc(func(ctx context.Context, uid uuid.UUID, rid string) {
+		// 威胁情报导入与定时同步生效集变化触发网关配置发布（IP 黑名单段热生效；口径同上）
+		threatIntelPublish = func(ctx context.Context, uid uuid.UUID, rid string) {
 			if _, err := publisher.Publish(ctx, gatewayconfig.PublishInput{RequestedBy: uid, RequestID: rid}); err != nil {
 				slog.Error("threat intel publish trigger failed", "error", err)
 			}
-		})
+		}
+		threatIntelHandler.SetPublishFunc(threatIntelPublish)
 		// 离线授权：发布通道实时读取授权内存状态——无效授权强制纯透传
 		// （Guard=nil、全部应用 BYPASS）；有效授权注入 max_qps 全局限速配额
 		publisher.SetLicenseStateProvider(func(context.Context) (bool, int64) {
@@ -1611,6 +1621,9 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 
 	// 统一 GeoIP 归属地单条 / 批量查询（ip2region + DB-IP/MMDB；大屏与控制台共用，要求登录态）
 	apigeo.RegisterLookupRoutes(mux, authz, apigeo.NewLookupHandler(geoEngine))
+	// GeoIP 归属地库管理面（阶段 1：状态查询、离线上传热加载、历史回滚与流水查询）
+	apigeo.RegisterManageRoutes(mux, authz, geoManageHandler)
+	a.geoEngine = geoEngine
 
 	var pcapService *requestpcap.Service
 	if cfg.RequestPCAP.Enabled() {
@@ -1908,6 +1921,51 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		})
 	}
 
+	// IP 库（GeoIP 归属地库 + 威胁情报多源黑名单）共享受控出站下载器、定时同步器与管理面路由（迁移 000256；默认离线零外连）
+	var ipLibCipher iplibhttp.SecretCipher
+	var geoCipher apigeo.SecretCipher
+	if encSvc != nil {
+		ipLibCipher = encSvc
+		geoCipher = encSvc
+	}
+	var ipLibAlertNotifier failureAlertNotifier
+	if alertEngine != nil {
+		ipLibAlertNotifier = alertEngine
+	}
+	ipLibAlertFn := makeIPLibAlertFunc(ipLibAlertNotifier)
+
+	ipLibDownloader := iplibhttp.NewDownloader(settingsSvc, ipLibCipher)
+	iplibhttp.RegisterRoutes(mux, authz, iplibhttp.NewHandler(settingsSvc, ipLibCipher, auditSvc))
+
+	geoSyncer := apigeo.NewGeoSyncer(geoSlotManager, geoManageStore, settingsSvc, ipLibDownloader, geoCipher).
+		SetAlertFunc(ipLibAlertFn)
+	if nodeSyncMgr != nil {
+		geoSyncer.SetHAPusher(haGeoPusherAdapter{mgr: nodeSyncMgr})
+	}
+	geoManageHandler.SetSyncer(geoSyncer)
+	if geoCipher != nil {
+		geoManageHandler.SetCipher(geoCipher)
+	}
+	a.geoSyncer = geoSyncer
+
+	threatIntelFeedStore := threatintel.NewPGFeedStore(db)
+	threatIntelHandler.SetFeedStore(threatIntelFeedStore)
+	threatIntelSyncer := threatintel.NewSyncer(
+		threatIntelFeedStore,
+		threatIntelSvc,
+		threatIntelDownloaderAdapter{fetcher: ipLibDownloader},
+		settingsSvc,
+	).SetPublishFunc(threatIntelPublish).SetAlertFunc(ipLibAlertFn)
+	threatIntelFeedsHandler := threatintel.NewFeedsHandler(
+		threatIntelFeedStore,
+		threatIntelSyncer,
+		settingsSvc,
+		ipLibDownloader.ValidateTargetURL,
+		auditSvc,
+	)
+	threatintel.RegisterFeedRoutes(mux, authz, threatIntelFeedsHandler)
+	a.threatIntelSyncer = threatIntelSyncer
+
 	// ---- 阶段8 / WDSP：API 动态防护（任务书 /api/v1/api-security 命名空间）----
 	if cfg.Product.APIDynamicProtectionEnabled() {
 		authzStore := apiauthz.NewStore(db)
@@ -2076,13 +2134,11 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 			apiscan.NewHandler(scanStore, auditSvc).
 				SetController(a.scanWorker).
 				SetRetest(apiscan.NewBuiltinEngine(nil), scanSigner, apiscan.NewWeaknessRetestWriter(apiweakness.NewStore(db))))
-		// 数据出境（P1-03）：复用进程级统一 GeoIP 引擎；数据文件缺失时 nil 降级（Sweep 空转、看板 geo_enabled=false）
+		// 数据出境（P1-03）：复用进程级可热重载 GeoIP 引擎；无可用库时动态降级（Sweep 空转、看板 geo_enabled=false），热加载后自动激活
 		a.apiGeoLookup = sharedCountryGeo
 		apigeo.RegisterRoutes(mux, authz, apigeo.NewHandler(apigeo.NewStore(db), a.apiGeoLookup, settingsSvc))
-		// 态势访问来源 Geo 维度（无离线库时 a.apiGeoLookup 为 nil，不注入保持降级）
-		if a.apiGeoLookup != nil {
-			apiSecurityHandler.SetGeoLookup(a.apiGeoLookup)
-		}
+		// 态势访问来源 Geo 维度（注入动态可热重载引擎，实时感知 Enabled 状态）
+		apiSecurityHandler.SetGeoLookup(a.apiGeoLookup)
 		// API 网络暴露面判定引擎（迁移 000190）：读复用 api_asset.read、重评复用
 		// api_asset.edit（零新增权限点）；公网 DNS 视角判定器按 settings 配置服务器
 		// 拨号；周期评估由 cmd/api/main.go sweeper 群启动；采集钩子注入见
@@ -2973,6 +3029,18 @@ func (a *App) StartStage6Workers(ctx context.Context) {
 				}
 			}
 		}()
+	}
+	// GeoIP 归属地库目录监听（15s 检测 .revision.json 与槽位文件变化，支持 HA 备节点与手工落盘无感热重载）
+	if a.geoEngine != nil {
+		go a.geoEngine.Watch(ctx, apigeo.DefaultWatchInterval)
+	}
+	// GeoIP 归属地库在线定时更新调度器（默认关闭，纯离线零外连）
+	if a.geoSyncer != nil {
+		go a.geoSyncer.Run(ctx)
+	}
+	// 威胁情报 IP 黑名单多源定时调度器（默认关闭，纯离线零外连；单轮变更合并触发一次网关发布）
+	if a.threatIntelSyncer != nil {
+		go a.threatIntelSyncer.Run(ctx)
 	}
 	// 离线授权周期复核（60s：到期/指纹变化翻转 → 告警 + 触发整站重发布；ctx 取消即退出）
 	if a.licenseSvc != nil {

@@ -29,6 +29,8 @@ const (
 	HeaderPackageSHA256         = "X-JZ-Package-SHA256"
 	HeaderRulePackVersion       = "X-JiuZhang-RulePack-Version"
 	HeaderRulePackPackageSHA256 = "X-JiuZhang-Package-SHA256"
+	HeaderGeoIPSHA256           = "X-GeoIP-SHA256"
+	HeaderGeoIPRevision         = "X-GeoIP-Revision"
 
 	// MaxRulePackArchiveBytes matches gateway/hasyncd and server/internal/rulepacks 64 MiB cap.
 	MaxRulePackArchiveBytes int64 = 64 << 20
@@ -42,6 +44,15 @@ const (
 	SidecarMirrorcap = "mirrorcap.json"
 )
 
+// Allowlisted GeoIP slot identifiers synchronized via PUT /v1/geoip/slots/{slot}.
+const (
+	GeoIPSlotIP2RegionV4 = "ip2region_v4"
+	GeoIPSlotIP2RegionV6 = "ip2region_v6"
+	GeoIPSlotDBIPCity    = "dbip_city"
+	GeoIPSlotCityIPv6    = "city_ipv6"
+	GeoIPSlotCountry     = "country"
+)
+
 var (
 	allowedSidecars = map[string]struct{}{
 		SidecarHaVip:     {},
@@ -49,16 +60,39 @@ var (
 		SidecarTproxyd:   {},
 		SidecarMirrorcap: {},
 	}
+	allowedGeoIPSlots = map[string]struct{}{
+		GeoIPSlotIP2RegionV4: {},
+		GeoIPSlotIP2RegionV6: {},
+		GeoIPSlotDBIPCity:    {},
+		GeoIPSlotCityIPv6:    {},
+		GeoIPSlotCountry:     {},
+	}
 	packageFilenameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(\.tar\.gz|\.run)$`)
 	uuidRE            = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	rulePackVersionRE = regexp.MustCompile(`^([0-9]{8})\.([0-9]{1,3})$`)
 	rulePackBuiltinRE = regexp.MustCompile(`^builtin-[0-9A-Za-z._-]+$`)
+	geoIPRevisionRE   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 )
 
 // AllowedSidecarFile reports whether name is in the strict sidecar allowlist.
 func AllowedSidecarFile(name string) bool {
 	_, ok := allowedSidecars[name]
 	return ok
+}
+
+// AllowedGeoIPSlot reports whether slot is in the strict GeoIP slot allowlist.
+func AllowedGeoIPSlot(slot string) bool {
+	_, ok := allowedGeoIPSlots[slot]
+	return ok
+}
+
+// ValidateGeoIPRevision validates a GeoIP revision token accepted by hasyncd X-GeoIP-Revision.
+func ValidateGeoIPRevision(raw string) (string, error) {
+	rev := strings.TrimSpace(raw)
+	if rev == "" || strings.Contains(rev, "..") || !geoIPRevisionRE.MatchString(rev) {
+		return "", errors.New("invalid GeoIP revision token")
+	}
+	return rev, nil
 }
 
 // ValidatePackageFilename enforces the exact package filename policy accepted by hasyncd.
@@ -327,6 +361,62 @@ type RulePackSyncClient interface {
 	StageRulePack(ctx context.Context, nodeID uuid.UUID, version, archivePath, expectedSHA256 string) (*RulePackStageResponse, error)
 	ActivateRulePack(ctx context.Context, nodeID uuid.UUID, version, manifestSHA256 string) (*RulePackActivateResponse, error)
 	DeleteRulePackRelease(ctx context.Context, nodeID uuid.UUID, version string) (*RulePackDeleteResponse, error)
+}
+
+// GeoIPSlotMeta describes a single active GeoIP slot file reported by a peer hasyncd agent.
+type GeoIPSlotMeta struct {
+	Filename   string     `json:"filename"`
+	SHA256     string     `json:"sha256"`
+	SizeBytes  int64      `json:"size_bytes"`
+	SourceType string     `json:"source_type,omitempty"`
+	UpdatedAt  *time.Time `json:"updated_at,omitempty"`
+}
+
+// GeoIPStatusResponse is returned by GET /v1/geoip/status.
+type GeoIPStatusResponse struct {
+	Node       string                   `json:"node"`
+	GeoIPReady bool                     `json:"geoip_ready"`
+	Revision   string                   `json:"revision"`
+	UpdatedAt  *time.Time               `json:"updated_at,omitempty"`
+	Slots      map[string]GeoIPSlotMeta `json:"slots"`
+}
+
+// GeoIPSlotPushResponse is returned by PUT /v1/geoip/slots/{slot}.
+type GeoIPSlotPushResponse struct {
+	OK        bool      `json:"ok"`
+	Node      string    `json:"node"`
+	Slot      string    `json:"slot"`
+	Filename  string    `json:"filename"`
+	SHA256    string    `json:"sha256"`
+	SizeBytes int64     `json:"size_bytes"`
+	Revision  string    `json:"revision"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// GeoIPPeerPushResult records the result of pushing a GeoIP slot file to a single HA peer node.
+type GeoIPPeerPushResult struct {
+	NodeID     string `json:"node_id,omitempty"`
+	NodeName   string `json:"node_name"`
+	OK         bool   `json:"ok"`
+	Slot       string `json:"slot"`
+	Revision   string `json:"revision,omitempty"`
+	SHA256     string `json:"sha256,omitempty"`
+	SizeBytes  int64  `json:"size_bytes,omitempty"`
+	DurationMs int64  `json:"duration_ms"`
+	Error      string `json:"error,omitempty"`
+}
+
+// GeoIPPeerStatus records the live GeoIP sync status queried from a single HA peer node.
+type GeoIPPeerStatus struct {
+	NodeID     string                   `json:"node_id,omitempty"`
+	NodeName   string                   `json:"node_name"`
+	Reachable  bool                     `json:"reachable"`
+	GeoIPReady bool                     `json:"geoip_ready"`
+	Revision   string                   `json:"revision,omitempty"`
+	UpdatedAt  *time.Time               `json:"updated_at,omitempty"`
+	Slots      map[string]GeoIPSlotMeta `json:"slots,omitempty"`
+	LatencyMs  int64                    `json:"latency_ms"`
+	Error      string                   `json:"error,omitempty"`
 }
 
 // APIError represents a non-2xx response returned by hasyncd.
