@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+## [1.19.1] - 2026-11-28
+
+### 修复与体验优化
+
+- **修复 Coraza v3.7.0 重复 `SecDefaultAction` 导致网关发布 `/load` 返回 400**：
+  - `server/internal/gatewayconfig/generator.go` 移除 `buildWAFDirectivesWithPolicy` 中与 `crs-setup.conf` 重复内联的 `phase:1..5` `SecDefaultAction` 声明，由 `crs-setup.conf` 唯一声明，避免 Coraza v3.7.0 `ParseDefaultActions` 报 `SecDefaultAction already defined for this phase`；新增 `gateway/corazasemantics/phase1_audit_logging_test.go`（`TestDuplicateSecDefaultActionRejectedByCoraza`）与 `generator_test.go` 回归防护。
+  - `server/internal/gatewayconfig/publisher.go` 将 `sanitizeCaddyError` 截断上限由 500 字节提升至 2000 字符（按 rune 安全截断），确保嵌套处理器错误能完整展示根因。
+- **优化 WAF/CRS 规则分类、中文名检索与防护策略生效内容透视**：
+  - `server/internal/wafrules/details.go`、`handler.go`、`i18n.go` 与 `rule_names_zh.json`/`rule_specs_zh.json` 完善 CRS 内部规则（`isCRSInternalRuleID`）与排除规则（`905100`/`905110`）归类、补齐中文规则名检索匹配与词条翻译；
+  - `server/internal/protectionpolicies/content.go`、OpenAPI `03-policies.yaml` 与前端 `ProtectionPoliciesPage.tsx`、`crsRuleNames.ts`、`wafRuleDetails.ts` 优化防护策略详情抽屉生效指令与生效规则清单展示。
+- **文档**：新增纯离线 WAF 规则包热更新设计文档 `docs/OFFLINE_RULEPACK_UPDATE_DESIGN.md`。
+
+### 验证与边界
+
+- **网关**：`cd gateway && go test -v -count=1 ./corazasemantics/...` 全部通过（含 `TestDuplicateSecDefaultActionRejectedByCoraza` 与 Phase 1 审计日志语义回归）。
+- **后端与 OpenAPI**：`cd server && go build ./...`、`go test -c ./tests` 及全部变更包（`gatewayconfig`、`protectionpolicies`、`wafrules`、`upgrades`）全部通过；`python3 tools/check-api-reconcile.py` 确认 1.19.1 路由 0 新增缺口。
+- **前端**：`cd web && npm run typecheck && npm run lint && npm run build` 0 报错通过（改动文件 0 lint 警告）；3 个变更 Vitest 测试文件（`ProtectionPoliciesPage`、`crsRuleNames`、`wafRuleDetails`，共 20/20 用例）全部通过。
+- **未执行项（`NOT_RUN`）**：打标发布时的目标 Linux/amd64 实机发布验证、回滚演练与 Playwright E2E 均为 `NOT_RUN`。
+
 ## [1.19.0] - 2026-11-27
 
 ### 新增
