@@ -4,6 +4,33 @@
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-11-28
+
+### 新增
+
+- **纯离线 WAF 规则包热更新（R1–R4 全阶段，覆盖 4 种部署拓扑，零外网依赖）**：
+  - **数据库迁移与三权分立**：新增迁移 `000255_waf_rule_packs`（`waf_rule_packs`、`waf_rule_pack_jobs`、`waf_rule_pack_node_states`，扩展 `waf_rules.is_active` 软归档与 `last_rulepack_version`、`gateway_config_versions.rulepack_version`）；按 `000232` 三权分立约束将 `waf_rules.pack.manage` 仅授予 `SECURITY_ADMIN`，`AUDIT_ADMIN` 维持只读。
+  - **规则包验签、版本化存储与跨模块集成（R1）**：
+    - 新增 `server/internal/rulepacks`（内置生产 Ed25519 公钥、64 MiB 压缩 / 256 MiB 解压 / 10,000 文件 Fail-Closed 门禁、扩展名与目录白名单、锚点完整性与 `@inspectFile`/`SecRuleScript`/`@rbl`/`@pmFromFile`/跨文件 Rule ID 唯一性静态校验、相对软链 `current -> releases/<ver>` 及保留最近 5 快照 GC 保护），提供 8 个 `/api/v1/rule-packs/*` 路由并同步 OpenAPI `33-rule-packs.yaml` / `wdsp-api.yaml`。
+    - 联动 `gatewayconfig`（显式版本 `Include` 路径、零应用最小配置验证、回滚缺失快照 Fail-Closed）、`wafrules`（活跃规则软归档同步与原始缓存失效）、`gateway/mirrorcap`（`rules_dir` 解析与 15 秒无重启热重载）、`upgrades`（误传规则包拒收与进行中互斥）、`systemalerts`/`notify`（`RULEPACK_APPLY_FAILED` / `RULEPACK_NODE_DRIFT`），新增离线制包脚本 `ops/rulepack/build-rulepack.sh` 与独立验签 CLI `server/cmd/rulepackverify`。
+  - **HA 双机备节点同步（R2）**：
+    - `gateway/hasyncd` 扩展 `/v1/health` `rulepack_ready` 与 4 个 HMAC 鉴权端点（`stage`/`status`/`activate`/`DELETE releases/{version}`），备节点独立复验内置 Ed25519 签名与 `.meta/<ver>.json`（同包幂等 `200` / 篡改冲突 `409`）；`server/internal/nodesync` 与 `app/rulepacks_adapter.go` 实现先备后主发布、脑裂与离线 Fail-Closed 及受控降级（`allow_degraded_ha` + 必填原因 + 告警 + 恢复后一键 `retry-sync`）。
+  - **全拓扑交付、升级迁移、裸机与灾备恢复（R3）**：
+    - `ops/offline-package/build.sh`、`build-update-full.sh`、`deployment/docker-compose.stage5.yml` 及 4 个 Dockerfile（`server`/`gateway`/`hasyncd`/`mirrorcap`）引入 `gateway-rules` 命名卷（`api`/`hasyncd` RW，`gateway`/`mirrorcap` RO，预建 UID/GID `1000:1000` 挂载点防止新装 `EACCES`）；
+    - `ops/upgrade/{apply,rollback}.sh` 实现 `migrate_gateway_rules_volume`、客户热更规则包不降级保护与 `builtin-*` 安全回滚，新增迁移专项测试 `rulepack-migration-harness.sh` 与 `test_rulepack_volume_migration.py`；
+    - 同步适配全裸机（`ops/baremetal/package/`）与混合裸机网关（`ops/install/install-gateway-baremetal.sh`，`root:jiuzhang-waf 2770` + SELinux `container_file_t`，零 `setenforce 0`）；
+    - `server/internal/backups` 与 `restores` 在 FULL `.jzbk` 归档自动封入当前生效的非内置签名规则包，灾备恢复时独立重验 Ed25519 并还原版本目录与 `current` 软链。
+  - **Web 管理界面（R4）**：
+    - `WafRulesPage` 升级为两步式「上传校验预览 → 确认一键生效 / 一键回滚」工作流（`RulePackUpdateDrawer`、`RulePackPreviewCard`、`RulePackJobProgress`、`RulePackHistoryDrawer`、`api/rulePacks.ts`），旧「同步CRS规则」下沉至「更多运维」下拉，支持策略影响告警、HA 集群一致性展示、降级原因校验与只读权限隐藏写操作。
+
+### 验证与边界
+
+- **网关**：`cd gateway && go test -race ./hasyncd/... ./cmd/hasyncd/...` 及 `go test ./hasyncd/... ./mirrorcap/... ./corazasemantics/...` 全部通过。
+- **后端与 OpenAPI**：`cd server && go build ./cmd/...`、`go test -race` 覆盖 `rulepacks`、`nodesync`、`app`、`backups`、`restores` 及全部 11 个改动包通过；`ops/rulepack/build-rulepack.sh --dev-ephemeral-key --skip-go-test` 冒烟制包并经 `rulepackverify` 验签通过；`python3 server/openapi/merge.py && python3 tools/check-api-reconcile.py` 确认 `/api/v1/rule-packs/*` 0 缺失/0 多余。
+- **运维脚本与升级交付测试**：10 个变更 `.sh` `bash -n` 通过；`rulepack-migration-harness.sh` 5/5、`ops/upgrade/tests` 104/104、`test/offline-package` 118/118 全部通过。
+- **前端**：`cd web && npx tsc --noEmit`、`eslint`、`npm run build` 0 报错通过；Vitest 4 个测试文件（`WafRulesPage`、`RulePackFlow`、`i18nLabels`、`stage6`，共 59/59 用例）全部通过。
+- **未执行项（`NOT_RUN`）**：按 `docs/tasks/UPGRADE_INCIDENT_2026-11-17.md`，目标 Linux/amd64 真实 Docker 镜像构建与冷启动、openEuler/兆芯 `update-full` 升级/不降级/回滚往返、真实 PostgreSQL/Valkey/Caddy/mirrorcap 外部流量攻击与回滚 E2E、双机 HA 真机 `hasyncd` 与 VIP 漂移联调、SELinux Enforcing 裸机热重载以及 FULL 备份灾备恢复实机演练均为 `NOT_RUN`。
+
 ## [1.19.1] - 2026-11-28
 
 ### 修复与体验优化
