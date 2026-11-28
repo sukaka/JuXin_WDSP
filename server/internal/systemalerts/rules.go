@@ -88,6 +88,10 @@ const (
 	// component 为 vuln_intel:<tech> 维度（同技术栈后续提醒走引擎合并/冷却），
 	// vuln_alerted 表保证同一漏洞同一技术栈只提醒一次。
 	TypeVulnIntelNew = "VULN_INTEL_NEW" // 订阅技术栈出现新漏洞
+
+	// 纯离线 WAF 规则包热更新告警（OFFLINE_RULEPACK_UPDATE_DESIGN.md）：
+	TypeRulePackApplyFailed = "RULEPACK_APPLY_FAILED" // 离线规则包应用/回滚执行失败
+	TypeRulePackNodeDrift   = "RULEPACK_NODE_DRIFT"   // HA 降级仅主节点生效导致主备规则包漂移
 )
 
 // 告警等级（任务书 §11.2）
@@ -177,7 +181,9 @@ var severityRules = map[string]string{
 	TypeAPMSLOBreach:             SeverityMedium, // SLO 违约（预算耗尽），参照 SOURCE_UNHEALTHY 档
 	TypeAPMIngestLag:             SeverityMedium, // 数据面采集滞后，参照 EVENT_COLLECTOR_LAG 档
 	TypeAIOpsScheduleCircuitOpen: SeverityHigh,   // 运营计划熔断停用 = 自动化能力丧失，参照 CONFIG_PUBLISH_FAILED 档
-	TypeVulnIntelNew:             SeverityHigh,   // 订阅技术栈新漏洞；批次含 CRITICAL 时调用方显式升 CRITICAL
+	TypeVulnIntelNew:             SeverityHigh, // 订阅技术栈新漏洞；批次含 CRITICAL 时调用方显式升 CRITICAL
+	TypeRulePackApplyFailed:      SeverityHigh, // 离线规则包应用或回滚失败
+	TypeRulePackNodeDrift:        SeverityHigh, // HA 节点规则包版本漂移（需补齐同步）
 }
 
 // IsValidType 判断告警类型是否合法。

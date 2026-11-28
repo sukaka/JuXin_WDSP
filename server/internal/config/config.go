@@ -177,6 +177,14 @@ type WAFConfig struct {
 	CRSDir string
 	// CRSVersion CRS 版本标识
 	CRSVersion string
+	// RulesStoreDir 离线规则包版本化可写存储根目录（如 /app/runtime/rules 或 __ROOT__/data/rules；空 = 沿用只读兼容模式）
+	RulesStoreDir string
+	// RulesSeedDir 内置规则基线种子目录（首次初始化 RulesStoreDir 时拷贝来源，如 /app/gateway/rules）
+	RulesSeedDir string
+	// GatewayRulesRoot 网关容器/宿主机视角的规则根路径（默认 /etc/caddy/rules）
+	GatewayRulesRoot string
+	// RulePackRetention 历史规则包快照保留数量（2-20，默认 5）
+	RulePackRetention int
 	// AuditLogPath Coraza 审计日志路径（事件采集）
 	AuditLogPath string
 	// AuditLogGateway 网关侧 Coraza 审计日志路径（下发 mirrorcap 边车用，裸机可自定义）
@@ -502,6 +510,10 @@ func Load() (*Config, error) {
 		WAF: WAFConfig{
 			CRSDir:                getEnv("WAF_CRS_DIR", "gateway/rules/crs/rules"),
 			CRSVersion:            getEnv("WAF_CRS_VERSION", "4.28.0"),
+			RulesStoreDir:         getEnv("WAF_RULES_STORE_DIR", ""),
+			RulesSeedDir:          getEnv("WAF_RULES_SEED_DIR", ""),
+			GatewayRulesRoot:      getEnv("GATEWAY_RULES_ROOT", "/etc/caddy/rules"),
+			RulePackRetention:     getEnvInt("WAF_RULEPACK_RETENTION", 5),
 			AuditLogPath:            getEnv("WAF_AUDIT_LOG", "runtime/logs/stage1/coraza-audit.log"),
 			AuditLogGateway:         getEnv("GATEWAY_AUDIT_LOG", "/var/log/caddy/coraza-audit.log"),
 			GatewayNodeName:       getEnv("GATEWAY_NODE_NAME", "gateway-poc-01"),

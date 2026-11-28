@@ -352,7 +352,7 @@ sequenceDiagram
    - `job_type VARCHAR(16) NOT NULL`（`APPLY` / `ROLLBACK`）
    - `target_pack_id UUID NOT NULL REFERENCES waf_rule_packs(id)`
    - `previous_pack_id UUID REFERENCES waf_rule_packs(id)`
-   - `publish_task_id UUID REFERENCES publish_tasks(id)`（串联配置发布任务溯源）
+   - `publish_task_id UUID REFERENCES gateway_publish_tasks(id)`（串联配置发布任务溯源）
    - `status VARCHAR(32) NOT NULL`
    - `current_step VARCHAR(64) NOT NULL DEFAULT ''`、`progress INT NOT NULL DEFAULT 0`
    - `allow_degraded_ha BOOLEAN NOT NULL DEFAULT FALSE`、`degraded_reason TEXT NOT NULL DEFAULT ''`
@@ -375,12 +375,12 @@ sequenceDiagram
    - 改造 `SyncService.SyncFromSources`：同步完目标规则包全部来源后，将本次未出现的旧规则（含旧 `crs_version` 行与同 `crs_version` 中已被移除的 `CUSTOM_PACK` 规则）标记为 `is_active = FALSE`（**不物理删除**，确保历史安全事件、漏洞档案和规则效果统计仍能反查规则名称）；
    - `waf_rules` 列表、分类统计（`Categories`）与版本查询（`Versions`）默认过滤 `is_active = TRUE`（同时保留可选查询参数 `include_inactive=true` 供溯源查询），彻底避免未来 CRS 从 `4.28.0` 升级到 `4.29.0` 时规则总数翻倍。
 
-5. **`config_versions` 表补充关联列**
+5. **`gateway_config_versions` 表补充关联列**
    - 新增可空列 `rulepack_version VARCHAR(64) NOT NULL DEFAULT ''`，每次配置发布固化记录当时所用的规则包版本号，供 GC 保护与配置回滚一致性校验使用。
 
-6. **RBAC 权限种子（遵循三权分立）**
+6. **RBAC 权限种子（遵循 000232 三权分立）**
    - 新增权限码：`waf_rules.pack.manage`（「离线规则包更新管理」，module=`waf_rules`）；
-   - 授予角色：`SECURITY_ADMIN`、`SYSTEM_ADMIN`；
+   - 授予角色：`SECURITY_ADMIN`（运维管理员，与 `waf_rules.sync` / `block_pages.manage` 同权责边界；不授予 `SYSTEM_ADMIN`）；
    - `AUDIT_ADMIN` 仅保留已有只读权限 `waf_rules.read`（可查看规则包历史、差异预检与审计日志，禁止上传/应用/回滚）。
 
 ---

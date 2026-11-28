@@ -47,6 +47,7 @@ type MirrorcapSidecar struct {
 	Domains    []string           `json:"domains,omitempty"`
 	EventsLog  string             `json:"events_log,omitempty"`
 	AuditLog   string             `json:"audit_log,omitempty"`
+	RulesDir   string             `json:"rules_dir,omitempty"`
 	Discovery  MirrorcapDiscovery `json:"discovery"`
 }
 
@@ -662,6 +663,9 @@ func (p *Publisher) writeMirrorcapSidecarConfig(ctx context.Context, apps []AppD
 	}
 	if p.sidecarAuditLog != "" {
 		mc.AuditLog = p.sidecarAuditLog
+	}
+	if rulesDir := p.activeMirrorRulesDir(ctx); rulesDir != "" {
+		mc.RulesDir = rulesDir
 	}
 	if hasDetectableMirrorApp(apps) && len(interfaces) == 0 {
 		slog.Warn("mirror apps active but no MIRROR interface configured on node; mirrorcap detection kept disabled",

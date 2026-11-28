@@ -368,6 +368,8 @@ var exportAlertTypeLabels = map[string]string{
 	TypeAPMSLOBreach:             "APM SLO 违约",
 	TypeAPMIngestLag:             "APM 采集入库滞后",
 	TypeAIOpsScheduleCircuitOpen: "AI 定时运营任务熔断",
+	TypeRulePackApplyFailed:      "离线规则包应用失败",
+	TypeRulePackNodeDrift:        "HA 规则包版本漂移",
 }
 
 func exportAlertTypeLabel(v string) string {

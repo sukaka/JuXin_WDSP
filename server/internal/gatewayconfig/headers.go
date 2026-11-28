@@ -418,7 +418,7 @@ func buildChainHandlesWithPreProxy(in GenerateInput, app AppData, proxy mapT, pu
 		if ruleEngine == "" {
 			ruleEngine = "DetectionOnly"
 		}
-		directives := buildWAFDirectivesWithPolicy(ruleEngine, app, in.Exceptions, in.CustomRules, app.RuleOverrideSecLang)
+		directives := buildWAFDirectivesWithBase(in.RulesBasePath, ruleEngine, app, in.Exceptions, in.CustomRules, app.RuleOverrideSecLang)
 		normal = append(normal, mapT{
 			"handler":    "waf",
 			"directives": directives,

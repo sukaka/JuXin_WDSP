@@ -30,22 +30,51 @@ const (
 // ErrRuleNotFound 表示目标规则 ID 不存在。
 var ErrRuleNotFound = errors.New("规则不存在")
 
+// ActiveSourceProvider 返回当前生效的离线规则包 CRS 目录、CRS 版本与规则包版本号。
+// 未注入时回退到 Handler 初始化时的静态 crsDir/crsVersion。
+type ActiveSourceProvider func(ctx context.Context) (crsDir, crsVersion, rulePackVersion string)
+
 // Handler 是WAF规则处理器。
 type Handler struct {
-	db             *pgxpool.Pool
-	syncSvc        *SyncService
-	audits         *audits.Service
-	crsDir         string
-	crsVersion     string
-	rawCacheMu     sync.RWMutex
-	rawCacheLoaded bool
-	rawCacheByKey  map[string]string
-	rawCacheByID   map[int]string
+	db                   *pgxpool.Pool
+	syncSvc              *SyncService
+	audits               *audits.Service
+	crsDir               string
+	crsVersion           string
+	activeSourceProvider ActiveSourceProvider
+	rawCacheMu           sync.RWMutex
+	rawCacheLoaded       bool
+	rawCacheByKey        map[string]string
+	rawCacheByID         map[int]string
 }
 
 // NewHandler 创建规则处理器。
 func NewHandler(db *pgxpool.Pool, au *audits.Service, crsDir, crsVersion string) *Handler {
 	return &Handler{db: db, syncSvc: NewSyncService(db), audits: au, crsDir: crsDir, crsVersion: crsVersion}
+}
+
+// SetActiveSourceProvider 注入动态规则源提供者（供离线规则包热更新切换目录与 CRS 版本）。
+func (h *Handler) SetActiveSourceProvider(fn ActiveSourceProvider) *Handler {
+	h.activeSourceProvider = fn
+	return h
+}
+
+// InvalidateRawCache 清空原始 SecRule 缓存（规则包激活或回滚后调用）。
+func (h *Handler) InvalidateRawCache() {
+	h.invalidateRawCache()
+}
+
+func (h *Handler) resolveActiveSource(ctx context.Context) (crsDir, crsVersion, rulePackVersion string) {
+	if h.activeSourceProvider != nil {
+		d, v, rp := h.activeSourceProvider(ctx)
+		if strings.TrimSpace(d) != "" {
+			if strings.TrimSpace(v) == "" {
+				v = h.crsVersion
+			}
+			return d, v, rp
+		}
+	}
+	return h.crsDir, h.crsVersion, ""
 }
 
 // ValidateDescriptionOverrideInput 校验并清洗管理员提交的规则中文说明覆盖内容。
@@ -91,10 +120,14 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	severity := r.URL.Query().Get("severity")
 	source := r.URL.Query().Get("rule_source")
 	tag := r.URL.Query().Get("tag")
+	includeInactive := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_inactive")), "true")
 	page := queryInt(r, "page", 1)
 	pageSize := queryInt(r, "page_size", 20)
 
-	where := "1=1"
+	where := "r.is_active = TRUE"
+	if includeInactive {
+		where = "1=1"
+	}
 	args := []interface{}{}
 	argIdx := 1
 	add := func(cond string, v interface{}) {
@@ -306,7 +339,7 @@ SELECT r.id, r.rule_id, r.rule_source, r.file_name, r.name, r.message, r.severit
 FROM waf_rules r
 LEFT JOIN waf_rule_descriptions d ON d.rule_id = r.rule_id
 WHERE r.rule_id = $1
-ORDER BY r.crs_version DESC
+ORDER BY r.is_active DESC, r.crs_version DESC
 LIMIT 1`, ruleID)
 	if err != nil {
 		return nil, "", err
@@ -451,10 +484,10 @@ func parseRuleIDPath(w http.ResponseWriter, r *http.Request) (int, bool) {
 	return ruleID, true
 }
 
-// Categories 规则分类统计。
+// Categories 规则分类统计（仅统计当前激活规则，避免跨 CRS 版本重复计数）。
 func (h *Handler) Categories(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(r.Context(), `
-SELECT attack_type, count(*) FROM waf_rules GROUP BY attack_type ORDER BY count(*) DESC`)
+SELECT attack_type, count(*) FROM waf_rules WHERE is_active = TRUE GROUP BY attack_type ORDER BY count(*) DESC`)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
@@ -473,10 +506,10 @@ SELECT attack_type, count(*) FROM waf_rules GROUP BY attack_type ORDER BY count(
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"items": items})
 }
 
-// Versions 规则版本列表。
+// Versions 规则版本列表（仅返回当前激活的 CRS 版本）。
 func (h *Handler) Versions(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(r.Context(), `
-SELECT DISTINCT crs_version FROM waf_rules WHERE rule_source = $1 ORDER BY crs_version DESC`, SourceCRS)
+SELECT DISTINCT crs_version FROM waf_rules WHERE rule_source = $1 AND is_active = TRUE ORDER BY crs_version DESC`, SourceCRS)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
@@ -497,9 +530,10 @@ SELECT DISTINCT crs_version FROM waf_rules WHERE rule_source = $1 ORDER BY crs_v
 // Sync 触发规则元数据同步（CRS 主包 + CRS 插件 + 第三方/自建 contrib 包 + 九章内置规则）。
 func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
-	report, err := h.syncSvc.SyncFromSources(r.Context(), h.crsVersion, h.syncSources())
+	crsDir, crsVersion, rulePackVersion := h.resolveActiveSource(r.Context())
+	report, err := h.syncSvc.SyncFromSourcesWithPack(r.Context(), crsVersion, rulePackVersion, BuildSyncSources(crsDir))
 	if err != nil {
-		h.recordAudit(r, p, "waf_rules", "sync", "crs", h.crsVersion, h.crsVersion,
+		h.recordAudit(r, p, "waf_rules", "sync", "crs", crsVersion, crsVersion,
 			"error="+err.Error(), audits.ResultFailure, audits.RiskMedium)
 		if errors.Is(err, ErrCRSDirEmpty) {
 			response.Error(w, r, http.StatusServiceUnavailable, "CRS_RULES_UNAVAILABLE", err.Error())
@@ -509,14 +543,15 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.invalidateRawCache()
-	h.recordAudit(r, p, "waf_rules", "sync", "crs", h.crsVersion, h.crsVersion,
+	h.recordAudit(r, p, "waf_rules", "sync", "crs", crsVersion, crsVersion,
 		"added="+itoa(report.Added)+",updated="+itoa(report.Updated)+",total="+itoa(report.TotalInDB), audits.ResultSuccess, audits.RiskMedium)
 	response.JSON(w, r, http.StatusOK, report)
 }
 
 // syncSources 组装同步来源：CRS 主包、CRS 插件目录、contrib 分包目录与九章内置目录。
 func (h *Handler) syncSources() []SourceDir {
-	return BuildSyncSources(h.crsDir)
+	crsDir, _, _ := h.resolveActiveSource(context.Background())
+	return BuildSyncSources(crsDir)
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, action, objType, objID, objName, summary, result, risk string) {

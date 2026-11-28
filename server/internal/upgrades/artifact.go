@@ -386,6 +386,9 @@ func verifyPackageArchiveReader(reader io.Reader, pkg *Package) ([]byte, []byte,
 	if err := json.Unmarshal(scan.manifestBytes, &manifest); err != nil {
 		return nil, nil, fmt.Errorf("manifest.json 不是合法 JSON: %w", err)
 	}
+	if strings.EqualFold(strings.TrimSpace(manifest.PackageType), "rulepack") {
+		return nil, nil, errors.New("此文件为 WAF 离线规则包（package_type=rulepack），请前往「防护规则库 → 更新离线规则包」上传")
+	}
 	if manifest.Version != pkg.VersionTo {
 		return nil, nil, fmt.Errorf("manifest 版本与升级目标不一致: %s", manifest.Version)
 	}
@@ -501,6 +504,9 @@ func readPackageManifestInfoReader(reader io.Reader) (*packageManifestInfo, erro
 	var manifest packageManifest
 	if err := json.Unmarshal(scan.manifestBytes, &manifest); err != nil {
 		return nil, fmt.Errorf("manifest.json 不是合法 JSON: %w", err)
+	}
+	if strings.EqualFold(strings.TrimSpace(manifest.PackageType), "rulepack") {
+		return nil, errors.New("此文件为 WAF 离线规则包（package_type=rulepack），请前往「防护规则库 → 更新离线规则包」上传")
 	}
 	return &packageManifestInfo{
 		raw:            scan.manifestBytes,

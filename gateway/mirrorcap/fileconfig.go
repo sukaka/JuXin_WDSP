@@ -47,6 +47,8 @@ type FileConfig struct {
 	EventsLog string `json:"events_log"`
 	// AuditLog Coraza 审计日志路径（空回退 env MIRROR_AUDIT_LOG；"off"/"none" 关闭）。
 	AuditLog string `json:"audit_log,omitempty"`
+	// RulesDir 网关规则版本目录路径（空回退 env MIRROR_RULES_DIR；非空时驱动检测器在线热重载）。
+	RulesDir string `json:"rules_dir,omitempty"`
 	// Discovery 站点资产被动发现块（可选；缺省整块缺省 = 沿用 env 基线，块内
 	// enabled=false = 文件显式关闭发现——文件优先）。发现与检测独立启停。
 	Discovery *FileDiscovery `json:"discovery"`
@@ -141,6 +143,10 @@ func (fc *FileConfig) normalize() error {
 	fc.Node = strings.TrimSpace(fc.Node)
 	fc.EventsLog = strings.TrimSpace(fc.EventsLog)
 	fc.AuditLog = strings.TrimSpace(fc.AuditLog)
+	fc.RulesDir = strings.TrimSpace(fc.RulesDir)
+	if fc.RulesDir != "" && (strings.Contains(fc.RulesDir, "..") || strings.ContainsRune(fc.RulesDir, 0)) {
+		return fmt.Errorf("rules_dir 包含非法路径穿越: %q", fc.RulesDir)
+	}
 	if fc.Enabled && len(fc.Ifaces) == 0 {
 		return fmt.Errorf("enabled=true 但 interfaces 为空")
 	}
@@ -203,6 +209,9 @@ func (fc FileConfig) overlay(base Config) Config {
 	}
 	if fc.AuditLog != "" {
 		cfg.AuditLog = fc.AuditLog
+	}
+	if fc.RulesDir != "" {
+		cfg.RulesDir = fc.RulesDir
 	}
 	if fc.Node != "" {
 		cfg.NodeName = fc.Node

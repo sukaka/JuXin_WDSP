@@ -460,6 +460,7 @@ func (p *Prechecker) activeTasks(ctx context.Context) []string {
 		{"备份任务", `SELECT count(*) FROM backup_jobs WHERE status IN ('PENDING','RUNNING','VERIFYING')`},
 		{"恢复任务", `SELECT count(*) FROM restore_jobs WHERE status NOT IN ('SUCCESS','FAILED','CANCELLED')`},
 		{"报告任务", `SELECT count(*) FROM report_jobs WHERE status IN ('PENDING','COLLECTING','AGGREGATING','RENDERING')`},
+		{"离线规则包更新任务", `SELECT count(*) FROM waf_rule_pack_jobs WHERE status NOT IN ('SUCCESS','ROLLED_BACK','FAILED')`},
 	}
 	var out []string
 	for _, q := range queries {

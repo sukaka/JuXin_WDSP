@@ -153,8 +153,8 @@ func (d desired) stateKey() string {
 	sort.Slice(ports, func(i, j int) bool { return ports[i] < ports[j] })
 	doms := append([]string(nil), d.cfg.Domains...)
 	sort.Strings(doms)
-	return fmt.Sprintf("%s|enabled=%v|ifaces=%s|ports=%v|domains=%s|log=%s|audit=%s|node=%s|disc=%v|%s",
-		d.source, d.enabled, strings.Join(ifs, ","), ports, strings.Join(doms, ","), d.cfg.EventsLog, d.cfg.AuditLog, d.cfg.NodeName,
+	return fmt.Sprintf("%s|enabled=%v|ifaces=%s|ports=%v|domains=%s|log=%s|audit=%s|rules=%s|node=%s|disc=%v|%s",
+		d.source, d.enabled, strings.Join(ifs, ","), ports, strings.Join(doms, ","), d.cfg.EventsLog, d.cfg.AuditLog, d.cfg.RulesDir, d.cfg.NodeName,
 		d.disc.enabled, d.disc.key())
 }
 
@@ -303,7 +303,7 @@ func (s *Supervisor) applyLocked(d desired) {
 	if d.enabled {
 		doms := append([]string(nil), d.cfg.Domains...)
 		sort.Strings(doms)
-		key := d.cfg.EventsLog + "|" + d.cfg.AuditLog + "|" + d.cfg.NodeName + "|" + strings.Join(doms, ",")
+		key := d.cfg.EventsLog + "|" + d.cfg.AuditLog + "|" + d.cfg.NodeName + "|" + d.cfg.RulesDir + "|" + strings.Join(doms, ",")
 		if s.gen.handler == nil || s.gen.key != key {
 			s.startDetectLocked(d, key)
 		}

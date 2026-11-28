@@ -47,8 +47,14 @@ func TestCategoriesContract(t *testing.T) {
 		}
 		total += len(c.AlertTypes)
 	}
-	if total != 38 {
-		t.Errorf("告警类型总数应为 38, got %d", total)
+	if total != 40 {
+		t.Errorf("告警类型总数应为 40, got %d", total)
+	}
+	if got := CategoryOf("RULEPACK_APPLY_FAILED"); got != "ops" {
+		t.Errorf("CategoryOf(RULEPACK_APPLY_FAILED) = %s, want ops", got)
+	}
+	if got := AlertTypeName("RULEPACK_NODE_DRIFT"); got != "HA规则包版本漂移" {
+		t.Errorf("AlertTypeName(RULEPACK_NODE_DRIFT) = %s, want HA规则包版本漂移", got)
 	}
 	if got := CategoryOf("HA_SPLIT_BRAIN"); got != "infrastructure" {
 		t.Errorf("CategoryOf(HA_SPLIT_BRAIN) = %s, want infrastructure", got)

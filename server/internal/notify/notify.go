@@ -106,7 +106,8 @@ var categories = []Category{
 		"API_CRITICAL_FINDING", "API_FINDING_SPIKE", "API_MASK_FAILURE"}},
 	{Code: "ops", Name: "运维操作", AlertTypes: []string{
 		"BACKUP_FAILED", "RESTORE_VALIDATION_FAILED", "REPORT_FAILED", "UPGRADE_FAILED", "AUDIT_INTEGRITY_FAILED",
-		"BACKUP_VERIFY_FAILED", "RESTORE_CLEANUP_FAILED", "UPGRADE_ROLLBACK_FAILED", "UPGRADE_ROLLED_BACK"}},
+		"BACKUP_VERIFY_FAILED", "RESTORE_CLEANUP_FAILED", "UPGRADE_ROLLBACK_FAILED", "UPGRADE_ROLLED_BACK",
+		"RULEPACK_APPLY_FAILED", "RULEPACK_NODE_DRIFT"}},
 	{Code: "security_events", Name: "安全事件", AlertTypes: []string{
 		"SECURITY_EVENT_SPIKE", "LOGIN_BRUTE_FORCE", "CC_BAN_SPIKE"}},
 	{Code: "apm", Name: "业务性能", AlertTypes: []string{
@@ -180,6 +181,8 @@ var alertTypeNames = map[string]string{
 	"LOGIN_BRUTE_FORCE":             "登录暴破锁定",
 	"CC_BAN_SPIKE":                  "CC封禁激增",
 	"VULN_INTEL_NEW":                "漏洞情报提醒",
+	"RULEPACK_APPLY_FAILED":         "离线规则包应用失败",
+	"RULEPACK_NODE_DRIFT":           "HA规则包版本漂移",
 }
 
 // AlertTypeName 返回告警类型中文名；未知类型返回原 code。

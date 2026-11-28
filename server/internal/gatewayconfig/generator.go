@@ -56,7 +56,13 @@ type GenerateInput struct {
 	ACMEHTTP01 *ACMEHTTP01Config
 	// TLSSessionLogPath jiuzhang_tls_mux 加密会话分析 JSONL 日志路径（空串取 DefaultTLSSessionLogPath）。
 	TLSSessionLogPath string
+	// RulesBasePath 网关侧 WAF 规则根目录路径（默认 DefaultRulesBasePath = "/etc/caddy/rules"；
+	// 启用纯离线规则包版本化存储时显式指向 "/etc/caddy/rules/releases/<rulepack_version>"）。
+	RulesBasePath string
 }
+
+// DefaultRulesBasePath 是网关侧默认 WAF 规则根目录路径。
+const DefaultRulesBasePath = "/etc/caddy/rules"
 
 // DefaultTLSSessionLogPath 是 jiuzhang_tls_mux 加密会话握手事件的默认 JSONL 落盘路径
 // （与网关 tlsmux.DefaultSessionLogPath 一致）。
@@ -1248,14 +1254,65 @@ func exceptionAppliesToApp(ex ExceptionRule, app AppData) bool {
 	}
 }
 
-// buildWAFDirectivesWithPolicy 构建带策略参数、例外、规则覆盖与自定义规则的 WAF SecLang 指令。
+// BuildMinimalRuleValidationConfig 生成不依赖业务站点的最小 Caddy JSON 配置，
+// 用于零业务应用接入时验证指定规则包目录可被 Coraza/Caddy 无错加载（ValidateConfig）。
+func BuildMinimalRuleValidationConfig(adminSocket, rulesBase string) (string, error) {
+	if strings.TrimSpace(adminSocket) == "" {
+		adminSocket = "/var/run/caddy/admin.sock"
+	}
+	directives := buildWAFDirectivesWithBase(rulesBase, "DetectionOnly", AppData{}, nil, nil, nil)
+	root := mapT{
+		"admin": mapT{
+			"listen": "unix/" + adminSocket,
+		},
+		"apps": mapT{
+			"http": mapT{
+				"servers": mapT{
+					"rulepack_validate_probe": mapT{
+						"listen": []string{"127.0.0.1:0"},
+						"routes": []interface{}{
+							mapT{
+								"handle": []interface{}{
+									mapT{
+										"handler":    "waf",
+										"directives": directives,
+									},
+									mapT{
+										"handler":     "static_response",
+										"status_code": "204",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	raw, err := marshalDeterministic(root)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+// buildWAFDirectivesWithPolicy 构建带策略参数、例外、规则覆盖与自定义规则的 WAF SecLang 指令（使用默认规则路径）。
+func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []ExceptionRule, customRules, ruleOverrides []string) string {
+	return buildWAFDirectivesWithBase(DefaultRulesBasePath, ruleEngine, app, exceptions, customRules, ruleOverrides)
+}
+
+// buildWAFDirectivesWithBase 构建带策略参数、例外、规则覆盖与自定义规则的 WAF SecLang 指令（支持显式规则包版本根路径）。
 // 阶段4：策略参数（PL/阈值）注入 crs-setup；例外与规则覆盖放 CRS 之前；
 // 管理面自定义规则放例外与规则覆盖之后、CRS 主规则之前（确保 phase:2 自定义阻断规则优先于
 // CRS 949 生效，且仍受其前例外与规则覆盖控制）；静态 jiuzhang-custom 与 contrib 包保持在 CRS 之后。
-func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []ExceptionRule, customRules, ruleOverrides []string) string {
+func buildWAFDirectivesWithBase(rulesBase, ruleEngine string, app AppData, exceptions []ExceptionRule, customRules, ruleOverrides []string) string {
+	base := strings.TrimRight(strings.TrimSpace(rulesBase), "/")
+	if base == "" {
+		base = DefaultRulesBasePath
+	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("SecRuleEngine %s\n", ruleEngine))
-	b.WriteString("Include /etc/caddy/rules/coraza.conf\n")
+	b.WriteString("Include " + base + "/coraza.conf\n")
 	// 生产审计策略（LOW-G15）：coraza.conf 的 SecAuditEngine On + Parts 含 C 是
 	// 阶段1 POC 为 go-ftw 日志标记所设，全量请求体落盘不得进入生产。SecLang 同类
 	// 单值指令顺序求值、后写覆盖（coraza v3.7.0 directives.go 直接赋值 WAF 字段），
@@ -1280,11 +1337,11 @@ func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []E
 		outbound = 4
 	}
 	b.WriteString(fmt.Sprintf("SecAction \"id:900001,phase:1,pass,nolog,setvar:tx.blocking_paranoia_level=%d,setvar:tx.inbound_anomaly_score_threshold=%d,setvar:tx.outbound_anomaly_score_threshold=%d\"\n", pl, inbound, outbound))
-	b.WriteString("Include /etc/caddy/rules/crs/crs-setup.conf\n")
+	b.WriteString("Include " + base + "/crs/crs-setup.conf\n")
 	// CRS 插件（官方加载顺序：config → before → CRS 主规则 → contrib → after）
-	b.WriteString("Include /etc/caddy/rules/crs/plugins/*/plugins/*-config.conf\n")
-	b.WriteString("Include /etc/caddy/rules/crs/plugins/*/plugins/*-before.conf\n")
-	b.WriteString("Include /etc/caddy/rules/exclusions/before-crs.conf\n")
+	b.WriteString("Include " + base + "/crs/plugins/*/plugins/*-config.conf\n")
+	b.WriteString("Include " + base + "/crs/plugins/*/plugins/*-before.conf\n")
+	b.WriteString("Include " + base + "/exclusions/before-crs.conf\n")
 	// 例外策略规则（运行时例外，放 CRS 规则之前）；
 	// 按作用域过滤下发：GLOBAL 下发到全部应用，APPLICATION 仅下发到归属应用——
 	// 否则单应用例外发布的 SecLang 会对所有应用摘除规则（SecLang 条件不编码应用归属）
@@ -1324,16 +1381,16 @@ func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []E
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("Include /etc/caddy/rules/crs/rules/*.conf\n")
+	b.WriteString("Include " + base + "/crs/rules/*.conf\n")
 	// 第三方与自建规则包（阶段：规则量扩展，放 CRS 主规则之后）
-	b.WriteString("Include /etc/caddy/rules/contrib/*/*.conf\n")
-	b.WriteString("Include /etc/caddy/rules/crs/plugins/*/plugins/*-after.conf\n")
-	b.WriteString("Include /etc/caddy/rules/exclusions/after-crs.conf\n")
-	b.WriteString("Include /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf\n")
+	b.WriteString("Include " + base + "/contrib/*/*.conf\n")
+	b.WriteString("Include " + base + "/crs/plugins/*/plugins/*-after.conf\n")
+	b.WriteString("Include " + base + "/exclusions/after-crs.conf\n")
+	b.WriteString("Include " + base + "/jiuzhang/jiuzhang-custom.conf\n")
 	// 二次阻断评估：必须始终是最后一条 Include（晚于一切计分规则）。
 	// CRS 949 阻断评估在 crs/rules/ 内部完成，晚于它执行的 contrib/插件/after-crs
 	// 计分规则需由该文件重新汇总分数并阻断。
-	b.WriteString("Include /etc/caddy/rules/jiuzhang/post-contrib-blocking.conf\n")
+	b.WriteString("Include " + base + "/jiuzhang/post-contrib-blocking.conf\n")
 	return b.String()
 }
 

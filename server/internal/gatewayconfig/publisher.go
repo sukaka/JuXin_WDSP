@@ -278,6 +278,10 @@ type Publisher struct {
 	firewallEnsurer FirewallEnsurer
 	// acmeHTTP01Provider 返回是否应在 :80 注入 ACME HTTP-01 挑战路由（nil=未启用）。
 	acmeHTTP01Provider func(ctx context.Context) (*ACMEHTTP01Config, error)
+	// rulesVersionProvider 返回当前生效规则包版本与网关侧 Include 根路径（nil=沿用默认 /etc/caddy/rules）。
+	rulesVersionProvider func(ctx context.Context) (rulePackVersion, gatewayRulesBasePath string)
+	// rulesReleaseChecker 检查指定历史规则包快照是否仍在磁盘上可用（用于配置回滚一致性门禁）。
+	rulesReleaseChecker func(rulePackVersion string) bool
 }
 
 type gatewayConfigLoader interface {
@@ -417,6 +421,38 @@ func (p *Publisher) SetSmokeProbe(dialAddr string, client *http.Client) {
 // SetACMEHTTP01Provider 注入 ACME HTTP-01 网关挑战路由配置提供者（nil 表示不注入）。
 func (p *Publisher) SetACMEHTTP01Provider(fn func(ctx context.Context) (*ACMEHTTP01Config, error)) {
 	p.acmeHTTP01Provider = fn
+}
+
+// SetRulesVersionProvider 注入当前生效离线规则包版本与网关侧路径提供者。
+func (p *Publisher) SetRulesVersionProvider(fn func(ctx context.Context) (rulePackVersion, gatewayRulesBasePath string)) {
+	p.rulesVersionProvider = fn
+}
+
+// SetRulesReleaseChecker 注入历史规则包快照可用性检查器（供配置回滚门禁使用）。
+func (p *Publisher) SetRulesReleaseChecker(fn func(rulePackVersion string) bool) {
+	p.rulesReleaseChecker = fn
+}
+
+func (p *Publisher) resolveRulesTarget(ctx context.Context, in PublishInput) (rulePackVer, rulesBase string) {
+	if strings.TrimSpace(in.TargetRulePackVersion) != "" || strings.TrimSpace(in.TargetRulesBasePath) != "" {
+		return strings.TrimSpace(in.TargetRulePackVersion), strings.TrimSpace(in.TargetRulesBasePath)
+	}
+	if p.rulesVersionProvider != nil {
+		return p.rulesVersionProvider(ctx)
+	}
+	return "", ""
+}
+
+// activeMirrorRulesDir 返回应写入 mirrorcap.json 的版本化规则目录；未启用版本化存储时返回空串以兼容旧 env 基线。
+func (p *Publisher) activeMirrorRulesDir(ctx context.Context) string {
+	if p.rulesVersionProvider == nil {
+		return ""
+	}
+	ver, base := p.rulesVersionProvider(ctx)
+	if ver == "" || strings.TrimSpace(base) == "" || strings.TrimRight(base, "/") == DefaultRulesBasePath {
+		return ""
+	}
+	return base
 }
 
 // DataDir 返回发布器数据目录路径（ACME 本地挑战目录与证书目录同源）。
@@ -660,6 +696,58 @@ type PublishInput struct {
 	// GuardOverride 阶段5访问控制配置覆盖（回滚历史版本时使用；nil 表示从数据库实时组装）。
 	// 使用前按当前产品开关再门控（API 动态防护关闭时剥除 API 段，见 gateGuardOverride）。
 	GuardOverride *GuardConfig
+	// TargetRulePackVersion / TargetRulesBasePath 由离线规则包生效/回滚流程显式注入：
+	// 在数据库激活指针切换之前先用候选版本目录构建、校验、加载与冒烟，失败零现网副作用。
+	TargetRulePackVersion string
+	TargetRulesBasePath   string
+}
+
+// PublishForRulePack 供离线规则包生效/回滚流程调用的统一网关验证与发布入口：
+//   - 若当前存在活动应用：执行完整 PublishSync（含 ValidateConfig、/load、哈希校验、发布冒烟与 HA 扇出），
+//     若任务失败则返回错误（网关已自动保持或回滚至旧配置）；
+//   - 若当前尚无任何活动应用（ErrNoApps）：对目标规则目录构建最小 Coraza 测试配置并执行 Caddy ValidateConfig，
+//     验证新规则包可被引擎编译无错后返回 zeroApps=true。
+func (p *Publisher) PublishForRulePack(ctx context.Context, rulePackVersion, gatewayRulesBasePath string, requestedBy uuid.UUID, requestID string) (*uuid.UUID, bool, string, error) {
+	if p.apps != nil {
+		apps, err := p.apps.ListAllActive(ctx)
+		if err != nil {
+			return nil, false, "", fmt.Errorf("查询活动应用失败: %w", err)
+		}
+		if len(apps) == 0 {
+			minJSON, err := BuildMinimalRuleValidationConfig(p.caddy.SocketPath(), gatewayRulesBasePath)
+			if err != nil {
+				return nil, true, "", fmt.Errorf("构建零应用规则校验配置失败: %w", err)
+			}
+			if err := p.caddy.ValidateConfig(ctx, minJSON); err != nil {
+				return nil, true, "", fmt.Errorf("规则包 Coraza 引擎语法校验失败: %s", sanitizeCaddyError(err))
+			}
+			return nil, true, "当前无接入应用，已通过 Coraza 引擎语法预校验", nil
+		}
+	}
+	task, err := p.PublishSync(ctx, PublishInput{
+		RequestedBy:           requestedBy,
+		RequestID:             requestID,
+		TargetRulePackVersion: rulePackVersion,
+		TargetRulesBasePath:   gatewayRulesBasePath,
+	})
+	if err != nil {
+		return nil, false, "", err
+	}
+	if task == nil {
+		return nil, false, "", errors.New("发布任务状态缺失")
+	}
+	tid := task.ID
+	if task.Status != TaskSuccess {
+		msg := task.FailureMessage
+		if msg == "" {
+			msg = task.ResultSummary
+		}
+		if msg == "" {
+			msg = task.FailureCode
+		}
+		return &tid, false, "", fmt.Errorf("%s", msg)
+	}
+	return &tid, false, task.ResultSummary, nil
 }
 
 // Publish 执行完整发布流程。
@@ -806,6 +894,8 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		return
 	}
 
+	rulePackVer, rulesBase := p.resolveRulesTarget(ctx, in)
+
 	// 步骤2：生成候选配置
 	p.updateTaskStep(ctx, taskID, TaskGenerating, "生成候选配置", 25)
 	gen, err := Generate(GenerateInput{
@@ -818,6 +908,7 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		TransparentHTTPListen:  p.effectiveTproxyTarget(),
 		TransparentHTTPSListen: p.effectiveTproxyTargetTLS(),
 		ACMEHTTP01:             acmeHTTP01Cfg,
+		RulesBasePath:          rulesBase,
 	})
 	if err != nil {
 		p.finishTask(ctx, taskID, TaskFailed, "GENERATE_FAILED", err.Error(), nil)
@@ -838,9 +929,12 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		return
 	}
 	snapshot["tproxyd"] = tproxySidecar
+	if rulePackVer != "" {
+		snapshot["rulepack_version"] = rulePackVer
+	}
 
 	// 步骤4：保存版本（不可变）
-	version, err := p.saveVersion(ctx, gen, snapshot, in, taskID)
+	version, err := p.saveVersion(ctx, gen, snapshot, in, taskID, rulePackVer)
 	if err != nil {
 		p.finishTask(ctx, taskID, TaskFailed, "SAVE_VERSION_FAILED", err.Error(), nil)
 		return
@@ -1380,6 +1474,9 @@ func (p *Publisher) buildMirrorcapSidecarForNode(ctx context.Context, nodeName s
 	if p.sidecarAuditLog != "" {
 		mc.AuditLog = p.sidecarAuditLog
 	}
+	if rulesDir := p.activeMirrorRulesDir(ctx); rulesDir != "" {
+		mc.RulesDir = rulesDir
+	}
 	return mc
 }
 
@@ -1905,6 +2002,11 @@ func (p *Publisher) Rollback(ctx context.Context, in RollbackInput) (*PublishTas
 	}
 	if version.PublishResult != "SUCCESS" {
 		p.finishTask(ctx, task.ID, TaskFailed, "VERSION_NOT_PUBLISHED", "目标版本未成功发布，不能回滚", nil)
+		return p.GetTask(ctx, task.ID)
+	}
+	if version.RulePackVersion != "" && p.rulesReleaseChecker != nil && !p.rulesReleaseChecker(version.RulePackVersion) {
+		p.finishTask(ctx, task.ID, TaskFailed, "RULEPACK_SNAPSHOT_MISSING",
+			fmt.Sprintf("目标历史配置依赖的规则包版本 %s 快照已清理，无法直接回滚，请先在规则包管理中恢复对应版本或重新发布", version.RulePackVersion), nil)
 		return p.GetTask(ctx, task.ID)
 	}
 

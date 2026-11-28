@@ -30,6 +30,7 @@ type ConfigVersion struct {
 	CreatedAt         time.Time  `json:"created_at"`
 	PublishedBy       *uuid.UUID `json:"published_by"`
 	PublishedAt       *time.Time `json:"published_at"`
+	RulePackVersion   string     `json:"rulepack_version,omitempty"`
 }
 
 // publishApplicationState 保存 activatePublishedVersion 会覆盖的应用字段，
@@ -273,7 +274,7 @@ func (p *Publisher) setTaskTargetVersion(ctx context.Context, taskID, versionID 
 // 密钥纪律：版本表不再保存密钥明文，回滚时重注入当前密钥（见 config_secrets.go）——
 // configuration_json 存储脱敏形态（guard 段 valkey 密码、identity_salt、扫描/文件签名
 // key_hex、TLS 票据键以 "***" 占位）；configuration_hash 仍为实发配置哈希（生效校验口径不变）。
-func (p *Publisher) saveVersion(ctx context.Context, gen *Generated, snapshot map[string]interface{}, in PublishInput, taskID uuid.UUID) (*ConfigVersion, error) {
+func (p *Publisher) saveVersion(ctx context.Context, gen *Generated, snapshot map[string]interface{}, in PublishInput, taskID uuid.UUID, rulePackVersion string) (*ConfigVersion, error) {
 	base := fmt.Sprintf("V%s-%s", time.Now().UTC().Format("20060102.150405.000"), gen.Hash[:8])
 
 	snapshotJSON, _ := json.Marshal(snapshot)
@@ -304,14 +305,15 @@ func (p *Publisher) saveVersion(ctx context.Context, gen *Generated, snapshot ma
 			PublishTaskID:     &taskID,
 			CreatedBy:         &in.RequestedBy,
 			PreviousVersionID: prevID,
+			RulePackVersion:   rulePackVersion,
 		}
 		err := p.db.QueryRow(ctx, `
 INSERT INTO gateway_config_versions (version_number, configuration_json, configuration_hash,
-  business_snapshot, change_summary, previous_version_id, publish_task_id, created_by)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+  business_snapshot, change_summary, previous_version_id, publish_task_id, created_by, rulepack_version)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 RETURNING id, created_at`,
 			v.VersionNumber, v.ConfigurationJSON, v.ConfigurationHash, v.BusinessSnapshot,
-			v.ChangeSummary, v.PreviousVersionID, v.PublishTaskID, v.CreatedBy,
+			v.ChangeSummary, v.PreviousVersionID, v.PublishTaskID, v.CreatedBy, v.RulePackVersion,
 		).Scan(&v.ID, &v.CreatedAt)
 		if err == nil {
 			// 写入版本配置文件（与版本表同口径脱敏存储）
@@ -415,7 +417,7 @@ func (p *Publisher) getVersion(ctx context.Context, id uuid.UUID) (*ConfigVersio
 	row := p.db.QueryRow(ctx, `
 SELECT id, version_number, configuration_json, configuration_hash, business_snapshot, change_summary,
   previous_version_id, publish_task_id, publish_result, validation_result, is_current,
-  created_by, created_at, published_by, published_at
+  created_by, created_at, published_by, published_at, COALESCE(rulepack_version, '')
 FROM gateway_config_versions WHERE id = $1`, id)
 	return scanVersion(row)
 }
@@ -440,7 +442,7 @@ func (p *Publisher) ListVersions(ctx context.Context, page, pageSize int) ([]Con
 	rows, err := p.db.Query(ctx, `
 SELECT id, version_number, configuration_json, configuration_hash, business_snapshot, change_summary,
   previous_version_id, publish_task_id, publish_result, validation_result, is_current,
-  created_by, created_at, published_by, published_at
+  created_by, created_at, published_by, published_at, COALESCE(rulepack_version, '')
 FROM gateway_config_versions ORDER BY created_at DESC LIMIT $1 OFFSET $2`, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return nil, 0, err
@@ -463,7 +465,7 @@ func (p *Publisher) GetCurrentVersion(ctx context.Context) (*ConfigVersion, erro
 	row := p.db.QueryRow(ctx, `
 SELECT id, version_number, configuration_json, configuration_hash, business_snapshot, change_summary,
   previous_version_id, publish_task_id, publish_result, validation_result, is_current,
-  created_by, created_at, published_by, published_at
+  created_by, created_at, published_by, published_at, COALESCE(rulepack_version, '')
 FROM gateway_config_versions WHERE is_current = TRUE LIMIT 1`)
 	v, err := scanVersion(row)
 	if err != nil {
@@ -480,7 +482,7 @@ func scanVersion(row pgx.Row) (*ConfigVersion, error) {
 	err := row.Scan(&v.ID, &v.VersionNumber, &v.ConfigurationJSON, &v.ConfigurationHash,
 		&v.BusinessSnapshot, &v.ChangeSummary, &v.PreviousVersionID, &v.PublishTaskID,
 		&v.PublishResult, &v.ValidationResult, &v.IsCurrent, &v.CreatedBy, &v.CreatedAt,
-		&v.PublishedBy, &v.PublishedAt)
+		&v.PublishedBy, &v.PublishedAt, &v.RulePackVersion)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("version not found: %w", err)
@@ -495,7 +497,7 @@ func scanVersionRows(rows pgx.Rows) (*ConfigVersion, error) {
 	err := rows.Scan(&v.ID, &v.VersionNumber, &v.ConfigurationJSON, &v.ConfigurationHash,
 		&v.BusinessSnapshot, &v.ChangeSummary, &v.PreviousVersionID, &v.PublishTaskID,
 		&v.PublishResult, &v.ValidationResult, &v.IsCurrent, &v.CreatedBy, &v.CreatedAt,
-		&v.PublishedBy, &v.PublishedAt)
+		&v.PublishedBy, &v.PublishedAt, &v.RulePackVersion)
 	if err != nil {
 		return nil, err
 	}

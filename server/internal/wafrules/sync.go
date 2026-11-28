@@ -52,10 +52,12 @@ type Rule struct {
 	DefaultState string          `json:"default_state"`
 	CRSVersion   string          `json:"crs_version"`
 	ContentHash  string          `json:"content_hash"`
-	ParsedSpec   json.RawMessage `json:"parsed_spec,omitempty"`
-	RawRule      string          `json:"raw_rule,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	ParsedSpec          json.RawMessage `json:"parsed_spec,omitempty"`
+	RawRule             string          `json:"raw_rule,omitempty"`
+	CreatedAt           time.Time       `json:"created_at"`
+	UpdatedAt           time.Time       `json:"updated_at"`
+	isActive            bool
+	lastRulePackVersion string
 }
 
 // SyncReport 是同步结果报告。
@@ -529,7 +531,14 @@ func (s *SyncService) SyncFromDirectory(ctx context.Context, crsDir, crsVersion 
 // 各来源独立去重（rule_id, rule_source, crs_version 唯一）；报告为全部来源合计。
 // 主 CRS 来源目录缺失或无任何可用 .conf 文件时返回明确错误，禁止静默返回全 0。
 func (s *SyncService) SyncFromSources(ctx context.Context, crsVersion string, sources []SourceDir) (*SyncReport, error) {
+	return s.SyncFromSourcesWithPack(ctx, crsVersion, "", sources)
+}
+
+// SyncFromSourcesWithPack 按指定规则包版本同步全部来源并自动将已下线或旧 CRS 版本的规则软归档（is_active=FALSE），
+// 保留历史规则行以支撑安全事件与漏洞档案回溯，同时确保列表与分类统计不因跨 CRS 版本而重复计数。
+func (s *SyncService) SyncFromSourcesWithPack(ctx context.Context, crsVersion, rulePackVersion string, sources []SourceDir) (*SyncReport, error) {
 	report := &SyncReport{}
+	syncedBySource := make(map[string][]int)
 	for _, sd := range sources {
 		pattern := filepath.Join(sd.Dir, "*.conf")
 		files, err := filepath.Glob(pattern)
@@ -551,7 +560,16 @@ func (s *SyncService) SyncFromSources(ctx context.Context, crsVersion string, so
 			continue // 可选来源目录（如未启用 contrib/插件包）为空时跳过
 		}
 		sort.Strings(usable)
-		if err := s.syncSourceFiles(ctx, usable, sd.Source, crsVersion, report); err != nil {
+		seenIDs, err := s.syncSourceFiles(ctx, usable, sd.Source, crsVersion, rulePackVersion, report)
+		if err != nil {
+			return nil, err
+		}
+		syncedBySource[sd.Source] = seenIDs
+	}
+
+	// 仅在本次确实解析出有效规则时执行软归档，防止异常空目录误停全库规则。
+	if report.TotalParsed > 0 {
+		if err := s.reconcileActiveFlags(ctx, crsVersion, syncedBySource); err != nil {
 			return nil, err
 		}
 	}
@@ -559,13 +577,14 @@ func (s *SyncService) SyncFromSources(ctx context.Context, crsVersion string, so
 }
 
 // syncSourceFiles 同步单个来源的文件集合：解析、去重（含同 ID 不同来源隔离）、入库与缺失统计。
-func (s *SyncService) syncSourceFiles(ctx context.Context, files []string, source, crsVersion string, report *SyncReport) error {
+func (s *SyncService) syncSourceFiles(ctx context.Context, files []string, source, crsVersion, rulePackVersion string, report *SyncReport) ([]int, error) {
 	// 收集数据库现有规则（该来源 + crs_version）
 	existing, err := s.existingRules(ctx, source, crsVersion)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	seen := map[int]bool{}
+	seenList := make([]int, 0, len(existing))
 
 	for _, file := range files {
 		// 跳过 example 与文档文件
@@ -585,12 +604,15 @@ func (s *SyncService) syncSourceFiles(ctx context.Context, files []string, sourc
 		for _, rule := range rules {
 			report.TotalParsed++
 			rule.CRSVersion = crsVersion
-			seen[rule.RuleID] = true
+			if !seen[rule.RuleID] {
+				seen[rule.RuleID] = true
+				seenList = append(seenList, rule.RuleID)
+			}
 
 			existingRule, ok := existing[rule.RuleID]
 			if !ok {
 				// 新增
-				if err := s.insertRule(ctx, rule); err != nil {
+				if err := s.insertRule(ctx, rule, rulePackVersion); err != nil {
 					report.Conflicts++
 					report.FailedRules = append(report.FailedRules, fmt.Sprintf("rule %d insert: %v", rule.RuleID, err))
 					continue
@@ -600,9 +622,11 @@ func (s *SyncService) syncSourceFiles(ctx context.Context, files []string, sourc
 				existingRule.Name != rule.Name || existingRule.Message != rule.Message ||
 				existingRule.AttackType != rule.AttackType ||
 				existingRule.RawRule != rule.RawRule ||
-				!parsedSpecEqual(existingRule.ParsedSpec, rule.ParsedSpec) {
-				// 更新（规则原文变化，或解析器升级导致名称/消息/攻击类型/结构化详述/原文补充修正）
-				if err := s.updateRule(ctx, rule); err != nil {
+				!parsedSpecEqual(existingRule.ParsedSpec, rule.ParsedSpec) ||
+				!existingRule.isActive ||
+				(rulePackVersion != "" && existingRule.lastRulePackVersion != rulePackVersion) {
+				// 更新（规则原文变化、解析器升级、重新激活或规则包版本变更）
+				if err := s.updateRule(ctx, rule, rulePackVersion); err != nil {
 					report.Conflicts++
 					report.FailedRules = append(report.FailedRules, fmt.Sprintf("rule %d update: %v", rule.RuleID, err))
 					continue
@@ -624,6 +648,39 @@ func (s *SyncService) syncSourceFiles(ctx context.Context, files []string, sourc
 	if err == nil {
 		report.TotalInDB += total
 	}
+	return seenList, nil
+}
+
+// reconcileActiveFlags 软归档未出现在本次全量规则快照中的旧 CRS 版本行或已移除规则（保留 USER_CUSTOM 不受影响）。
+func (s *SyncService) reconcileActiveFlags(ctx context.Context, activeCRSVersion string, syncedBySource map[string][]int) error {
+	// 1. 不同 CRS 版本的非用户自定义规则统一软归档
+	if _, err := s.db.Exec(ctx, `
+UPDATE waf_rules
+SET is_active = FALSE, updated_at = now()
+WHERE rule_source <> $1 AND crs_version <> $2 AND is_active = TRUE`, SourceCustom, activeCRSVersion); err != nil {
+		return err
+	}
+	// 2. 当前 CRS 版本下，已从磁盘来源消失的规则软归档
+	managedSources := []string{SourceCRS, SourceCRSPlugin, SourceThirdParty, SourceCustomPack, SourceJiuzhang}
+	for _, src := range managedSources {
+		ids := syncedBySource[src]
+		if len(ids) == 0 {
+			if _, err := s.db.Exec(ctx, `
+UPDATE waf_rules
+SET is_active = FALSE, updated_at = now()
+WHERE rule_source = $1 AND crs_version = $2 AND is_active = TRUE`, src, activeCRSVersion); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := s.db.Exec(ctx, `
+UPDATE waf_rules
+SET is_active = FALSE, updated_at = now()
+WHERE rule_source = $1 AND crs_version = $2 AND is_active = TRUE AND NOT (rule_id = ANY($3::int[]))`,
+			src, activeCRSVersion, ids); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -641,7 +698,7 @@ func parsedSpecEqual(a, b json.RawMessage) bool {
 
 func (s *SyncService) existingRules(ctx context.Context, source, crsVersion string) (map[int]*Rule, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT rule_id, content_hash, name, message, attack_type, parsed_spec, COALESCE(raw_rule, '') FROM waf_rules WHERE rule_source = $1 AND crs_version = $2`, source, crsVersion)
+		`SELECT rule_id, content_hash, name, message, attack_type, parsed_spec, COALESCE(raw_rule, ''), is_active, COALESCE(last_rulepack_version, '') FROM waf_rules WHERE rule_source = $1 AND crs_version = $2`, source, crsVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -649,61 +706,66 @@ func (s *SyncService) existingRules(ctx context.Context, source, crsVersion stri
 	out := map[int]*Rule{}
 	for rows.Next() {
 		var id int
-		var hash, name, message, attackType, rawRule string
+		var hash, name, message, attackType, rawRule, packVer string
 		var parsedSpec []byte
-		if err := rows.Scan(&id, &hash, &name, &message, &attackType, &parsedSpec, &rawRule); err != nil {
+		var isActive bool
+		if err := rows.Scan(&id, &hash, &name, &message, &attackType, &parsedSpec, &rawRule, &isActive, &packVer); err != nil {
 			return nil, err
 		}
 		out[id] = &Rule{
-			RuleID:      id,
-			ContentHash: hash,
-			Name:        name,
-			Message:     message,
-			AttackType:  attackType,
-			ParsedSpec:  json.RawMessage(parsedSpec),
-			RawRule:     rawRule,
+			RuleID:              id,
+			ContentHash:         hash,
+			Name:                name,
+			Message:             message,
+			AttackType:          attackType,
+			ParsedSpec:          json.RawMessage(parsedSpec),
+			RawRule:             rawRule,
+			isActive:            isActive,
+			lastRulePackVersion: packVer,
 		}
 	}
 	return out, rows.Err()
 }
 
-func (s *SyncService) insertRule(ctx context.Context, r *Rule) error {
+func (s *SyncService) insertRule(ctx context.Context, r *Rule, rulePackVersion string) error {
 	spec := r.ParsedSpec
 	if len(spec) == 0 {
 		spec = json.RawMessage("{}")
 	}
 	_, err := s.db.Exec(ctx, `
 INSERT INTO waf_rules (rule_id, rule_source, file_name, name, message, severity, phase, tags,
-  attack_type, default_state, crs_version, content_hash, parsed_spec, raw_rule)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+  attack_type, default_state, crs_version, content_hash, parsed_spec, raw_rule, is_active, last_rulepack_version)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,TRUE,$15)
 ON CONFLICT (rule_id, rule_source, crs_version) DO UPDATE SET
   file_name=EXCLUDED.file_name, name=EXCLUDED.name, message=EXCLUDED.message,
   severity=EXCLUDED.severity, phase=EXCLUDED.phase, tags=EXCLUDED.tags,
   attack_type=EXCLUDED.attack_type, content_hash=EXCLUDED.content_hash,
-  parsed_spec=EXCLUDED.parsed_spec, raw_rule=EXCLUDED.raw_rule, updated_at=now()`,
+  parsed_spec=EXCLUDED.parsed_spec, raw_rule=EXCLUDED.raw_rule,
+  is_active=TRUE, last_rulepack_version=EXCLUDED.last_rulepack_version, updated_at=now()`,
 		r.RuleID, r.RuleSource, r.FileName, r.Name, r.Message, r.Severity, r.Phase, r.Tags,
-		r.AttackType, r.DefaultState, r.CRSVersion, r.ContentHash, spec, r.RawRule)
+		r.AttackType, r.DefaultState, r.CRSVersion, r.ContentHash, spec, r.RawRule, rulePackVersion)
 	return err
 }
 
-func (s *SyncService) updateRule(ctx context.Context, r *Rule) error {
+func (s *SyncService) updateRule(ctx context.Context, r *Rule, rulePackVersion string) error {
 	spec := r.ParsedSpec
 	if len(spec) == 0 {
 		spec = json.RawMessage("{}")
 	}
 	_, err := s.db.Exec(ctx, `
 UPDATE waf_rules SET file_name=$1, name=$2, message=$3, severity=$4, phase=$5, tags=$6,
-  attack_type=$7, content_hash=$8, parsed_spec=$9, raw_rule=$10, updated_at=now()
-WHERE rule_id=$11 AND rule_source=$12 AND crs_version=$13`,
+  attack_type=$7, content_hash=$8, parsed_spec=$9, raw_rule=$10,
+  is_active=TRUE, last_rulepack_version=$11, updated_at=now()
+WHERE rule_id=$12 AND rule_source=$13 AND crs_version=$14`,
 		r.FileName, r.Name, r.Message, r.Severity, r.Phase, r.Tags, r.AttackType, r.ContentHash, spec, r.RawRule,
-		r.RuleID, r.RuleSource, r.CRSVersion)
+		rulePackVersion, r.RuleID, r.RuleSource, r.CRSVersion)
 	return err
 }
 
 func (s *SyncService) countRules(ctx context.Context, source, crsVersion string) (int, error) {
 	var n int
 	err := s.db.QueryRow(ctx,
-		`SELECT count(*) FROM waf_rules WHERE rule_source = $1 AND crs_version = $2`, source, crsVersion).Scan(&n)
+		`SELECT count(*) FROM waf_rules WHERE rule_source = $1 AND crs_version = $2 AND is_active = TRUE`, source, crsVersion).Scan(&n)
 	return n, err
 }
 
