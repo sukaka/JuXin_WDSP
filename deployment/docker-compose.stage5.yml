@@ -142,6 +142,10 @@ services:
       CADDY_ADMIN_SOCKET: /var/run/caddy/admin.sock
       GATEWAY_DATA_DIR: /app/runtime
       MIGRATIONS_DIR: /app/migrations
+      WAF_RULES_STORE_DIR: /app/runtime/rules
+      WAF_RULES_SEED_DIR: /app/gateway/rules
+      GATEWAY_RULES_ROOT: /etc/caddy/rules
+      WAF_RULEPACK_RETENTION: ${WAF_RULEPACK_RETENTION:-5}
       WAF_CRS_DIR: /etc/caddy/rules/crs/rules
       WAF_CRS_VERSION: 4.28.0
       WAF_AUDIT_LOG: /var/log/caddy-audit/coraza-audit.log
@@ -208,8 +212,6 @@ services:
       - stage5-gateway-admin:/var/run/caddy
       # 只读挂载网关日志卷（事件采集器读取 Coraza 审计日志）
       - stage5-gateway-logs:/var/log/caddy-audit:ro
-      # 只读挂载 CRS 规则目录（CRS 元数据同步）
-      - ../gateway/rules:/etc/caddy/rules:ro
       # 只读挂载文档与合规文件（交付检查）
       - ../docs:/app/docs:ro
       - ../THIRD_PARTY_NOTICES.md:/app/THIRD_PARTY_NOTICES.md:ro
@@ -218,6 +220,9 @@ services:
       # /etc/caddy/certs（生成配置引用路径）。嵌套在 stage5-runtime 挂载点之下；
       # api 与网关运行用户同为 uid/gid 1000，0600 权属数值一致可读。
       - stage5-gateway-certs:/app/runtime/certificates
+      # 离线 WAF 规则包版本化存储通道：api 读写 <dataDir>/rules（本卷），gateway/mirrorcap
+      # 只读挂载到 /etc/caddy/rules，卷内相对软链 current -> releases/<ver> 跨挂载一致。
+      - stage5-gateway-rules:/app/runtime/rules
       # 离线授权：宿主机指纹文件只读挂载（安装期 ops/install/install.sh 采集写入仓库根 runtime/license/；
       # 叠加在命名卷 stage5-runtime 挂载点之下，容器内路径 /app/runtime/license/host_fingerprint）
       - ../runtime/license:/app/runtime/license:ro
@@ -278,9 +283,13 @@ services:
       - "${GATEWAY_SITE_HTTP_PORT:-82}:82"
       - "${GATEWAY_SITE_HTTPS_PORT:-443}:443"
     volumes:
-      - ../gateway/configs/Caddyfile:/etc/caddy/Caddyfile:ro
+      # 最小引导 Caddyfile（仅绑定 Admin Unix Socket，不含静态规则 Include），
+      # 避免全新拉起时 gateway 早于 api 初始化 stage5-gateway-rules 卷导致启动失败；
+      # 业务站点与版本化规则路径由 api 发布经 Admin API /load 下发并持久化到 autosave.json。
+      - ./baremetal/Caddyfile.bootstrap:/etc/caddy/Caddyfile:ro
       - ../gateway/configs/blockpage.html:/srv/jiuzhang/blockpage.html:ro
-      - ../gateway/rules:/etc/caddy/rules:ro
+      # 离线规则包版本化存储通道（与 api 侧 stage5-gateway-rules 同一卷，严格只读）
+      - stage5-gateway-rules:/etc/caddy/rules:ro
       - stage5-gateway-logs:/var/log/caddy
       - stage5-gateway-admin:/var/run/caddy
       - stage5-gateway-config:/config
@@ -364,11 +373,11 @@ services:
     environment:
       GATEWAY_NODE_NAME: gateway-stage5-01
       MIRROR_DROP_PRIVS: "1"
-      MIRROR_RULES_DIR: /etc/caddy/rules
+      MIRROR_RULES_DIR: /etc/caddy/rules/current
     volumes:
       - stage5-gateway-admin:/var/run/caddy:ro
       - stage5-gateway-logs:/var/log/caddy
-      - ../gateway/rules:/etc/caddy/rules:ro
+      - stage5-gateway-rules:/etc/caddy/rules:ro
     depends_on:
       gateway:
         condition: service_started
@@ -464,12 +473,14 @@ services:
       HASYNC_TLS_KEY: ${HASYNC_TLS_KEY:-}
       UPGRADE_PACKAGES_DIR: /app/runtime/upgrade-packages
       UPGRADE_EXECUTOR_DIR: /app/runtime/upgrade-executor
+      HASYNC_RULES_DIR: /app/runtime/rules
     ports:
       - "127.0.0.1:${HASYNC_PORT:-18443}:18443"
     volumes:
       - stage5-gateway-admin:/var/run/caddy
       - stage5-gateway-logs:/var/log/caddy:ro
       - stage5-runtime:/app/runtime
+      - stage5-gateway-rules:/app/runtime/rules
       - ../runtime/hostctl:/app/runtime/hostctl
     depends_on:
       gateway:
@@ -596,6 +607,8 @@ volumes:
   stage5-runtime:
     driver: local
   stage5-gateway-certs:
+    driver: local
+  stage5-gateway-rules:
     driver: local
   stage5-containerops:
     driver: local

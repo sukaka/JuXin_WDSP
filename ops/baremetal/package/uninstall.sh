@@ -130,6 +130,6 @@ if [[ "${PURGE}" == "1" ]]; then
   log_info "卸载完成（全部数据已删除）"
 else
   log_info "[4/4] 保留数据"
-  log_info "卸载完成。数据保留于 ${R}（数据库 data/pgdata、配置 env、授权 data/runtime/license、日志 data/logs）"
+  log_info "卸载完成。数据保留于 ${R}（数据库 data/pgdata、规则包 data/rules、配置 env、授权 data/runtime/license、日志 data/logs）"
   log_info "彻底清理请执行：sudo bash ${R}/uninstall.sh --purge"
 fi

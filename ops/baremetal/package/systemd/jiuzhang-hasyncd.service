@@ -13,12 +13,12 @@ User=__USER__
 Group=__USER__
 UMask=0027
 EnvironmentFile=__ROOT__/env
-ExecStart=__ROOT__/bin/hasyncd --node __NODE_NAME__ --caddy-socket __ROOT__/data/run/caddy/admin.sock --sidecar-dir __ROOT__/data/run/caddy/sidecars --hostctl-dir __ROOT__/data/runtime/hostctl --upgrade-packages-dir __ROOT__/data/runtime/upgrade-packages --upgrade-executor-dir __ROOT__/data/runtime/upgrade-executor --node-ifaces-log __ROOT__/data/logs/caddy/node-interfaces.jsonl
+ExecStart=__ROOT__/bin/hasyncd --node __NODE_NAME__ --caddy-socket __ROOT__/data/run/caddy/admin.sock --sidecar-dir __ROOT__/data/run/caddy/sidecars --hostctl-dir __ROOT__/data/runtime/hostctl --upgrade-packages-dir __ROOT__/data/runtime/upgrade-packages --upgrade-executor-dir __ROOT__/data/runtime/upgrade-executor --rules-dir __ROOT__/data/rules --node-ifaces-log __ROOT__/data/logs/caddy/node-interfaces.jsonl
 # hasyncd 全程非 root 运行，无需任何 Linux 特权能力
 CapabilityBoundingSet=
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=__ROOT__/data/run/caddy/sidecars __ROOT__/data/runtime/hostctl __ROOT__/data/runtime/upgrade-packages __ROOT__/data/runtime/upgrade-executor /tmp
+ReadWritePaths=__ROOT__/data/run/caddy/sidecars __ROOT__/data/runtime/hostctl __ROOT__/data/runtime/upgrade-packages __ROOT__/data/runtime/upgrade-executor __ROOT__/data/rules /tmp
 Restart=always
 RestartSec=5
 

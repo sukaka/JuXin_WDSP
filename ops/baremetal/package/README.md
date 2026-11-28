@@ -35,7 +35,8 @@ $R/data/pgdata                PostgreSQL 数据目录（0700）
 $R/data/valkey/               Valkey 数据与 valkey.conf
 $R/data/caddy/                网关 XDG config/data（autosave.json 在此）
 $R/data/caddy-console/        控制台 Caddy XDG 目录（与网关隔离）
-$R/data/runtime/              api 数据（geoip/ license/ certificates/ configs/ backups/ hostctl/ …）
+$R/data/runtime/              api 数据（geoip/ license/ certificates/ configs/ backups/ hostctl/ rulepack-archives/ …）
+$R/data/rules/                离线 WAF 规则包版本化存储（releases/builtin-<ver> + 相对软链 current；api/hasyncd 读写，gateway/mirrorcap 只读）
 $R/data/logs/caddy/           全部网关日志（caddy/access/coraza-audit/guard-events/api-runtime-events/…）
 $R/data/run/caddy/            admin.sock 与 sidecars/（network.json ↔ netmgrd、mirrorcap.json ↔ mirrorcap、tproxyd.json ↔ tproxyd）
 $R/backups/                   backup.sh 产物
@@ -152,7 +153,7 @@ journalctl -u 'jiuzhang-*' -f                          # 全部组件日志
   `ProtectSystem=strict` + `ReadWritePaths=$R/data`（网关另放行 /tmp/coraza）
 - 宿主兼容符号链接（发布配置硬编码路径 → 安装根；卸载时仅移除仍指向安装根的）：
   ```
-  /etc/caddy/rules              -> $R/gateway/rules
+  /etc/caddy/rules              -> $R/data/rules
   /etc/caddy/certs              -> $R/data/runtime/certificates
   /srv/jiuzhang/blockpage.html  -> $R/gateway/blockpage.html
   /var/log/caddy                -> $R/data/logs/caddy

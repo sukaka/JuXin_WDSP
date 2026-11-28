@@ -83,7 +83,12 @@ switch_current() {
   parent="$(dirname "$CURRENT_LINK")"
   tmp="$parent/.current.rollback.$$"
   ln -s "$OLD_INSTALL_ROOT" "$tmp"
-  mv -Tf "$tmp" "$CURRENT_LINK"
+  if ! mv -Tf "$tmp" "$CURRENT_LINK" 2>/dev/null \
+    && ! mv -hf "$tmp" "$CURRENT_LINK" 2>/dev/null \
+    && ! { command -v python3 >/dev/null 2>&1 && python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$tmp" "$CURRENT_LINK" 2>/dev/null; }; then
+    rm -f -- "$tmp"
+    die "回滚切换 current 软链失败: ${CURRENT_LINK}"
+  fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -107,6 +112,7 @@ OLD_SERVER_IMAGE=""; OLD_GATEWAY_IMAGE=""; NEW_SERVER_IMAGE=""; NEW_GATEWAY_IMAG
 OLD_SERVER_IMAGE_ID=""; OLD_GATEWAY_IMAGE_ID=""; NEW_SERVER_IMAGE_ID=""
 TARGET_COMPOSE_FILE=""; TARGET_ENV_FILE=""; PREVIOUS_COMPOSE_FILE=""; CURRENT_LINK=""
 FULL_UPGRADE=false; SCHEMA_BEFORE=""; UPGRADE_SERVICES=""; TARGET_IMAGES_B64=""; OLD_IMAGES_B64=""; OLD_IDS_B64=""; API_EXTRA_NETWORKS_B64=""
+RULES_VOLUME_NAME=""; RULES_PREVIOUS_CURRENT_TARGET=""
 load_env_file "$STATE_FILE"
 [[ -n "$OLD_SERVER_IMAGE" && -n "$OLD_GATEWAY_IMAGE" ]] || die "回滚状态缺少旧镜像信息"
 [[ -n "$BACKUP_JOB_ID" ]] || log_warn "回滚状态无备份任务 ID"
@@ -233,6 +239,31 @@ restore_sidecars_permissions_for_legacy_netmgrd() {
   fi
   log_info "已恢复 sidecars 目录权限（0:1000 0770，兼容旧版无 group_add 的 netmgrd）"
 }
+restore_gateway_rules_symlink_if_needed() {
+  # 仅当升级期间将 builtin-* current 切换到了新版 builtin-* 时才回切；
+  # 若原环境已使用客户日期规则包（apply.sh 未改动 current）或旧版仍挂载宿主目录，则不触碰。
+  [[ -n "$RULES_VOLUME_NAME" && -n "$RULES_PREVIOUS_CURRENT_TARGET" ]] || return 0
+  [[ "$RULES_PREVIOUS_CURRENT_TARGET" =~ ^releases/builtin-[0-9A-Za-z._-]+$ ]] || return 0
+  local dst tmp_link rel
+  dst="$(docker volume inspect --format '{{.Mountpoint}}' "$RULES_VOLUME_NAME" 2>/dev/null || true)"
+  [[ -n "$dst" && "$dst" == /* && -d "$dst" && ! -L "$dst" ]] || return 0
+  for rel in coraza.conf crs/crs-setup.conf jiuzhang/post-contrib-blocking.conf; do
+    [[ -f "$dst/$RULES_PREVIOUS_CURRENT_TARGET/$rel" && ! -L "$dst/$RULES_PREVIOUS_CURRENT_TARGET/$rel" && -s "$dst/$RULES_PREVIOUS_CURRENT_TARGET/$rel" ]] || return 0
+  done
+  tmp_link="$dst/.current.rollback.$$.$RANDOM"
+  rm -f -- "$tmp_link"
+  ln -s "$RULES_PREVIOUS_CURRENT_TARGET" "$tmp_link" || die "创建回滚规则软链失败: $dst"
+  if [[ "$(id -u)" == "0" ]]; then
+    chown -h 1000:1000 "$tmp_link" 2>/dev/null || true
+  fi
+  if ! mv -Tf "$tmp_link" "$dst/current" 2>/dev/null \
+    && ! mv -hf "$tmp_link" "$dst/current" 2>/dev/null \
+    && ! { command -v python3 >/dev/null 2>&1 && python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$tmp_link" "$dst/current" 2>/dev/null; }; then
+    rm -f -- "$tmp_link"
+    die "回滚恢复规则卷 current 软链失败: $dst"
+  fi
+  log_info "已恢复规则卷 current 软链（卷: ${RULES_VOLUME_NAME}，current -> ${RULES_PREVIOUS_CURRENT_TARGET}）"
+}
 
 confirm "确认恢复原容器镜像及本轮新增迁移？" || { log_warn "已取消"; exit 3; }
 EXISTING_SERVICES=()
@@ -316,6 +347,7 @@ else
   ((${#REMOVE_SERVICES[@]} == 0)) || compose rm -sf "${REMOVE_SERVICES[@]}" >/dev/null 2>&1 || true
 fi
 restore_sidecars_permissions_for_legacy_netmgrd
+restore_gateway_rules_symlink_if_needed
 log_info "重建原组件: ${EXISTING_SERVICES[*]}"
 compose rm -sf "${EXISTING_SERVICES[@]}" >/dev/null 2>&1 || true
 compose up -d --no-deps --force-recreate "${EXISTING_SERVICES[@]}" || die "原容器重建失败"

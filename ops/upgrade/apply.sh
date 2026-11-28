@@ -20,6 +20,8 @@ TARGET_IMAGES=()
 OLD_IMAGES=()
 OLD_IDS=()
 API_EXTRA_NETWORKS=()
+RULES_VOLUME_NAME=""
+RULES_PREVIOUS_CURRENT_TARGET=""
 SWITCH_STARTED=false
 
 usage() {
@@ -135,10 +137,10 @@ copy_cert_file_to_vol() {
   local src="$1" dst_dir="$2" name="$3"
   local dest="$dst_dir/$name" tmp="" cur_mode=""
   [[ ! -L "$src" && -f "$src" && -s "$src" ]] || return 1
-  [[ ! -L "$dest" ]] || die "目标证书卷中存在符号链接: $name（未切换容器）"
+  [[ ! -L "$dest" ]] || die "目标证书卷中存在符号链接: ${name}（未切换容器）"
   if [[ -e "$dest" ]]; then
     [[ -f "$dest" ]] && cmp -s "$src" "$dest" \
-      || die "目标证书卷已存在同名但内容不同的文件: $name，拒绝覆盖（未切换容器）"
+      || die "目标证书卷已存在同名但内容不同的文件: ${name}，拒绝覆盖（未切换容器）"
     ensure_owner_1000 "$dest" || die "无法设置证书文件属主: $dest"
     cur_mode="$(file_mode_octal "$dest")"
     if [[ "$name" == *.key ]]; then
@@ -151,7 +153,7 @@ copy_cert_file_to_vol() {
   tmp="$(mktemp "$dst_dir/.wdsp-cert-migrate.XXXXXX")" || die "无法在证书卷创建临时文件: $dst_dir"
   if ! cat "$src" > "$tmp" || ! ensure_owner_1000 "$tmp" || ! chmod 0600 "$tmp" || ! mv -f "$tmp" "$dest"; then
     rm -f -- "$tmp"
-    die "迁移证书文件失败: $name（未切换容器）"
+    die "迁移证书文件失败: ${name}（未切换容器）"
   fi
   return 0
 }
@@ -163,7 +165,7 @@ migrate_gateway_certs_if_needed() {
   [[ -n "$target_gw_vol" && "$target_gw_vol" == "$target_api_vol" ]] || return 0
 
   target_vol_name="$(compose_volume_name "$TARGET_COMPOSE_JSON" "$target_gw_vol")"
-  [[ -n "$target_vol_name" ]] || die "无法解析目标证书卷名（compose 卷键: $target_gw_vol）"
+  [[ -n "$target_vol_name" ]] || die "无法解析目标证书卷名（compose 卷键: ${target_gw_vol}）"
   project_name="$(jq -r '.name // empty' <<<"$TARGET_COMPOSE_JSON")"
 
   old_gw_vol="$(compose_volume_source "$OLD_COMPOSE_JSON" gateway /etc/caddy/certs)"
@@ -179,12 +181,12 @@ migrate_gateway_certs_if_needed() {
     [[ -z "$project_name" ]] || create_args+=(--label "com.docker.compose.project=$project_name")
     create_args+=(--label "com.docker.compose.volume=$target_gw_vol")
     docker volume create "${create_args[@]}" "$target_vol_name" >/dev/null \
-      || die "创建目标证书卷失败: $target_vol_name（未切换容器）"
+      || die "创建目标证书卷失败: ${target_vol_name}（未切换容器）"
   fi
   local dst
   dst="$(docker volume inspect --format '{{.Mountpoint}}' "$target_vol_name" 2>/dev/null || true)"
   [[ -n "$dst" && "$dst" == /* && -d "$dst" && ! -L "$dst" ]] \
-    || die "无法解析目标证书卷挂载目录: $target_vol_name（未切换容器）"
+    || die "无法解析目标证书卷挂载目录: ${target_vol_name}（未切换容器）"
   ensure_owner_1000 "$dst" || die "无法设置目标证书卷属主为 1000:1000: $dst"
   chmod 0700 "$dst" || die "无法设置目标证书卷权限: $dst"
 
@@ -243,12 +245,12 @@ migrate_gateway_certs_if_needed() {
       [.apps.tls.certificates.load_files[]? | .certificate, .key]
       | map(select(type == "string" and startswith("/etc/caddy/certs/")))
       | unique[]
-    ' "$autosave" 2>/dev/null)" || die "无法解析当前网关 autosave.json 的证书引用: $autosave（未切换容器）"
+    ' "$autosave" 2>/dev/null)" || die "无法解析当前网关 autosave.json 的证书引用: ${autosave}（未切换容器）"
     while IFS= read -r ref; do
       [[ -n "$ref" ]] || continue
       rel="${ref#/etc/caddy/certs/}"
       [[ -n "$rel" && "$rel" != */* && "$rel" != "." && "$rel" != ".." ]] \
-        || die "网关 autosave.json 含非法证书路径引用: $ref（未切换容器）"
+        || die "网关 autosave.json 含非法证书路径引用: ${ref}（未切换容器）"
       [[ -f "$dst/$rel" && ! -L "$dst/$rel" && -s "$dst/$rel" ]] \
         || die "目标证书卷 ${target_vol_name} 缺少当前网关配置引用的证书文件: ${rel}（未切换容器）"
       verified_refs=$((verified_refs + 1))
@@ -256,6 +258,238 @@ migrate_gateway_certs_if_needed() {
   fi
   if (( migrated > 0 || verified_refs > 0 )); then
     log_info "已完成跨版本证书卷迁移与核验（卷: ${target_vol_name}，本次迁移 ${migrated} 个文件，autosave 核验 ${verified_refs} 项）"
+  fi
+}
+verify_rules_anchors() {
+  local dir="$1" rel
+  [[ -d "$dir" && ! -L "$dir" ]] || return 1
+  for rel in coraza.conf crs/crs-setup.conf jiuzhang/post-contrib-blocking.conf; do
+    [[ -f "$dir/$rel" && ! -L "$dir/$rel" && -s "$dir/$rel" ]] || return 1
+  done
+  return 0
+}
+atomic_replace_symlink() {
+  local target="$1" link_path="$2" parent tmp_link
+  parent="$(dirname "$link_path")"
+  tmp_link="$parent/.$(basename "$link_path").tmp.$$.$RANDOM"
+  rm -f -- "$tmp_link"
+  ln -s "$target" "$tmp_link" || return 1
+  if [[ "$(id -u)" == "0" ]]; then
+    chown -h 1000:1000 "$tmp_link" 2>/dev/null || true
+  fi
+  if mv -Tf "$tmp_link" "$link_path" 2>/dev/null; then
+    return 0
+  fi
+  if mv -hf "$tmp_link" "$link_path" 2>/dev/null; then
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$tmp_link" "$link_path" 2>/dev/null; then
+    return 0
+  fi
+  rm -f -- "$tmp_link"
+  return 1
+}
+resolve_target_builtin_rulepack_version() {
+  local ver="" raw_tag=""
+  if [[ -f "$TARGET_INSTALL_ROOT/manifest.json" ]]; then
+    ver="$(jq -r '.version // empty' "$TARGET_INSTALL_ROOT/manifest.json" 2>/dev/null || true)"
+  fi
+  if [[ -z "$ver" && -f "$TARGET_INSTALL_ROOT/PRODUCT.txt" ]]; then
+    ver="$(awk -F= '$1=="version"{print $2; exit}' "$TARGET_INSTALL_ROOT/PRODUCT.txt" 2>/dev/null || true)"
+  fi
+  if [[ -z "$ver" && -n "$SERVER_IMAGE" ]]; then
+    raw_tag="${SERVER_IMAGE%%@*}"
+    if [[ "$raw_tag" == *:* ]]; then
+      ver="${raw_tag##*:}"
+    fi
+  fi
+  ver="${ver#v}"
+  ver="$(printf '%s' "$ver" | tr -c '0-9A-Za-z._-' '-' | sed 's/^-*//; s/-*$//')"
+  [[ -n "$ver" && "$ver" =~ ^[0-9A-Za-z._-]+$ ]] || ver="0.0.0"
+  printf 'builtin-%s\n' "$ver"
+}
+resolve_seed_rules_dir() {
+  local cand
+  for cand in "$TARGET_INSTALL_ROOT/gateway/rules" "$TARGET_INSTALL_ROOT/../gateway/rules"; do
+    if [[ -d "$cand" && ! -L "$cand" ]] && verify_rules_anchors "$cand"; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+copy_rules_seed_dir() {
+  local src="$1" dst="$2"
+  mkdir -p "$dst" || return 1
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$src" "$dst" <<'PY' || return 1
+import os, shutil, sys
+src, dst = sys.argv[1], sys.argv[2]
+for root, dirs, files in os.walk(src, followlinks=False):
+    rel = os.path.relpath(root, src)
+    target_root = dst if rel == "." else os.path.join(dst, rel)
+    os.makedirs(target_root, mode=0o750, exist_ok=True)
+    os.chmod(target_root, 0o750)
+    # 跳过源目录内的符号链接目录，防止目录逃逸
+    dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
+    for name in files:
+        sp = os.path.join(root, name)
+        if os.path.islink(sp) or not os.path.isfile(sp):
+            continue
+        dp = os.path.join(target_root, name)
+        shutil.copyfile(sp, dp)
+        os.chmod(dp, 0o640)
+PY
+  else
+    cp -R "$src/." "$dst/" || return 1
+    find "$dst" -type l -delete || return 1
+    find "$dst" -type d -exec chmod 0750 {} + || return 1
+    find "$dst" -type f -exec chmod 0640 {} + || return 1
+  fi
+  if [[ "$(id -u)" == "0" ]]; then
+    chown -R 1000:1000 "$dst" || return 1
+  fi
+  return 0
+}
+migrate_gateway_rules_volume() {
+  local target_gw_vol target_api_vol target_vol_name project_name
+  target_gw_vol="$(compose_volume_source "$TARGET_COMPOSE_JSON" gateway /etc/caddy/rules)"
+  target_api_vol="$(compose_volume_source "$TARGET_COMPOSE_JSON" api /app/runtime/rules)"
+  [[ -n "$target_gw_vol" && "$target_gw_vol" == "$target_api_vol" ]] || return 0
+
+  target_vol_name="$(compose_volume_name "$TARGET_COMPOSE_JSON" "$target_gw_vol")"
+  [[ -n "$target_vol_name" ]] || die "无法解析目标规则卷名（compose 卷键: ${target_gw_vol}）"
+  project_name="$(jq -r '.name // empty' <<<"$TARGET_COMPOSE_JSON")"
+
+  if ! docker volume inspect "$target_vol_name" >/dev/null 2>&1; then
+    local create_args=()
+    [[ -z "$project_name" ]] || create_args+=(--label "com.docker.compose.project=$project_name")
+    create_args+=(--label "com.docker.compose.volume=$target_gw_vol")
+    docker volume create "${create_args[@]}" "$target_vol_name" >/dev/null \
+      || die "创建目标规则卷失败: ${target_vol_name}（未切换容器）"
+  fi
+  local dst
+  dst="$(docker volume inspect --format '{{.Mountpoint}}' "$target_vol_name" 2>/dev/null || true)"
+  [[ -n "$dst" && "$dst" == /* && -d "$dst" && ! -L "$dst" ]] \
+    || die "无法解析目标规则卷挂载目录: ${target_vol_name}（未切换容器）"
+  ensure_owner_1000 "$dst" || die "无法设置目标规则卷属主为 1000:1000: ${dst}"
+  chmod 0750 "$dst" || die "无法设置目标规则卷权限: ${dst}"
+
+  [[ ! -L "$dst/releases" ]] || die "目标规则卷 releases 路径为符号链接，拒绝迁移（未切换容器）"
+  [[ ! -L "$dst/.staging" ]] || die "目标规则卷 .staging 路径为符号链接，拒绝迁移（未切换容器）"
+  mkdir -p "$dst/releases" "$dst/.staging" || die "无法初始化目标规则卷目录: ${dst}（未切换容器）"
+  ensure_owner_1000 "$dst/releases" && chmod 0750 "$dst/releases" || die "无法设置规则卷 releases 权限: ${dst}/releases"
+  ensure_owner_1000 "$dst/.staging" && chmod 0750 "$dst/.staging" || die "无法设置规则卷 .staging 权限: ${dst}/.staging"
+
+  local seed_dir builtin_ver
+  seed_dir="$(resolve_seed_rules_dir)" || die "目标版本缺少有效内置规则种子目录（未切换容器）"
+  builtin_ver="$(resolve_target_builtin_rulepack_version)"
+
+  local stage_dir="$dst/.staging/seed-${builtin_ver}-$$.$RANDOM"
+  local release_dir="$dst/releases/$builtin_ver"
+  [[ ! -L "$release_dir" ]] || die "目标规则卷内置种子路径为符号链接: ${release_dir}（未切换容器）"
+  rm -rf -- "$stage_dir"
+  if ! copy_rules_seed_dir "$seed_dir" "$stage_dir"; then
+    rm -rf -- "$stage_dir"
+    die "复制内置规则种子到目标规则卷失败: ${target_vol_name}（未切换容器）"
+  fi
+  if ! verify_rules_anchors "$stage_dir"; then
+    rm -rf -- "$stage_dir"
+    die "目标内置规则种子缺少核心锚点文件（coraza.conf/crs-setup.conf/post-contrib-blocking.conf），未切换容器"
+  fi
+  if [[ -e "$release_dir" ]]; then
+    local backup_old="$dst/.staging/old-${builtin_ver}-$$.$RANDOM"
+    rm -rf -- "$backup_old"
+    if ! mv "$release_dir" "$backup_old"; then
+      rm -rf -- "$stage_dir"
+      die "替换既有内置规则种子目录失败: ${release_dir}（未切换容器）"
+    fi
+    if ! mv "$stage_dir" "$release_dir"; then
+      mv "$backup_old" "$release_dir" 2>/dev/null || true
+      rm -rf -- "$stage_dir"
+      die "原子落盘内置规则种子失败: ${release_dir}（未切换容器）"
+    fi
+    rm -rf -- "$backup_old"
+  else
+    if ! mv "$stage_dir" "$release_dir"; then
+      rm -rf -- "$stage_dir"
+      die "原子落盘内置规则种子失败: ${release_dir}（未切换容器）"
+    fi
+  fi
+
+  # 防降级规则（§9.2）：若卷内已存在客户应用的日期规则包（releases/YYYYMMDD.N），
+  # 仅旁路写入新系统 builtin-<ver> 快照，绝不覆盖 current 软链。
+  local current_link="$dst/current"
+  local cur_target="" preserved_customer=false
+  if [[ -e "$current_link" && ! -L "$current_link" ]]; then
+    die "目标规则卷 current 路径不是符号链接，拒绝覆盖（未切换容器）"
+  fi
+  if [[ -L "$current_link" ]]; then
+    cur_target="$(readlink "$current_link")"
+    if [[ "$cur_target" =~ ^releases/([0-9]{8}\.[0-9]{1,3})$ ]]; then
+      verify_rules_anchors "$dst/$cur_target" \
+        || die "目标规则卷 current 指向不完整的客户规则包快照: ${cur_target}（未切换容器）"
+      preserved_customer=true
+      log_info "目标规则卷已激活客户离线规则包（current -> ${cur_target}），已旁路写入内置种子 ${builtin_ver} 并保留客户规则包生效（防降级）"
+    elif [[ "$cur_target" =~ ^releases/builtin-[0-9A-Za-z._-]+$ ]]; then
+      if [[ "$cur_target" != "releases/$builtin_ver" ]]; then
+        RULES_VOLUME_NAME="$target_vol_name"
+        RULES_PREVIOUS_CURRENT_TARGET="$cur_target"
+      fi
+      atomic_replace_symlink "releases/$builtin_ver" "$current_link" \
+        || die "原子更新目标规则卷 current 软链失败（未切换容器）"
+    else
+      die "目标规则卷 current 软链指向非法路径: ${cur_target}（未切换容器）"
+    fi
+  else
+    atomic_replace_symlink "releases/$builtin_ver" "$current_link" \
+      || die "创建目标规则卷 current 相对软链失败（未切换容器）"
+  fi
+
+  local final_target
+  final_target="$(readlink "$current_link" 2>/dev/null || true)"
+  [[ "$final_target" == releases/* ]] && verify_rules_anchors "$dst/$final_target" \
+    || die "目标规则卷 current 指向的快照锚点校验失败: ${final_target:-<empty>}（未切换容器）"
+
+  # 兼容既有扁平路径（如升级前 autosave.json 中仍引用 /etc/caddy/rules/coraza.conf 等路径），
+  # 在卷根建立相对软链指向 current/*，确保 gateway --resume 零中断恢复。
+  local compat_item
+  for compat_item in coraza.conf crs contrib exclusions jiuzhang; do
+    if [[ -e "$dst/$compat_item" && ! -L "$dst/$compat_item" ]]; then
+      die "目标规则卷根目录存在非符号链接的同名条目: ${compat_item}（未切换容器）"
+    fi
+    atomic_replace_symlink "current/$compat_item" "$dst/$compat_item" \
+      || die "创建目标规则卷兼容软链失败: ${compat_item}（未切换容器）"
+  done
+  for compat_item in coraza.conf crs/crs-setup.conf jiuzhang/post-contrib-blocking.conf; do
+    [[ -f "$dst/$compat_item" && -s "$dst/$compat_item" ]] \
+      || die "目标规则卷兼容入口校验失败: ${compat_item}（未切换容器）"
+  done
+
+  # 若既有 gateway autosave.json 显式引用了 releases/<ver>/，在停容器前 fail-closed 复核其完整性
+  local old_gw_id old_cfg_mp old_cfg_vol old_cfg_name autosave autosave_rule_vers ref_ver
+  old_gw_id="$(docker compose -f "$OLD_COMPOSE_FILE" --env-file "$JZ_ENV_FILE" ps -q gateway 2>/dev/null || true)"
+  old_cfg_mp="$(container_mount_source "$old_gw_id" /config)"
+  if [[ -z "$old_cfg_mp" ]]; then
+    old_cfg_vol="$(compose_volume_source "$OLD_COMPOSE_JSON" gateway /config)"
+    if [[ -n "$old_cfg_vol" ]]; then
+      old_cfg_name="$(compose_volume_name "$OLD_COMPOSE_JSON" "$old_cfg_vol")"
+      old_cfg_mp="$(docker volume inspect --format '{{.Mountpoint}}' "$old_cfg_name" 2>/dev/null || true)"
+    fi
+  fi
+  autosave="${old_cfg_mp:+$old_cfg_mp/caddy/autosave.json}"
+  if [[ -n "$autosave" && -f "$autosave" && ! -L "$autosave" && -r "$autosave" ]]; then
+    autosave_rule_vers="$(grep -oE '/etc/caddy/rules/releases/[0-9A-Za-z._-]+/' "$autosave" 2>/dev/null \
+      | sed -E 's|^/etc/caddy/rules/releases/||; s|/$||' | LC_ALL=C sort -u || true)"
+    while IFS= read -r ref_ver; do
+      [[ -n "$ref_ver" ]] || continue
+      verify_rules_anchors "$dst/releases/$ref_ver" \
+        || die "目标规则卷 ${target_vol_name} 缺少当前网关 autosave.json 引用的规则快照: releases/${ref_ver}（未切换容器）"
+    done <<< "$autosave_rule_vers"
+  fi
+
+  if [[ "$preserved_customer" != true ]]; then
+    log_info "已完成规则卷迁移与锚点核验（卷: ${target_vol_name}，current -> ${final_target}）"
   fi
 }
 reconcile_sidecars_permissions_for_netmgrd() {
@@ -450,6 +684,7 @@ esac
 NEW_SERVER_IMAGE_ID="$(docker image inspect "$SERVER_IMAGE" --format '{{.Id}}')" || die "无法读取目标 API 镜像 ID"
 
 migrate_gateway_certs_if_needed
+migrate_gateway_rules_volume
 reconcile_sidecars_permissions_for_netmgrd
 
 API_EXTRA_NETWORKS=()
@@ -482,6 +717,8 @@ TARGET_IMAGES_B64=$(array_encode "${TARGET_IMAGES[@]}")
 OLD_IMAGES_B64=$(array_encode "${OLD_IMAGES[@]}")
 OLD_IDS_B64=$(array_encode "${OLD_IDS[@]}")
 API_EXTRA_NETWORKS_B64=$(array_encode ${API_EXTRA_NETWORKS[@]+"${API_EXTRA_NETWORKS[@]}"})
+RULES_VOLUME_NAME=$RULES_VOLUME_NAME
+RULES_PREVIOUS_CURRENT_TARGET=$RULES_PREVIOUS_CURRENT_TARGET
 BACKUP_JOB_ID=$BACKUP_JOB_ID
 UPGRADE_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 EOF
@@ -527,7 +764,7 @@ wait_selected_services() {
       IFS='|' read -r state health image restarts started extra <<<"$snapshot"
       expected="$(docker image inspect "${TARGET_IMAGES[$i]}" --format '{{.Id}}' 2>/dev/null)" || { ready=false; break; }
       if [[ "$state" != running || -n "$extra" || ( -n "$health" && "$health" != healthy ) || "$image" != "$expected" || ! "$restarts" =~ ^[0-9]+$ || -z "$started" ]]; then
-        log_warn "$service 尚未运行目标镜像并通过自身健康检查（状态=${state:-unknown} 健康=${health:-未配置} 重启=${restarts:-?} 镜像=$image 预期=$expected）"
+        log_warn "$service 尚未运行目标镜像并通过自身健康检查（状态=${state:-unknown} 健康=${health:-未配置} 重启=${restarts:-?} 镜像=${image} 预期=${expected}）"
         ready=false; break
       fi
       case "$service" in
@@ -560,7 +797,7 @@ if [[ -x "$SCRIPT_DIR/../healthcheck/check.sh" ]]; then
     || die "升级后健康检查失败"
 fi
 bash "$TARGET_INSTALL_ROOT/ops/install/install-hostctl.sh" --install-root "$TARGET_INSTALL_ROOT" --strict \
-  || die "升级后 hostctl 单元更新失败（目标 release: $TARGET_INSTALL_ROOT），开始自动回滚"
+  || die "升级后 hostctl 单元更新失败（目标 release: ${TARGET_INSTALL_ROOT}），开始自动回滚"
 SWITCH_STARTED=false
 trap - EXIT
-log_info "容器与数据库升级完成；备份任务 $BACKUP_JOB_ID。current 由完整升级入口在后续宿主检查通过后切换"
+log_info "容器与数据库升级完成；备份任务 ${BACKUP_JOB_ID}。current 由完整升级入口在后续宿主检查通过后切换"

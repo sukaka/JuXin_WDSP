@@ -141,12 +141,13 @@ class MirrorcapDeliveryTests(unittest.TestCase):
 
             rules_mounts = [m for m in mounts if m.get("target") == "/etc/caddy/rules"]
             self.assertEqual(len(rules_mounts), 1, mounts)
-            self.assertEqual(rules_mounts[0].get("type"), "bind")
-            self.assertEqual(
-                Path(rules_mounts[0]["source"]).resolve(),
-                (pkg_root / "gateway/rules").resolve(),
-            )
+            self.assertEqual(rules_mounts[0].get("type"), "volume")
+            self.assertEqual(rules_mounts[0].get("source"), "gateway-rules")
             self.assertIs(rules_mounts[0].get("read_only"), True)
+            self.assertEqual(
+                mirrorcap.get("environment", {}).get("MIRROR_RULES_DIR"),
+                "/etc/caddy/rules/current",
+            )
 
             allowed_services = (
                 services["containerops"]
@@ -197,11 +198,13 @@ class MirrorcapDeliveryTests(unittest.TestCase):
 
         rules_mounts = [m for m in mounts if m.get("target") == "/etc/caddy/rules"]
         self.assertEqual(len(rules_mounts), 1, mounts)
-        self.assertEqual(
-            Path(rules_mounts[0]["source"]).resolve(),
-            (ROOT / "gateway/rules").resolve(),
-        )
+        self.assertEqual(rules_mounts[0].get("type"), "volume")
+        self.assertEqual(rules_mounts[0].get("source"), "stage5-gateway-rules")
         self.assertIs(rules_mounts[0].get("read_only"), True)
+        self.assertEqual(
+            mirrorcap.get("environment", {}).get("MIRROR_RULES_DIR"),
+            "/etc/caddy/rules/current",
+        )
 
         allowed_services = (
             services["containerops"]

@@ -592,7 +592,12 @@ services:
       CADDY_ADMIN_SOCKET: /var/run/caddy/admin.sock
       GATEWAY_DATA_DIR: /app/runtime
       MIGRATIONS_DIR: /app/migrations
-      # 防护规则库元数据同步目录（与 gateway 共用 ./gateway/rules 只读挂载，缺省则回退镜像内置目录）
+      # 纯离线 WAF 规则包版本化存储（独立命名卷 gateway-rules；api 读写，gateway/mirrorcap 只读）
+      WAF_RULES_STORE_DIR: /app/runtime/rules
+      WAF_RULES_SEED_DIR: /app/gateway/rules
+      GATEWAY_RULES_ROOT: /etc/caddy/rules
+      WAF_RULEPACK_RETENTION: \${WAF_RULEPACK_RETENTION:-5}
+      # 防护规则库元数据同步兜底目录（未启用版本化存储时兼容回退）
       WAF_CRS_DIR: /etc/caddy/rules/crs/rules
       WAF_CRS_VERSION: 4.28.0
       # 产品线（由打包写入，安装时可被 .env 覆盖）
@@ -653,11 +658,12 @@ services:
     volumes:
       - gateway-admin:/var/run/caddy
       - gateway-logs:/var/log/caddy-audit:ro
-      # 只读挂载 WAF 规则目录（CRS + 插件 + contrib + 九章内置，与 gateway 共源）
-      - ./gateway/rules:/etc/caddy/rules:ro
       - runtime-data:/app/runtime
       # HTTPS 证书下发：与 gateway 的 /etc/caddy/certs 共用同一卷；嵌套在 runtime-data 下
       - gateway-certs:/app/runtime/certificates
+      # 离线 WAF 规则包版本化存储：与 gateway/mirrorcap 的 /etc/caddy/rules:ro 及 hasyncd 的
+      # /app/runtime/rules 共用同一独立命名卷；嵌套在 runtime-data 下，相对软链 current 跨挂载一致。
+      - gateway-rules:/app/runtime/rules
       # 系统控制通道：API 写入的 hostctl 标志必须对宿主机 path 单元可见；
       # 在 runtime-data 挂载点下叠加嵌套 bind，保留其余 runtime 命名卷数据。
       - ./runtime/hostctl:/app/runtime/hostctl
@@ -741,12 +747,11 @@ services:
       - gateway-config:/data
       # API 写入 /app/runtime/certificates；Caddy 经同一卷只读加载
       - gateway-certs:/etc/caddy/certs:ro
-      # 修复既有缺陷（设计文档「二、现状与关键事实」）：原生产模板缺少
-      # rules/Caddyfile/blockpage 挂载，参照 deployment/docker-compose.stage5.yml 补齐。
-      # 离线生产包统一从 bootstrap Caddyfile 启动，配置由 API 经 Unix Socket 发布。
+      # 离线生产包统一从 bootstrap Caddyfile 启动（仅绑定 Admin Unix Socket，无静态规则 Include），
+      # 规则由 API 经 gateway-rules 卷版本化管理并经 Unix Socket 发布；gateway 保持严格只读。
       - ./gateway/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./gateway/blockpage.html:/srv/jiuzhang/blockpage.html:ro
-      - ./gateway/rules:/etc/caddy/rules:ro
+      - gateway-rules:/etc/caddy/rules:ro
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE, SETUID, SETGID, SETPCAP]
@@ -806,11 +811,11 @@ services:
     environment:
       GATEWAY_NODE_NAME: \${GATEWAY_NODE_NAME:-gateway-poc-01}
       MIRROR_DROP_PRIVS: "1"
-      MIRROR_RULES_DIR: /etc/caddy/rules
+      MIRROR_RULES_DIR: /etc/caddy/rules/current
     volumes:
       - gateway-admin:/var/run/caddy:ro
       - gateway-logs:/var/log/caddy
-      - ./gateway/rules:/etc/caddy/rules:ro
+      - gateway-rules:/etc/caddy/rules:ro
     depends_on:
       gateway: {condition: service_started}
 
@@ -882,12 +887,14 @@ services:
       HASYNC_TLS_KEY: \${HASYNC_TLS_KEY:-}
       UPGRADE_PACKAGES_DIR: /app/runtime/upgrade-packages
       UPGRADE_EXECUTOR_DIR: /app/runtime/upgrade-executor
+      HASYNC_RULES_DIR: /app/runtime/rules
     ports:
       - "\${HASYNC_BIND_ADDR:-127.0.0.1}:\${HASYNC_PORT:-18443}:18443"
     volumes:
       - gateway-admin:/var/run/caddy
       - gateway-logs:/var/log/caddy:ro
       - runtime-data:/app/runtime
+      - gateway-rules:/app/runtime/rules
       - ./runtime/hostctl:/app/runtime/hostctl
     depends_on:
       gateway: {condition: service_started}
@@ -954,6 +961,7 @@ volumes:
   gateway-logs: {driver: local}
   gateway-config: {driver: local}
   gateway-certs: {driver: local}
+  gateway-rules: {driver: local}
   runtime-data: {driver: local}
   containerops-data: {driver: local}
 
@@ -983,6 +991,8 @@ API_DYNAMIC_PROTECTION_ENABLED=${API_DYNAMIC_DEFAULT}
 WEB_WAF_ENABLED=${WEB_WAF_DEFAULT}
 # 网关侧 API 防护模式：OFF | OBSERVE | PROTECT
 API_PROTECTION_MODE=OBSERVE
+# 纯离线 WAF 规则包历史快照保留数量（2-20，默认 5）
+WAF_RULEPACK_RETENTION=5
 
 # ---------- APM 业务性能监控（可选能力，默认关闭）----------
 # 管理面总开关：true 后 /api/v1/apm/* 生效；false（默认）时统一 503 降级

@@ -48,7 +48,7 @@ RUN if [ "$WDSP_LICENSE_TEST_KEYS" = "1" ]; then \
 FROM alpine:3.24${ALPINE_IMAGE_DIGEST:+@$ALPINE_IMAGE_DIGEST}
 
 RUN addgroup -g 1000 -S jiuzhang && adduser -u 1000 -S -G jiuzhang jiuzhang \
-    && mkdir -p /app/migrations /app/runtime/certificates && chown -R jiuzhang:jiuzhang /app
+    && mkdir -p /app/migrations /app/runtime/certificates /app/runtime/rules && chown -R jiuzhang:jiuzhang /app
 
 # 极少变动的大体积离线资产前置（报告 PDF 字体与离线 GeoIP 库），
 # 保证跨版本层 diff_id 稳定，供 Web 差量升级包（layer-delta）直接复用

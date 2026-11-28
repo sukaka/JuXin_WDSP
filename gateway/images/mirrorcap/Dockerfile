@@ -44,8 +44,8 @@ FROM alpine:3.24${ALPINE_IMAGE_DIGEST:+@$ALPINE_IMAGE_DIGEST}
 RUN apk add --no-cache ethtool \
     && addgroup -g 1000 -S mirrorcap \
     && adduser -u 1000 -S -G mirrorcap -H -h /var/lib/mirrorcap mirrorcap \
-    && mkdir -p /var/log/caddy /var/run/caddy/sidecars /tmp/coraza \
-    && chown -R mirrorcap:mirrorcap /var/log/caddy /var/run/caddy /tmp/coraza
+    && mkdir -p /etc/caddy/rules /var/log/caddy /var/run/caddy/sidecars /tmp/coraza \
+    && chown -R mirrorcap:mirrorcap /etc/caddy/rules /var/log/caddy /var/run/caddy /tmp/coraza
 
 COPY --from=builder /out/mirrorcap /usr/local/bin/mirrorcap
 

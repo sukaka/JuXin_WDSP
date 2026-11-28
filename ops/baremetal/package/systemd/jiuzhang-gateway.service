@@ -22,6 +22,8 @@ NoNewPrivileges=true
 ProtectSystem=strict
 # /tmp/coraza：coraza.conf SecDataDir 持久化目录（/etc/tmpfiles.d/jiuzhang.conf 创建）
 ReadWritePaths=__ROOT__/data /tmp/coraza
+# 离线规则包存储仅由 api / hasyncd 写入，网关严格只读访问（覆盖 ReadWritePaths=__ROOT__/data）
+ReadOnlyPaths=__ROOT__/data/rules
 LimitNOFILE=1048576
 Restart=on-failure
 RestartSec=5

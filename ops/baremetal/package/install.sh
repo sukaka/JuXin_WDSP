@@ -165,6 +165,21 @@ if [[ -f "${ENV_FILE}" ]]; then
     fi
   done < "${rendered_tmp}"
   rm -f "${rendered_tmp}"
+  # 升级平滑迁移：旧版默认值指向只读 ${R}/gateway/rules 时，更新为版本化路径（保留自定义值）
+  if grep -qxF "MIRROR_RULES_DIR=${R}/gateway/rules" "${ENV_FILE}"; then
+    env_mig_tmp="$(mktemp)"
+    awk -v old="MIRROR_RULES_DIR=${R}/gateway/rules" -v repl="MIRROR_RULES_DIR=/etc/caddy/rules/current" \
+      '$0 == old { print repl; next } { print }' "${ENV_FILE}" > "${env_mig_tmp}"
+    mv -f "${env_mig_tmp}" "${ENV_FILE}"
+    log_info "  迁移 MIRROR_RULES_DIR -> /etc/caddy/rules/current"
+  fi
+  if grep -qxF "WAF_CRS_DIR=${R}/gateway/rules/crs/rules" "${ENV_FILE}"; then
+    env_mig_tmp="$(mktemp)"
+    awk -v old="WAF_CRS_DIR=${R}/gateway/rules/crs/rules" -v repl="WAF_CRS_DIR=/etc/caddy/rules/crs/rules" \
+      '$0 == old { print repl; next } { print }' "${ENV_FILE}" > "${env_mig_tmp}"
+    mv -f "${env_mig_tmp}" "${ENV_FILE}"
+    log_info "  迁移 WAF_CRS_DIR -> /etc/caddy/rules/crs/rules"
+  fi
 else
   (umask 077; render_env > "${ENV_FILE}")
   log_info "已生成 ${ENV_FILE}（含随机口令）"
@@ -188,7 +203,8 @@ NODE_NAME="$(env_get GATEWAY_NODE_NAME)"; NODE_NAME="${NODE_NAME:-gateway-bareme
 log_info "==> [5/16] 数据目录树"
 mkdir -p "${R}/data/pgdata" "${R}/data/valkey" \
   "${R}/data/caddy/config" "${R}/data/caddy/data" "${R}/data/caddy-console" \
-  "${R}/data/runtime" "${R}/data/runtime/hostctl" \
+  "${R}/data/rules" "${R}/data/rules/releases" "${R}/data/rules/.staging" \
+  "${R}/data/runtime" "${R}/data/runtime/hostctl" "${R}/data/runtime/rulepack-archives" \
   "${R}/data/runtime/upgrade-packages" "${R}/data/runtime/upgrade-executor/jobs" "${R}/data/runtime/upgrade-executor/results" \
   "${R}/data/logs/caddy" "${R}/data/run/caddy/sidecars" "${R}/data/run/caddy/sidecars/keepalived" \
   "${R}/data/run/pg" "${R}/certificates" "${R}/backups"
@@ -197,7 +213,8 @@ chown root:root "${R}/backups"
 chmod 0750 "${R}/data"
 chmod 0700 "${R}/backups"
 chmod 0700 "${R}/data/pgdata" "${R}/data/caddy" "${R}/data/caddy-console" "${R}/certificates"
-chmod 0750 "${R}/data/valkey" "${R}/data/runtime" "${R}/data/runtime/hostctl" \
+chmod 0750 "${R}/data/valkey" "${R}/data/rules" "${R}/data/rules/releases" "${R}/data/rules/.staging" \
+  "${R}/data/runtime" "${R}/data/runtime/hostctl" "${R}/data/runtime/rulepack-archives" \
   "${R}/data/runtime/upgrade-packages" "${R}/data/runtime/upgrade-executor" \
   "${R}/data/logs" "${R}/data/logs/caddy" "${R}/data/run" "${R}/data/run/caddy" "${R}/data/run/pg"
 # sidecars：api（jiuzhang）写 network.json / ha-vip.json，netmgrd / havipd（root + SupplementaryGroups=jiuzhang、
@@ -206,6 +223,106 @@ chmod 0770 "${R}/data/run/caddy/sidecars" "${R}/data/run/caddy/sidecars/keepaliv
 if [[ -d "${R}/data/run/caddy/sidecars/diag" ]]; then
   chmod 0770 "${R}/data/run/caddy/sidecars/diag"
 fi
+
+# ---------- 5b. 初始化版本化 WAF 规则包存储（__ROOT__/data/rules） ----------
+# 非破坏性防降级原则（§9.2）：若已存在客户上传生效的日期规则包（current -> releases/YYYYMMDD.N），
+# 仅旁路写入新内置种子 releases/builtin-<ver>/，绝不回退或覆盖 current。
+baremetal_verify_rules_anchors() {
+  local dir="$1" rel
+  [[ -d "${dir}" && ! -L "${dir}" ]] || return 1
+  for rel in coraza.conf crs/crs-setup.conf jiuzhang/post-contrib-blocking.conf; do
+    [[ -f "${dir}/${rel}" && ! -L "${dir}/${rel}" && -s "${dir}/${rel}" ]] || return 1
+  done
+  return 0
+}
+baremetal_atomic_symlink() {
+  local target="$1" link_path="$2" parent tmp_link
+  parent="$(dirname "${link_path}")"
+  tmp_link="${parent}/.$(basename "${link_path}").tmp.$$"
+  rm -f -- "${tmp_link}"
+  ln -s "${target}" "${tmp_link}" || return 1
+  chown -h "${RUN_USER}:${RUN_USER}" "${tmp_link}" 2>/dev/null || true
+  if mv -Tf "${tmp_link}" "${link_path}" 2>/dev/null; then
+    return 0
+  fi
+  if mv -hf "${tmp_link}" "${link_path}" 2>/dev/null; then
+    return 0
+  fi
+  rm -f -- "${tmp_link}"
+  return 1
+}
+init_baremetal_versioned_rules() {
+  local rules_root="${R}/data/rules"
+  local seed_src="${R}/gateway/rules"
+  local raw_ver="" builtin_ver stage_dir release_dir cur_target compat_item
+  baremetal_verify_rules_anchors "${seed_src}" || die "内置规则种子目录不完整：${seed_src}"
+  if [[ -f "${R}/VERSION" ]]; then
+    raw_ver="$(awk 'NF{print $1; exit}' "${R}/VERSION" 2>/dev/null || true)"
+  elif [[ -f "${seed_src}/crs/VERSION.txt" ]]; then
+    raw_ver="$(awk 'NF{print $1; exit}' "${seed_src}/crs/VERSION.txt" 2>/dev/null || true)"
+  fi
+  raw_ver="${raw_ver#v}"
+  raw_ver="$(printf '%s' "${raw_ver}" | tr -c '0-9A-Za-z._-' '-' | sed 's/^-*//; s/-*$//')"
+  [[ -n "${raw_ver}" ]] || raw_ver="baremetal"
+  builtin_ver="builtin-${raw_ver}"
+
+  stage_dir="${rules_root}/.staging/seed-${builtin_ver}-$$"
+  release_dir="${rules_root}/releases/${builtin_ver}"
+  [[ ! -L "${release_dir}" ]] || die "规则存储内置快照路径为符号链接，拒绝覆盖：${release_dir}"
+  rm -rf -- "${stage_dir}"
+  mkdir -p "${stage_dir}"
+  cp -R "${seed_src}/." "${stage_dir}/"
+  find "${stage_dir}" -type l -delete
+  find "${stage_dir}" -type d -exec chmod 0750 {} +
+  find "${stage_dir}" -type f -exec chmod 0640 {} +
+  chown -R "${RUN_USER}:${RUN_USER}" "${stage_dir}"
+  baremetal_verify_rules_anchors "${stage_dir}" || { rm -rf -- "${stage_dir}"; die "规则种子落盘校验失败：${builtin_ver}"; }
+  if [[ -e "${release_dir}" ]]; then
+    local backup_old="${rules_root}/.staging/old-${builtin_ver}-$$"
+    rm -rf -- "${backup_old}"
+    mv "${release_dir}" "${backup_old}"
+    if ! mv "${stage_dir}" "${release_dir}"; then
+      mv "${backup_old}" "${release_dir}" 2>/dev/null || true
+      rm -rf -- "${stage_dir}"
+      die "原子替换内置规则种子失败：${release_dir}"
+    fi
+    rm -rf -- "${backup_old}"
+  else
+    mv "${stage_dir}" "${release_dir}"
+  fi
+
+  if [[ -e "${rules_root}/current" && ! -L "${rules_root}/current" ]]; then
+    die "规则存储 ${rules_root}/current 不是符号链接，拒绝覆盖"
+  fi
+  if [[ -L "${rules_root}/current" ]]; then
+    cur_target="$(readlink "${rules_root}/current")"
+    if [[ "${cur_target}" =~ ^releases/([0-9]{8}\.[0-9]{1,3})$ ]]; then
+      baremetal_verify_rules_anchors "${rules_root}/${cur_target}" \
+        || die "既有客户规则包快照不完整：${rules_root}/${cur_target}"
+      log_info "保留既有客户离线规则包生效：current -> ${cur_target}（已旁路写入内置种子 ${builtin_ver}）"
+    elif [[ "${cur_target}" =~ ^releases/builtin-[0-9A-Za-z._-]+$ ]]; then
+      baremetal_atomic_symlink "releases/${builtin_ver}" "${rules_root}/current" \
+        || die "更新 ${rules_root}/current 软链失败"
+      log_info "已更新版本化规则基线：current -> releases/${builtin_ver}"
+    else
+      die "规则存储 current 软链指向非法路径：${cur_target}"
+    fi
+  else
+    baremetal_atomic_symlink "releases/${builtin_ver}" "${rules_root}/current" \
+      || die "创建 ${rules_root}/current 相对软链失败"
+    log_info "已初始化版本化规则存储：current -> releases/${builtin_ver}"
+  fi
+
+  # 卷根兼容软链（保障既有 autosave.json 中的扁平 /etc/caddy/rules/... 引用零中断）
+  for compat_item in coraza.conf crs contrib exclusions jiuzhang; do
+    if [[ -e "${rules_root}/${compat_item}" && ! -L "${rules_root}/${compat_item}" ]]; then
+      die "规则存储根目录存在非符号链接的同名条目：${rules_root}/${compat_item}"
+    fi
+    baremetal_atomic_symlink "current/${compat_item}" "${rules_root}/${compat_item}" \
+      || die "创建规则兼容软链失败：${rules_root}/${compat_item}"
+  done
+}
+init_baremetal_versioned_rules
 
 # ---------- 6. PostgreSQL 初始化 ----------
 log_info "==> [6/16] PostgreSQL 数据目录"
@@ -368,7 +485,13 @@ ensure_link() {
   log_info "  ${link} -> ${target}"
 }
 mkdir -p /etc/caddy /srv/jiuzhang
-ensure_link /etc/caddy/rules "${R}/gateway/rules"
+# 升级迁移：旧版裸机安装将 /etc/caddy/rules 指向 ${R}/gateway/rules；安全切换为版本化目录 ${R}/data/rules
+if [[ -L /etc/caddy/rules && "$(readlink /etc/caddy/rules)" == "${R}/gateway/rules" ]]; then
+  ln -s "${R}/data/rules" /etc/caddy/.rules.migrate.$$
+  mv -Tf /etc/caddy/.rules.migrate.$$ /etc/caddy/rules
+  log_info "  已迁移规则软链：/etc/caddy/rules -> ${R}/data/rules"
+fi
+ensure_link /etc/caddy/rules "${R}/data/rules"
 ensure_link /etc/caddy/certs "${R}/data/runtime/certificates"
 ensure_link /srv/jiuzhang/blockpage.html "${R}/gateway/blockpage.html"
 ensure_link /var/log/caddy "${R}/data/logs/caddy"

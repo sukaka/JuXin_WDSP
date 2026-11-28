@@ -50,7 +50,7 @@ FROM alpine:3.24${ALPINE_IMAGE_DIGEST:+@$ALPINE_IMAGE_DIGEST}
 # hasyncd 全程以非 root uid/gid 1000 (jiuzhang) 运行，零 Linux capability，不挂载 docker.sock
 RUN addgroup -g 1000 -S jiuzhang \
     && adduser -u 1000 -S -G jiuzhang -H -h /var/lib/hasyncd jiuzhang \
-    && mkdir -p /var/lib/hasyncd /var/run/caddy/sidecars /var/log/caddy /app/runtime/hostctl /app/runtime/upgrade-packages /app/runtime/upgrade-executor \
+    && mkdir -p /var/lib/hasyncd /var/run/caddy/sidecars /var/log/caddy /app/runtime/hostctl /app/runtime/upgrade-packages /app/runtime/upgrade-executor /app/runtime/rules \
     && chown -R jiuzhang:jiuzhang /var/lib/hasyncd /var/run/caddy /var/log/caddy /app/runtime
 
 COPY --from=builder /hasyncd /usr/local/bin/hasyncd

@@ -155,7 +155,7 @@ check "bootstrap 含 rolling 指令" grep -q 'roll_size 100mib' \
 
 # ---------- 5. build.sh 新增函数存在性 ----------
 check "build.sh 含裸机包函数" grep -q 'build_gateway_baremetal_pkg' "$BUILD"
-check "build.sh compose 模板已补 rules 挂载" grep -q './gateway/rules:/etc/caddy/rules:ro' "$BUILD"
+check "build.sh compose 模板已补 rules 卷挂载" grep -q 'gateway-rules:/etc/caddy/rules:ro' "$BUILD"
 check "build.sh compose 模板已补 blockpage 挂载" grep -q './gateway/blockpage.html:/srv/jiuzhang/blockpage.html:ro' "$BUILD"
 check "build.sh compose 模板已补 Caddyfile 挂载" grep -q './gateway/Caddyfile:/etc/caddy/Caddyfile:ro' "$BUILD"
 

@@ -359,9 +359,14 @@ EOF
 create_layout() {
   log_info "步骤 4/10：创建宿主机目录布局（4.2 权限表）"
   run install -d -m 0755 -o root -g root "$OPT_ROOT" "$OPT_ROOT/releases/$REL_VER"
-  # /etc/caddy 与子目录：root:jiuzhang-waf 0750（网关进程凭组只读）
+  # /etc/caddy 与证书目录：root:jiuzhang-waf 0750（网关进程凭组只读）
   run install -d -m 0750 -o root -g "$WAF_GROUP" \
-    "$CADDY_ETC" "$CADDY_ETC/rules" "$CADDY_ETC/certificates"
+    "$CADDY_ETC" "$CADDY_ETC/certificates"
+  # /etc/caddy/rules：版本化规则包共享目录（root:jiuzhang-waf 2770 setgid），
+  # 管理面 api 容器经 group_add=[WAF_GID] 读写版本目录，网关通过 systemd ReadOnlyPaths=/etc/caddy 严格只读。
+  run install -d -m 2770 -o root -g "$WAF_GROUP" \
+    "$CADDY_ETC/rules" "$CADDY_ETC/rules/releases" "$CADDY_ETC/rules/.staging"
+  run chmod 2770 "$CADDY_ETC/rules" "$CADDY_ETC/rules/releases" "$CADDY_ETC/rules/.staging"
   # blockpage：root:jiuzhang-waf，文件 0640
   run install -d -m 0750 -o root -g "$WAF_GROUP" "$SRV_DIR"
   # 网关进程可写：日志目录与 StateDirectory（autosave/data）
@@ -373,6 +378,110 @@ create_layout() {
   # RuntimeDirectory=/var/run/caddy 由 systemd 创建（0750，属主为 unit User=）；
   # 此处预建仅为 SELinux fcontext 与冒烟检查提供稳定落点。
   run install -d -m 0750 -o "$GW_USER" -g "$WAF_GROUP" "$RUN_DIR"
+}
+
+# verify_versioned_rules_anchors DIR —— 校验规则快照必备锚点文件存在且非空。
+verify_versioned_rules_anchors() {
+  local dir="$1" rel
+  [[ -d "$dir" && ! -L "$dir" ]] || return 1
+  for rel in coraza.conf crs/crs-setup.conf jiuzhang/post-contrib-blocking.conf; do
+    [[ -f "$dir/$rel" && ! -L "$dir/$rel" && -s "$dir/$rel" ]] || return 1
+  done
+  return 0
+}
+
+# atomic_replace_rules_symlink TARGET LINK_PATH [OWNER_GROUP] —— 原子替换相对符号链接。
+atomic_replace_rules_symlink() {
+  local target="$1" link_path="$2" owner="${3:-}" parent tmp_link
+  parent="$(dirname "$link_path")"
+  tmp_link="$parent/.$(basename "$link_path").tmp.$$.$RANDOM"
+  rm -f -- "$tmp_link"
+  ln -s "$target" "$tmp_link" || return 1
+  if [[ -n "$owner" && "$(id -u)" == "0" ]]; then
+    chown -h "$owner" "$tmp_link" 2>/dev/null || true
+  fi
+  if mv -Tf "$tmp_link" "$link_path" 2>/dev/null; then
+    return 0
+  fi
+  if mv -hf "$tmp_link" "$link_path" 2>/dev/null; then
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$tmp_link" "$link_path" 2>/dev/null; then
+    return 0
+  fi
+  rm -f -- "$tmp_link"
+  return 1
+}
+
+# install_versioned_rules_dir SRC RULES_ROOT BUILTIN_VER OWNER_GROUP ——
+# 将规则初始化/升级为版本化目录布局（releases/<builtin_ver>/ + 相对软链 current），
+# 设置 root:<group> + 2770 setgid（文件 0640），升级时严格保留既有客户日期规则包（§9.2 防降级）。
+install_versioned_rules_dir() {
+  local src="$1" rules_root="$2" builtin_ver="$3" owner="$4"
+  verify_versioned_rules_anchors "$src" || die "规则源目录缺少核心锚点文件: $src"
+  mkdir -p "$rules_root/releases" "$rules_root/.staging"
+  if [[ "$(id -u)" == "0" && -n "$owner" ]]; then
+    chown "$owner" "$rules_root" "$rules_root/releases" "$rules_root/.staging"
+  fi
+  chmod 2770 "$rules_root" "$rules_root/releases" "$rules_root/.staging"
+
+  local stage_dir="$rules_root/.staging/seed-${builtin_ver}-$$.$RANDOM"
+  local release_dir="$rules_root/releases/$builtin_ver"
+  [[ ! -L "$release_dir" ]] || die "规则目标内置目录为符号链接，拒绝覆盖: $release_dir"
+  rm -rf -- "$stage_dir"
+  mkdir -p "$stage_dir"
+  cp -R "$src/." "$stage_dir/"
+  find "$stage_dir" -type l -delete
+  find "$stage_dir" -type d -exec chmod 2770 {} +
+  find "$stage_dir" -type f -exec chmod 0640 {} +
+  if [[ "$(id -u)" == "0" && -n "$owner" ]]; then
+    chown -R "$owner" "$stage_dir"
+  fi
+  verify_versioned_rules_anchors "$stage_dir" || { rm -rf -- "$stage_dir"; die "规则种子落盘校验失败: $builtin_ver"; }
+  if [[ -e "$release_dir" ]]; then
+    local backup_old="$rules_root/.staging/old-${builtin_ver}-$$.$RANDOM"
+    rm -rf -- "$backup_old"
+    mv "$release_dir" "$backup_old"
+    if ! mv "$stage_dir" "$release_dir"; then
+      mv "$backup_old" "$release_dir" 2>/dev/null || true
+      rm -rf -- "$stage_dir"
+      die "原子替换内置规则目录失败: $release_dir"
+    fi
+    rm -rf -- "$backup_old"
+  else
+    mv "$stage_dir" "$release_dir"
+  fi
+
+  if [[ -e "$rules_root/current" && ! -L "$rules_root/current" ]]; then
+    die "规则目录 current 不是符号链接，拒绝覆盖: $rules_root/current"
+  fi
+  local cur_target=""
+  if [[ -L "$rules_root/current" ]]; then
+    cur_target="$(readlink "$rules_root/current")"
+    if [[ "$cur_target" =~ ^releases/([0-9]{8}\.[0-9]{1,3})$ ]]; then
+      verify_versioned_rules_anchors "$rules_root/$cur_target" \
+        || die "既有客户规则包快照不完整: $rules_root/$cur_target"
+      log_info "保留既有客户离线规则包生效: ${rules_root}/current -> ${cur_target}（已旁路写入 ${builtin_ver}）"
+    elif [[ "$cur_target" =~ ^releases/builtin-[0-9A-Za-z._-]+$ ]]; then
+      atomic_replace_rules_symlink "releases/$builtin_ver" "$rules_root/current" "$owner" \
+        || die "更新规则 current 软链失败: $rules_root/current"
+    else
+      die "规则目录 current 软链指向非法路径: $cur_target"
+    fi
+  else
+    atomic_replace_rules_symlink "releases/$builtin_ver" "$rules_root/current" "$owner" \
+      || die "创建规则 current 相对软链失败: $rules_root/current"
+  fi
+
+  # 迁移既有扁平文件/目录为相对兼容软链（保障旧 autosave.json --resume 零中断）
+  local compat_item
+  for compat_item in coraza.conf crs contrib exclusions jiuzhang; do
+    if [[ -e "$rules_root/$compat_item" && ! -L "$rules_root/$compat_item" ]]; then
+      rm -rf -- "$rules_root/$compat_item"
+    fi
+    atomic_replace_rules_symlink "current/$compat_item" "$rules_root/$compat_item" "$owner" \
+      || die "创建规则兼容软链失败: $rules_root/$compat_item"
+  done
 }
 
 # ---------- 5. 安装二进制与配套文件 ----------
@@ -392,12 +501,16 @@ install_files() {
   elif [[ -d "$REPO_ROOT/gateway/rules" ]]; then rules_src="$REPO_ROOT/gateway/rules"
   fi
   [[ -n "$rules_src" ]] || die "未找到 CRS 规则目录（包内无 rules/，--rules-dir 未指定，仓库 gateway/rules/ 不存在）"
+  local safe_rel_ver builtin_rules_ver
+  safe_rel_ver="${REL_VER#v}"
+  safe_rel_ver="$(printf '%s' "$safe_rel_ver" | tr -c '0-9A-Za-z._-' '-' | sed 's/^-*//; s/-*$//')"
+  [[ -n "$safe_rel_ver" ]] || safe_rel_ver="baremetal"
+  builtin_rules_ver="builtin-${safe_rel_ver}"
   if [[ "$DRY_RUN" == "true" ]]; then
-    printf '[DRY-RUN] 复制规则 %s -> %s/rules/\n' "$rules_src" "$CADDY_ETC"
+    printf '[DRY-RUN] 初始化版本化规则目录 %s -> %s/rules/releases/%s（root:%s 2770 setgid，相对 current 软链，升级保留客户规则包）\n' \
+      "$rules_src" "$CADDY_ETC" "$builtin_rules_ver" "$WAF_GROUP"
   else
-    cp -R "$rules_src/." "$CADDY_ETC/rules/"
-    chown -R root:"$WAF_GROUP" "$CADDY_ETC/rules"
-    chmod -R u=rwX,g=rX,o= "$CADDY_ETC/rules"
+    install_versioned_rules_dir "$rules_src" "$CADDY_ETC/rules" "$builtin_rules_ver" "root:$WAF_GROUP"
   fi
 
   local blockpage_src="$SRC_DIR/blockpage.html"
@@ -479,7 +592,7 @@ configure_selinux() {
   fi
   # 宿主机 systemd 进程 + Docker 容器共享目录场景：候选方案为共享目录设置
   # container_file_t fcontext（期1 经验证候选；安装报告注明需在目标环境复核）。
-  local dirs=("$LOG_DIR" "$RUN_DIR" "$CADDY_ETC/certificates" "$LIB_DIR/config")
+  local dirs=("$LOG_DIR" "$RUN_DIR" "$CADDY_ETC/rules" "$CADDY_ETC/certificates" "$LIB_DIR/config")
   if command -v semanage >/dev/null 2>&1; then
     local d
     for d in "${dirs[@]}"; do
@@ -553,7 +666,8 @@ print_report() {
   账号:        $GW_USER(uid=$GW_UID) / $WAF_GROUP(gid=$WAF_GID)
   安装档案:    $INSTALL_ENV_FILE
   目录:        ${OPT_ROOT}（root 0755，防篡改）
-               $CADDY_ETC{,/rules,/certificates}（root:$WAF_GROUP 0750，网关只读）
+               $CADDY_ETC{,/certificates}（root:$WAF_GROUP 0750，网关只读）
+               $CADDY_ETC/rules（root:$WAF_GROUP 2770 setgid，版本化 releases/ + current；api 凭组读写，网关只读）
                $SRV_DIR/blockpage.html（0640）
                $LOG_DIR / ${LIB_DIR}（$GW_USER:$WAF_GROUP 0750，网关可写）
                $LIB_DIR/config（root:$WAF_GROUP 0750，发布存档）
@@ -562,9 +676,10 @@ print_report() {
   性能调优:    $(if [[ -n "$TUNE_TARGET" ]]; then printf '已应用 %s 档（tune-gateway-baremetal.sh；验收见 docs/BARE_METAL_PERFORMANCE_TUNING.md）' "$TUNE_TARGET"; else printf '未执行（如需: bash ops/install/tune-gateway-baremetal.sh --target 6 --apply）'; fi)
 
   后续步骤（管理面对接，期2 落地）：
-    1. 生产 compose 为 api 服务追加 bind mount：
+    1. 生产 compose 为 api 服务追加 bind mount 与环境变量：
        - $RUN_DIR:/var/run/caddy（admin socket 发布通道）
        - $LOG_DIR:/var/log/caddy-audit:ro（日志采集）
+       - $CADDY_ETC/rules:/app/runtime/rules（离线规则包版本化存储，配 WAF_RULES_STORE_DIR=/app/runtime/rules）
        - $CADDY_ETC/certificates:<dataDir>/certificates（证书下发）
        - $LIB_DIR/config:<dataDir>/gateway-config（发布存档）
     2. api 服务追加 group_add: ["$WAF_GID"]（共享 GID 授权，容器内 UID 无需等于宿主机）

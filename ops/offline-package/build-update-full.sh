@@ -157,6 +157,7 @@ jq -e '(.services | has("pcapd") | not) and
   (.services.mirrorcap.cap_drop == ["ALL"]) and
   (.services.mirrorcap.cap_add | sort == (["NET_RAW", "NET_ADMIN", "SETUID", "SETGID", "SETPCAP"] | sort)) and
   (.services.mirrorcap.environment.MIRROR_DROP_PRIVS == "1") and
+  (.services.mirrorcap.environment.MIRROR_RULES_DIR == "/etc/caddy/rules/current") and
   (.services.tproxyd.network_mode == "host") and
   (.services.tproxyd.user == "1000:1000") and
   (.services.tproxyd.read_only == true) and
@@ -170,8 +171,11 @@ jq -e '(.services | has("pcapd") | not) and
   (.services.havipd.cap_add | sort == (["NET_ADMIN", "NET_BROADCAST", "NET_RAW"] | sort)) and
   ((.services.havipd.security_opt // []) | index("no-new-privileges:true") != null) and
   any(.services.api.volumes[]?; .source == "gateway-certs" and .target == "/app/runtime/certificates") and
-  any(.services.gateway.volumes[]?; .source == "gateway-certs" and .target == "/etc/caddy/certs" and .read_only == true)' <<<"$COMPOSE_JSON" >/dev/null \
-  || die "交付 Compose 的低端口、证书下发、sidecar、mirrorcap、tproxyd、havipd 或默认关闭 hasyncd/PCAP 契约不合格"
+  any(.services.gateway.volumes[]?; .source == "gateway-certs" and .target == "/etc/caddy/certs" and .read_only == true) and
+  any(.services.api.volumes[]?; .source == "gateway-rules" and .target == "/app/runtime/rules" and (.read_only // false) == false) and
+  any(.services.gateway.volumes[]?; .source == "gateway-rules" and .target == "/etc/caddy/rules" and .read_only == true) and
+  any(.services.mirrorcap.volumes[]?; .source == "gateway-rules" and .target == "/etc/caddy/rules" and .read_only == true)' <<<"$COMPOSE_JSON" >/dev/null \
+  || die "交付 Compose 的低端口、证书/规则卷下发、sidecar、mirrorcap、tproxyd、havipd 或默认关闭 hasyncd/PCAP 契约不合格"
 COMPOSE_HASYNC_JSON="$(POSTGRES_PASSWORD=verify-only VALKEY_PASSWORD=verify-only JIUZHANG_MASTER_KEY=verify-only \
   docker compose -f "$ROOT_DIR/docker-compose.yml" --profile ha-sync --env-file /dev/null config --format json)" \
   || die "交付 Compose（ha-sync profile）无法渲染"
@@ -179,8 +183,10 @@ jq -e '.services.hasyncd.user == "1000:1000" and
   .services.hasyncd.read_only == true and
   .services.hasyncd.cap_drop == ["ALL"] and
   ((.services.hasyncd.cap_add // []) | length == 0) and
-  ((.services.hasyncd.security_opt // []) | index("no-new-privileges:true") != null)' <<<"$COMPOSE_HASYNC_JSON" >/dev/null \
-  || die "交付 Compose 的 hasyncd 安全契约不合格"
+  ((.services.hasyncd.security_opt // []) | index("no-new-privileges:true") != null) and
+  .services.hasyncd.environment.HASYNC_RULES_DIR == "/app/runtime/rules" and
+  any(.services.hasyncd.volumes[]?; .source == "gateway-rules" and .target == "/app/runtime/rules" and (.read_only // false) == false)' <<<"$COMPOSE_HASYNC_JSON" >/dev/null \
+  || die "交付 Compose 的 hasyncd 安全与规则卷契约不合格"
 SCAN="$OUTPUT_DIR/jiuzhang-wdsp-offline-$VERSION-amd64.scan.json"
 jq -e --arg digest "$(sha256_of "$ARCHIVE" | awk '{print $1}')" '.result == "PASS" and .input.sha256 == $digest' "$SCAN" >/dev/null \
   || die "最终内容扫描未绑定本次交付归档"
